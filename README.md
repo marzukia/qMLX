@@ -1,6 +1,6 @@
 # vLLM-MLX
 
-**Apple Silicon MLX Backend for vLLM** - GPU-accelerated LLM inference on Mac
+**Apple Silicon MLX Backend for vLLM alike** - GPU-accelerated LLM inference on Mac
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
