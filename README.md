@@ -648,6 +648,130 @@ Tokens saved: 15
 
 *Prefix caching saves computation when the same prompt prefix is repeated (e.g., system prompts, chat history).*
 
+#### VLM KV Cache (Image + Video) Test
+
+This test uses a real VLM model plus the same image and video assets as the benchmark utilities.
+
+Run:
+```bash
+python tests/test_vlm_cache.py
+```
+
+Example output:
+```
+============================================================
+VLM KV Cache Test with Real Model
+============================================================
+Model: mlx-community/Qwen3-VL-4B-Instruct-3bit
+
+Downloading model...
+Model loaded in 0.11s
+Model type: qwen3_vl
+
+Creating real KV cache from model.language_model...
+KV cache: 36 layers of KVCache
+
+Downloading test images...
+Image 1: 1200x989 (https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/YellowLabradorLooking_new.jpg/1200px-YellowLabradorLooking_new.jpg)
+Image 2: 1200x1198 (https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/1200px-Cat03.jpg)
+Image 3: failed to download (https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/640px-PNG_transparency_demonstration_1.png): cannot write mode RGBA as JPEG
+
+Creating resized image variants...
+Resized: 224x224
+Resized: 336x336
+Resized: 512x512
+Resized: 768x768
+
+Downloading test videos...
+  Downloading video from: https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big...
+  Downloaded: 0.9 MB
+Video 1: 640x360, 10.0s, 30.0 fps (https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4)
+  Downloading video from: https://docs.evostream.com/sample_content/assets/bunny.mp4...
+  Downloaded: 37.3 MB
+Video 2: 424x240, 596.5s, 24.0 fps (https://docs.evostream.com/sample_content/assets/bunny.mp4)
+
+[1] Testing IMAGE cache...
+    First request: hit=False (expected: False)
+    After image miss: hits=0, misses=1, hit_rate=0.0%, tokens_saved=0, image_cache_hits=0, evictions=0
+    Stored cache for image
+    After image store: hits=0, misses=1, hit_rate=0.0%, tokens_saved=0, image_cache_hits=0, evictions=0
+    Second request: hit=True (expected: True)
+    Retrieved cache layers: 36
+    After image hit: hits=1, misses=1, hit_rate=50.0%, tokens_saved=500, image_cache_hits=1, evictions=0
+    Different prompt: hit=False (expected: False)
+    After image different prompt: hits=1, misses=2, hit_rate=33.3%, tokens_saved=500, image_cache_hits=1, evictions=0
+
+[1b] Testing ADDITIONAL image cache entries...
+    Image 2 first request: hit=False (expected: False)
+    Image 2 second request: hit=True (expected: True)
+    After additional images: hits=2, misses=3, hit_rate=40.0%, tokens_saved=820, image_cache_hits=2, evictions=0
+
+[1c] Testing RESIZED image cache entries...
+    Resized 224x224 first request: hit=False (expected: False)
+    Resized 224x224 second request: hit=True (expected: True)
+    Resized 336x336 first request: hit=False (expected: False)
+    Resized 336x336 second request: hit=True (expected: True)
+    Resized 512x512 first request: hit=False (expected: False)
+    Resized 512x512 second request: hit=True (expected: True)
+    Resized 768x768 first request: hit=False (expected: False)
+    Resized 768x768 second request: hit=True (expected: True)
+    After resized images: hits=6, misses=7, hit_rate=46.2%, tokens_saved=1670, image_cache_hits=6, evictions=0
+
+[2] Testing VIDEO cache with fps/max_frames...
+    First request: hit=False (expected: False)
+    After video miss: hits=6, misses=8, hit_rate=42.9%, tokens_saved=1670, image_cache_hits=6, evictions=0
+    Stored cache for video (fps=2.0, max_frames=16)
+    After video store: hits=6, misses=8, hit_rate=42.9%, tokens_saved=1670, image_cache_hits=6, evictions=0
+    Same params: hit=True (expected: True)
+    After video hit: hits=7, misses=8, hit_rate=46.7%, tokens_saved=2470, image_cache_hits=7, evictions=0
+    Different fps (4.0): hit=False (expected: False)
+    After video different fps: hits=7, misses=9, hit_rate=43.8%, tokens_saved=2470, image_cache_hits=7, evictions=0
+    Different max_frames (32): hit=False (expected: False)
+    After video different max_frames: hits=7, misses=10, hit_rate=41.2%, tokens_saved=2470, image_cache_hits=7, evictions=0
+
+[2a] Testing multiple fps/max_frames combinations...
+    fps=0.5, max_frames=2 first: hit=False (expected: False)
+    fps=0.5, max_frames=2 second: hit=True (expected: True)
+    fps=1.0, max_frames=4 first: hit=False (expected: False)
+    fps=1.0, max_frames=4 second: hit=True (expected: True)
+    fps=2.0, max_frames=8 first: hit=False (expected: False)
+    fps=2.0, max_frames=8 second: hit=True (expected: True)
+    fps=4.0, max_frames=16 first: hit=False (expected: False)
+    fps=4.0, max_frames=16 second: hit=True (expected: True)
+    After multiple fps/max_frames: hits=11, misses=14, hit_rate=44.0%, tokens_saved=5650, image_cache_hits=11, evictions=0
+
+[2b] Testing ADDITIONAL video cache entries...
+    Video 2 first request: hit=False (expected: False)
+    Video 2 second request: hit=True (expected: True)
+    After additional videos: hits=12, misses=15, hit_rate=44.4%, tokens_saved=6370, image_cache_hits=12, evictions=0
+
+[3] Testing LRU eviction...
+    Cache full: 2/2 entries
+    Added img3, evictions: 1
+    Small cache after eviction: hits=1, misses=0, hit_rate=100.0%, tokens_saved=0, image_cache_hits=1, evictions=1
+    img2 (oldest): hit=False (expected: False - evicted)
+    img1 (recently used): hit=True (expected: True)
+
+============================================================
+Final Cache Statistics
+============================================================
+hits: 12
+misses: 15
+hit_rate: 44.4%
+tokens_saved: 6370
+image_cache_hits: 12
+evictions: 0
+============================================================
+```
+
+Metrics (concise):
+- hits: cache hits for image/video + prompt combinations.
+- misses: requests not found in cache (computed from scratch).
+- hit_rate: hits divided by total queries.
+- tokens_saved: prompt tokens skipped thanks to cache reuse.
+- image_cache_hits: hits where at least one image/video was present.
+- evictions: LRU entries removed when cache is full.
+
 ## Supported Models
 
 **All quantized models from [mlx-community on HuggingFace](https://huggingface.co/mlx-community/models) are compatible!**
