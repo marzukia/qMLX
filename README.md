@@ -93,6 +93,11 @@ cd vllm-mlx
 pip install -e .
 ```
 
+Optional (transformers video processors / torchvision):
+```bash
+pip install -e ".[vision]"
+```
+
 This will install:
 - `mlx`, `mlx-lm`, `mlx-vlm` - MLX framework and model libraries
 - `transformers`, `tokenizers` - HuggingFace libraries

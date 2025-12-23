@@ -214,6 +214,10 @@ VIDEO_SAMPLE_URLS = {
 }
 
 DEFAULT_VIDEO_URL = VIDEO_SAMPLE_URLS["bunny_10s"]
+VLM_TEST_VIDEO_URLS = [
+    VIDEO_SAMPLE_URLS["bunny_10s"],
+    VIDEO_SAMPLE_URLS["bunny_240p"],
+]
 
 
 @dataclass
@@ -610,6 +614,11 @@ MLLM_PATTERNS = [
 
 # Test image URL (Yellow Labrador from Wikimedia Commons)
 MLLM_TEST_IMAGE_URL = "https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/YellowLabradorLooking_new.jpg/1200px-YellowLabradorLooking_new.jpg"
+MLLM_TEST_IMAGE_URLS = [
+    MLLM_TEST_IMAGE_URL,
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/1200px-Cat03.jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/640px-PNG_transparency_demonstration_1.png",
+]
 
 
 def is_mllm_model(model_name: str) -> bool:
