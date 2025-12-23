@@ -482,25 +482,67 @@ class TestMLXMultimodalLMCache:
 
 
 if __name__ == "__main__":
-    # Test VLM cache with real model using mlx-vlm directly (no transformers processor)
-    # Reuses image/video loading from benchmark module
+    # Verbose VLM cache test with real model
+    # Uses mlx-vlm directly (no transformers processor bugs)
     import time
     from pathlib import Path
 
     VLM_MODEL = "mlx-community/Qwen3-VL-4B-Instruct-3bit"
 
+    def print_header(title):
+        print("\n" + "=" * 70)
+        print(f"  {title}")
+        print("=" * 70)
+
+    def print_subheader(title):
+        print("\n" + "-" * 70)
+        print(f"  {title}")
+        print("-" * 70)
+
+    def print_table(headers, rows, indent=4):
+        """Print a formatted table."""
+        pad = " " * indent
+        # Calculate column widths
+        col_widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(str(cell)))
+
+        # Print header
+        header_line = " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
+        separator = "-+-".join("-" * w for w in col_widths)
+        print(f"{pad}{header_line}")
+        print(f"{pad}{separator}")
+
+        # Print rows
+        for row in rows:
+            row_line = " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
+            print(f"{pad}{row_line}")
+
+    def print_cache_stats_table(manager, title="Cache Statistics"):
+        """Print cache stats as a table."""
+        stats = manager.get_stats()
+        print(f"\n    {title}:")
+        print_table(
+            ["Metric", "Value"],
+            [
+                ["Hits", stats['hits']],
+                ["Misses", stats['misses']],
+                ["Hit Rate", f"{stats['hit_rate']*100:.1f}%"],
+                ["Tokens Saved", stats['tokens_saved']],
+                ["Image/Video Hits", stats['image_cache_hits']],
+                ["Evictions", stats['evictions']],
+            ]
+        )
+
     def run_vlm_cache_test():
         """
         Test VLM cache with real model's KV cache and real images/videos.
-
-        Uses mlx-vlm's load_model directly to avoid transformers processor bugs.
-        Reuses image/video utilities from benchmark module.
         """
         from huggingface_hub import snapshot_download
         from mlx_vlm.utils import load_model, load_config
         from mlx_vlm.models import cache as vlm_cache
 
-        # Reuse benchmark utilities for image/video loading
         from vllm_mlx.benchmark import (
             download_test_image,
             download_video,
@@ -509,46 +551,41 @@ if __name__ == "__main__":
             VLM_TEST_VIDEO_URLS,
         )
 
-        def print_cache_stats(label, manager):
-            stats = manager.get_stats()
-            print(
-                f"    {label}: hits={stats['hits']}, misses={stats['misses']}, "
-                f"hit_rate={stats['hit_rate']*100:.1f}%, "
-                f"tokens_saved={stats['tokens_saved']}, "
-                f"image_cache_hits={stats['image_cache_hits']}, "
-                f"evictions={stats['evictions']}"
-            )
+        print_header("VLM KV CACHE TEST")
+        print(f"\n  Model: {VLM_MODEL}")
+        print(f"  Test: Verify KV cache reuse for repeated image/video + prompt combinations")
+        print(f"  Expected behavior:")
+        print(f"    - Same image + same prompt → cache HIT")
+        print(f"    - Same image + different prompt → cache MISS")
+        print(f"    - Different image + same prompt → cache MISS")
+        print(f"    - Same video + same fps/max_frames → cache HIT")
+        print(f"    - Same video + different fps/max_frames → cache MISS")
 
-        print("=" * 60)
-        print("VLM KV Cache Test with Real Model")
-        print("=" * 60)
-        print(f"Model: {VLM_MODEL}")
-        print()
-
-        # Download and load model (without processor to avoid transformers bugs)
-        print("Downloading model...")
+        # ============================================================
+        # SETUP: Load Model and Create KV Cache
+        # ============================================================
+        print_subheader("SETUP: Loading Model")
+        print(f"    Downloading: {VLM_MODEL}")
         model_path = Path(snapshot_download(
             VLM_MODEL,
             allow_patterns=["*.safetensors", "*.json"]
         ))
 
-        print("Loading model...")
-        start = time.perf_counter()
+        load_start = time.perf_counter()
         model = load_model(model_path)
         config = load_config(model_path)
-        load_time = time.perf_counter() - start
-        print(f"Model loaded in {load_time:.2f}s")
-        print(f"Model type: {config.get('model_type', 'unknown')}")
-        print()
+        load_time = time.perf_counter() - load_start
+        print(f"    Model loaded in {load_time:.2f}s")
+        print(f"    Model type: {config.get('model_type', 'unknown')}")
 
-        # Create real KV cache from model
-        print("Creating real KV cache from model.language_model...")
+        print(f"\n    Creating KV cache from model.language_model...")
         real_kv_cache = vlm_cache.make_prompt_cache(model.language_model)
-        print(f"KV cache: {len(real_kv_cache)} layers of {type(real_kv_cache[0]).__name__}")
-        print()
+        print(f"    KV cache: {len(real_kv_cache)} layers of {type(real_kv_cache[0]).__name__}")
 
-        # Download real test images (from benchmark list)
-        print("Downloading test images...")
+        # ============================================================
+        # SETUP: Download Test Images
+        # ============================================================
+        print_subheader("SETUP: Downloading Test Images")
         image_paths = []
         resized_image_entries = []
         base_image = None
@@ -564,15 +601,14 @@ if __name__ == "__main__":
                 image_paths.append(temp_path)
                 if base_image is None:
                     base_image = test_image.copy()
-                print(f"Image {idx}: {test_image.size[0]}x{test_image.size[1]} ({url})")
+                print(f"    Image {idx}: {test_image.size[0]}x{test_image.size[1]}")
             except Exception as exc:
-                print(f"Image {idx}: failed to download ({url}): {exc}")
+                print(f"    Image {idx}: FAILED ({exc})")
         if not image_paths:
             raise RuntimeError("No test images could be downloaded.")
-        print()
 
         if base_image is not None:
-            print("Creating resized image variants...")
+            print(f"\n    Creating resized variants for cache key testing...")
             resize_sizes = [(224, 224), (336, 336), (512, 512), (768, 768)]
             for width, height in resize_sizes:
                 resized = base_image.resize((width, height), Image.Resampling.LANCZOS)
@@ -581,24 +617,24 @@ if __name__ == "__main__":
                 temp_img.close()
                 resized.save(temp_path, "JPEG")
                 resized_image_entries.append((temp_path, width, height))
-                print(f"Resized: {width}x{height}")
-            print()
+                print(f"    Resized: {width}x{height}")
 
-        # Download real test videos (from benchmark list)
-        print("Downloading test videos...")
+        # ============================================================
+        # SETUP: Download Test Videos
+        # ============================================================
+        print_subheader("SETUP: Downloading Test Videos")
         video_paths = []
         for idx, url in enumerate(VLM_TEST_VIDEO_URLS, start=1):
             try:
                 path = download_video(url)
                 video_paths.append(path)
                 video_info = get_video_info(path)
-                print(f"Video {idx}: {video_info['width']}x{video_info['height']}, "
-                      f"{video_info['duration']:.1f}s, {video_info['fps']:.1f} fps ({url})")
+                print(f"    Video {idx}: {video_info['width']}x{video_info['height']}, "
+                      f"{video_info['duration']:.1f}s @ {video_info['fps']:.1f}fps")
             except Exception as exc:
-                print(f"Video {idx}: failed to download ({url}): {exc}")
+                print(f"    Video {idx}: FAILED ({exc})")
         if not video_paths:
             raise RuntimeError("No test videos could be downloaded.")
-        print()
 
         primary_image_path = image_paths[0]
         primary_video_path = video_paths[0]
@@ -606,178 +642,249 @@ if __name__ == "__main__":
         # Initialize VLM Cache Manager
         cache_manager = VLMCacheManager(max_entries=50)
 
-        # Test 1: Image cache miss then hit
-        print("[1] Testing IMAGE cache...")
+        # Collect test results for summary table
+        test_results = []
+
+        # ============================================================
+        # TEST 1: Image Cache - Same image, same prompt should HIT
+        # ============================================================
+        print_subheader("TEST 1: Image Cache - Basic Hit/Miss")
         test_prompt = "Describe this image in detail"
+        print(f"    Image: {primary_image_path}")
+        print(f"    Prompt: \"{test_prompt}\"")
+
+        # Test table for this section
+        test1_rows = []
 
         # First request - miss
+        t_start = time.perf_counter()
         cached, hit = cache_manager.fetch_cache([primary_image_path], test_prompt)
-        print(f"    First request: hit={hit} (expected: False)")
+        t1 = (time.perf_counter() - t_start) * 1000
+        test1_rows.append(["1a", "First request (new)", "MISS", "HIT" if hit else "MISS", f"{t1:.2f}ms", "✓" if not hit else "✗"])
         assert not hit, "Expected cache miss"
-        print_cache_stats("After image miss", cache_manager)
 
         # Store cache
         cache_manager.store_cache([primary_image_path], test_prompt, real_kv_cache, num_tokens=500)
-        print(f"    Stored cache for image")
-        print_cache_stats("After image store", cache_manager)
 
         # Second request - hit
+        t_start = time.perf_counter()
         cached, hit = cache_manager.fetch_cache([primary_image_path], test_prompt)
-        print(f"    Second request: hit={hit} (expected: True)")
+        t2 = (time.perf_counter() - t_start) * 1000
+        test1_rows.append(["1b", "Same image+prompt", "HIT", "HIT" if hit else "MISS", f"{t2:.2f}ms", "✓" if hit else "✗"])
         assert hit, "Expected cache hit"
-        print(f"    Retrieved cache layers: {len(cached)}")
-        print_cache_stats("After image hit", cache_manager)
 
         # Different prompt - miss
-        cached, hit = cache_manager.fetch_cache([primary_image_path], "Different question")
-        print(f"    Different prompt: hit={hit} (expected: False)")
+        t_start = time.perf_counter()
+        cached, hit = cache_manager.fetch_cache([primary_image_path], "What colors are in this image?")
+        t3 = (time.perf_counter() - t_start) * 1000
+        test1_rows.append(["1c", "Same image, diff prompt", "MISS", "HIT" if hit else "MISS", f"{t3:.2f}ms", "✓" if not hit else "✗"])
         assert not hit, "Expected cache miss for different prompt"
-        print_cache_stats("After image different prompt", cache_manager)
 
-        # Extra images - independent cache entries
+        print("\n    Results:")
+        print_table(["Step", "Description", "Expected", "Actual", "Time", "Status"], test1_rows)
+        test_results.extend(test1_rows)
+        print_cache_stats_table(cache_manager)
+
+        # ============================================================
+        # TEST 2: Different Images Have Different Cache Keys
+        # ============================================================
         if len(image_paths) > 1:
-            print("\n[1b] Testing ADDITIONAL image cache entries...")
+            print_subheader("TEST 2: Different Images = Different Cache Keys")
+            test2_rows = []
             for idx, image_path in enumerate(image_paths[1:], start=2):
                 extra_prompt = f"Describe image {idx}"
+                t_start = time.perf_counter()
                 cached, hit = cache_manager.fetch_cache([image_path], extra_prompt)
-                print(f"    Image {idx} first request: hit={hit} (expected: False)")
+                t_ms = (time.perf_counter() - t_start) * 1000
+                test2_rows.append([f"2.{idx}a", f"Image {idx} first", "MISS", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if not hit else "✗"])
                 assert not hit
-                cache_manager.store_cache([image_path], extra_prompt, real_kv_cache, num_tokens=300 + idx * 10)
+                cache_manager.store_cache([image_path], extra_prompt, real_kv_cache, num_tokens=300)
+                t_start = time.perf_counter()
                 cached, hit = cache_manager.fetch_cache([image_path], extra_prompt)
-                print(f"    Image {idx} second request: hit={hit} (expected: True)")
+                t_ms = (time.perf_counter() - t_start) * 1000
+                test2_rows.append([f"2.{idx}b", f"Image {idx} cached", "HIT", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if hit else "✗"])
                 assert hit
-            print_cache_stats("After additional images", cache_manager)
+            print("\n    Results:")
+            print_table(["Step", "Description", "Expected", "Actual", "Time", "Status"], test2_rows)
+            test_results.extend(test2_rows)
+            print_cache_stats_table(cache_manager)
 
+        # ============================================================
+        # TEST 3: Resized Images Have Different Cache Keys (content hash differs)
+        # ============================================================
         if resized_image_entries:
-            print("\n[1c] Testing RESIZED image cache entries...")
+            print_subheader("TEST 3: Resized Images = Different Cache Keys")
+            print(f"    (Cache uses content hash, so different sizes = different keys)")
+            test3_rows = []
             for idx, (image_path, width, height) in enumerate(resized_image_entries, start=1):
-                extra_prompt = f"Describe resized image {idx}"
+                extra_prompt = f"Describe this {width}x{height} image"
+                t_start = time.perf_counter()
                 cached, hit = cache_manager.fetch_cache([image_path], extra_prompt)
-                print(f"    Resized {width}x{height} first request: hit={hit} (expected: False)")
+                t_ms = (time.perf_counter() - t_start) * 1000
+                test3_rows.append([f"3.{idx}a", f"{width}x{height} first", "MISS", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if not hit else "✗"])
                 assert not hit
-                cache_manager.store_cache([image_path], extra_prompt, real_kv_cache, num_tokens=200 + idx * 5)
+                cache_manager.store_cache([image_path], extra_prompt, real_kv_cache, num_tokens=200)
+                t_start = time.perf_counter()
                 cached, hit = cache_manager.fetch_cache([image_path], extra_prompt)
-                print(f"    Resized {width}x{height} second request: hit={hit} (expected: True)")
+                t_ms = (time.perf_counter() - t_start) * 1000
+                test3_rows.append([f"3.{idx}b", f"{width}x{height} cached", "HIT", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if hit else "✗"])
                 assert hit
-            print_cache_stats("After resized images", cache_manager)
+            print("\n    Results:")
+            print_table(["Step", "Description", "Expected", "Actual", "Time", "Status"], test3_rows)
+            test_results.extend(test3_rows)
+            print_cache_stats_table(cache_manager)
 
-        # Test 2: Video cache with fps/max_frames
-        print("\n[2] Testing VIDEO cache with fps/max_frames...")
+        # ============================================================
+        # TEST 4: Video Cache - fps and max_frames affect cache key
+        # ============================================================
+        print_subheader("TEST 4: Video Cache - fps/max_frames in Cache Key")
         video_fps = 2.0
         video_max_frames = 16
-
-        # Video cache key includes fps and max_frames
         video_key = f"video:{primary_video_path}:fps{video_fps}:max{video_max_frames}"
         video_prompt = "Describe what happens in this video"
 
+        print(f"    Config: fps={video_fps}, max_frames={video_max_frames}")
+        test4_rows = []
+
         # First request - miss
+        t_start = time.perf_counter()
         cached, hit = cache_manager.fetch_cache([video_key], video_prompt)
-        print(f"    First request: hit={hit} (expected: False)")
+        t_ms = (time.perf_counter() - t_start) * 1000
+        test4_rows.append(["4a", "Video first request", "MISS", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if not hit else "✗"])
         assert not hit
-        print_cache_stats("After video miss", cache_manager)
 
         # Store cache
         cache_manager.store_cache([video_key], video_prompt, real_kv_cache, num_tokens=800)
-        print(f"    Stored cache for video (fps={video_fps}, max_frames={video_max_frames})")
-        print_cache_stats("After video store", cache_manager)
 
         # Same params - hit
+        t_start = time.perf_counter()
         cached, hit = cache_manager.fetch_cache([video_key], video_prompt)
-        print(f"    Same params: hit={hit} (expected: True)")
+        t_ms = (time.perf_counter() - t_start) * 1000
+        test4_rows.append(["4b", "Same video+params", "HIT", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if hit else "✗"])
         assert hit
-        print_cache_stats("After video hit", cache_manager)
 
         # Different fps - miss (important for video!)
         video_key_diff_fps = f"video:{primary_video_path}:fps4.0:max{video_max_frames}"
+        t_start = time.perf_counter()
         cached, hit = cache_manager.fetch_cache([video_key_diff_fps], video_prompt)
-        print(f"    Different fps (4.0): hit={hit} (expected: False)")
+        t_ms = (time.perf_counter() - t_start) * 1000
+        test4_rows.append(["4c", "Different fps (4.0)", "MISS", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if not hit else "✗"])
         assert not hit
-        print_cache_stats("After video different fps", cache_manager)
 
         # Different max_frames - miss
         video_key_diff_frames = f"video:{primary_video_path}:fps{video_fps}:max32"
+        t_start = time.perf_counter()
         cached, hit = cache_manager.fetch_cache([video_key_diff_frames], video_prompt)
-        print(f"    Different max_frames (32): hit={hit} (expected: False)")
+        t_ms = (time.perf_counter() - t_start) * 1000
+        test4_rows.append(["4d", "Different max_frames (32)", "MISS", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if not hit else "✗"])
         assert not hit
-        print_cache_stats("After video different max_frames", cache_manager)
 
-        print("\n[2a] Testing multiple fps/max_frames combinations...")
-        video_configs = [
-            (0.5, 2),
-            (1.0, 4),
-            (2.0, 8),
-            (4.0, 16),
-        ]
+        # Multiple fps/max_frames combinations
+        video_configs = [(0.5, 2), (1.0, 4), (2.0, 8), (4.0, 16)]
         for fps_value, max_frames in video_configs:
             extra_key = f"video:{primary_video_path}:fps{fps_value}:max{max_frames}"
             extra_prompt = f"Describe video at {fps_value} fps"
+            t_start = time.perf_counter()
             cached, hit = cache_manager.fetch_cache([extra_key], extra_prompt)
-            print(f"    fps={fps_value}, max_frames={max_frames} first: hit={hit} (expected: False)")
+            t_ms = (time.perf_counter() - t_start) * 1000
+            test4_rows.append([f"4.{fps_value}a", f"fps={fps_value} first", "MISS", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if not hit else "✗"])
             assert not hit
-            cache_manager.store_cache(
-                [extra_key],
-                extra_prompt,
-                real_kv_cache,
-                num_tokens=600 + int(fps_value * 100) + max_frames,
-            )
+            cache_manager.store_cache([extra_key], extra_prompt, real_kv_cache,
+                num_tokens=600 + int(fps_value * 100) + max_frames)
+            t_start = time.perf_counter()
             cached, hit = cache_manager.fetch_cache([extra_key], extra_prompt)
-            print(f"    fps={fps_value}, max_frames={max_frames} second: hit={hit} (expected: True)")
+            t_ms = (time.perf_counter() - t_start) * 1000
+            test4_rows.append([f"4.{fps_value}b", f"fps={fps_value} cached", "HIT", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if hit else "✗"])
             assert hit
-        print_cache_stats("After multiple fps/max_frames", cache_manager)
 
-        # Extra videos - independent cache entries
+        print("\n    Results:")
+        print_table(["Step", "Description", "Expected", "Actual", "Time", "Status"], test4_rows)
+        test_results.extend(test4_rows)
+        print_cache_stats_table(cache_manager)
+
+        # Extra videos
         if len(video_paths) > 1:
-            print("\n[2b] Testing ADDITIONAL video cache entries...")
+            print_subheader("TEST 5: Additional Videos")
+            test5_rows = []
             for idx, path in enumerate(video_paths[1:], start=2):
                 extra_video_key = f"video:{path}:fps{video_fps}:max{video_max_frames}"
                 extra_prompt = f"Describe video {idx}"
+                t_start = time.perf_counter()
                 cached, hit = cache_manager.fetch_cache([extra_video_key], extra_prompt)
-                print(f"    Video {idx} first request: hit={hit} (expected: False)")
+                t_ms = (time.perf_counter() - t_start) * 1000
+                test5_rows.append([f"5.{idx}a", f"Video {idx} first", "MISS", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if not hit else "✗"])
                 assert not hit
                 cache_manager.store_cache([extra_video_key], extra_prompt, real_kv_cache, num_tokens=700 + idx * 10)
+                t_start = time.perf_counter()
                 cached, hit = cache_manager.fetch_cache([extra_video_key], extra_prompt)
-                print(f"    Video {idx} second request: hit={hit} (expected: True)")
+                t_ms = (time.perf_counter() - t_start) * 1000
+                test5_rows.append([f"5.{idx}b", f"Video {idx} cached", "HIT", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if hit else "✗"])
                 assert hit
-            print_cache_stats("After additional videos", cache_manager)
+            print("\n    Results:")
+            print_table(["Step", "Description", "Expected", "Actual", "Time", "Status"], test5_rows)
+            test_results.extend(test5_rows)
+            print_cache_stats_table(cache_manager)
 
-        # Test 3: LRU eviction
-        print("\n[3] Testing LRU eviction...")
+        # ============================================================
+        # TEST 6: LRU Eviction
+        # ============================================================
+        print_subheader("TEST 6: LRU Eviction Policy")
         small_cache = VLMCacheManager(max_entries=2)
         small_cache.store_cache(["img1.jpg"], "p1", real_kv_cache)
         small_cache.store_cache(["img2.jpg"], "p2", real_kv_cache)
-        print(f"    Cache full: {len(small_cache)}/2 entries")
+        print(f"    Cache capacity: 2 entries (currently {len(small_cache)}/2)")
 
         # Access img1 to make it recently used
         small_cache.fetch_cache(["img1.jpg"], "p1")
+        print(f"    Touched img1 to make it recently used")
 
         # Add new entry - should evict img2
         small_cache.store_cache(["img3.jpg"], "p3", real_kv_cache)
-        print(f"    Added img3, evictions: {small_cache.stats.evictions}")
-        print_cache_stats("Small cache after eviction", small_cache)
 
-        # img2 should be evicted
+        test6_rows = []
+        t_start = time.perf_counter()
         _, hit = small_cache.fetch_cache(["img2.jpg"], "p2")
-        print(f"    img2 (oldest): hit={hit} (expected: False - evicted)")
+        t_ms = (time.perf_counter() - t_start) * 1000
+        test6_rows.append(["6a", "img2 (oldest, evicted)", "MISS", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if not hit else "✗"])
         assert not hit
 
-        # img1 should still be there
+        t_start = time.perf_counter()
         _, hit = small_cache.fetch_cache(["img1.jpg"], "p1")
-        print(f"    img1 (recently used): hit={hit} (expected: True)")
+        t_ms = (time.perf_counter() - t_start) * 1000
+        test6_rows.append(["6b", "img1 (recently used)", "HIT", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if hit else "✗"])
         assert hit
 
-        # Print final stats
-        print("\n" + "=" * 60)
-        print("Final Cache Statistics")
-        print("=" * 60)
+        t_start = time.perf_counter()
+        _, hit = small_cache.fetch_cache(["img3.jpg"], "p3")
+        t_ms = (time.perf_counter() - t_start) * 1000
+        test6_rows.append(["6c", "img3 (newest)", "HIT", "HIT" if hit else "MISS", f"{t_ms:.2f}ms", "✓" if hit else "✗"])
+        assert hit
+
+        print("\n    Results:")
+        print_table(["Step", "Description", "Expected", "Actual", "Time", "Status"], test6_rows)
+        print(f"\n    Evictions: {small_cache.stats.evictions}")
+
+        # ============================================================
+        # FINAL SUMMARY
+        # ============================================================
+        print_header("TEST RESULTS SUMMARY")
+
         stats = cache_manager.get_stats()
-        print(f"hits: {stats['hits']}")
-        print(f"misses: {stats['misses']}")
-        print(f"hit_rate: {stats['hit_rate']*100:.1f}%")
-        print(f"tokens_saved: {stats['tokens_saved']}")
-        print(f"image_cache_hits: {stats['image_cache_hits']}")
-        print(f"evictions: {stats['evictions']}")
-        print("=" * 60)
-        print("\nALL TESTS PASSED!")
+        print("\n    Final Cache Statistics:")
+        print_table(
+            ["Metric", "Value"],
+            [
+                ["Total Hits", stats['hits']],
+                ["Total Misses", stats['misses']],
+                ["Hit Rate", f"{stats['hit_rate']*100:.1f}%"],
+                ["Tokens Saved", stats['tokens_saved']],
+                ["Image/Video Hits", stats['image_cache_hits']],
+                ["Evictions", stats['evictions']],
+            ]
+        )
+        print("\n" + "=" * 70)
+        print("  ✓ ALL TESTS PASSED - VLM cache working correctly!")
+        print("=" * 70)
 
         # Cleanup temp files
         for path in image_paths:

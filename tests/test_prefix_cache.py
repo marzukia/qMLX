@@ -301,23 +301,70 @@ class TestSchedulerIntegration:
 
 
 if __name__ == "__main__":
-    # Quick standalone test with real model
+    # Verbose standalone test with real model
     import asyncio
     import time
 
     MODEL_NAME = "mlx-community/Qwen3-0.6B-8bit"
 
+    def print_header(title):
+        print("\n" + "=" * 70)
+        print(f"  {title}")
+        print("=" * 70)
+
+    def print_subheader(title):
+        print("\n" + "-" * 70)
+        print(f"  {title}")
+        print("-" * 70)
+
+    def print_table(headers, rows):
+        """Print a formatted table."""
+        # Calculate column widths
+        col_widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(str(cell)))
+
+        # Print header
+        header_line = " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
+        separator = "-+-".join("-" * w for w in col_widths)
+        print(f"    {header_line}")
+        print(f"    {separator}")
+
+        # Print rows
+        for row in rows:
+            row_line = " | ".join(str(cell).ljust(col_widths[i]) for i, cell in enumerate(row))
+            print(f"    {row_line}")
+
+    def print_stats_table(stats, title="Cache Statistics"):
+        """Print cache stats as a table."""
+        print(f"\n    {title}:")
+        headers = ["Metric", "Value"]
+        rows = [
+            ["Hits", stats['hits']],
+            ["Misses", stats['misses']],
+            ["Hit Rate", f"{stats['hit_rate']*100:.1f}%"],
+            ["Tokens Saved", stats['tokens_saved']],
+            ["Total Queries", stats['total_queries']],
+        ]
+        print_table(headers, rows)
+
     async def run_cache_test():
         from mlx_lm import load
         from vllm_mlx import AsyncEngineCore, EngineConfig, SamplingParams, SchedulerConfig
 
-        print("=" * 60)
-        print("Prefix Cache Test")
-        print("=" * 60)
-        print(f"Model: {MODEL_NAME}")
+        print_header("LLM PREFIX CACHE TEST")
+        print(f"\n  Model: {MODEL_NAME}")
+        print(f"  Test: Verify KV cache reuse for repeated prompts")
+        print(f"  Expected behavior:")
+        print(f"    - Same prompt → cache HIT (skip prompt processing)")
+        print(f"    - Different prompt → cache MISS (process from scratch)")
 
-        print("\nLoading model...")
+        print_subheader("Loading Model")
+        load_start = time.perf_counter()
         model, tokenizer = load(MODEL_NAME)
+        load_time = time.perf_counter() - load_start
+        print(f"    Model loaded in {load_time:.2f}s")
 
         config = EngineConfig(
             model_name="test",
@@ -330,56 +377,137 @@ if __name__ == "__main__":
         async with AsyncEngineCore(model, tokenizer, config) as engine:
             await asyncio.sleep(0.1)
 
-            # Same prompt twice to test caching
-            prompt = "What is 2+2?"
-            formatted = tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
+            # Test prompts
+            prompt1 = "What is 2+2?"
+            prompt2 = "What is the capital of France?"
+
+            formatted1 = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt1}],
                 tokenize=False,
                 add_generation_prompt=True,
             )
+            formatted2 = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt2}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+
+            tokens1 = len(tokenizer.encode(formatted1))
+            tokens2 = len(tokenizer.encode(formatted2))
+
             params = SamplingParams(max_tokens=20, temperature=0.0)
 
-            print("\n[1] First request (cache miss expected)...")
+            # Collect test results for final table
+            test_results = []
+
+            # ============================================================
+            # TEST 1: First request - should be cache MISS
+            # ============================================================
+            print_subheader("TEST 1: First Request (Cache Miss Expected)")
+            print(f"    Prompt: \"{prompt1}\"")
+            print(f"    Tokens: {tokens1}")
+
             start = time.perf_counter()
-            rid1 = await engine.add_request(formatted, params)
+            rid1 = await engine.add_request(formatted1, params)
+            response1 = ""
             async for out in engine.stream_outputs(rid1, timeout=30):
+                if out.output_text:
+                    response1 = out.output_text
                 if out.finished:
                     break
             t1 = time.perf_counter() - start
-            stats1 = engine.get_cache_stats()
-            print(f"    Time: {t1*1000:.1f}ms | Stats: hits={stats1['hits']}, misses={stats1['misses']}")
 
-            print("\n[2] Second request SAME prompt (cache hit expected)...")
+            stats1 = engine.get_cache_stats()
+            test1_pass = stats1['misses'] == 1 and stats1['hits'] == 0
+            test_results.append(["TEST 1", "First request", "MISS", "MISS" if stats1['hits'] == 0 else "HIT", f"{t1*1000:.1f}ms", "✓" if test1_pass else "✗"])
+
+            print(f"    Response: \"{response1.strip()[:50]}...\"")
+            print_stats_table(stats1)
+
+            # ============================================================
+            # TEST 2: Same prompt again - should be cache HIT
+            # ============================================================
+            print_subheader("TEST 2: Same Prompt Again (Cache Hit Expected)")
+            print(f"    Prompt: \"{prompt1}\" (same as TEST 1)")
+            print(f"    Tokens: {tokens1}")
+
             start = time.perf_counter()
-            rid2 = await engine.add_request(formatted, params)
+            rid2 = await engine.add_request(formatted1, params)
+            response2 = ""
             async for out in engine.stream_outputs(rid2, timeout=30):
+                if out.output_text:
+                    response2 = out.output_text
                 if out.finished:
                     break
             t2 = time.perf_counter() - start
-            stats2 = engine.get_cache_stats()
-            print(f"    Time: {t2*1000:.1f}ms | Stats: hits={stats2['hits']}, misses={stats2['misses']}, tokens_saved={stats2['tokens_saved']}")
 
-            print("\n[3] Third request DIFFERENT prompt (cache miss expected)...")
-            different_prompt = tokenizer.apply_chat_template(
-                [{"role": "user", "content": "What is the capital of France?"}],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+            stats2 = engine.get_cache_stats()
+            test2_pass = stats2['hits'] == 1
+            test_results.append(["TEST 2", "Same prompt (cached)", "HIT", "HIT" if stats2['hits'] > stats1['hits'] else "MISS", f"{t2*1000:.1f}ms", "✓" if test2_pass else "✗"])
+
+            print(f"    Response: \"{response2.strip()[:50]}...\"")
+            speedup = t1 / t2 if t2 > 0 else 0
+            print(f"    Speedup: {speedup:.2f}x faster")
+            print_stats_table(stats2)
+
+            # ============================================================
+            # TEST 3: Different prompt - should be cache MISS
+            # ============================================================
+            print_subheader("TEST 3: Different Prompt (Cache Miss Expected)")
+            print(f"    Prompt: \"{prompt2}\" (different from TEST 1)")
+            print(f"    Tokens: {tokens2}")
+
             start = time.perf_counter()
-            rid3 = await engine.add_request(different_prompt, params)
+            rid3 = await engine.add_request(formatted2, params)
+            response3 = ""
             async for out in engine.stream_outputs(rid3, timeout=30):
+                if out.output_text:
+                    response3 = out.output_text
                 if out.finished:
                     break
             t3 = time.perf_counter() - start
-            stats3 = engine.get_cache_stats()
-            print(f"    Time: {t3*1000:.1f}ms | Stats: hits={stats3['hits']}, misses={stats3['misses']}")
 
-            print("\n" + "=" * 60)
-            print("Final Cache Stats")
-            print("=" * 60)
+            stats3 = engine.get_cache_stats()
+            test3_pass = stats3['misses'] == 2
+            test_results.append(["TEST 3", "Different prompt", "MISS", "MISS" if stats3['misses'] > stats2['misses'] else "HIT", f"{t3*1000:.1f}ms", "✓" if test3_pass else "✗"])
+
+            print(f"    Response: \"{response3.strip()[:50]}...\"")
+            print_stats_table(stats3)
+
+            # ============================================================
+            # SUMMARY TABLE
+            # ============================================================
+            print_header("TEST RESULTS SUMMARY")
+
+            # Test results table
+            print("\n    Test Results:")
+            print_table(
+                ["Test", "Description", "Expected", "Actual", "Time", "Status"],
+                test_results
+            )
+
+            # Final stats table
             final_stats = engine.get_cache_stats()
-            print(f"Hit rate: {final_stats['hit_rate']*100:.1f}%")
-            print(f"Tokens saved: {final_stats['tokens_saved']}")
-            print("=" * 60)
+            print("\n    Final Cache Statistics:")
+            print_table(
+                ["Metric", "Value"],
+                [
+                    ["Total Requests", 3],
+                    ["Cache Hits", final_stats['hits']],
+                    ["Cache Misses", final_stats['misses']],
+                    ["Hit Rate", f"{final_stats['hit_rate']*100:.1f}%"],
+                    ["Tokens Saved", final_stats['tokens_saved']],
+                    ["Speedup (cached)", f"{speedup:.2f}x"],
+                ]
+            )
+
+            all_passed = test1_pass and test2_pass and test3_pass
+
+            print("\n" + "=" * 70)
+            if all_passed:
+                print("  ✓ ALL TESTS PASSED - Prefix cache working correctly!")
+            else:
+                print("  ✗ SOME TESTS FAILED - Check results above")
+            print("=" * 70)
 
     asyncio.run(run_cache_test())

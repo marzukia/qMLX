@@ -624,27 +624,92 @@ python tests/test_prefix_cache.py
 **Prefix Cache Results - Qwen3-0.6B-8bit (M4 Max, 128GB):**
 
 ```
-=== Test Prefix Cache ===
-Model: mlx-community/Qwen3-0.6B-8bit
-[1] First request (cache miss expected)...
-    Time: 113.9ms | Stats: hits=0, misses=1
+======================================================================
+  LLM PREFIX CACHE TEST
+======================================================================
 
-[2] Second request SAME prompt (cache hit expected)...
-    Time: 93.9ms | Stats: hits=1, misses=1, tokens_saved=15
+  Model: mlx-community/Qwen3-0.6B-8bit
+  Test: Verify KV cache reuse for repeated prompts
+  Expected behavior:
+    - Same prompt → cache HIT (skip prompt processing)
+    - Different prompt → cache MISS (process from scratch)
 
-[3] Third request DIFFERENT prompt (cache miss expected)...
-    Time: 93.9ms | Stats: hits=1, misses=2
+----------------------------------------------------------------------
+  Loading Model
+----------------------------------------------------------------------
+    Model loaded in 0.70s
 
-=== Final Cache Stats ===
-Hit rate: 33.3%
-Tokens saved: 15
+----------------------------------------------------------------------
+  TEST 1: First Request (Cache Miss Expected)
+----------------------------------------------------------------------
+    Prompt: "What is 2+2?"
+    Tokens: 15
+
+    Cache Statistics:
+    Metric        | Value
+    --------------+------
+    Hits          | 0
+    Misses        | 1
+    Hit Rate      | 0.0%
+    Tokens Saved  | 0
+    Total Queries | 1
+
+----------------------------------------------------------------------
+  TEST 2: Same Prompt Again (Cache Hit Expected)
+----------------------------------------------------------------------
+    Prompt: "What is 2+2?" (same as TEST 1)
+    Tokens: 15
+    Speedup: 1.26x faster
+
+    Cache Statistics:
+    Metric        | Value
+    --------------+------
+    Hits          | 1
+    Misses        | 1
+    Hit Rate      | 50.0%
+    Tokens Saved  | 15
+    Total Queries | 2
+
+----------------------------------------------------------------------
+  TEST 3: Different Prompt (Cache Miss Expected)
+----------------------------------------------------------------------
+    Prompt: "What is the capital of France?" (different from TEST 1)
+    Tokens: 15
+
+    Cache Statistics:
+    Metric        | Value
+    --------------+------
+    Hits          | 1
+    Misses        | 2
+    Hit Rate      | 33.3%
+    Tokens Saved  | 15
+    Total Queries | 3
+
+======================================================================
+  TEST RESULTS SUMMARY
+======================================================================
+
+    Test Results:
+    Test   | Description          | Expected | Actual | Time   | Status
+    -------+----------------------+----------+--------+--------+-------
+    TEST 1 | First request        | MISS     | MISS   | 84.3ms | ✓
+    TEST 2 | Same prompt (cached) | HIT      | HIT    | 66.9ms | ✓
+    TEST 3 | Different prompt     | MISS     | MISS   | 65.2ms | ✓
+
+    Final Cache Statistics:
+    Metric           | Value
+    -----------------+------
+    Total Requests   | 3
+    Cache Hits       | 1
+    Cache Misses     | 2
+    Hit Rate         | 33.3%
+    Tokens Saved     | 15
+    Speedup (cached) | 1.26x
+
+======================================================================
+  ✓ ALL TESTS PASSED - Prefix cache working correctly!
+======================================================================
 ```
-
-| Request | Prompt | Cache Status | Tokens Saved |
-|---------|--------|--------------|--------------|
-| 1st | "What is 2+2?" | MISS | 0 |
-| 2nd | "What is 2+2?" | **HIT** | 15 |
-| 3rd | "Capital of France?" | MISS | 0 |
 
 *Prefix caching saves computation when the same prompt prefix is repeated (e.g., system prompts, chat history).*
 
@@ -659,118 +724,152 @@ python tests/test_vlm_cache.py
 
 Example output:
 ```
-============================================================
-VLM KV Cache Test with Real Model
-============================================================
-Model: mlx-community/Qwen3-VL-4B-Instruct-3bit
+======================================================================
+  VLM KV CACHE TEST
+======================================================================
 
-Downloading model...
-Model loaded in 0.11s
-Model type: qwen3_vl
+  Model: mlx-community/Qwen3-VL-4B-Instruct-3bit
+  Test: Verify KV cache reuse for repeated image/video + prompt combinations
+  Expected behavior:
+    - Same image + same prompt → cache HIT
+    - Same image + different prompt → cache MISS
+    - Different image + same prompt → cache MISS
+    - Same video + same fps/max_frames → cache HIT
+    - Same video + different fps/max_frames → cache MISS
 
-Creating real KV cache from model.language_model...
-KV cache: 36 layers of KVCache
+----------------------------------------------------------------------
+  SETUP: Loading Model
+----------------------------------------------------------------------
+    Model loaded in 0.11s
+    Model type: qwen3_vl
+    KV cache: 36 layers of KVCache
 
-Downloading test images...
-Image 1: 1200x989 (https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/YellowLabradorLooking_new.jpg/1200px-YellowLabradorLooking_new.jpg)
-Image 2: 1200x1198 (https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/1200px-Cat03.jpg)
-Image 3: failed to download (https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/PNG_transparency_demonstration_1.png/640px-PNG_transparency_demonstration_1.png): cannot write mode RGBA as JPEG
+----------------------------------------------------------------------
+  SETUP: Downloading Test Images
+----------------------------------------------------------------------
+    Image 1: 1200x989
+    Image 2: 1200x1198
+    Resized: 224x224, 336x336, 512x512, 768x768
 
-Creating resized image variants...
-Resized: 224x224
-Resized: 336x336
-Resized: 512x512
-Resized: 768x768
+----------------------------------------------------------------------
+  SETUP: Downloading Test Videos
+----------------------------------------------------------------------
+    Video 1: 640x360, 10.0s @ 30.0fps
+    Video 2: 424x240, 596.5s @ 24.0fps
 
-Downloading test videos...
-  Downloading video from: https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big...
-  Downloaded: 0.9 MB
-Video 1: 640x360, 10.0s, 30.0 fps (https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4)
-  Downloading video from: https://docs.evostream.com/sample_content/assets/bunny.mp4...
-  Downloaded: 37.3 MB
-Video 2: 424x240, 596.5s, 24.0 fps (https://docs.evostream.com/sample_content/assets/bunny.mp4)
+----------------------------------------------------------------------
+  TEST 1: Image Cache - Basic Hit/Miss
+----------------------------------------------------------------------
+    Results:
+    Step | Description             | Expected | Actual | Time   | Status
+    -----+-------------------------+----------+--------+--------+-------
+    1a   | First request (new)     | MISS     | MISS   | 0.39ms | ✓
+    1b   | Same image+prompt       | HIT      | HIT    | 0.42ms | ✓
+    1c   | Same image, diff prompt | MISS     | MISS   | 0.25ms | ✓
 
-[1] Testing IMAGE cache...
-    First request: hit=False (expected: False)
-    After image miss: hits=0, misses=1, hit_rate=0.0%, tokens_saved=0, image_cache_hits=0, evictions=0
-    Stored cache for image
-    After image store: hits=0, misses=1, hit_rate=0.0%, tokens_saved=0, image_cache_hits=0, evictions=0
-    Second request: hit=True (expected: True)
-    Retrieved cache layers: 36
-    After image hit: hits=1, misses=1, hit_rate=50.0%, tokens_saved=500, image_cache_hits=1, evictions=0
-    Different prompt: hit=False (expected: False)
-    After image different prompt: hits=1, misses=2, hit_rate=33.3%, tokens_saved=500, image_cache_hits=1, evictions=0
+----------------------------------------------------------------------
+  TEST 2: Different Images = Different Cache Keys
+----------------------------------------------------------------------
+    Results:
+    Step | Description    | Expected | Actual | Time   | Status
+    -----+----------------+----------+--------+--------+-------
+    2.2a | Image 2 first  | MISS     | MISS   | 0.20ms | ✓
+    2.2b | Image 2 cached | HIT      | HIT    | 0.34ms | ✓
 
-[1b] Testing ADDITIONAL image cache entries...
-    Image 2 first request: hit=False (expected: False)
-    Image 2 second request: hit=True (expected: True)
-    After additional images: hits=2, misses=3, hit_rate=40.0%, tokens_saved=820, image_cache_hits=2, evictions=0
+----------------------------------------------------------------------
+  TEST 3: Resized Images = Different Cache Keys
+----------------------------------------------------------------------
+    (Cache uses content hash, so different sizes = different keys)
 
-[1c] Testing RESIZED image cache entries...
-    Resized 224x224 first request: hit=False (expected: False)
-    Resized 224x224 second request: hit=True (expected: True)
-    Resized 336x336 first request: hit=False (expected: False)
-    Resized 336x336 second request: hit=True (expected: True)
-    Resized 512x512 first request: hit=False (expected: False)
-    Resized 512x512 second request: hit=True (expected: True)
-    Resized 768x768 first request: hit=False (expected: False)
-    Resized 768x768 second request: hit=True (expected: True)
-    After resized images: hits=6, misses=7, hit_rate=46.2%, tokens_saved=1670, image_cache_hits=6, evictions=0
+    Results:
+    Step | Description    | Expected | Actual | Time   | Status
+    -----+----------------+----------+--------+--------+-------
+    3.1a | 224x224 first  | MISS     | MISS   | 0.06ms | ✓
+    3.1b | 224x224 cached | HIT      | HIT    | 0.17ms | ✓
+    3.2a | 336x336 first  | MISS     | MISS   | 0.06ms | ✓
+    3.2b | 336x336 cached | HIT      | HIT    | 0.19ms | ✓
+    3.3a | 512x512 first  | MISS     | MISS   | 0.16ms | ✓
+    3.3b | 512x512 cached | HIT      | HIT    | 0.20ms | ✓
+    3.4a | 768x768 first  | MISS     | MISS   | 0.12ms | ✓
+    3.4b | 768x768 cached | HIT      | HIT    | 0.24ms | ✓
 
-[2] Testing VIDEO cache with fps/max_frames...
-    First request: hit=False (expected: False)
-    After video miss: hits=6, misses=8, hit_rate=42.9%, tokens_saved=1670, image_cache_hits=6, evictions=0
-    Stored cache for video (fps=2.0, max_frames=16)
-    After video store: hits=6, misses=8, hit_rate=42.9%, tokens_saved=1670, image_cache_hits=6, evictions=0
-    Same params: hit=True (expected: True)
-    After video hit: hits=7, misses=8, hit_rate=46.7%, tokens_saved=2470, image_cache_hits=7, evictions=0
-    Different fps (4.0): hit=False (expected: False)
-    After video different fps: hits=7, misses=9, hit_rate=43.8%, tokens_saved=2470, image_cache_hits=7, evictions=0
-    Different max_frames (32): hit=False (expected: False)
-    After video different max_frames: hits=7, misses=10, hit_rate=41.2%, tokens_saved=2470, image_cache_hits=7, evictions=0
+----------------------------------------------------------------------
+  TEST 4: Video Cache - fps/max_frames in Cache Key
+----------------------------------------------------------------------
+    Config: fps=2.0, max_frames=16
 
-[2a] Testing multiple fps/max_frames combinations...
-    fps=0.5, max_frames=2 first: hit=False (expected: False)
-    fps=0.5, max_frames=2 second: hit=True (expected: True)
-    fps=1.0, max_frames=4 first: hit=False (expected: False)
-    fps=1.0, max_frames=4 second: hit=True (expected: True)
-    fps=2.0, max_frames=8 first: hit=False (expected: False)
-    fps=2.0, max_frames=8 second: hit=True (expected: True)
-    fps=4.0, max_frames=16 first: hit=False (expected: False)
-    fps=4.0, max_frames=16 second: hit=True (expected: True)
-    After multiple fps/max_frames: hits=11, misses=14, hit_rate=44.0%, tokens_saved=5650, image_cache_hits=11, evictions=0
+    Results:
+    Step   | Description               | Expected | Actual | Time   | Status
+    -------+---------------------------+----------+--------+--------+-------
+    4a     | Video first request       | MISS     | MISS   | 0.03ms | ✓
+    4b     | Same video+params         | HIT      | HIT    | 0.14ms | ✓
+    4c     | Different fps (4.0)       | MISS     | MISS   | 0.01ms | ✓
+    4d     | Different max_frames (32) | MISS     | MISS   | 0.01ms | ✓
+    4.0.5a | fps=0.5 first             | MISS     | MISS   | 0.01ms | ✓
+    4.0.5b | fps=0.5 cached            | HIT      | HIT    | 0.14ms | ✓
+    4.1.0a | fps=1.0 first             | MISS     | MISS   | 0.01ms | ✓
+    4.1.0b | fps=1.0 cached            | HIT      | HIT    | 0.14ms | ✓
+    4.2.0a | fps=2.0 first             | MISS     | MISS   | 0.01ms | ✓
+    4.2.0b | fps=2.0 cached            | HIT      | HIT    | 0.14ms | ✓
+    4.4.0a | fps=4.0 first             | MISS     | MISS   | 0.01ms | ✓
+    4.4.0b | fps=4.0 cached            | HIT      | HIT    | 0.14ms | ✓
 
-[2b] Testing ADDITIONAL video cache entries...
-    Video 2 first request: hit=False (expected: False)
-    Video 2 second request: hit=True (expected: True)
-    After additional videos: hits=12, misses=15, hit_rate=44.4%, tokens_saved=6370, image_cache_hits=12, evictions=0
+----------------------------------------------------------------------
+  TEST 5: Additional Videos
+----------------------------------------------------------------------
+    Results:
+    Step | Description    | Expected | Actual | Time   | Status
+    -----+----------------+----------+--------+--------+-------
+    5.2a | Video 2 first  | MISS     | MISS   | 0.01ms | ✓
+    5.2b | Video 2 cached | HIT      | HIT    | 0.14ms | ✓
 
-[3] Testing LRU eviction...
-    Cache full: 2/2 entries
-    Added img3, evictions: 1
-    Small cache after eviction: hits=1, misses=0, hit_rate=100.0%, tokens_saved=0, image_cache_hits=1, evictions=1
-    img2 (oldest): hit=False (expected: False - evicted)
-    img1 (recently used): hit=True (expected: True)
+----------------------------------------------------------------------
+  TEST 6: LRU Eviction Policy
+----------------------------------------------------------------------
+    Cache capacity: 2 entries (currently 2/2)
+    Touched img1 to make it recently used
 
-============================================================
-Final Cache Statistics
-============================================================
-hits: 12
-misses: 15
-hit_rate: 44.4%
-tokens_saved: 6370
-image_cache_hits: 12
-evictions: 0
-============================================================
+    Results:
+    Step | Description            | Expected | Actual | Time   | Status
+    -----+------------------------+----------+--------+--------+-------
+    6a   | img2 (oldest, evicted) | MISS     | MISS   | 0.01ms | ✓
+    6b   | img1 (recently used)   | HIT      | HIT    | 0.14ms | ✓
+    6c   | img3 (newest)          | HIT      | HIT    | 0.14ms | ✓
+
+    Evictions: 1
+
+======================================================================
+  TEST RESULTS SUMMARY
+======================================================================
+
+    Final Cache Statistics:
+    Metric           | Value
+    -----------------+------
+    Total Hits       | 12
+    Total Misses     | 15
+    Hit Rate         | 44.4%
+    Tokens Saved     | 6300
+    Image/Video Hits | 12
+    Evictions        | 0
+
+======================================================================
+  ✓ ALL TESTS PASSED - VLM cache working correctly!
+======================================================================
 ```
 
-Metrics (concise):
-- hits: cache hits for image/video + prompt combinations.
-- misses: requests not found in cache (computed from scratch).
-- hit_rate: hits divided by total queries.
-- tokens_saved: prompt tokens skipped thanks to cache reuse.
-- image_cache_hits: hits where at least one image/video was present.
-- evictions: LRU entries removed when cache is full.
+**Cache Key Strategy:**
+- Images: `hash(image_content) + hash(prompt)`
+- Videos: `hash(video_path) + hash(fps) + hash(max_frames) + hash(prompt)`
+
+**Metrics:**
+| Metric | Description |
+|--------|-------------|
+| Hits | Cache hits for image/video + prompt combinations |
+| Misses | Requests not found in cache (computed from scratch) |
+| Hit Rate | Hits / total queries |
+| Tokens Saved | Prompt tokens skipped thanks to cache reuse |
+| Image/Video Hits | Hits where at least one image/video was present |
+| Evictions | LRU entries removed when cache is full |
 
 ## Supported Models
 
