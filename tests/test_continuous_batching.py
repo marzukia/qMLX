@@ -208,6 +208,8 @@ if __name__ == "__main__":
     # Quick standalone test
     import sys
 
+    MODEL_NAME = "mlx-community/Qwen3-0.6B-8bit"
+
     async def run_benchmark():
         from mlx_lm import load
         from vllm_mlx import AsyncEngineCore, EngineConfig, SamplingParams, SchedulerConfig
@@ -215,9 +217,10 @@ if __name__ == "__main__":
         print("=" * 60)
         print("Continuous Batching Benchmark")
         print("=" * 60)
+        print(f"Model: {MODEL_NAME}")
 
         print("\nLoading model...")
-        model, tokenizer = load("mlx-community/Qwen3-0.6B-8bit")
+        model, tokenizer = load(MODEL_NAME)
 
         config = EngineConfig(
             model_name="test",

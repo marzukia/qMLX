@@ -298,3 +298,88 @@ class TestSchedulerIntegration:
         default_config = SchedulerConfig()
         assert default_config.enable_prefix_cache is True
         assert default_config.prefix_cache_size == 100
+
+
+if __name__ == "__main__":
+    # Quick standalone test with real model
+    import asyncio
+    import time
+
+    MODEL_NAME = "mlx-community/Qwen3-0.6B-8bit"
+
+    async def run_cache_test():
+        from mlx_lm import load
+        from vllm_mlx import AsyncEngineCore, EngineConfig, SamplingParams, SchedulerConfig
+
+        print("=" * 60)
+        print("Prefix Cache Test")
+        print("=" * 60)
+        print(f"Model: {MODEL_NAME}")
+
+        print("\nLoading model...")
+        model, tokenizer = load(MODEL_NAME)
+
+        config = EngineConfig(
+            model_name="test",
+            scheduler_config=SchedulerConfig(
+                enable_prefix_cache=True,
+                prefix_cache_size=100,
+            ),
+        )
+
+        async with AsyncEngineCore(model, tokenizer, config) as engine:
+            await asyncio.sleep(0.1)
+
+            # Same prompt twice to test caching
+            prompt = "What is 2+2?"
+            formatted = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            params = SamplingParams(max_tokens=20, temperature=0.0)
+
+            print("\n[1] First request (cache miss expected)...")
+            start = time.perf_counter()
+            rid1 = await engine.add_request(formatted, params)
+            async for out in engine.stream_outputs(rid1, timeout=30):
+                if out.finished:
+                    break
+            t1 = time.perf_counter() - start
+            stats1 = engine.get_cache_stats()
+            print(f"    Time: {t1*1000:.1f}ms | Stats: hits={stats1['hits']}, misses={stats1['misses']}")
+
+            print("\n[2] Second request SAME prompt (cache hit expected)...")
+            start = time.perf_counter()
+            rid2 = await engine.add_request(formatted, params)
+            async for out in engine.stream_outputs(rid2, timeout=30):
+                if out.finished:
+                    break
+            t2 = time.perf_counter() - start
+            stats2 = engine.get_cache_stats()
+            print(f"    Time: {t2*1000:.1f}ms | Stats: hits={stats2['hits']}, misses={stats2['misses']}, tokens_saved={stats2['tokens_saved']}")
+
+            print("\n[3] Third request DIFFERENT prompt (cache miss expected)...")
+            different_prompt = tokenizer.apply_chat_template(
+                [{"role": "user", "content": "What is the capital of France?"}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            start = time.perf_counter()
+            rid3 = await engine.add_request(different_prompt, params)
+            async for out in engine.stream_outputs(rid3, timeout=30):
+                if out.finished:
+                    break
+            t3 = time.perf_counter() - start
+            stats3 = engine.get_cache_stats()
+            print(f"    Time: {t3*1000:.1f}ms | Stats: hits={stats3['hits']}, misses={stats3['misses']}")
+
+            print("\n" + "=" * 60)
+            print("Final Cache Stats")
+            print("=" * 60)
+            final_stats = engine.get_cache_stats()
+            print(f"Hit rate: {final_stats['hit_rate']*100:.1f}%")
+            print(f"Tokens saved: {final_stats['tokens_saved']}")
+            print("=" * 60)
+
+    asyncio.run(run_cache_test())
