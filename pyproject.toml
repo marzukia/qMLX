@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-mlx"
-version = "0.1.0"
-description = "Apple Silicon MLX backend for vLLM - GPU-accelerated LLM inference on Mac"
+version = "0.2.0"
+description = "Apple Silicon MLX backend for vLLM - GPU-accelerated LLM inference on Mac with continuous batching"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
@@ -45,6 +45,9 @@ dependencies = [
     "opencv-python>=4.8.0",
     # Resource monitoring
     "psutil>=5.9.0",
+    # Server
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
 ]
 
 [project.optional-dependencies]
@@ -68,7 +71,8 @@ Repository = "https://github.com/vllm-mlx/vllm-mlx"
 mlx = "vllm_mlx.plugin:mlx_platform_plugin"
 
 [project.scripts]
-vllm-mlx = "vllm_mlx.server:main"
+vllm-mlx = "vllm_mlx.cli:main"
+vllm-mlx-serve = "vllm_mlx.server_v2:main"
 vllm-mlx-chat = "vllm_mlx.gradio_app:main"
 vllm-mlx-bench = "vllm_mlx.benchmark:main"
 

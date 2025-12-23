@@ -57,14 +57,11 @@ vllm-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 - ✅ Gradio chat UI with text/image/video support
 - ✅ Performance benchmarking tools
 
-### 🚧 What's Next (Phase 4: Optimizations)
-
-**Performance & Scalability**
-- ⏳ Request batching for higher throughput
-- ⏳ KV cache optimization / prompt caching
+**Phase 4: Optimizations (In Progress)**
+- ✅ Continuous batching for higher throughput (Phase 4.1)
+- ✅ KV cache / prefix caching for repeated prompts (Phase 4.2)
 - ⏳ Improved streaming performance
 - ⏳ Memory optimization for large models
-- ⏳ Multi-request concurrency improvements
 
 **Advanced Features**
 - ⏳ Structured output (JSON mode, grammar constraints)
@@ -73,8 +70,6 @@ vllm-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 - ⏳ Fine-tuning support
 
 **Current Limitations:**
-- Single-request optimization (not yet optimized for batching)
-- No prompt caching (each request processes full context)
 - Limited to models available on mlx-community
 
 **Want to contribute?** See [Contributing](#contributing) section below.
@@ -529,48 +524,124 @@ Run performance benchmarks to measure inference speed:
 #### Text-Only LLM Benchmarks
 
 ```bash
-# Llama 3.2-1B (lightweight model)
+# Run LLM benchmark
 vllm-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 5 --max-tokens 256
 ```
 
-**Real Performance (M4 Max, 128GB):**
-- **Generation Speed**: 460.1 tok/s
-- **TTFT**: 48.6 ms
-- **Memory**: 0.69 GB MLX peak
+**Real Performance - LLM Models (M4 Max, 128GB):**
 
-```bash
-# Llama 3.2-3B (balanced model)
-vllm-mlx-bench --model mlx-community/Llama-3.2-3B-Instruct-4bit --prompts 5 --max-tokens 256
-```
+| Model | Gen Speed | TTFT* | Memory |
+|-------|-----------|-------|--------|
+| Qwen3-0.6B-8bit | 395.4 tok/s | 64.7 ms | 0.67 GB |
+| Llama-3.2-1B-Instruct-4bit | 463.4 tok/s | 61.7 ms | 0.69 GB |
+| Qwen2.5-1.5B-Instruct-4bit | 308.5 tok/s | 86.2 ms | 0.84 GB |
+| Llama-3.2-3B-Instruct-4bit | 200.1 tok/s | 81.4 ms | 1.79 GB |
+| Qwen3-30B-A3B-4bit | 123.9 tok/s | 126.9 ms | 16.05 GB |
 
-**Real Performance (M4 Max, 128GB):**
-- **Generation Speed**: 200.8 tok/s
-- **TTFT**: 62.7 ms
-- **Memory**: 1.79 GB MLX peak
+*TTFT = Time to First Token (latency until the model starts generating)
 
 #### Multimodal Image Benchmarks
 
 ```bash
+# Full image benchmark (10 resolutions)
+vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit
+
 # Quick image benchmark (4 resolutions)
-vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --quick
+vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --quick
 ```
 
-**Real Performance (M4 Max, 128GB):**
-- **224x224**: ~80 tok/s
-- **512x512**: ~64 tok/s
-- **1024x768**: ~37 tok/s
+**Real Performance - Qwen3-VL-8B-Instruct-4bit (M4 Max, 128GB):**
+
+| Resolution | Pixels | Time | Tokens | Speed |
+|------------|--------|------|--------|-------|
+| 224x224 | 50K | 1.04s | 78 | 75.1 tok/s |
+| 336x336 | 113K | 0.94s | 64 | 68.3 tok/s |
+| 448x448 | 201K | 1.16s | 70 | 60.2 tok/s |
+| 512x512 | 262K | 1.58s | 99 | 62.8 tok/s |
+| 672x672 | 452K | 1.83s | 83 | 45.3 tok/s |
+| 768x768 | 590K | 2.14s | 91 | 42.5 tok/s |
+| 896x896 | 803K | 2.61s | 90 | 34.5 tok/s |
+| 1024x1024 | 1.0M | 3.05s | 76 | 24.9 tok/s |
+| 1280x720 | 922K | 2.97s | 96 | 32.4 tok/s |
+| 1920x1080 | 2.1M | 6.30s | 89 | 14.1 tok/s |
+
+**Summary:** Average 35.4 tok/s across all resolutions. Fastest at 336x336 (68.3 tok/s), slowest at 1920x1080 (14.1 tok/s)
 
 #### Multimodal Video Benchmarks
 
 ```bash
+# Full video benchmark (8 configurations)
+vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video
+
 # Quick video benchmark (3 frame counts)
-vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --quick
+vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video --quick
 ```
 
-**Real Performance (M4 Max, 128GB):**
-- **4 frames**: 98.2 tok/s (3.5 GB memory)
-- **8 frames**: 69.1 tok/s (4.0 GB memory)
-- **16 frames**: 41.3 tok/s (4.7 GB memory)
+**Real Performance - Qwen3-VL-8B-Instruct-4bit (M4 Max, 128GB):**
+
+| Configuration | Frames | Time | Tokens | Speed |
+|---------------|--------|------|--------|-------|
+| 2 frames @ 0.5fps | 2 | 5.86s | 256 | 43.7 tok/s |
+| 4 frames @ 1fps | 4 | 5.87s | 256 | 43.6 tok/s |
+| 6 frames @ 1fps | 6 | 6.07s | 197 | 32.4 tok/s |
+| 8 frames @ 2fps | 8 | 7.85s | 240 | 30.6 tok/s |
+| 12 frames @ 2fps | 12 | 10.16s | 256 | 25.2 tok/s |
+| 16 frames @ 2fps | 16 | 12.42s | 256 | 20.6 tok/s |
+| 24 frames @ 4fps | 24 | 16.72s | 226 | 13.5 tok/s |
+| 32 frames @ 4fps | 32 | 23.00s | 256 | 11.1 tok/s |
+
+**Summary:** Average 22.1 tok/s across all configurations. Fastest at 2 frames (43.7 tok/s), slowest at 32 frames (11.1 tok/s)
+
+#### Continuous Batching & Prefix Cache
+
+vllm-mlx includes optimizations for handling multiple concurrent requests efficiently.
+
+**Run the tests:**
+```bash
+# Continuous batching benchmark
+python tests/test_continuous_batching.py
+
+# Prefix cache test
+python tests/test_prefix_cache.py
+```
+
+**Continuous Batching Results (M4 Max, 128GB):**
+
+| Model | Single Request | Batch (5 req) | Speedup |
+|-------|----------------|---------------|---------|
+| Qwen3-0.6B-8bit | 294.9 tok/s | 1003.7 tok/s | **3.40x** |
+| Qwen2.5-1.5B-Instruct-4bit | 54.5 tok/s | 348.1 tok/s | **6.39x** |
+| Llama-3.2-3B-Instruct-4bit | 77.7 tok/s | 184.4 tok/s | **2.37x** |
+| Qwen3-30B-A3B-4bit | 88.0 tok/s | 224.4 tok/s | **2.55x** |
+
+*Batching 5 concurrent requests shows 2-6x throughput improvement depending on model size.*
+
+**Prefix Cache Results - Qwen3-0.6B-8bit (M4 Max, 128GB):**
+
+```
+=== Test Prefix Cache ===
+Model: mlx-community/Qwen3-0.6B-8bit
+[1] First request (cache miss expected)...
+    Time: 113.9ms | Stats: hits=0, misses=1
+
+[2] Second request SAME prompt (cache hit expected)...
+    Time: 93.9ms | Stats: hits=1, misses=1, tokens_saved=15
+
+[3] Third request DIFFERENT prompt (cache miss expected)...
+    Time: 93.9ms | Stats: hits=1, misses=2
+
+=== Final Cache Stats ===
+Hit rate: 33.3%
+Tokens saved: 15
+```
+
+| Request | Prompt | Cache Status | Tokens Saved |
+|---------|--------|--------------|--------------|
+| 1st | "What is 2+2?" | MISS | 0 |
+| 2nd | "What is 2+2?" | **HIT** | 15 |
+| 3rd | "Capital of France?" | MISS | 0 |
+
+*Prefix caching saves computation when the same prompt prefix is repeated (e.g., system prompts, chat history).*
 
 ## Supported Models
 
@@ -767,17 +838,23 @@ MLX Cache Memory       0.06 GB
 System Memory          25.1 / 128 GB (20%)
 ```
 
-## Performance
+### GSM8K Evaluation
 
-Performance on Apple Silicon (compared to CPU-only vLLM):
+Run math reasoning evaluation on the [GSM8K](https://huggingface.co/datasets/openai/gsm8k) benchmark:
 
-| Model | M1 Pro | M2 Max | M3 Max |
-|-------|--------|--------|--------|
-| Llama-3.2-3B-4bit | ~30 tok/s | ~45 tok/s | ~60 tok/s |
-| Mistral-7B-4bit | ~15 tok/s | ~25 tok/s | ~35 tok/s |
-| Qwen2-VL-2B-4bit | ~20 tok/s | ~30 tok/s | ~40 tok/s |
+```bash
+# Start server
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --port 9000
 
-*Note: Actual performance varies based on prompt length, generation settings, and system load.*
+# Run GSM8K evaluation (10 questions for quick test)
+python tests/evals/gsm8k/gsm8k_eval.py --port 9000 --num-questions 10
+
+# Run full GSM8K test set (1319 questions)
+python tests/evals/gsm8k/gsm8k_eval.py --port 9000
+
+# Save results to JSON
+python tests/evals/gsm8k/gsm8k_eval.py --port 9000 --output results.json
+```
 
 ## Hardware Detection
 

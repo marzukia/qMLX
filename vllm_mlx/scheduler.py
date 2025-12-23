@@ -1,0 +1,544 @@
+# SPDX-License-Identifier: Apache-2.0
+"""
+Scheduler for vllm-mlx continuous batching.
+
+This module provides a Scheduler class that manages request scheduling
+using mlx-lm's BatchGenerator for efficient continuous batching.
+
+The scheduler follows vLLM's design with:
+- Waiting queue for pending requests
+- Running set for active requests
+- Continuous batching via BatchGenerator
+"""
+
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+
+import mlx.core as mx
+from mlx_lm.generate import BatchGenerator
+from mlx_lm.sample_utils import make_sampler
+
+from .prefix_cache import PrefixCacheManager
+from .request import Request, RequestOutput, RequestStatus, SamplingParams
+
+logger = logging.getLogger(__name__)
+
+
+class SchedulingPolicy(Enum):
+    """Scheduling policy for request ordering."""
+
+    FCFS = "fcfs"  # First-Come-First-Served
+    PRIORITY = "priority"  # Priority-based
+
+
+@dataclass
+class SchedulerConfig:
+    """Configuration for the scheduler."""
+
+    # Maximum number of concurrent requests in the batch
+    max_num_seqs: int = 256
+    # Maximum tokens to process per step (for prefill chunking)
+    max_num_batched_tokens: int = 8192
+    # Scheduling policy
+    policy: SchedulingPolicy = SchedulingPolicy.FCFS
+    # BatchGenerator settings
+    prefill_batch_size: int = 8
+    completion_batch_size: int = 32
+    prefill_step_size: int = 2048
+    # Prefix cache settings
+    enable_prefix_cache: bool = True
+    prefix_cache_size: int = 100  # Max cached entries
+
+
+@dataclass
+class SchedulerOutput:
+    """
+    Output from a scheduling step.
+
+    Contains information about what was scheduled and results.
+    """
+
+    # Requests scheduled in this step
+    scheduled_request_ids: List[str] = field(default_factory=list)
+    # Total tokens scheduled
+    num_scheduled_tokens: int = 0
+    # Requests that finished in this step
+    finished_request_ids: Set[str] = field(default_factory=set)
+    # Request outputs (tokens generated)
+    outputs: List[RequestOutput] = field(default_factory=list)
+    # Whether any work was done
+    has_work: bool = False
+
+
+class Scheduler:
+    """
+    Scheduler for continuous batching using mlx-lm BatchGenerator.
+
+    This scheduler manages the lifecycle of requests:
+    1. Requests arrive and are added to the waiting queue
+    2. Scheduler moves requests from waiting to running (via BatchGenerator)
+    3. BatchGenerator processes all running requests together
+    4. Finished requests are removed and outputs returned
+
+    The key insight is that mlx-lm's BatchGenerator already implements
+    continuous batching at the token level, so we use it as the backend.
+    """
+
+    def __init__(
+        self,
+        model: Any,
+        tokenizer: Any,
+        config: Optional[SchedulerConfig] = None,
+    ):
+        """
+        Initialize the scheduler.
+
+        Args:
+            model: The MLX model
+            tokenizer: The tokenizer
+            config: Scheduler configuration
+        """
+        self.model = model
+        self.tokenizer = tokenizer
+        self.config = config or SchedulerConfig()
+
+        # Request management - following vLLM's design
+        self.waiting: deque[Request] = deque()  # Waiting queue (FCFS)
+        self.running: Dict[str, Request] = {}  # Running requests by ID
+        self.requests: Dict[str, Request] = {}  # All requests by ID
+        self.finished_req_ids: Set[str] = set()  # Recently finished
+
+        # Mapping between our request IDs and BatchGenerator UIDs
+        self.request_id_to_uid: Dict[str, int] = {}
+        self.uid_to_request_id: Dict[int, str] = {}
+
+        # BatchGenerator - the actual batching engine
+        self.batch_generator: Optional[BatchGenerator] = None
+        self._current_sampler_params: Optional[Tuple] = None
+
+        # Prefix cache for KV state reuse
+        self.prefix_cache: Optional[PrefixCacheManager] = None
+        if self.config.enable_prefix_cache:
+            self.prefix_cache = PrefixCacheManager(
+                model=model,
+                max_entries=self.config.prefix_cache_size,
+            )
+            logger.info(
+                f"Prefix cache enabled with max_entries={self.config.prefix_cache_size}"
+            )
+
+        # Statistics
+        self.num_requests_processed = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
+    def _get_stop_tokens(self) -> Set[int]:
+        """Get stop token IDs from tokenizer."""
+        stop_tokens = set()
+        if hasattr(self.tokenizer, 'eos_token_id') and self.tokenizer.eos_token_id is not None:
+            if isinstance(self.tokenizer.eos_token_id, list):
+                stop_tokens.update(self.tokenizer.eos_token_id)
+            else:
+                stop_tokens.add(self.tokenizer.eos_token_id)
+        if hasattr(self.tokenizer, 'eos_token_ids'):
+            stop_tokens.update(self.tokenizer.eos_token_ids)
+        return stop_tokens
+
+    def _create_batch_generator(self, sampling_params: SamplingParams) -> BatchGenerator:
+        """Create a BatchGenerator with the given sampling parameters."""
+        sampler = make_sampler(
+            temp=sampling_params.temperature,
+            top_p=sampling_params.top_p,
+            min_p=sampling_params.min_p,
+        )
+
+        stop_tokens = self._get_stop_tokens()
+        # Add custom stop token IDs
+        if sampling_params.stop_token_ids:
+            stop_tokens.update(sampling_params.stop_token_ids)
+
+        return BatchGenerator(
+            model=self.model,
+            max_tokens=sampling_params.max_tokens,
+            stop_tokens=stop_tokens,
+            sampler=sampler,
+            prefill_batch_size=self.config.prefill_batch_size,
+            completion_batch_size=self.config.completion_batch_size,
+            prefill_step_size=self.config.prefill_step_size,
+        )
+
+    def _ensure_batch_generator(self, sampling_params: SamplingParams) -> None:
+        """Ensure BatchGenerator exists with compatible settings."""
+        sampler_params = (
+            sampling_params.temperature,
+            sampling_params.top_p,
+            sampling_params.min_p,
+        )
+
+        # Create new generator if needed or if sampling params changed
+        if self.batch_generator is None or self._current_sampler_params != sampler_params:
+            # If we have an existing generator with requests, we need to drain it first
+            if self.batch_generator is not None and self.running:
+                logger.warning(
+                    "Sampling parameters changed with active requests. "
+                    "New requests will use new parameters after current batch completes."
+                )
+                return
+
+            self.batch_generator = self._create_batch_generator(sampling_params)
+            self._current_sampler_params = sampler_params
+
+    def add_request(self, request: Request) -> None:
+        """
+        Add a new request to the scheduler.
+
+        Args:
+            request: The request to add
+        """
+        if request.request_id in self.requests:
+            raise ValueError(f"Request {request.request_id} already exists")
+
+        # Tokenize if needed
+        if request.prompt_token_ids is None:
+            if isinstance(request.prompt, str):
+                request.prompt_token_ids = self.tokenizer.encode(request.prompt)
+            else:
+                request.prompt_token_ids = list(request.prompt)
+            request.num_prompt_tokens = len(request.prompt_token_ids)
+
+        # Check prefix cache for cached KV state
+        if self.prefix_cache is not None:
+            cache, remaining = self.prefix_cache.fetch_cache(request.prompt_token_ids)
+            if cache:
+                request.prompt_cache = cache
+                request.cached_tokens = len(request.prompt_token_ids) - len(remaining)
+                request.remaining_tokens = remaining
+                logger.debug(
+                    f"Request {request.request_id}: cache hit, "
+                    f"{request.cached_tokens} tokens cached, "
+                    f"{len(remaining)} tokens remaining"
+                )
+            else:
+                request.remaining_tokens = request.prompt_token_ids
+        else:
+            request.remaining_tokens = request.prompt_token_ids
+
+        # Add to tracking
+        self.requests[request.request_id] = request
+        self.waiting.append(request)
+
+        logger.debug(
+            f"Added request {request.request_id} with {request.num_prompt_tokens} prompt tokens"
+        )
+
+    def abort_request(self, request_id: str) -> bool:
+        """
+        Abort a request.
+
+        Args:
+            request_id: The request ID to abort
+
+        Returns:
+            True if request was found and aborted, False otherwise
+        """
+        request = self.requests.get(request_id)
+        if request is None:
+            return False
+
+        # Remove from waiting queue
+        if request.status == RequestStatus.WAITING:
+            try:
+                self.waiting.remove(request)
+            except ValueError:
+                pass
+
+        # Remove from running (BatchGenerator)
+        if request.request_id in self.request_id_to_uid:
+            uid = self.request_id_to_uid[request.request_id]
+            if self.batch_generator is not None:
+                self.batch_generator.remove([uid])
+            del self.uid_to_request_id[uid]
+            del self.request_id_to_uid[request.request_id]
+
+        if request_id in self.running:
+            del self.running[request_id]
+
+        # Mark as aborted
+        request.set_finished(RequestStatus.FINISHED_ABORTED)
+        self.finished_req_ids.add(request_id)
+
+        logger.debug(f"Aborted request {request_id}")
+        return True
+
+    def has_requests(self) -> bool:
+        """Check if there are any pending or running requests."""
+        return bool(self.waiting or self.running)
+
+    def get_num_waiting(self) -> int:
+        """Get number of waiting requests."""
+        return len(self.waiting)
+
+    def get_num_running(self) -> int:
+        """Get number of running requests."""
+        return len(self.running)
+
+    def _schedule_waiting(self) -> List[Request]:
+        """
+        Move requests from waiting queue to running.
+
+        Returns:
+            List of requests that were scheduled
+        """
+        scheduled = []
+
+        while self.waiting and len(self.running) < self.config.max_num_seqs:
+            request = self.waiting.popleft()
+
+            # Ensure we have a batch generator
+            self._ensure_batch_generator(request.sampling_params)
+
+            if self.batch_generator is None:
+                # Put back and try again later
+                self.waiting.appendleft(request)
+                break
+
+            # Determine tokens to process and cache to use
+            tokens_to_process = request.remaining_tokens or request.prompt_token_ids
+            cache_to_use = request.prompt_cache  # May be None
+
+            # Insert into BatchGenerator with optional cache
+            uids = self.batch_generator.insert(
+                [tokens_to_process],
+                max_tokens=[request.sampling_params.max_tokens],
+                caches=[cache_to_use] if cache_to_use else None,
+            )
+
+            if uids:
+                uid = uids[0]
+                self.request_id_to_uid[request.request_id] = uid
+                self.uid_to_request_id[uid] = request.request_id
+                request.batch_uid = uid
+                request.status = RequestStatus.RUNNING
+                self.running[request.request_id] = request
+                scheduled.append(request)
+
+                self.total_prompt_tokens += request.num_prompt_tokens
+                cache_info = f", {request.cached_tokens} cached" if request.cached_tokens > 0 else ""
+                logger.debug(
+                    f"Scheduled request {request.request_id} (uid={uid}) "
+                    f"with {request.num_prompt_tokens} tokens{cache_info}"
+                )
+
+        return scheduled
+
+    def _process_batch_responses(
+        self, responses: List[Any]
+    ) -> Tuple[List[RequestOutput], Set[str]]:
+        """
+        Process responses from BatchGenerator.
+
+        Args:
+            responses: List of BatchGenerator.Response objects
+
+        Returns:
+            Tuple of (outputs, finished_request_ids)
+        """
+        outputs = []
+        finished_ids = set()
+
+        for response in responses:
+            request_id = self.uid_to_request_id.get(response.uid)
+            if request_id is None:
+                continue
+
+            request = self.running.get(request_id)
+            if request is None:
+                continue
+
+            # Append token to request
+            request.append_output_token(response.token)
+
+            # Decode the new token
+            new_text = self.tokenizer.decode([response.token])
+
+            # Create output
+            output = RequestOutput(
+                request_id=request_id,
+                new_token_ids=[response.token],
+                new_text=new_text,
+                output_token_ids=list(request.output_token_ids),
+                prompt_tokens=request.num_prompt_tokens,
+                completion_tokens=request.num_output_tokens,
+            )
+
+            # Check if finished
+            if response.finish_reason is not None:
+                if response.finish_reason == "stop":
+                    request.set_finished(RequestStatus.FINISHED_STOPPED)
+                elif response.finish_reason == "length":
+                    request.set_finished(RequestStatus.FINISHED_LENGTH_CAPPED)
+
+                output.finished = True
+                output.finish_reason = response.finish_reason
+                finished_ids.add(request_id)
+
+                # Decode full output
+                output.output_text = self.tokenizer.decode(request.output_token_ids)
+                request.output_text = output.output_text
+
+                # Extract cache for future reuse
+                if hasattr(response, 'prompt_cache'):
+                    try:
+                        # prompt_cache may be callable or direct attribute
+                        if callable(response.prompt_cache):
+                            extracted_cache = response.prompt_cache()
+                        else:
+                            extracted_cache = response.prompt_cache
+                        if extracted_cache:
+                            # Store temporarily on request for _cleanup_finished
+                            request._extracted_cache = extracted_cache
+                    except Exception as e:
+                        logger.debug(f"Failed to extract cache for {request_id}: {e}")
+
+                self.total_completion_tokens += request.num_output_tokens
+                self.num_requests_processed += 1
+
+                logger.debug(
+                    f"Request {request_id} finished: {response.finish_reason}, "
+                    f"{request.num_output_tokens} tokens"
+                )
+
+            outputs.append(output)
+
+        return outputs, finished_ids
+
+    def _cleanup_finished(self, finished_ids: Set[str]) -> None:
+        """Clean up finished requests and store caches for reuse."""
+        for request_id in finished_ids:
+            request = self.running.get(request_id)
+
+            # Store cache for future reuse
+            if (
+                self.prefix_cache is not None
+                and request is not None
+                and hasattr(request, '_extracted_cache')
+                and request._extracted_cache is not None
+                and request.prompt_token_ids
+            ):
+                try:
+                    self.prefix_cache.store_cache(
+                        request.prompt_token_ids,
+                        request._extracted_cache,
+                    )
+                    logger.debug(
+                        f"Stored cache for request {request_id} "
+                        f"({len(request.prompt_token_ids)} tokens)"
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to store cache for {request_id}: {e}")
+
+            # Remove from running
+            if request_id in self.running:
+                del self.running[request_id]
+
+            # Remove UID mappings
+            if request_id in self.request_id_to_uid:
+                uid = self.request_id_to_uid[request_id]
+                if uid in self.uid_to_request_id:
+                    del self.uid_to_request_id[uid]
+                del self.request_id_to_uid[request_id]
+
+            # Track as finished
+            self.finished_req_ids.add(request_id)
+
+    def step(self) -> SchedulerOutput:
+        """
+        Execute one scheduling step.
+
+        This method:
+        1. Schedules waiting requests into the batch
+        2. Runs one generation step via BatchGenerator
+        3. Processes outputs and handles finished requests
+
+        Returns:
+            SchedulerOutput with results of this step
+        """
+        output = SchedulerOutput()
+
+        # Schedule waiting requests
+        scheduled = self._schedule_waiting()
+        output.scheduled_request_ids = [r.request_id for r in scheduled]
+        output.num_scheduled_tokens = sum(r.num_prompt_tokens for r in scheduled)
+
+        # Run generation step if we have running requests
+        if self.batch_generator is not None and self.running:
+            try:
+                responses = self.batch_generator.next()
+                output.has_work = True
+
+                if responses:
+                    outputs, finished_ids = self._process_batch_responses(responses)
+                    output.outputs = outputs
+                    output.finished_request_ids = finished_ids
+                    self._cleanup_finished(finished_ids)
+
+            except Exception as e:
+                logger.error(f"Error in batch generation step: {e}")
+                raise
+
+        # Clear finished tracking for next step
+        old_finished = self.finished_req_ids
+        self.finished_req_ids = set()
+
+        return output
+
+    def get_request(self, request_id: str) -> Optional[Request]:
+        """Get a request by ID."""
+        return self.requests.get(request_id)
+
+    def remove_finished_request(self, request_id: str) -> Optional[Request]:
+        """Remove a finished request from tracking."""
+        return self.requests.pop(request_id, None)
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get scheduler statistics."""
+        stats = {
+            "num_waiting": len(self.waiting),
+            "num_running": len(self.running),
+            "num_requests_processed": self.num_requests_processed,
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+        }
+        # Include prefix cache stats if enabled
+        if self.prefix_cache is not None:
+            stats["prefix_cache"] = self.prefix_cache.get_stats()
+        return stats
+
+    def get_cache_stats(self) -> Optional[Dict[str, Any]]:
+        """Get prefix cache statistics."""
+        if self.prefix_cache is not None:
+            return self.prefix_cache.get_stats()
+        return None
+
+    def reset(self) -> None:
+        """Reset the scheduler state."""
+        # Abort all requests
+        for request_id in list(self.requests.keys()):
+            self.abort_request(request_id)
+
+        self.waiting.clear()
+        self.running.clear()
+        self.requests.clear()
+        self.finished_req_ids.clear()
+        self.request_id_to_uid.clear()
+        self.uid_to_request_id.clear()
+        self.batch_generator = None
+        self._current_sampler_params = None
+
+        # Clear prefix cache
+        if self.prefix_cache is not None:
+            self.prefix_cache.clear()
