@@ -19,24 +19,40 @@ import sys
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import uvicorn
-    from .server_v2 import app, load_model
-    from .scheduler import SchedulerConfig
 
-    # Handle prefix cache flags (--disable-prefix-cache overrides --enable-prefix-cache)
-    enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
-
-    # Create scheduler config from args
-    scheduler_config = SchedulerConfig(
-        max_num_seqs=args.max_num_seqs,
-        prefill_batch_size=args.prefill_batch_size,
-        completion_batch_size=args.completion_batch_size,
-        enable_prefix_cache=enable_prefix_cache,
-        prefix_cache_size=args.prefix_cache_size,
-    )
-
-    # Load model
     print(f"Loading model: {args.model}")
-    load_model(args.model, scheduler_config)
+    print(f"Default max tokens: {args.max_tokens}")
+
+    if args.continuous_batching:
+        # Use server_v2 with continuous batching (for multiple concurrent users)
+        from .server_v2 import app, load_model
+        from .scheduler import SchedulerConfig
+
+        # Handle prefix cache flags
+        enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
+
+        scheduler_config = SchedulerConfig(
+            max_num_seqs=args.max_num_seqs,
+            prefill_batch_size=args.prefill_batch_size,
+            completion_batch_size=args.completion_batch_size,
+            enable_prefix_cache=enable_prefix_cache,
+            prefix_cache_size=args.prefix_cache_size,
+        )
+
+        print(f"Mode: Continuous batching (for multiple concurrent users)")
+        print(f"Stream interval: {args.stream_interval} tokens")
+        load_model(
+            args.model,
+            scheduler_config,
+            stream_interval=args.stream_interval,
+            max_tokens=args.max_tokens,
+        )
+    else:
+        # Use simple server (maximum throughput for single user)
+        from .server import app, load_model
+
+        print(f"Mode: Simple (maximum throughput)")
+        load_model(args.model, max_tokens=args.max_tokens)
 
     # Start server
     print(f"Starting server at http://{args.host}:{args.port}")
@@ -174,6 +190,23 @@ Examples:
         type=int,
         default=100,
         help="Max entries in prefix cache (default: 100)",
+    )
+    serve_parser.add_argument(
+        "--stream-interval",
+        type=int,
+        default=1,
+        help="Tokens to batch before streaming (1=smooth, higher=throughput)",
+    )
+    serve_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=32768,
+        help="Default max tokens for generation (default: 32768)",
+    )
+    serve_parser.add_argument(
+        "--continuous-batching",
+        action="store_true",
+        help="Enable continuous batching for multiple concurrent users (slower for single user)",
     )
 
     # Bench command

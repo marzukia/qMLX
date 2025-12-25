@@ -119,7 +119,7 @@ class TestChatCompletionRequest:
 
         assert request.model == "test-model"
         assert len(request.messages) == 1
-        assert request.max_tokens == 256  # default
+        assert request.max_tokens is None  # uses _default_max_tokens when None
         assert request.temperature == 0.7  # default
         assert request.stream is False  # default
 
@@ -168,7 +168,7 @@ class TestCompletionRequest:
 
         assert request.model == "test-model"
         assert request.prompt == "Once upon a time"
-        assert request.max_tokens == 256
+        assert request.max_tokens is None  # uses _default_max_tokens when None
 
 
 # =============================================================================

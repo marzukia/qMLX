@@ -225,9 +225,9 @@ if __name__ == "__main__":
         config = EngineConfig(
             model_name="test",
             scheduler_config=SchedulerConfig(
-                max_num_seqs=32,
+                max_num_seqs=256,
                 prefill_batch_size=8,
-                completion_batch_size=16,
+                completion_batch_size=32,  # 32 gives optimal throughput
             ),
         )
 
@@ -246,23 +246,17 @@ if __name__ == "__main__":
             print(f"\nSending {len(prompts)} concurrent requests...")
             start = time.perf_counter()
 
-            request_ids = []
-            for p in prompts:
+            # Use generate() for optimal throughput (no streaming overhead)
+            async def run_one(prompt):
                 formatted = tokenizer.apply_chat_template(
-                    [{"role": "user", "content": p}],
+                    [{"role": "user", "content": prompt}],
                     tokenize=False,
                     add_generation_prompt=True,
                 )
-                rid = await engine.add_request(formatted, params)
-                request_ids.append((rid, p))
+                result = await engine.engine.generate(formatted, params)
+                return (prompt, result.output_text[:50], result.completion_tokens)
 
-            async def get_result(rid, prompt):
-                async for out in engine.stream_outputs(rid, timeout=60):
-                    if out.finished:
-                        return (prompt, out.output_text[:50], out.completion_tokens)
-                return (prompt, "TIMEOUT", 0)
-
-            results = await asyncio.gather(*[get_result(r, p) for r, p in request_ids])
+            results = await asyncio.gather(*[run_one(p) for p in prompts])
 
             total_time = time.perf_counter() - start
             total_tokens = sum(r[2] for r in results)

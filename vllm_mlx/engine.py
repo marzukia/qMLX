@@ -20,6 +20,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Set, Union
 
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .scheduler import Scheduler, SchedulerConfig, SchedulerOutput
+from .output_collector import RequestOutputCollector, RequestStreamState
+from .model_registry import get_registry, ModelOwnershipError
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class EngineConfig:
     model_name: str = ""
     scheduler_config: Optional[SchedulerConfig] = None
     step_interval: float = 0.001  # 1ms between steps
+    stream_interval: int = 1  # Tokens to batch before streaming (1=every token)
 
 
 class EngineCore:
@@ -46,10 +49,37 @@ class EngineCore:
         model: Any,
         tokenizer: Any,
         config: Optional[EngineConfig] = None,
+        engine_id: Optional[str] = None,
+        force_model_ownership: bool = True,
     ):
+        """
+        Initialize the engine.
+
+        Args:
+            model: The MLX model
+            tokenizer: The tokenizer
+            config: Engine configuration
+            engine_id: Optional unique ID for this engine (auto-generated if None)
+            force_model_ownership: If True (default), forcibly take model ownership
+                                   from any existing engine. If False, raises
+                                   ModelOwnershipError if model is in use.
+        """
         self.model = model
         self.tokenizer = tokenizer
         self.config = config or EngineConfig()
+        self._engine_id = engine_id or str(uuid.uuid4())
+        self._owns_model = False
+        self._closed = False
+
+        # Acquire model ownership
+        registry = get_registry()
+        registry.acquire(
+            model=model,
+            engine=self,
+            engine_id=self._engine_id,
+            force=force_model_ownership,
+        )
+        self._owns_model = True
 
         # Create scheduler
         scheduler_config = self.config.scheduler_config or SchedulerConfig()
@@ -59,8 +89,9 @@ class EngineCore:
             config=scheduler_config,
         )
 
-        # Output queues for streaming
-        self._output_queues: Dict[str, asyncio.Queue] = {}
+        # Output collectors for low-latency streaming (vLLM pattern)
+        self._output_collectors: Dict[str, RequestOutputCollector] = {}
+        self._stream_states: Dict[str, RequestStreamState] = {}
         self._finished_events: Dict[str, asyncio.Event] = {}
 
         # Engine state
@@ -68,6 +99,8 @@ class EngineCore:
         self._task: Optional[asyncio.Task] = None
         self._start_time: Optional[float] = None
         self._steps_executed = 0
+
+        logger.debug(f"Engine {self._engine_id} initialized")
 
     async def start(self) -> None:
         """Start the engine loop."""
@@ -96,7 +129,12 @@ class EngineCore:
         return self._running
 
     async def _engine_loop(self) -> None:
-        """Main engine loop."""
+        """Main engine loop - optimized for minimal overhead."""
+        # Cache config values for faster access
+        step_interval = self.config.step_interval
+        stream_interval = self.config.stream_interval
+        use_simple_streaming = (stream_interval == 1)
+
         while self._running:
             try:
                 if self.scheduler.has_requests():
@@ -104,19 +142,41 @@ class EngineCore:
                     output = self.scheduler.step()
                     self._steps_executed += 1
 
-                    # Distribute outputs to waiting clients
-                    for req_output in output.outputs:
-                        queue = self._output_queues.get(req_output.request_id)
-                        if queue:
-                            await queue.put(req_output)
+                    # Fast path: distribute outputs to collectors
+                    outputs = output.outputs
+                    if outputs:
+                        collectors = self._output_collectors
+                        states = self._stream_states
+                        events = self._finished_events
 
-                        if req_output.finished:
-                            event = self._finished_events.get(req_output.request_id)
-                            if event:
-                                event.set()
+                        for req_output in outputs:
+                            rid = req_output.request_id
+                            collector = collectors.get(rid)
+
+                            if collector is not None:
+                                # Optimized: skip stream_interval check when interval=1
+                                if use_simple_streaming:
+                                    collector.put(req_output)
+                                else:
+                                    state = states.get(rid)
+                                    if state and state.should_send(
+                                        req_output.completion_tokens,
+                                        req_output.finished
+                                    ):
+                                        collector.put(req_output)
+                                        state.mark_sent(req_output.completion_tokens)
+
+                            if req_output.finished:
+                                event = events.get(rid)
+                                if event:
+                                    event.set()
+
+                        # OPTIMIZATION: Only yield if streaming consumers are waiting
+                        if RequestOutputCollector.has_waiting_consumers():
+                            await asyncio.sleep(0)
                 else:
                     # No work, yield control
-                    await asyncio.sleep(self.config.step_interval)
+                    await asyncio.sleep(step_interval)
 
             except asyncio.CancelledError:
                 break
@@ -159,8 +219,11 @@ class EngineCore:
             videos=videos,
         )
 
-        # Setup output queue
-        self._output_queues[request_id] = asyncio.Queue()
+        # Setup output collector with stream_interval from config
+        self._output_collectors[request_id] = RequestOutputCollector(aggregate=True)
+        self._stream_states[request_id] = RequestStreamState(
+            stream_interval=self.config.stream_interval
+        )
         self._finished_events[request_id] = asyncio.Event()
 
         # Add to scheduler
@@ -176,7 +239,10 @@ class EngineCore:
 
     def _cleanup_request(self, request_id: str) -> None:
         """Clean up request tracking."""
-        self._output_queues.pop(request_id, None)
+        collector = self._output_collectors.pop(request_id, None)
+        if collector:
+            collector.clear()
+        self._stream_states.pop(request_id, None)
         self._finished_events.pop(request_id, None)
         self.scheduler.remove_finished_request(request_id)
 
@@ -186,7 +252,10 @@ class EngineCore:
         timeout: Optional[float] = None,
     ) -> AsyncIterator[RequestOutput]:
         """
-        Stream outputs for a request.
+        Stream outputs for a request with low-latency non-blocking pattern.
+
+        Uses the vLLM pattern: get_nowait() or await get()
+        This avoids unnecessary task switches when output is available.
 
         Args:
             request_id: The request ID
@@ -195,18 +264,25 @@ class EngineCore:
         Yields:
             RequestOutput objects as tokens are generated
         """
-        queue = self._output_queues.get(request_id)
-        if queue is None:
+        collector = self._output_collectors.get(request_id)
+        if collector is None:
             # Request might not be added yet or already cleaned up
             return
 
         try:
             while True:
                 try:
+                    # Non-blocking drain pattern from vLLM
+                    # Try get_nowait first to avoid task switch if output ready
                     if timeout:
-                        output = await asyncio.wait_for(queue.get(), timeout=timeout)
+                        output = collector.get_nowait()
+                        if output is None:
+                            output = await asyncio.wait_for(
+                                collector.get(),
+                                timeout=timeout
+                            )
                     else:
-                        output = await queue.get()
+                        output = collector.get_nowait() or await collector.get()
 
                     yield output
 
@@ -230,6 +306,9 @@ class EngineCore:
         """
         Generate a complete response (non-streaming).
 
+        This method is optimized to avoid streaming overhead when
+        you only need the final result.
+
         Args:
             prompt: Input prompt
             sampling_params: Generation parameters
@@ -245,14 +324,87 @@ class EngineCore:
             **kwargs,
         )
 
+        # Wait for completion using event instead of streaming
+        # This avoids the waiting_consumer tracking overhead
+        event = self._finished_events.get(request_id)
+        if event is None:
+            raise RuntimeError(f"No event for request {request_id}")
+
+        # Wait for the request to finish
+        await event.wait()
+
+        # Get the final output from collector
+        collector = self._output_collectors.get(request_id)
+        if collector is None:
+            raise RuntimeError(f"No collector for request {request_id}")
+
+        # Drain all outputs and get the last one
         final_output = None
-        async for output in self.stream_outputs(request_id, timeout=300):
+        while True:
+            output = collector.get_nowait()
+            if output is None:
+                break
             final_output = output
+
+        # Cleanup
+        self._cleanup_request(request_id)
 
         if final_output is None:
             raise RuntimeError(f"No output for request {request_id}")
 
         return final_output
+
+    def generate_batch_sync(
+        self,
+        prompts: List[Union[str, List[int]]],
+        sampling_params: Optional[SamplingParams] = None,
+    ) -> List[RequestOutput]:
+        """
+        Generate responses synchronously for maximum throughput.
+
+        This bypasses the async engine loop entirely, running the scheduler
+        directly for optimal batching performance. Use this when you don't
+        need streaming and want maximum throughput.
+
+        Args:
+            prompts: List of input prompts
+            sampling_params: Generation parameters (same for all)
+
+        Returns:
+            List of RequestOutput in same order as prompts
+        """
+        from .request import Request
+        import uuid as uuid_module
+
+        if sampling_params is None:
+            sampling_params = SamplingParams()
+
+        # Add all requests to scheduler
+        request_ids = []
+        for prompt in prompts:
+            request_id = str(uuid_module.uuid4())
+            request = Request(
+                request_id=request_id,
+                prompt=prompt,
+                sampling_params=sampling_params,
+            )
+            self.scheduler.add_request(request)
+            request_ids.append(request_id)
+
+        # Process until all done - direct scheduler access, no async overhead
+        results: Dict[str, RequestOutput] = {}
+        while self.scheduler.has_requests():
+            output = self.scheduler.step()
+            for req_output in output.outputs:
+                if req_output.finished:
+                    results[req_output.request_id] = req_output
+
+        # Cleanup
+        for rid in request_ids:
+            self.scheduler.remove_finished_request(rid)
+
+        # Return in original order
+        return [results[rid] for rid in request_ids]
 
     def get_stats(self) -> Dict[str, Any]:
         """Get engine statistics."""
@@ -263,13 +415,67 @@ class EngineCore:
             "running": self._running,
             "uptime_seconds": uptime,
             "steps_executed": self._steps_executed,
-            "active_requests": len(self._output_queues),
+            "active_requests": len(self._output_collectors),
+            "stream_interval": self.config.stream_interval,
             **scheduler_stats,
         }
 
     def get_cache_stats(self) -> Optional[Dict[str, Any]]:
         """Get prefix cache statistics."""
         return self.scheduler.get_cache_stats()
+
+    def _release_model(self) -> None:
+        """Release model ownership."""
+        if self._owns_model and not self._closed:
+            registry = get_registry()
+            registry.release(self.model, self._engine_id)
+            self._owns_model = False
+            logger.debug(f"Engine {self._engine_id} released model ownership")
+
+    def close(self) -> None:
+        """
+        Explicitly close the engine and release resources.
+
+        This should be called when done using the engine, especially
+        if you plan to create another engine with the same model.
+        """
+        if self._closed:
+            return
+
+        # Release model ownership BEFORE setting _closed
+        # (_release_model checks not self._closed)
+        if self._owns_model:
+            registry = get_registry()
+            registry.release(self.model, self._engine_id)
+            self._owns_model = False
+            logger.debug(f"Engine {self._engine_id} released model ownership")
+
+        self._closed = True
+
+        # Reset scheduler to clear BatchGenerator and all caches
+        self.scheduler.deep_reset()
+
+        # Clear output collectors
+        for collector in self._output_collectors.values():
+            collector.clear()
+        self._output_collectors.clear()
+        self._stream_states.clear()
+        self._finished_events.clear()
+
+        logger.debug(f"Engine {self._engine_id} closed")
+
+    def __del__(self):
+        """Cleanup on destruction."""
+        try:
+            self._release_model()
+        except Exception:
+            # Ignore errors during garbage collection
+            pass
+
+    @property
+    def engine_id(self) -> str:
+        """Get the engine ID."""
+        return self._engine_id
 
 
 class AsyncEngineCore:

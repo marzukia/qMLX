@@ -75,9 +75,18 @@ class MLXLanguageModel:
 
             logger.info(f"Loading model: {self.model_name}")
 
+            # Build tokenizer config
+            tokenizer_config = {"trust_remote_code": self.trust_remote_code}
+
+            # Qwen3 fix: eos_token changed from <|im_end|> to <|endoftext|>
+            # but chat template still uses <|im_end|>, so we need to set it explicitly
+            if "qwen3" in self.model_name.lower() or "Qwen3" in self.model_name:
+                tokenizer_config["eos_token"] = "<|im_end|>"
+                logger.info("Qwen3 detected: setting eos_token to <|im_end|>")
+
             self.model, self.tokenizer = load(
                 self.model_name,
-                tokenizer_config={"trust_remote_code": self.trust_remote_code},
+                tokenizer_config=tokenizer_config,
             )
 
             self._loaded = True

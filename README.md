@@ -57,11 +57,20 @@ vllm-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 - ✅ Gradio chat UI with text/image/video support
 - ✅ Performance benchmarking tools
 
-**Phase 4: Optimizations (In Progress)**
+**Phase 4: Optimizations (Complete)**
 - ✅ Continuous batching for higher throughput (Phase 4.1)
 - ✅ KV cache / prefix caching for repeated prompts (Phase 4.2)
-- ⏳ Improved streaming performance
+- ✅ Low-latency streaming with RequestOutputCollector pattern (Phase 4.3)
+- ✅ Dual server modes: Simple (max throughput) and Continuous Batching (multi-user)
+- ✅ Qwen3 tokenizer fix (eos_token handling)
+- ✅ Special token filtering in output
 - ⏳ Memory optimization for large models
+
+**Phase 5: Integrations**
+- ✅ Open WebUI compatibility
+- ✅ Configurable max_tokens via CLI
+- ⏳ LangChain integration
+- ⏳ LlamaIndex integration
 
 **Advanced Features**
 - ⏳ Structured output (JSON mode, grammar constraints)
@@ -123,7 +132,11 @@ vllm-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 1
 
 Start the server:
 ```bash
-python -m vllm_mlx.server --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+# Start server (simple mode - maximum throughput)
+vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+
+# For multiple concurrent users, use continuous batching mode
+vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuous-batching
 ```
 
 Use with OpenAI client:
@@ -614,12 +627,55 @@ python tests/test_prefix_cache.py
 
 | Model | Single Request | Batch (5 req) | Speedup |
 |-------|----------------|---------------|---------|
-| Qwen3-0.6B-8bit | 294.9 tok/s | 1003.7 tok/s | **3.40x** |
-| Qwen2.5-1.5B-Instruct-4bit | 54.5 tok/s | 348.1 tok/s | **6.39x** |
-| Llama-3.2-3B-Instruct-4bit | 77.7 tok/s | 184.4 tok/s | **2.37x** |
-| Qwen3-30B-A3B-4bit | 88.0 tok/s | 224.4 tok/s | **2.55x** |
+| Llama-3.2-1B-Instruct-4bit | 299.1 tok/s | 613.0 tok/s | **2.05x** |
+| Llama-3.2-3B-Instruct-4bit | 137.6 tok/s | 208.1 tok/s | **1.51x** |
+| Qwen3-0.6B-8bit | 328.1 tok/s | 992.3 tok/s | **3.02x** |
+| Qwen3-30B-A3B-4bit | 98.1 tok/s | 233.3 tok/s | **2.38x** |
+| Qwen2.5-1.5B-Instruct-4bit | 196.9 tok/s | 322.2 tok/s | **1.64x** |
 
-*Batching 5 concurrent requests shows 2-6x throughput improvement depending on model size.*
+*Batching 5 concurrent requests shows 1.5-3x throughput improvement depending on model size.*
+
+**Streaming Performance (M4 Max, 128GB):**
+
+| Model | TTFT | Generation Speed |
+|-------|------|------------------|
+| Llama-3.2-1B-Instruct-4bit | ~4.6ms | 218.9 tok/s |
+| Llama-3.2-3B-Instruct-4bit | ~10.7ms | 93.6 tok/s |
+| Qwen3-0.6B-8bit | ~3.0ms | 328.5 tok/s |
+| Qwen3-30B-A3B-4bit | ~10.2ms | 98.4 tok/s |
+| Qwen2.5-1.5B-Instruct-4bit | ~7.1ms | 140.3 tok/s |
+
+*TTFT = Time to First Token. Streaming delivers tokens as they're generated with low latency.*
+
+**Streaming Configuration:**
+
+Use `--stream-interval` to control streaming behavior:
+
+```bash
+# Smooth streaming (default) - send every token immediately
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --stream-interval 1
+# Or: python -m vllm_mlx.server_v2 --model mlx-community/Qwen3-0.6B-8bit --stream-interval 1
+
+# Batch tokens for higher throughput (useful for high-latency networks)
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --stream-interval 5
+# Or: python -m vllm_mlx.server_v2 --model mlx-community/Qwen3-0.6B-8bit --stream-interval 5
+
+# Non-streaming mode: set stream=false in API request
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}], "stream": false}'
+
+# Streaming mode (default): set stream=true in API request
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
+```
+
+| `--stream-interval` | Behavior |
+|---------------------|----------|
+| `1` (default) | Send every token immediately - smoothest streaming |
+| `2-5` | Batch tokens before sending - reduces network overhead |
+| `10+` | Higher batching - maximum throughput, chunkier output |
 
 **Prefix Cache Results - Qwen3-0.6B-8bit (M4 Max, 128GB):**
 
@@ -934,22 +990,104 @@ Browse thousands of pre-optimized models at: **https://huggingface.co/mlx-commun
 
 vllm-mlx provides three CLI commands:
 
-### `vllm-mlx` - OpenAI-Compatible Server
+### `vllm-mlx serve` - OpenAI-Compatible Server
 
 Start an OpenAI-compatible API server:
 
 ```bash
-vllm-mlx --model mlx-community/Llama-3.2-1B-Instruct-4bit --port 8000
+# Simple mode (default) - Maximum throughput for single user
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --port 8000
+
+# Continuous batching mode - For multiple concurrent users
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --port 8000 --continuous-batching
+
+# With custom max tokens (default: 32768)
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --max-tokens 16384
+```
+
+#### When to Use Each Mode
+
+| Mode | Use Case | Performance |
+|------|----------|-------------|
+| **Simple (default)** | Single user, local development, maximum speed | ~1000 tok/s (Qwen3-0.6B) |
+| **Continuous Batching** | Multiple concurrent users, production deployment | ~300-600 tok/s per user (batched) |
+
+**Simple Mode (Default):**
+- Best for: Single user, CLI tools, local testing, Open WebUI with one user
+- Performance: Maximum tokens/second (~1000 tok/s for Qwen3-0.6B)
+- Trade-off: One request at a time (no concurrent handling)
+
+**Continuous Batching Mode (`--continuous-batching`):**
+- Best for: Production servers, multiple concurrent users, API services
+- Performance: 1.5-3x higher total throughput with multiple users
+- Trade-off: Higher latency per request, more overhead
+
+```bash
+# Example: Local development (single user)
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit
+
+# Example: Production server (multiple users)
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --continuous-batching --max-num-seqs 64
 ```
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--model` | Model name from HuggingFace or local path | `mlx-community/Llama-3.2-3B-Instruct-4bit` |
+| `model` | Model name from HuggingFace or local path | **Required** |
 | `--host` | Host address to bind | `0.0.0.0` |
 | `--port` | Port number | `8000` |
-| `--mllm` | Force loading as MLLM (multimodal model) | `false` |
+| `--max-tokens` | Default max tokens for generation | `32768` |
+| `--continuous-batching` | Enable batching for multiple users | `false` |
+| `--stream-interval` | Tokens to batch before streaming (only with --continuous-batching) | `1` |
+| `--max-num-seqs` | Max concurrent sequences (only with --continuous-batching) | `256` |
+| `--prefill-batch-size` | Prefill batch size (only with --continuous-batching) | `8` |
+| `--completion-batch-size` | Completion batch size (only with --continuous-batching) | `32` |
+| `--enable-prefix-cache` | Enable prefix caching (only with --continuous-batching) | `true` |
+| `--disable-prefix-cache` | Disable prefix caching | `false` |
+| `--prefix-cache-size` | Max entries in prefix cache | `100` |
 
-**MLLM models are auto-detected** by patterns like `-VL-`, `llava`, `paligemma`, etc. Use `--mllm` flag to force MLLM mode for custom models.
+#### API Streaming Control
+
+Streaming is controlled per-request using the `stream` parameter in the API:
+
+```bash
+# Non-streaming (wait for complete output) - Slightly higher throughput
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}], "stream": false}'
+
+# Streaming (tokens sent as generated) - Better UX for interactive use
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
+```
+
+**Performance Tip:** Non-streaming (`stream: false`) gives **5-10% higher tokens/second**. Use streaming for interactive applications where users want to see tokens as they're generated.
+
+#### Open WebUI Integration
+
+vllm-mlx is compatible with [Open WebUI](https://github.com/open-webui/open-webui) for a ChatGPT-like interface:
+
+```bash
+# 1. Start vllm-mlx server
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --port 8000
+
+# 2. Start Open WebUI with Docker
+docker run -d \
+  --name open-webui \
+  -p 3000:8080 \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 \
+  -e OPENAI_API_KEY=not-needed \
+  -e WEBUI_AUTH=false \
+  -v open-webui:/app/backend/data \
+  ghcr.io/open-webui/open-webui:main
+
+# 3. Open http://localhost:3000 in your browser
+```
+
+**Notes:**
+- `host.docker.internal` allows Docker to connect to your Mac's localhost
+- Use `--continuous-batching` if multiple users will chat simultaneously
+- For VLM models (image/video), Open WebUI supports multimodal content
 
 ### `vllm-mlx-chat` - Gradio Chat Interface
 

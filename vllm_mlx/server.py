@@ -28,9 +28,10 @@ The server provides:
 import argparse
 import asyncio
 import logging
+import re
 import time
 import uuid
-from typing import AsyncIterator, Union
+from typing import AsyncIterator, Optional, Union
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -49,6 +50,26 @@ app = FastAPI(
 _model = None
 _model_name = None
 _is_mllm = False  # Track if model is a multimodal language model
+_default_max_tokens: int = 32768
+
+
+# Special tokens to remove from output (keeps <think> blocks)
+SPECIAL_TOKENS_PATTERN = re.compile(
+    r'<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>|'
+    r'<\|end\|>|<\|eot_id\|>|<\|start_header_id\|>|<\|end_header_id\|>|'
+    r'</s>|<s>|<pad>|\[PAD\]|\[SEP\]|\[CLS\]'
+)
+
+
+def clean_output_text(text: str) -> str:
+    """
+    Clean model output by removing special tokens.
+    Keeps <think>...</think> blocks intact.
+    """
+    if not text:
+        return text
+    text = SPECIAL_TOKENS_PATTERN.sub('', text)
+    return text.strip()
 
 
 # MLLM model detection patterns (auto-detects multimodal language models)
@@ -107,7 +128,7 @@ class ChatCompletionRequest(BaseModel):
     messages: list[Message]
     temperature: float = 0.7
     top_p: float = 0.9
-    max_tokens: int = 256
+    max_tokens: int | None = None  # Uses _default_max_tokens if not set
     stream: bool = False
     stop: list[str] | None = None
     # MLLM-specific parameters
@@ -120,7 +141,7 @@ class CompletionRequest(BaseModel):
     prompt: str | list[str]
     temperature: float = 0.7
     top_p: float = 0.9
-    max_tokens: int = 256
+    max_tokens: int | None = None  # Uses _default_max_tokens if not set
     stream: bool = False
     stop: list[str] | None = None
 
@@ -181,15 +202,18 @@ def get_model():
     return _model
 
 
-def load_model(model_name: str, force_mllm: bool = False):
+def load_model(model_name: str, force_mllm: bool = False, max_tokens: int = 32768):
     """
     Load a model (auto-detects MLLM vs LLM).
 
     Args:
         model_name: HuggingFace model name or local path
         force_mllm: Force loading as MLLM even if not auto-detected
+        max_tokens: Default max tokens for generation
     """
-    global _model, _model_name, _is_mllm
+    global _model, _model_name, _is_mllm, _default_max_tokens
+
+    _default_max_tokens = max_tokens
 
     # Auto-detect MLLM models
     _is_mllm = force_mllm or is_mllm_model(model_name)
@@ -207,6 +231,7 @@ def load_model(model_name: str, force_mllm: bool = False):
     _model_name = model_name
     model_type = "MLLM" if _is_mllm else "LLM"
     logger.info(f"{model_type} model loaded: {model_name}")
+    logger.info(f"Default max tokens: {_default_max_tokens}")
 
 
 @app.get("/health")
@@ -243,14 +268,15 @@ async def create_completion(request: CompletionRequest):
             media_type="text/event-stream",
         )
 
-    # Non-streaming response
+    # Non-streaming response with timing
+    start_time = time.perf_counter()
     choices = []
     total_completion_tokens = 0
 
     for i, prompt in enumerate(prompts):
         output = model.generate(
             prompt=prompt,
-            max_tokens=request.max_tokens,
+            max_tokens=request.max_tokens or _default_max_tokens,
             temperature=request.temperature,
             top_p=request.top_p,
             stop=request.stop if hasattr(model, 'generate') and not _is_mllm else None,
@@ -258,7 +284,7 @@ async def create_completion(request: CompletionRequest):
 
         choices.append(CompletionChoice(
             index=i,
-            text=output.text,
+            text=clean_output_text(output.text),
             finish_reason=output.finish_reason,
         ))
         # Handle both LLM (tokens) and MLLM (completion_tokens) outputs
@@ -266,6 +292,10 @@ async def create_completion(request: CompletionRequest):
             total_completion_tokens += len(output.tokens)
         elif hasattr(output, 'completion_tokens'):
             total_completion_tokens += output.completion_tokens
+
+    elapsed = time.perf_counter() - start_time
+    tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0
+    logger.info(f"Completion: {total_completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)")
 
     return CompletionResponse(
         model=request.model,
@@ -402,18 +432,24 @@ async def create_chat_completion(request: ChatCompletionRequest):
                 media_type="text/event-stream",
             )
 
-        # Non-streaming MLLM response
+        # Non-streaming MLLM response with timing
+        start_time = time.perf_counter()
+
         output = model.chat(
             messages=mllm_messages,
-            max_tokens=request.max_tokens,
+            max_tokens=request.max_tokens or _default_max_tokens,
             temperature=request.temperature,
             **mllm_kwargs,
         )
 
+        elapsed = time.perf_counter() - start_time
+        tokens_per_sec = output.completion_tokens / elapsed if elapsed > 0 else 0
+        logger.info(f"MLLM completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)")
+
         return ChatCompletionResponse(
             model=request.model,
             choices=[ChatCompletionChoice(
-                message=Message(role="assistant", content=output.text),
+                message=Message(role="assistant", content=clean_output_text(output.text)),
                 finish_reason=output.finish_reason,
             )],
             usage=Usage(
@@ -430,20 +466,26 @@ async def create_chat_completion(request: ChatCompletionRequest):
             media_type="text/event-stream",
         )
 
-    # Non-streaming response
+    # Non-streaming response with timing
+    start_time = time.perf_counter()
+
     output = model.chat(
         messages=messages,
-        max_tokens=request.max_tokens,
+        max_tokens=request.max_tokens or _default_max_tokens,
         temperature=request.temperature,
         top_p=request.top_p,
     )
 
+    elapsed = time.perf_counter() - start_time
     completion_tokens = len(output.tokens) if hasattr(output, 'tokens') else 0
+    tokens_per_sec = completion_tokens / elapsed if elapsed > 0 else 0
+
+    logger.info(f"Chat completion: {completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)")
 
     return ChatCompletionResponse(
         model=request.model,
         choices=[ChatCompletionChoice(
-            message=Message(role="assistant", content=output.text),
+            message=Message(role="assistant", content=clean_output_text(output.text)),
             finish_reason=output.finish_reason,
         )],
         usage=Usage(
@@ -463,7 +505,7 @@ async def stream_completion(
 
     for chunk in model.stream_generate(
         prompt=prompt,
-        max_tokens=request.max_tokens,
+        max_tokens=request.max_tokens or _default_max_tokens,
         temperature=request.temperature,
         top_p=request.top_p,
         stop=request.stop,
@@ -511,11 +553,11 @@ async def stream_chat_completion(
         # Fall back to non-streaming for models without stream support
         output = model.chat(
             messages=messages,
-            max_tokens=request.max_tokens,
+            max_tokens=request.max_tokens or _default_max_tokens,
             temperature=request.temperature,
         ) if hasattr(model, 'chat') else model.generate(
             prompt=prompt,
-            max_tokens=request.max_tokens,
+            max_tokens=request.max_tokens or _default_max_tokens,
             temperature=request.temperature,
         )
         data = {
@@ -525,7 +567,7 @@ async def stream_chat_completion(
             "model": request.model,
             "choices": [{
                 "index": 0,
-                "delta": {"content": output.text},
+                "delta": {"content": clean_output_text(output.text)},
                 "finish_reason": "stop",
             }],
         }
@@ -535,7 +577,7 @@ async def stream_chat_completion(
 
     for chunk in model.stream_generate(
         prompt=prompt,
-        max_tokens=request.max_tokens,
+        max_tokens=request.max_tokens or _default_max_tokens,
         temperature=request.temperature,
         top_p=request.top_p,
         stop=request.stop,
@@ -580,7 +622,7 @@ async def stream_mllm_chat_completion(
     try:
         for chunk in model.stream_chat(
             messages=messages,
-            max_tokens=request.max_tokens,
+            max_tokens=request.max_tokens or _default_max_tokens,
             temperature=request.temperature,
             **mllm_kwargs,
         ):
@@ -602,7 +644,7 @@ async def stream_mllm_chat_completion(
         # Fall back to non-streaming
         output = model.chat(
             messages=messages,
-            max_tokens=request.max_tokens,
+            max_tokens=request.max_tokens or _default_max_tokens,
             temperature=request.temperature,
             **mllm_kwargs,
         )
@@ -613,7 +655,7 @@ async def stream_mllm_chat_completion(
             "model": request.model,
             "choices": [{
                 "index": 0,
-                "delta": {"content": output.text},
+                "delta": {"content": clean_output_text(output.text)},
                 "finish_reason": "stop",
             }],
         }

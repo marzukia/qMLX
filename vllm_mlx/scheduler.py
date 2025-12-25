@@ -27,6 +27,13 @@ from .request import Request, RequestOutput, RequestStatus, SamplingParams
 
 logger = logging.getLogger(__name__)
 
+# Error patterns that indicate cache corruption
+CACHE_CORRUPTION_PATTERNS = [
+    "'NoneType' object is not subscriptable",
+    "cache",
+    "BatchKVCache",
+]
+
 
 class SchedulingPolicy(Enum):
     """Scheduling policy for request ordering."""
@@ -189,8 +196,54 @@ class Scheduler:
                 )
                 return
 
+            # Clear prefix cache when BatchGenerator changes
+            # BatchKVCache objects are tied to their generator instance
+            if self.prefix_cache is not None and self.batch_generator is not None:
+                logger.debug("Clearing prefix cache: BatchGenerator being recreated")
+                self.prefix_cache.clear()
+
             self.batch_generator = self._create_batch_generator(sampling_params)
             self._current_sampler_params = sampler_params
+
+    def _validate_cache(self, cache: Any) -> bool:
+        """
+        Validate that a cache object is usable.
+
+        This prevents NoneType errors when mlx-lm's BatchKVCache
+        contains invalid/stale references.
+
+        Args:
+            cache: The cache object to validate
+
+        Returns:
+            True if cache is valid and usable
+        """
+        if cache is None:
+            return False
+
+        # Check if it's a list of cache layers
+        if isinstance(cache, list):
+            if len(cache) == 0:
+                return False
+            # Check each layer
+            for layer_cache in cache:
+                if layer_cache is None:
+                    return False
+                # Check if layer has expected structure
+                if hasattr(layer_cache, 'keys') and layer_cache.keys is None:
+                    return False
+                if hasattr(layer_cache, 'values') and layer_cache.values is None:
+                    return False
+
+        # Check BatchKVCache structure
+        if hasattr(cache, 'caches'):
+            if cache.caches is None:
+                return False
+            for c in cache.caches:
+                if c is None:
+                    return False
+
+        return True
 
     def add_request(self, request: Request) -> None:
         """
@@ -309,6 +362,18 @@ class Scheduler:
             # Determine tokens to process and cache to use
             tokens_to_process = request.remaining_tokens or request.prompt_token_ids
             cache_to_use = request.prompt_cache  # May be None
+
+            # Validate cache before using it
+            if cache_to_use is not None and not self._validate_cache(cache_to_use):
+                logger.debug(
+                    f"Request {request.request_id}: invalid cache detected, "
+                    f"proceeding without cache"
+                )
+                cache_to_use = None
+                request.prompt_cache = None
+                request.cached_tokens = 0
+                request.remaining_tokens = request.prompt_token_ids
+                tokens_to_process = request.prompt_token_ids
 
             # Insert into BatchGenerator with optional cache
             uids = self.batch_generator.insert(
@@ -455,37 +520,104 @@ class Scheduler:
             # Track as finished
             self.finished_req_ids.add(request_id)
 
-    def step(self) -> SchedulerOutput:
+    def _is_cache_corruption_error(self, error: Exception) -> bool:
+        """Check if an error indicates cache corruption."""
+        error_str = str(error)
+        return any(pattern in error_str for pattern in CACHE_CORRUPTION_PATTERNS)
+
+    def _recover_from_cache_error(self) -> None:
+        """Recover from cache corruption error."""
+        # Clear batch generator (this is the source of the corruption)
+        self.batch_generator = None
+        self._current_sampler_params = None
+
+        # Clear prefix cache
+        if self.prefix_cache is not None:
+            self.prefix_cache.clear()
+
+        # Clear UID mappings
+        self.request_id_to_uid.clear()
+        self.uid_to_request_id.clear()
+
+        logger.info("Cache recovery completed")
+
+    def _reschedule_running_requests(self) -> None:
+        """Move running requests back to waiting queue for retry."""
+        count = len(self.running)
+        for request_id, request in list(self.running.items()):
+            # Reset request state
+            request.status = RequestStatus.WAITING
+            request.batch_uid = None
+            request.prompt_cache = None
+            request.cached_tokens = 0
+            request.remaining_tokens = request.prompt_token_ids
+
+            # Move to waiting queue (at front for priority)
+            self.waiting.appendleft(request)
+            del self.running[request_id]
+
+        if count > 0:
+            logger.info(f"Rescheduled {count} requests for retry")
+
+    def step(self, max_retries: int = 1) -> SchedulerOutput:
         """
-        Execute one scheduling step.
+        Execute one scheduling step with automatic error recovery.
 
         This method:
         1. Schedules waiting requests into the batch
         2. Runs one generation step via BatchGenerator
         3. Processes outputs and handles finished requests
+        4. Automatically recovers from cache corruption errors
+
+        Args:
+            max_retries: Number of times to retry on cache errors (default 1)
 
         Returns:
             SchedulerOutput with results of this step
         """
         output = SchedulerOutput()
 
-        # Schedule waiting requests
-        scheduled = self._schedule_waiting()
-        output.scheduled_request_ids = [r.request_id for r in scheduled]
-        output.num_scheduled_tokens = sum(r.num_prompt_tokens for r in scheduled)
-
-        # Run generation step if we have running requests
-        if self.batch_generator is not None and self.running:
+        for attempt in range(max_retries + 1):
             try:
-                responses = self.batch_generator.next()
-                output.has_work = True
+                # Schedule waiting requests
+                scheduled = self._schedule_waiting()
+                output.scheduled_request_ids = [r.request_id for r in scheduled]
+                output.num_scheduled_tokens = sum(r.num_prompt_tokens for r in scheduled)
 
-                if responses:
-                    outputs, finished_ids = self._process_batch_responses(responses)
-                    output.outputs = outputs
-                    output.finished_request_ids = finished_ids
-                    self._cleanup_finished(finished_ids)
+                # Run generation step if we have running requests
+                if self.batch_generator is not None and self.running:
+                    responses = self.batch_generator.next()
+                    output.has_work = True
 
+                    if responses:
+                        outputs, finished_ids = self._process_batch_responses(responses)
+                        output.outputs = outputs
+                        output.finished_request_ids = finished_ids
+                        self._cleanup_finished(finished_ids)
+
+                # Success - break out of retry loop
+                break
+
+            except TypeError as e:
+                # Catch the NoneType error specifically
+                if self._is_cache_corruption_error(e):
+                    if attempt < max_retries:
+                        logger.warning(
+                            f"Cache corruption detected (attempt {attempt + 1}), "
+                            f"performing recovery and retry..."
+                        )
+                        # Deep reset to recover
+                        self._recover_from_cache_error()
+                        # Re-add any running requests back to waiting
+                        self._reschedule_running_requests()
+                    else:
+                        logger.error(
+                            f"Cache corruption not recoverable after "
+                            f"{max_retries + 1} attempts"
+                        )
+                        raise
+                else:
+                    raise
             except Exception as e:
                 logger.error(f"Error in batch generation step: {e}")
                 raise
@@ -542,3 +674,32 @@ class Scheduler:
         # Clear prefix cache
         if self.prefix_cache is not None:
             self.prefix_cache.clear()
+
+    def deep_reset(self) -> None:
+        """
+        Deep reset that clears ALL cache state including model-level caches.
+
+        This is more aggressive than reset() and should be used when
+        switching engines or recovering from errors.
+        """
+        # Standard reset first
+        self.reset()
+
+        # Clear any model-level cache state
+        # MLX models may have internal cache references
+        if hasattr(self.model, 'cache'):
+            self.model.cache = None
+
+        # Some MLX models store cache in layers
+        if hasattr(self.model, 'layers'):
+            for layer in self.model.layers:
+                if hasattr(layer, 'cache'):
+                    layer.cache = None
+                if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'cache'):
+                    layer.self_attn.cache = None
+
+        # Force garbage collection of any lingering cache objects
+        import gc
+        gc.collect()
+
+        logger.info("Deep reset completed - all caches cleared")

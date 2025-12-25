@@ -20,6 +20,7 @@ from vllm_mlx.scheduler import Scheduler, SchedulerConfig, SchedulerOutput
 from vllm_mlx.engine import EngineCore, AsyncEngineCore, EngineConfig
 from vllm_mlx.prefix_cache import PrefixCacheManager, PrefixCacheStats
 from vllm_mlx.vlm_cache import VLMCacheManager, VLMCacheStats
+from vllm_mlx.model_registry import get_registry, ModelOwnershipError
 
 # vLLM integration components (require torch)
 # These are loaded lazily to allow CLI usage without torch
@@ -58,6 +59,9 @@ __all__ = [
     "EngineCore",
     "AsyncEngineCore",
     "EngineConfig",
+    # Model registry
+    "get_registry",
+    "ModelOwnershipError",
     # Prefix cache (LLM)
     "PrefixCacheManager",
     "PrefixCacheStats",

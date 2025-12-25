@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 _engine: Optional[AsyncEngineCore] = None
 _model_name: Optional[str] = None
 _is_mllm: bool = False
+_default_max_tokens: int = 32768
 
 
 # MLLM model detection patterns
@@ -60,6 +62,37 @@ def is_mllm_model(model_name: str) -> bool:
     """Check if model name indicates a multimodal model."""
     model_lower = model_name.lower()
     return any(pattern.lower() in model_lower for pattern in MLLM_PATTERNS)
+
+
+# Special tokens to remove from output (keeps <think> blocks)
+SPECIAL_TOKENS_PATTERN = re.compile(
+    r'<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>|'
+    r'<\|end\|>|<\|eot_id\|>|<\|start_header_id\|>|<\|end_header_id\|>|'
+    r'</s>|<s>|<pad>|\[PAD\]|\[SEP\]|\[CLS\]'
+)
+
+
+def clean_output_text(text: str) -> str:
+    """
+    Clean model output by removing special tokens.
+    Keeps <think>...</think> blocks intact.
+
+    Args:
+        text: Raw model output
+
+    Returns:
+        Cleaned text (with thinking preserved)
+    """
+    if not text:
+        return text
+
+    # Remove special tokens only (not thinking blocks)
+    text = SPECIAL_TOKENS_PATTERN.sub('', text)
+
+    # Clean up whitespace
+    text = text.strip()
+
+    return text
 
 
 # ============================================================================
@@ -93,7 +126,7 @@ class ChatCompletionRequest(BaseModel):
     messages: List[Message]
     temperature: float = 0.7
     top_p: float = 0.9
-    max_tokens: int = 256
+    max_tokens: Optional[int] = None  # Uses _default_max_tokens if not set
     stream: bool = False
     stop: Optional[List[str]] = None
 
@@ -103,7 +136,7 @@ class CompletionRequest(BaseModel):
     prompt: Union[str, List[str]]
     temperature: float = 0.7
     top_p: float = 0.9
-    max_tokens: int = 256
+    max_tokens: Optional[int] = None  # Uses _default_max_tokens if not set
     stream: bool = False
     stop: Optional[List[str]] = None
 
@@ -182,7 +215,7 @@ def extract_text_from_messages(messages: List[Message]) -> str:
 def create_sampling_params(
     temperature: float = 0.7,
     top_p: float = 0.9,
-    max_tokens: int = 256,
+    max_tokens: int = 32768,
     stop: Optional[List[str]] = None,
 ) -> SamplingParams:
     """Create SamplingParams from request parameters."""
@@ -206,7 +239,7 @@ async def lifespan(app: FastAPI):
         _engine.start()
     yield
     if _engine is not None:
-        _engine.stop()
+        await _engine.stop()
 
 
 app = FastAPI(
@@ -261,7 +294,7 @@ async def create_completion(request: CompletionRequest):
     sampling_params = create_sampling_params(
         temperature=request.temperature,
         top_p=request.top_p,
-        max_tokens=request.max_tokens,
+        max_tokens=request.max_tokens or _default_max_tokens,
         stop=request.stop,
     )
 
@@ -271,29 +304,25 @@ async def create_completion(request: CompletionRequest):
             media_type="text/event-stream",
         )
 
-    # Non-streaming
+    # Non-streaming - use optimized generate() with concurrent requests
+    async def generate_one(i: int, prompt: str):
+        output = await engine.generate(prompt=prompt, sampling_params=sampling_params)
+        return i, output
+
+    results = await asyncio.gather(*[generate_one(i, p) for i, p in enumerate(prompts)])
+
     choices = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
 
-    for i, prompt in enumerate(prompts):
-        request_id = await engine.add_request(
-            prompt=prompt,
-            sampling_params=sampling_params,
-        )
-
-        final_output = None
-        async for output in engine.stream_outputs(request_id):
-            final_output = output
-
-        if final_output:
-            choices.append(CompletionChoice(
-                index=i,
-                text=final_output.output_text,
-                finish_reason=final_output.finish_reason,
-            ))
-            total_prompt_tokens += final_output.prompt_tokens
-            total_completion_tokens += final_output.completion_tokens
+    for i, output in sorted(results, key=lambda x: x[0]):
+        choices.append(CompletionChoice(
+            index=i,
+            text=clean_output_text(output.output_text),
+            finish_reason=output.finish_reason,
+        ))
+        total_prompt_tokens += output.prompt_tokens
+        total_completion_tokens += output.completion_tokens
 
     return CompletionResponse(
         model=request.model,
@@ -329,7 +358,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
     sampling_params = create_sampling_params(
         temperature=request.temperature,
         top_p=request.top_p,
-        max_tokens=request.max_tokens,
+        max_tokens=request.max_tokens or _default_max_tokens,
         stop=request.stop,
     )
 
@@ -339,23 +368,16 @@ async def create_chat_completion(request: ChatCompletionRequest):
             media_type="text/event-stream",
         )
 
-    # Non-streaming
-    request_id = await engine.add_request(
+    # Non-streaming - use optimized generate() method
+    final_output = await engine.generate(
         prompt=prompt,
         sampling_params=sampling_params,
     )
 
-    final_output = None
-    async for output in engine.stream_outputs(request_id):
-        final_output = output
-
-    if final_output is None:
-        raise HTTPException(status_code=500, detail="No output generated")
-
     return ChatCompletionResponse(
         model=request.model,
         choices=[ChatCompletionChoice(
-            message=Message(role="assistant", content=final_output.output_text),
+            message=Message(role="assistant", content=clean_output_text(final_output.output_text)),
             finish_reason=final_output.finish_reason,
         )],
         usage=Usage(
@@ -372,27 +394,39 @@ async def stream_completion(
     sampling_params: SamplingParams,
     model_name: str,
 ) -> AsyncIterator[str]:
-    """Stream completion response."""
+    """Stream completion response with cancellation support."""
     request_id = await engine.add_request(
         prompt=prompt,
         sampling_params=sampling_params,
     )
 
-    async for output in engine.stream_outputs(request_id):
-        data = {
-            "id": f"cmpl-{uuid.uuid4().hex[:8]}",
-            "object": "text_completion",
-            "created": int(time.time()),
-            "model": model_name,
-            "choices": [{
-                "index": 0,
-                "text": output.new_text,
-                "finish_reason": output.finish_reason if output.finished else None,
-            }],
-        }
-        yield f"data: {json.dumps(data)}\n\n"
+    try:
+        async for output in engine.stream_outputs(request_id):
+            data = {
+                "id": f"cmpl-{uuid.uuid4().hex[:8]}",
+                "object": "text_completion",
+                "created": int(time.time()),
+                "model": model_name,
+                "choices": [{
+                    "index": 0,
+                    "text": clean_output_text(output.new_text),
+                    "finish_reason": output.finish_reason if output.finished else None,
+                }],
+            }
+            yield f"data: {json.dumps(data)}\n\n"
 
-    yield "data: [DONE]\n\n"
+        yield "data: [DONE]\n\n"
+
+    except asyncio.CancelledError:
+        # Client disconnected - abort the request
+        logger.info(f"Client disconnected, aborting request {request_id}")
+        await engine.abort_request(request_id)
+        raise
+    except GeneratorExit:
+        # Generator was garbage collected
+        logger.info(f"Generator exit, aborting request {request_id}")
+        await engine.abort_request(request_id)
+        raise
 
 
 async def stream_chat_completion(
@@ -401,27 +435,39 @@ async def stream_chat_completion(
     sampling_params: SamplingParams,
     model_name: str,
 ) -> AsyncIterator[str]:
-    """Stream chat completion response."""
+    """Stream chat completion response with cancellation support."""
     request_id = await engine.add_request(
         prompt=prompt,
         sampling_params=sampling_params,
     )
 
-    async for output in engine.stream_outputs(request_id):
-        data = {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": model_name,
-            "choices": [{
-                "index": 0,
-                "delta": {"content": output.new_text} if output.new_text else {},
-                "finish_reason": output.finish_reason if output.finished else None,
-            }],
-        }
-        yield f"data: {json.dumps(data)}\n\n"
+    try:
+        async for output in engine.stream_outputs(request_id):
+            data = {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": model_name,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": clean_output_text(output.new_text)} if output.new_text else {},
+                    "finish_reason": output.finish_reason if output.finished else None,
+                }],
+            }
+            yield f"data: {json.dumps(data)}\n\n"
 
-    yield "data: [DONE]\n\n"
+        yield "data: [DONE]\n\n"
+
+    except asyncio.CancelledError:
+        # Client disconnected - abort the request
+        logger.info(f"Client disconnected, aborting request {request_id}")
+        await engine.abort_request(request_id)
+        raise
+    except GeneratorExit:
+        # Generator was garbage collected
+        logger.info(f"Generator exit, aborting request {request_id}")
+        await engine.abort_request(request_id)
+        raise
 
 
 @app.get("/v1/engine/stats")
@@ -458,9 +504,13 @@ async def get_cache_stats():
 def load_model(
     model_name: str,
     scheduler_config: Optional[SchedulerConfig] = None,
+    stream_interval: int = 1,
+    max_tokens: int = 32768,
 ) -> None:
     """Load a model and initialize the engine."""
-    global _engine, _model_name, _is_mllm
+    global _engine, _model_name, _is_mllm, _default_max_tokens
+
+    _default_max_tokens = max_tokens
 
     logger.info(f"Loading model: {model_name}")
 
@@ -474,12 +524,22 @@ def load_model(
     else:
         # Load LLM model
         from mlx_lm import load
-        model, tokenizer = load(model_name)
 
-    # Create engine config
+        # Qwen3 fix: eos_token changed from <|im_end|> to <|endoftext|>
+        # but chat template still uses <|im_end|>, so we need to set it explicitly
+        # See: https://kaitchup.substack.com/p/qwen3-when-im_end-suddenly-becomes
+        tokenizer_config = None
+        if "qwen3" in model_name.lower() or "Qwen3" in model_name:
+            tokenizer_config = {"eos_token": "<|im_end|>"}
+            logger.info("Qwen3 detected: setting eos_token to <|im_end|>")
+
+        model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
+
+    # Create engine config with stream_interval for low-latency streaming
     engine_config = EngineConfig(
         model_name=model_name,
         scheduler_config=scheduler_config or SchedulerConfig(),
+        stream_interval=stream_interval,
     )
 
     # Create engine
@@ -487,6 +547,7 @@ def load_model(
     _model_name = model_name
 
     logger.info(f"Model loaded: {model_name} ({'MLLM' if _is_mllm else 'LLM'})")
+    logger.info(f"Stream interval: {stream_interval} tokens")
 
 
 # ============================================================================
@@ -524,6 +585,12 @@ def main():
         default=32,
         help="Completion batch size",
     )
+    parser.add_argument(
+        "--stream-interval",
+        type=int,
+        default=1,
+        help="Tokens to batch before streaming (1=smooth, higher=more throughput)",
+    )
 
     args = parser.parse_args()
 
@@ -534,8 +601,8 @@ def main():
         completion_batch_size=args.completion_batch_size,
     )
 
-    # Load model
-    load_model(args.model, scheduler_config)
+    # Load model with stream_interval
+    load_model(args.model, scheduler_config, stream_interval=args.stream_interval)
 
     # Start server
     import uvicorn
