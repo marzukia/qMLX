@@ -18,7 +18,8 @@ __version__ = "0.2.0"
 from vllm_mlx.request import Request, RequestOutput, RequestStatus, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig, SchedulerOutput
 from vllm_mlx.engine import EngineCore, AsyncEngineCore, EngineConfig
-from vllm_mlx.prefix_cache import PrefixCacheManager, PrefixCacheStats
+from vllm_mlx.prefix_cache import PrefixCacheManager, PrefixCacheStats, BlockAwarePrefixCache
+from vllm_mlx.paged_cache import PagedCacheManager, CacheBlock, BlockTable, CacheStats
 from vllm_mlx.vlm_cache import VLMCacheManager, VLMCacheStats
 from vllm_mlx.model_registry import get_registry, ModelOwnershipError
 
@@ -65,6 +66,12 @@ __all__ = [
     # Prefix cache (LLM)
     "PrefixCacheManager",
     "PrefixCacheStats",
+    "BlockAwarePrefixCache",
+    # Paged cache (memory efficiency)
+    "PagedCacheManager",
+    "CacheBlock",
+    "BlockTable",
+    "CacheStats",
     # VLM cache (images/videos)
     "VLMCacheManager",
     "VLMCacheStats",

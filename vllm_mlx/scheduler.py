@@ -22,7 +22,8 @@ import mlx.core as mx
 from mlx_lm.generate import BatchGenerator
 from mlx_lm.sample_utils import make_sampler
 
-from .prefix_cache import PrefixCacheManager
+from .paged_cache import PagedCacheManager
+from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,11 @@ class SchedulerConfig:
     # Prefix cache settings
     enable_prefix_cache: bool = True
     prefix_cache_size: int = 100  # Max cached entries
+
+    # Paged cache settings (experimental - for memory efficiency)
+    use_paged_cache: bool = False  # Use BlockAwarePrefixCache instead of PrefixCacheManager
+    paged_cache_block_size: int = 64  # Tokens per block
+    max_cache_blocks: int = 1000  # Maximum number of cache blocks
 
 
 @dataclass
@@ -129,14 +135,33 @@ class Scheduler:
 
         # Prefix cache for KV state reuse
         self.prefix_cache: Optional[PrefixCacheManager] = None
+        self.paged_cache_manager: Optional[PagedCacheManager] = None
+        self.block_aware_cache: Optional[BlockAwarePrefixCache] = None
+
         if self.config.enable_prefix_cache:
-            self.prefix_cache = PrefixCacheManager(
-                model=model,
-                max_entries=self.config.prefix_cache_size,
-            )
-            logger.info(
-                f"Prefix cache enabled with max_entries={self.config.prefix_cache_size}"
-            )
+            if self.config.use_paged_cache:
+                # Use paged cache for memory efficiency
+                self.paged_cache_manager = PagedCacheManager(
+                    block_size=self.config.paged_cache_block_size,
+                    max_blocks=self.config.max_cache_blocks,
+                )
+                self.block_aware_cache = BlockAwarePrefixCache(
+                    model=model,
+                    paged_cache_manager=self.paged_cache_manager,
+                )
+                logger.info(
+                    f"Paged cache enabled: block_size={self.config.paged_cache_block_size}, "
+                    f"max_blocks={self.config.max_cache_blocks}"
+                )
+            else:
+                # Use standard prefix cache
+                self.prefix_cache = PrefixCacheManager(
+                    model=model,
+                    max_entries=self.config.prefix_cache_size,
+                )
+                logger.info(
+                    f"Prefix cache enabled with max_entries={self.config.prefix_cache_size}"
+                )
 
         # Statistics
         self.num_requests_processed = 0
@@ -245,6 +270,40 @@ class Scheduler:
 
         return True
 
+    def _extract_cache_states(self, raw_cache: List[Any]) -> List[Dict[str, Any]]:
+        """
+        Extract actual tensor state from each layer cache.
+
+        This extracts the real KV data using mlx-lm's cache.state property,
+        allowing the data to be stored and reconstructed later even after
+        the BatchGenerator is recreated.
+
+        Args:
+            raw_cache: List of KVCache objects from mlx-lm
+
+        Returns:
+            List of dicts with {state: (keys, values), meta_state: (offset,), class_name: str}
+        """
+        if not raw_cache:
+            return []
+
+        extracted = []
+        for layer_cache in raw_cache:
+            try:
+                if hasattr(layer_cache, 'state') and hasattr(layer_cache, 'meta_state'):
+                    state = layer_cache.state  # (keys, values) MLX arrays
+                    meta = layer_cache.meta_state  # (offset,) as strings
+                    extracted.append({
+                        'state': state,
+                        'meta_state': meta,
+                        'class_name': type(layer_cache).__name__,
+                    })
+            except Exception as e:
+                logger.debug(f"Failed to extract state from cache layer: {e}")
+                continue
+
+        return extracted if len(extracted) == len(raw_cache) else []
+
     def add_request(self, request: Request) -> None:
         """
         Add a new request to the scheduler.
@@ -264,7 +323,36 @@ class Scheduler:
             request.num_prompt_tokens = len(request.prompt_token_ids)
 
         # Check prefix cache for cached KV state
-        if self.prefix_cache is not None:
+        if self.block_aware_cache is not None:
+            # Use paged cache
+            block_table, remaining = self.block_aware_cache.fetch_cache(
+                request.request_id,
+                request.prompt_token_ids,
+            )
+            if block_table and block_table.num_tokens > 0:
+                # Reconstruct actual KVCache objects from stored tensor data
+                reconstructed = self.block_aware_cache.reconstruct_cache(block_table)
+                if reconstructed:
+                    request.prompt_cache = reconstructed
+                    request.block_table = block_table
+                    request.cached_tokens = block_table.num_tokens
+                    request.shared_prefix_blocks = len(block_table.block_ids)
+                    request.remaining_tokens = remaining
+                    logger.debug(
+                        f"Request {request.request_id}: paged cache hit, "
+                        f"{request.cached_tokens} tokens in {request.shared_prefix_blocks} blocks, "
+                        f"{len(remaining)} tokens remaining, cache reconstructed"
+                    )
+                else:
+                    # Reconstruction failed, treat as cache miss
+                    request.remaining_tokens = request.prompt_token_ids
+                    logger.debug(
+                        f"Request {request.request_id}: paged cache reconstruction failed"
+                    )
+            else:
+                request.remaining_tokens = request.prompt_token_ids
+        elif self.prefix_cache is not None:
+            # Use standard prefix cache
             cache, remaining = self.prefix_cache.fetch_cache(request.prompt_token_ids)
             if cache:
                 request.prompt_cache = cache
@@ -460,12 +548,24 @@ class Scheduler:
                     try:
                         # prompt_cache may be callable or direct attribute
                         if callable(response.prompt_cache):
-                            extracted_cache = response.prompt_cache()
+                            raw_cache = response.prompt_cache()
                         else:
-                            extracted_cache = response.prompt_cache
-                        if extracted_cache:
-                            # Store temporarily on request for _cleanup_finished
-                            request._extracted_cache = extracted_cache
+                            raw_cache = response.prompt_cache
+
+                        if raw_cache:
+                            # For paged cache, extract actual tensor states
+                            # This allows cache to survive BatchGenerator recreation
+                            if self.block_aware_cache is not None:
+                                extracted_cache = self._extract_cache_states(raw_cache)
+                                if extracted_cache:
+                                    request._extracted_cache = extracted_cache
+                                    logger.debug(
+                                        f"Extracted {len(extracted_cache)} layer states "
+                                        f"for request {request_id}"
+                                    )
+                            else:
+                                # Standard cache stores object references
+                                request._extracted_cache = raw_cache
                     except Exception as e:
                         logger.debug(f"Failed to extract cache for {request_id}: {e}")
 
@@ -487,24 +587,40 @@ class Scheduler:
             request = self.running.get(request_id)
 
             # Store cache for future reuse
-            if (
-                self.prefix_cache is not None
-                and request is not None
-                and hasattr(request, '_extracted_cache')
-                and request._extracted_cache is not None
-                and request.prompt_token_ids
-            ):
-                try:
-                    self.prefix_cache.store_cache(
-                        request.prompt_token_ids,
-                        request._extracted_cache,
-                    )
-                    logger.debug(
-                        f"Stored cache for request {request_id} "
-                        f"({len(request.prompt_token_ids)} tokens)"
-                    )
-                except Exception as e:
-                    logger.debug(f"Failed to store cache for {request_id}: {e}")
+            if request is not None and request.prompt_token_ids:
+                if self.block_aware_cache is not None:
+                    # Store in paged cache
+                    if hasattr(request, '_extracted_cache') and request._extracted_cache is not None:
+                        try:
+                            self.block_aware_cache.store_cache(
+                                request_id,
+                                request.prompt_token_ids,
+                                request._extracted_cache,
+                            )
+                            logger.debug(
+                                f"Stored paged cache for request {request_id} "
+                                f"({len(request.prompt_token_ids)} tokens)"
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to store paged cache for {request_id}: {e}")
+                    # NOTE: Do NOT call release_cache here - blocks should persist
+                    # for future requests to share. The LRU eviction will clean up
+                    # unused blocks when under memory pressure.
+
+                elif self.prefix_cache is not None:
+                    # Store in standard prefix cache
+                    if hasattr(request, '_extracted_cache') and request._extracted_cache is not None:
+                        try:
+                            self.prefix_cache.store_cache(
+                                request.prompt_token_ids,
+                                request._extracted_cache,
+                            )
+                            logger.debug(
+                                f"Stored cache for request {request_id} "
+                                f"({len(request.prompt_token_ids)} tokens)"
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to store cache for {request_id}: {e}")
 
             # Remove from running
             if request_id in self.running:
@@ -531,7 +647,9 @@ class Scheduler:
         self.batch_generator = None
         self._current_sampler_params = None
 
-        # Clear prefix cache
+        # Clear caches
+        if self.block_aware_cache is not None:
+            self.block_aware_cache.clear()
         if self.prefix_cache is not None:
             self.prefix_cache.clear()
 
@@ -645,14 +763,18 @@ class Scheduler:
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
         }
-        # Include prefix cache stats if enabled
-        if self.prefix_cache is not None:
+        # Include cache stats
+        if self.block_aware_cache is not None:
+            stats["paged_cache"] = self.block_aware_cache.get_stats()
+        elif self.prefix_cache is not None:
             stats["prefix_cache"] = self.prefix_cache.get_stats()
         return stats
 
     def get_cache_stats(self) -> Optional[Dict[str, Any]]:
-        """Get prefix cache statistics."""
-        if self.prefix_cache is not None:
+        """Get cache statistics."""
+        if self.block_aware_cache is not None:
+            return self.block_aware_cache.get_stats()
+        elif self.prefix_cache is not None:
             return self.prefix_cache.get_stats()
         return None
 
@@ -671,7 +793,9 @@ class Scheduler:
         self.batch_generator = None
         self._current_sampler_params = None
 
-        # Clear prefix cache
+        # Clear caches
+        if self.block_aware_cache is not None:
+            self.block_aware_cache.clear()
         if self.prefix_cache is not None:
             self.prefix_cache.clear()
 

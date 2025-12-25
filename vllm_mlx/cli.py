@@ -37,10 +37,16 @@ def serve_command(args):
             completion_batch_size=args.completion_batch_size,
             enable_prefix_cache=enable_prefix_cache,
             prefix_cache_size=args.prefix_cache_size,
+            # Paged cache options
+            use_paged_cache=args.use_paged_cache,
+            paged_cache_block_size=args.paged_cache_block_size,
+            max_cache_blocks=args.max_cache_blocks,
         )
 
         print(f"Mode: Continuous batching (for multiple concurrent users)")
         print(f"Stream interval: {args.stream_interval} tokens")
+        if args.use_paged_cache:
+            print(f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}")
         load_model(
             args.model,
             scheduler_config,
@@ -81,11 +87,18 @@ def bench_command(args):
             completion_batch_size=args.completion_batch_size,
             enable_prefix_cache=enable_prefix_cache,
             prefix_cache_size=args.prefix_cache_size,
+            # Paged cache options
+            use_paged_cache=args.use_paged_cache,
+            paged_cache_block_size=args.paged_cache_block_size,
+            max_cache_blocks=args.max_cache_blocks,
         )
         engine_config = EngineConfig(
             model_name=args.model,
             scheduler_config=scheduler_config,
         )
+
+        if args.use_paged_cache:
+            print(f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}")
 
         # Generate prompts
         prompts = [
@@ -208,6 +221,24 @@ Examples:
         action="store_true",
         help="Enable continuous batching for multiple concurrent users (slower for single user)",
     )
+    # Paged cache options (experimental)
+    serve_parser.add_argument(
+        "--use-paged-cache",
+        action="store_true",
+        help="Use paged KV cache for memory efficiency (experimental)",
+    )
+    serve_parser.add_argument(
+        "--paged-cache-block-size",
+        type=int,
+        default=64,
+        help="Tokens per cache block (default: 64)",
+    )
+    serve_parser.add_argument(
+        "--max-cache-blocks",
+        type=int,
+        default=1000,
+        help="Maximum number of cache blocks (default: 1000)",
+    )
 
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")
@@ -243,6 +274,24 @@ Examples:
         type=int,
         default=100,
         help="Max entries in prefix cache (default: 100)",
+    )
+    # Paged cache options (experimental)
+    bench_parser.add_argument(
+        "--use-paged-cache",
+        action="store_true",
+        help="Use paged KV cache for memory efficiency (experimental)",
+    )
+    bench_parser.add_argument(
+        "--paged-cache-block-size",
+        type=int,
+        default=64,
+        help="Tokens per cache block (default: 64)",
+    )
+    bench_parser.add_argument(
+        "--max-cache-blocks",
+        type=int,
+        default=1000,
+        help="Maximum number of cache blocks (default: 1000)",
     )
 
     args = parser.parse_args()
