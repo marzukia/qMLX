@@ -59,7 +59,7 @@ def print_table(headers: List[str], rows: List[List[str]], col_widths: List[int]
     print(f"+{separator}+")
 
 
-def test_shared_system_prompt_real(model_name: str):
+def run_shared_system_prompt_real(model_name: str):
     """
     Test with real model: Multiple requests sharing same system prompt.
     """
@@ -255,7 +255,7 @@ Let's begin the session. I'm ready to help with any technical questions you have
     return paged_stats
 
 
-async def test_real_concurrent_inference(model_name: str):
+async def run_real_concurrent_inference(model_name: str):
     """
     Run REAL concurrent inference with 20 requests.
     This uses actual model generation, not simulation.
@@ -532,8 +532,8 @@ def main():
     print(f"\nModel: {args.model}")
 
     # Run tests
-    test_shared_system_prompt_real(args.model)
-    asyncio.run(test_real_concurrent_inference(args.model))
+    run_shared_system_prompt_real(args.model)
+    asyncio.run(run_real_concurrent_inference(args.model))
 
     print("\n" + "=" * 70)
     print("     TEST COMPLETE")
