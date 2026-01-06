@@ -94,6 +94,35 @@ python examples/audio_separation_example.py meeting.mp3 --play
 python examples/audio_separation_example.py song.mp3 --description music -o music.wav
 ```
 
+### Guitar Separation Demo
+
+Isolate electric guitar from a rock song using SAM-Audio:
+
+**Original Track:** "Get Ready" by David Fesliyan (30 sec, royalty-free)
+<audio controls>
+  <source src="../../examples/rock_get_ready.mp3" type="audio/mpeg">
+</audio>
+
+**Isolated Guitar:**
+<audio controls>
+  <source src="../../examples/guitar_isolated.wav" type="audio/wav">
+</audio>
+
+**Track Without Guitar:**
+<audio controls>
+  <source src="../../examples/rock_no_guitar.wav" type="audio/wav">
+</audio>
+
+```bash
+# Isolate guitar from rock song
+python examples/audio_separation_example.py examples/rock_get_ready.mp3 \
+  --description "electric guitar" \
+  --output guitar_isolated.wav \
+  --background rock_no_guitar.wav
+```
+
+**Performance:** 30s audio processed in ~20 seconds on M4 Max.
+
 ## Supported Models
 
 ### STT Models (Speech-to-Text)
