@@ -21,6 +21,10 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import mlx.core as mx
 from mlx_lm.generate import BatchGenerator
 from mlx_lm.sample_utils import make_sampler
+from mlx_lm.tokenizer_utils import (
+    NaiveStreamingDetokenizer,
+    StreamingDetokenizer,
+)
 
 from .paged_cache import PagedCacheManager
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
@@ -167,6 +171,33 @@ class Scheduler:
         self.num_requests_processed = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+
+        # Streaming detokenizer pool for efficient token decoding
+        # Each request gets its own detokenizer to track incremental text
+        self._detokenizer_pool: Dict[str, StreamingDetokenizer] = {}
+
+    def _get_detokenizer(self, request_id: str) -> StreamingDetokenizer:
+        """
+        Get or create a streaming detokenizer for a request.
+
+        Uses mlx-lm's optimized StreamingDetokenizer which provides O(T)
+        complexity for most tokenizers vs O(T²) for naive decode calls.
+        """
+        if request_id not in self._detokenizer_pool:
+            # Try to get optimized detokenizer from TokenizerWrapper
+            if hasattr(self.tokenizer, 'detokenizer'):
+                detok = self.tokenizer.detokenizer
+            else:
+                # Fallback to naive detokenizer
+                detok = NaiveStreamingDetokenizer(self.tokenizer)
+            detok.reset()
+            self._detokenizer_pool[request_id] = detok
+        return self._detokenizer_pool[request_id]
+
+    def _cleanup_detokenizer(self, request_id: str) -> None:
+        """Remove detokenizer for finished request."""
+        if request_id in self._detokenizer_pool:
+            del self._detokenizer_pool[request_id]
 
     def _get_stop_tokens(self) -> Set[int]:
         """Get stop token IDs from tokenizer."""
@@ -515,8 +546,11 @@ class Scheduler:
             # Append token to request
             request.append_output_token(response.token)
 
-            # Decode the new token
-            new_text = self.tokenizer.decode([response.token])
+            # Use streaming detokenizer for efficient incremental decoding
+            # This is O(T) vs O(T²) for naive decode on each token
+            detokenizer = self._get_detokenizer(request_id)
+            detokenizer.add_token(response.token)
+            new_text = detokenizer.last_segment
 
             # Create output
             output = RequestOutput(
@@ -539,8 +573,10 @@ class Scheduler:
                 output.finish_reason = response.finish_reason
                 finished_ids.add(request_id)
 
-                # Decode full output
-                output.output_text = self.tokenizer.decode(request.output_token_ids)
+                # Finalize streaming detokenizer and get complete text
+                detokenizer = self._get_detokenizer(request_id)
+                detokenizer.finalize()
+                output.output_text = detokenizer.text
                 request.output_text = output.output_text
 
                 # Extract cache for future reuse
@@ -625,6 +661,9 @@ class Scheduler:
             # Remove from running
             if request_id in self.running:
                 del self.running[request_id]
+
+            # Cleanup streaming detokenizer
+            self._cleanup_detokenizer(request_id)
 
             # Remove UID mappings
             if request_id in self.request_id_to_uid:
