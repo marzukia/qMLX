@@ -598,18 +598,18 @@ vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video --quick
 
 **Real Performance - Qwen3-VL-8B-Instruct-4bit (M4 Max, 128GB):**
 
-| Configuration | Frames | Time | Tokens | Speed |
-|---------------|--------|------|--------|-------|
-| 2 frames @ 0.5fps | 2 | 5.86s | 256 | 43.7 tok/s |
-| 4 frames @ 1fps | 4 | 5.87s | 256 | 43.6 tok/s |
-| 6 frames @ 1fps | 6 | 6.07s | 197 | 32.4 tok/s |
-| 8 frames @ 2fps | 8 | 7.85s | 240 | 30.6 tok/s |
-| 12 frames @ 2fps | 12 | 10.16s | 256 | 25.2 tok/s |
-| 16 frames @ 2fps | 16 | 12.42s | 256 | 20.6 tok/s |
-| 24 frames @ 4fps | 24 | 16.72s | 226 | 13.5 tok/s |
-| 32 frames @ 4fps | 32 | 23.00s | 256 | 11.1 tok/s |
+| Configuration | Frames | Time | Tokens | Speed | Memory |
+|---------------|--------|------|--------|-------|--------|
+| 2 frames @ 0.5fps | 2 | 4.46s | 256 | 57.4 tok/s | 6.4 GB |
+| 4 frames @ 1fps | 4 | 4.69s | 256 | 54.5 tok/s | 6.4 GB |
+| 6 frames @ 1fps | 6 | 5.16s | 197 | 38.2 tok/s | 6.6 GB |
+| 8 frames @ 2fps | 8 | 6.72s | 240 | 35.7 tok/s | 6.8 GB |
+| 12 frames @ 2fps | 12 | 8.91s | 256 | 28.7 tok/s | 7.1 GB |
+| 16 frames @ 2fps | 16 | 11.46s | 256 | 22.3 tok/s | 7.6 GB |
+| 24 frames @ 4fps | 24 | 16.13s | 226 | 14.0 tok/s | 8.4 GB |
+| 32 frames @ 4fps | 32 | 21.34s | 256 | 12.0 tok/s | 9.2 GB |
 
-**Summary:** Average 22.1 tok/s across all configurations. Fastest at 2 frames (43.7 tok/s), slowest at 32 frames (11.1 tok/s)
+**Summary:** Average 24.6 tok/s across all configurations. Fastest at 2 frames (57.4 tok/s), slowest at 32 frames (12.0 tok/s)
 
 #### Continuous Batching & Prefix Cache
 
