@@ -1,0 +1,89 @@
+# Quick Start
+
+## Option 1: OpenAI-Compatible Server
+
+Start the server:
+
+```bash
+# Simple mode - maximum throughput for single user
+vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+
+# Continuous batching - for multiple concurrent users
+vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuous-batching
+```
+
+Use with OpenAI Python SDK:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+response = client.chat.completions.create(
+    model="mlx-community/Llama-3.2-3B-Instruct-4bit",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(response.choices[0].message.content)
+```
+
+Or with curl:
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+## Option 2: Direct Python API
+
+```python
+from vllm_mlx.models import MLXLanguageModel
+
+model = MLXLanguageModel("mlx-community/Llama-3.2-3B-Instruct-4bit")
+model.load()
+
+# Generate text
+output = model.generate("What is the capital of France?", max_tokens=100)
+print(output.text)
+
+# Streaming
+for chunk in model.stream_generate("Tell me a story"):
+    print(chunk.text, end="", flush=True)
+```
+
+## Option 3: Gradio Chat UI
+
+```bash
+vllm-mlx-chat --model mlx-community/Llama-3.2-3B-Instruct-4bit
+```
+
+Opens a web interface at http://localhost:7860
+
+## Multimodal Models
+
+For image/video understanding, use a VLM model:
+
+```bash
+vllm-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+```
+
+```python
+response = client.chat.completions.create(
+    model="default",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+        ]
+    }],
+    max_tokens=256
+)
+```
+
+## Next Steps
+
+- [Server Guide](../guides/server.md) - Full server configuration
+- [Python API](../guides/python-api.md) - Direct API usage
+- [Multimodal Guide](../guides/multimodal.md) - Images and video
+- [Supported Models](../reference/models.md) - Available models
