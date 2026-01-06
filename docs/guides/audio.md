@@ -69,6 +69,31 @@ with open("output.wav", "wb") as f:
     f.write(audio.content)
 ```
 
+### Voice Separation (SAM-Audio)
+
+Isolate voice from background noise, music, or other sounds:
+
+```python
+from vllm_mlx.audio import AudioProcessor
+
+# Load SAM-Audio model
+processor = AudioProcessor("mlx-community/sam-audio-large-fp16")
+processor.load()
+
+# Separate speech from audio
+result = processor.separate("meeting_with_music.mp3", description="speech")
+
+# Save isolated voice and background
+processor.save(result.target, "voice_only.wav")
+processor.save(result.residual, "background_only.wav")
+```
+
+**CLI Example:**
+```bash
+python examples/audio_separation_example.py meeting.mp3 --play
+python examples/audio_separation_example.py song.mp3 --description music -o music.wav
+```
+
 ## Supported Models
 
 ### STT Models (Speech-to-Text)
