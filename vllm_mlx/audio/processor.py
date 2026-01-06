@@ -123,7 +123,6 @@ class AudioProcessor:
                     descriptions=batch.descriptions,
                     chunk_seconds=chunk_seconds,
                     overlap_seconds=chunk_seconds / 3,
-                    sizes=getattr(batch, 'sizes', None),
                     anchor_ids=getattr(batch, 'anchor_ids', None),
                     anchor_alignment=getattr(batch, 'anchor_alignment', None),
                 )
