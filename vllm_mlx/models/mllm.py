@@ -32,56 +32,6 @@ from vllm_mlx.vlm_cache import VLMCacheManager
 logger = logging.getLogger(__name__)
 
 
-def _patch_transformers_video_processor_bug():
-    """
-    Patch transformers video_processing_auto bug when PyTorch is not installed.
-
-    The bug occurs in transformers 5.x where VIDEO_PROCESSOR_MAPPING_NAMES
-    can be None when PyTorch/torchvision is not available, causing:
-    TypeError: argument of type 'NoneType' is not iterable
-
-    This patch makes the function safely return None when the mapping is unavailable.
-    """
-    try:
-        from transformers.models.auto import video_processing_auto as vp_auto
-
-        original_func = getattr(vp_auto, 'video_processor_class_from_name', None)
-        if original_func is None:
-            return
-
-        def patched_video_processor_class_from_name(class_name):
-            """Patched version that handles None VIDEO_PROCESSOR_MAPPING_NAMES."""
-            if class_name is None:
-                return None
-            try:
-                extractors = getattr(vp_auto, 'VIDEO_PROCESSOR_MAPPING_NAMES', None)
-                if extractors is None:
-                    return None
-                if class_name in extractors:
-                    return extractors[class_name]
-                # Check in values
-                for module_name, cls_names in extractors.items():
-                    if cls_names is None:
-                        continue
-                    if isinstance(cls_names, str):
-                        if class_name == cls_names:
-                            return getattr(vp_auto, class_name, None)
-                    elif class_name in cls_names:
-                        return getattr(vp_auto, class_name, None)
-                return None
-            except (TypeError, AttributeError):
-                return None
-
-        vp_auto.video_processor_class_from_name = patched_video_processor_class_from_name
-        logger.debug("Patched transformers video_processor_class_from_name bug")
-    except ImportError:
-        pass  # transformers not installed
-    except Exception as e:
-        logger.debug(f"Could not patch transformers bug: {e}")
-
-
-# Apply patch on module load
-_patch_transformers_video_processor_bug()
 
 
 # Video processing constants
