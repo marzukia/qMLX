@@ -589,7 +589,7 @@ vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --quick
 #### Multimodal Video Benchmarks
 
 ```bash
-# Full video benchmark (8 configurations)
+# Full video benchmark (10 configurations, 2-64 frames)
 vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video
 
 # Quick video benchmark (3 frame counts)
@@ -600,16 +600,20 @@ vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --video --quick
 
 | Configuration | Frames | Time | Tokens | Speed | Memory |
 |---------------|--------|------|--------|-------|--------|
-| 2 frames @ 0.5fps | 2 | 4.46s | 256 | 57.4 tok/s | 6.4 GB |
-| 4 frames @ 1fps | 4 | 4.69s | 256 | 54.5 tok/s | 6.4 GB |
-| 6 frames @ 1fps | 6 | 5.16s | 197 | 38.2 tok/s | 6.6 GB |
-| 8 frames @ 2fps | 8 | 6.72s | 240 | 35.7 tok/s | 6.8 GB |
-| 12 frames @ 2fps | 12 | 8.91s | 256 | 28.7 tok/s | 7.1 GB |
-| 16 frames @ 2fps | 16 | 11.46s | 256 | 22.3 tok/s | 7.6 GB |
-| 24 frames @ 4fps | 24 | 16.13s | 226 | 14.0 tok/s | 8.4 GB |
-| 32 frames @ 4fps | 32 | 21.34s | 256 | 12.0 tok/s | 9.2 GB |
+| 2 frames @ 0.5fps | 2 | 4.48s | 256 | 57.1 tok/s | 6.4 GB |
+| 4 frames @ 1fps | 4 | 4.65s | 256 | 55.0 tok/s | 6.4 GB |
+| 6 frames @ 1fps | 6 | 5.15s | 197 | 38.2 tok/s | 6.6 GB |
+| 8 frames @ 2fps | 8 | 6.45s | 240 | 37.2 tok/s | 6.8 GB |
+| 12 frames @ 2fps | 12 | 8.73s | 256 | 29.3 tok/s | 7.1 GB |
+| 16 frames @ 2fps | 16 | 10.96s | 256 | 23.4 tok/s | 7.6 GB |
+| 24 frames @ 4fps | 24 | 14.95s | 226 | 15.1 tok/s | 8.4 GB |
+| 32 frames @ 4fps | 32 | 20.00s | 256 | 12.8 tok/s | 9.2 GB |
+| 48 frames @ 8fps | 48 | 31.11s | 246 | 7.9 tok/s | 11.1 GB |
+| 64 frames @ 8fps | 64 | 59.81s | 256 | 4.3 tok/s | 12.9 GB |
 
-**Summary:** Average 24.6 tok/s across all configurations. Fastest at 2 frames (57.4 tok/s), slowest at 32 frames (12.0 tok/s)
+**Summary:** Fastest at 2 frames (57.1 tok/s), slowest at 64 frames (4.3 tok/s). Memory scales from 6.4 GB to 12.9 GB.
+
+> **Note:** 96+ frames causes GPU timeout on most hardware due to memory/compute limits
 
 #### Continuous Batching & Prefix Cache
 
@@ -1397,7 +1401,7 @@ vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --video-u
 
 **MLLM Image Metrics:** Tok/s at different resolutions (224x224 to 1920x1080)
 
-**MLLM Video Metrics:** Tok/s at different frame counts (2 to 32 frames)
+**MLLM Video Metrics:** Tok/s at different frame counts (2 to 64 frames)
 
 **Resource Metrics:**
 

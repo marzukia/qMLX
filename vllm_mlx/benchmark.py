@@ -1135,7 +1135,8 @@ def run_video_benchmark(
         ]
     else:
         configs = [
-            # Varying frame counts
+            # Varying frame counts (from 2 to 64 frames)
+            # Note: 96+ frames causes GPU timeout on most hardware
             ("2 frames @ 0.5fps", 0.5, 2),
             ("4 frames @ 1fps", 1.0, 4),
             ("6 frames @ 1fps", 1.0, 6),
@@ -1144,6 +1145,8 @@ def run_video_benchmark(
             ("16 frames @ 2fps", 2.0, 16),
             ("24 frames @ 4fps", 4.0, 24),
             ("32 frames @ 4fps", 4.0, 32),
+            ("48 frames @ 8fps", 8.0, 48),
+            ("64 frames @ 8fps", 8.0, 64),
         ]
 
     print(f"\n{'='*70}")
