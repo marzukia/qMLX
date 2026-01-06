@@ -1,6 +1,6 @@
 # vLLM-MLX
 
-**Apple Silicon MLX Backend for vLLM** - GPU-accelerated LLM inference on Mac
+**vLLM-like inference for Apple Silicon** - GPU-accelerated Text, Image, Video & Audio on Mac
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -14,11 +14,13 @@ vllm-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 - **[MLX](https://github.com/ml-explore/mlx)**: Apple's ML framework with unified memory and Metal kernels
 - **[mlx-lm](https://github.com/ml-explore/mlx-lm)**: Optimized LLM inference with KV cache and quantization
 - **[mlx-vlm](https://github.com/Blaizzy/mlx-vlm)**: Vision-language models for multimodal inference
+- **[mlx-audio](https://github.com/Blaizzy/mlx-audio)**: Speech-to-Text and Text-to-Speech with native voices
 
 ## Features
 
+- **Multimodal** - Text, Image, Video & Audio in one platform
 - **Native GPU acceleration** on Apple Silicon (M1, M2, M3, M4)
-- **Vision-language models** - image, video, and audio understanding
+- **Native TTS voices** - Spanish, French, Chinese, Japanese + 5 more languages
 - **OpenAI API compatible** - drop-in replacement for OpenAI client
 - **MCP Tool Calling** - integrate external tools via Model Context Protocol
 - **Paged KV Cache** - memory-efficient caching with prefix sharing
@@ -77,6 +79,35 @@ response = client.chat.completions.create(
 )
 ```
 
+### Audio (TTS/STT)
+
+```bash
+# Install audio dependencies
+pip install vllm-mlx[audio]
+python -m spacy download en_core_web_sm
+brew install espeak-ng  # macOS, for non-English languages
+```
+
+```bash
+# Text-to-Speech (English)
+python examples/tts_example.py "Hello, how are you?" --play
+
+# Text-to-Speech (Spanish)
+python examples/tts_multilingual.py "Hola mundo" --lang es --play
+
+# List available models and languages
+python examples/tts_multilingual.py --list-models
+python examples/tts_multilingual.py --list-languages
+```
+
+**Supported TTS Models:**
+| Model | Languages | Description |
+|-------|-----------|-------------|
+| Kokoro | EN, ES, FR, JA, ZH, IT, PT, HI | Fast, 82M params, 11 voices |
+| Chatterbox | 15+ languages | Expressive, voice cloning |
+| VibeVoice | EN | Realtime, low latency |
+| VoxCPM | ZH, EN | High quality Chinese/English |
+
 ## Documentation
 
 For full documentation, see the [docs](docs/) directory:
@@ -89,6 +120,7 @@ For full documentation, see the [docs](docs/) directory:
   - [OpenAI-Compatible Server](docs/guides/server.md)
   - [Python API](docs/guides/python-api.md)
   - [Multimodal (Images & Video)](docs/guides/multimodal.md)
+  - [Audio (STT/TTS)](docs/guides/audio.md)
   - [MCP & Tool Calling](docs/guides/mcp-tools.md)
   - [Continuous Batching](docs/guides/continuous-batching.md)
 

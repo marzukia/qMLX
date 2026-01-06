@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vllm-mlx"
 version = "0.2.0"
-description = "Apple Silicon MLX backend for vLLM - GPU-accelerated LLM inference on Mac with continuous batching"
+description = "vLLM-like inference for Apple Silicon - GPU-accelerated Text, Image, Video & Audio on Mac"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
@@ -52,6 +52,8 @@ dependencies = [
     "mcp>=1.0.0",
     # JSON Schema validation for structured output
     "jsonschema>=4.0.0",
+    # Audio support (STT, TTS, audio processing)
+    "mlx-audio>=0.2.9",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +70,26 @@ vllm = [
 vision = [
     "torch>=2.3.0",
     "torchvision>=0.18.0",
+]
+# Audio dependencies for TTS/STT (mlx-audio)
+audio = [
+    "mlx-audio>=0.2.9",
+    "sounddevice>=0.4.0",
+    "soundfile>=0.12.0",
+    "scipy>=1.10.0",
+    "numba>=0.57.0",
+    "tiktoken>=0.5.0",
+    "misaki[zh,ja]>=0.5.0",  # Chinese (zh) and Japanese (ja) support
+    "spacy>=3.7.0",
+    "num2words>=0.5.0",
+    "loguru>=0.7.0",
+    "phonemizer>=3.2.0",
+    # Additional multilingual dependencies
+    "ordered_set>=4.1.0",    # Required for Chinese TTS
+    "cn2an>=0.5.0",          # Chinese number conversion
+    "fugashi>=1.3.0",        # Japanese tokenizer
+    "unidic-lite>=1.0.0",    # Japanese dictionary for fugashi
+    "jieba>=0.42.0",         # Chinese word segmentation
 ]
 
 [project.urls]
