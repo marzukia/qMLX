@@ -17,7 +17,7 @@ __version__ = "0.2.0"
 # Continuous batching engine (core functionality, no torch required)
 from vllm_mlx.request import Request, RequestOutput, RequestStatus, SamplingParams
 from vllm_mlx.scheduler import Scheduler, SchedulerConfig, SchedulerOutput
-from vllm_mlx.engine import EngineCore, AsyncEngineCore, EngineConfig
+from vllm_mlx.engine_core import EngineCore, AsyncEngineCore, EngineConfig
 from vllm_mlx.prefix_cache import PrefixCacheManager, PrefixCacheStats, BlockAwarePrefixCache
 from vllm_mlx.paged_cache import PagedCacheManager, CacheBlock, BlockTable, CacheStats
 from vllm_mlx.vlm_cache import VLMCacheManager, VLMCacheStats

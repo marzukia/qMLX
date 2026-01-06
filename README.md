@@ -75,7 +75,7 @@ vllm-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 
 **Advanced Features**
 - ⏳ Structured output (JSON mode, grammar constraints)
-- ⏳ Function calling / tool use
+- ✅ Function calling / tool use with MCP integration
 - ⏳ Vision-language reasoning chains
 - ⏳ Fine-tuning support
 
@@ -279,7 +279,7 @@ print(response.choices[0].message.content)
 
 Start the server with a MLLM model (auto-detected):
 ```bash
-python -m vllm_mlx.server --model mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+vllm-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 ```
 
 Use with OpenAI client for multimodal content:
@@ -551,8 +551,8 @@ vllm-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 5 --ma
 
 | Model | Gen Speed | TTFT* | Memory |
 |-------|-----------|-------|--------|
-| Qwen3-0.6B-8bit | 395.4 tok/s | 64.7 ms | 0.67 GB |
-| Llama-3.2-1B-Instruct-4bit | 463.4 tok/s | 61.7 ms | 0.69 GB |
+| Qwen3-0.6B-8bit | 402.3 tok/s | 58.6 ms | 0.68 GB |
+| Llama-3.2-1B-Instruct-4bit | 463.6 tok/s | 49.2 ms | 0.69 GB |
 | Qwen2.5-1.5B-Instruct-4bit | 308.5 tok/s | 86.2 ms | 0.84 GB |
 | Llama-3.2-3B-Instruct-4bit | 200.1 tok/s | 81.4 ms | 1.79 GB |
 | Qwen3-30B-A3B-4bit | 123.9 tok/s | 126.9 ms | 16.05 GB |
@@ -573,18 +573,18 @@ vllm-mlx-bench --model mlx-community/Qwen3-VL-8B-Instruct-4bit --quick
 
 | Resolution | Pixels | Time | Tokens | Speed |
 |------------|--------|------|--------|-------|
-| 224x224 | 50K | 1.04s | 78 | 75.1 tok/s |
+| 224x224 | 50K | 1.04s | 78 | 74.8 tok/s |
 | 336x336 | 113K | 0.94s | 64 | 68.3 tok/s |
-| 448x448 | 201K | 1.16s | 70 | 60.2 tok/s |
+| 448x448 | 201K | 1.45s | 70 | 48.1 tok/s |
 | 512x512 | 262K | 1.58s | 99 | 62.8 tok/s |
 | 672x672 | 452K | 1.83s | 83 | 45.3 tok/s |
-| 768x768 | 590K | 2.14s | 91 | 42.5 tok/s |
+| 768x768 | 590K | 2.05s | 91 | 44.3 tok/s |
 | 896x896 | 803K | 2.61s | 90 | 34.5 tok/s |
-| 1024x1024 | 1.0M | 3.05s | 76 | 24.9 tok/s |
+| 1024x1024 | 1.0M | 2.79s | 76 | 27.2 tok/s |
 | 1280x720 | 922K | 2.97s | 96 | 32.4 tok/s |
 | 1920x1080 | 2.1M | 6.30s | 89 | 14.1 tok/s |
 
-**Summary:** Average 35.4 tok/s across all resolutions. Fastest at 336x336 (68.3 tok/s), slowest at 1920x1080 (14.1 tok/s)
+**Summary:** Average 45.2 tok/s across all resolutions. Fastest at 224x224 (74.8 tok/s), slowest at 1920x1080 (14.1 tok/s)
 
 #### Multimodal Video Benchmarks
 
@@ -630,7 +630,7 @@ python tests/test_prefix_cache.py
 |-------|----------------|---------------|---------|
 | Llama-3.2-1B-Instruct-4bit | 299.1 tok/s | 613.0 tok/s | **2.05x** |
 | Llama-3.2-3B-Instruct-4bit | 137.6 tok/s | 208.1 tok/s | **1.51x** |
-| Qwen3-0.6B-8bit | 328.1 tok/s | 992.3 tok/s | **3.02x** |
+| Qwen3-0.6B-8bit | 328.1 tok/s | 1111.8 tok/s | **3.39x** |
 | Qwen3-30B-A3B-4bit | 98.1 tok/s | 233.3 tok/s | **2.38x** |
 | Qwen2.5-1.5B-Instruct-4bit | 196.9 tok/s | 322.2 tok/s | **1.64x** |
 
@@ -654,12 +654,10 @@ Use `--stream-interval` to control streaming behavior:
 
 ```bash
 # Smooth streaming (default) - send every token immediately
-vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --stream-interval 1
-# Or: python -m vllm_mlx.server_v2 --model mlx-community/Qwen3-0.6B-8bit --stream-interval 1
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --continuous-batching --stream-interval 1
 
 # Batch tokens for higher throughput (useful for high-latency networks)
-vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --stream-interval 5
-# Or: python -m vllm_mlx.server_v2 --model mlx-community/Qwen3-0.6B-8bit --stream-interval 5
+vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --continuous-batching --stream-interval 5
 
 # Non-streaming mode: set stream=false in API request
 curl http://localhost:8000/v1/chat/completions \
@@ -918,16 +916,16 @@ vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit \
 --------------------------------------------------
 Test 1: WITHOUT Paged Cache (2 rounds of 10)
 --------------------------------------------------
-  Time: 1.45s
-  Throughput: 688.1 tok/s
+  Time: 1.47s
+  Throughput: 681.2 tok/s
   Cache hits: 0
   Tokens saved: 0
 
 --------------------------------------------------
 Test 2: WITH Paged Cache (2 rounds of 10)
 --------------------------------------------------
-  Time: 1.27s
-  Throughput: 785.0 tok/s
+  Time: 1.31s
+  Throughput: 765.8 tok/s
 
   Paged Cache Stats:
     Blocks allocated: 25
@@ -938,10 +936,10 @@ Test 2: WITH Paged Cache (2 rounds of 10)
 ==================================================
 SUMMARY
 ==================================================
-  Without paged cache: 688.1 tok/s
-  With paged cache:    785.0 tok/s
+  Without paged cache: 681.2 tok/s
+  With paged cache:    765.8 tok/s
 
-  Speedup: 1.14x
+  Speedup: 1.12x
   Cache hits: 10 (all Round 2 requests)
   Tokens saved: 2,560 (~256 tokens × 10 requests)
 ==================================================
@@ -1282,6 +1280,7 @@ vllm-mlx serve mlx-community/Qwen3-0.6B-8bit --continuous-batching --use-paged-c
 | `--use-paged-cache` | Enable paged KV cache for memory efficiency | `false` |
 | `--paged-cache-block-size` | Tokens per cache block | `64` |
 | `--max-cache-blocks` | Maximum number of cache blocks | `1000` |
+| `--mcp-config` | Path to MCP configuration file for tool integration | `None` |
 
 #### API Streaming Control
 
@@ -1459,6 +1458,227 @@ python tests/evals/gsm8k/gsm8k_eval.py --port 9000
 # Save results to JSON
 python tests/evals/gsm8k/gsm8k_eval.py --port 9000 --output results.json
 ```
+
+## MCP and Tool Calling
+
+vllm-mlx supports [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) for tool integration, allowing LLMs to interact with external tools like filesystems, databases, and APIs.
+
+### How Tool Calling Works
+
+```
+┌─────────────┐     1. Request + tools     ┌─────────────┐
+│   Client    │ ─────────────────────────► │   Server    │
+│  (your app) │                            │  vllm-mlx   │
+└─────────────┘                            └─────────────┘
+                                                  │
+                                           2. LLM generates
+                                              tool_calls
+                                                  ▼
+┌─────────────┐     3. tool_calls          ┌─────────────┐
+│   Client    │ ◄───────────────────────── │     LLM     │
+│  (your app) │                            │   (Qwen)    │
+└─────────────┘                            └─────────────┘
+       │
+       │ 4. YOUR APP executes
+       │    the function via MCP
+       ▼
+┌─────────────┐     5. Execute tool        ┌─────────────┐
+│   Client    │ ─────────────────────────► │ MCP Server  │
+│  (your app) │                            │ (filesystem)│
+└─────────────┘                            └─────────────┘
+       │
+       │ 6. Result
+       ▼
+┌─────────────┐  7. Send tool result       ┌─────────────┐
+│   Client    │ ─────────────────────────► │   Server    │
+│  (your app) │                            │  vllm-mlx   │
+└─────────────┘                            └─────────────┘
+       │
+       │ 8. LLM generates final response
+       ▼
+    Response
+```
+
+**Important:** The LLM does NOT execute functions directly. It only says "I want to call this function with these arguments". Your application executes the tool and sends the result back.
+
+### Quick Start with MCP
+
+1. **Create MCP config file** (`mcp.json`):
+
+```json
+{
+  "servers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "enabled": true,
+      "timeout": 30
+    }
+  },
+  "max_tool_calls": 10,
+  "default_timeout": 30.0
+}
+```
+
+2. **Install MCP SDK**:
+
+```bash
+pip install mcp
+```
+
+3. **Start server with MCP**:
+
+```bash
+# Simple mode with MCP
+vllm-mlx serve mlx-community/Qwen3-4B-4bit --mcp-config mcp.json
+
+# Continuous batching with MCP
+vllm-mlx serve mlx-community/Qwen3-4B-4bit --continuous-batching --mcp-config mcp.json
+```
+
+4. **Check MCP status**:
+
+```bash
+curl http://localhost:8000/health | python -m json.tool
+# Returns: {"mcp": {"enabled": true, "servers_connected": 1, "tools_available": 14}}
+
+curl http://localhost:8000/v1/mcp/tools | python -m json.tool
+# Returns list of available tools
+```
+
+### Tool Calling Example
+
+```python
+from openai import OpenAI
+import requests
+import json
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# 1. Get available MCP tools
+tools_response = requests.get("http://localhost:8000/v1/mcp/tools").json()
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool["parameters"],
+        }
+    }
+    for tool in tools_response.get("tools", [])
+]
+
+# 2. Send request with tools
+messages = [{"role": "user", "content": "List the files in /tmp"}]
+response = client.chat.completions.create(
+    model="default",
+    messages=messages,
+    tools=tools,
+    max_tokens=500,
+)
+
+message = response.choices[0].message
+
+# 3. If LLM wants to use tools, execute them
+if message.tool_calls:
+    for tool_call in message.tool_calls:
+        # Execute tool via MCP
+        result = requests.post(
+            "http://localhost:8000/v1/mcp/execute",
+            json={
+                "tool_name": tool_call.function.name,
+                "arguments": json.loads(tool_call.function.arguments),
+            }
+        ).json()
+
+        print(f"Tool: {tool_call.function.name}")
+        print(f"Result: {result['content']}")
+
+        # Add tool result to conversation
+        messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.function.name,
+                    "arguments": tool_call.function.arguments,
+                }
+            }]
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": str(result.get("content", "")),
+        })
+
+    # 4. Get final response with tool results
+    final_response = client.chat.completions.create(
+        model="default",
+        messages=messages,
+        max_tokens=500,
+    )
+    print(f"Assistant: {final_response.choices[0].message.content}")
+```
+
+### MCP Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/mcp/tools` | GET | List all available MCP tools |
+| `/v1/mcp/execute` | POST | Execute an MCP tool |
+| `/v1/mcp/servers` | GET | List MCP server status |
+
+### Example MCP Servers
+
+Install additional MCP servers for different capabilities:
+
+```bash
+# Filesystem access
+npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/dir
+
+# GitHub integration
+npx -y @modelcontextprotocol/server-github
+
+# PostgreSQL database
+npx -y @modelcontextprotocol/server-postgres postgresql://...
+
+# Brave Search
+npx -y @anthropic/mcp-server-brave-search
+```
+
+Configure in `mcp.json`:
+
+```json
+{
+  "servers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "github": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_TOKEN": "your-token"}
+    }
+  }
+}
+```
+
+### Interactive MCP Chat
+
+Run the interactive chat example:
+
+```bash
+python examples/mcp_chat.py
+```
+
+This provides a terminal-based chat where the LLM can use filesystem tools to create, read, and modify files.
 
 ## Hardware Detection
 

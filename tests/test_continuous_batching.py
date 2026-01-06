@@ -254,16 +254,18 @@ if __name__ == "__main__":
                     add_generation_prompt=True,
                 )
                 result = await engine.engine.generate(formatted, params)
-                return (prompt, result.output_text[:50], result.completion_tokens)
+                return (prompt, result.output_text[:50], result.prompt_tokens, result.completion_tokens)
 
             results = await asyncio.gather(*[run_one(p) for p in prompts])
 
             total_time = time.perf_counter() - start
-            total_tokens = sum(r[2] for r in results)
+            prompt_tokens = sum(r[2] for r in results)
+            completion_tokens = sum(r[3] for r in results)
+            total_tokens = prompt_tokens + completion_tokens
 
             print("\n" + "-" * 60)
             print("Results:")
-            for prompt, output, tokens in results:
+            for prompt, output, _, tokens in results:
                 clean_output = output.replace("\n", " ")[:40]
                 print(f"  [{tokens:3d} tok] {prompt[:20]:20s} -> {clean_output}...")
 

@@ -48,6 +48,8 @@ dependencies = [
     # Server
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
+    # MCP (Model Context Protocol) support
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]

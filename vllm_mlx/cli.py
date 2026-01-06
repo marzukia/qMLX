@@ -18,16 +18,24 @@ import sys
 
 def serve_command(args):
     """Start the OpenAI-compatible server."""
+    import os
     import uvicorn
+
+    # Import unified server
+    from .server import app, load_model
+    from .scheduler import SchedulerConfig
 
     print(f"Loading model: {args.model}")
     print(f"Default max tokens: {args.max_tokens}")
 
-    if args.continuous_batching:
-        # Use server_v2 with continuous batching (for multiple concurrent users)
-        from .server_v2 import app, load_model
-        from .scheduler import SchedulerConfig
+    # Store MCP config path for FastAPI startup
+    if args.mcp_config:
+        print(f"MCP config: {args.mcp_config}")
+        os.environ["VLLM_MLX_MCP_CONFIG"] = args.mcp_config
 
+    # Build scheduler config for batched mode
+    scheduler_config = None
+    if args.continuous_batching:
         # Handle prefix cache flags
         enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
@@ -47,18 +55,17 @@ def serve_command(args):
         print(f"Stream interval: {args.stream_interval} tokens")
         if args.use_paged_cache:
             print(f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}")
-        load_model(
-            args.model,
-            scheduler_config,
-            stream_interval=args.stream_interval,
-            max_tokens=args.max_tokens,
-        )
     else:
-        # Use simple server (maximum throughput for single user)
-        from .server import app, load_model
-
         print(f"Mode: Simple (maximum throughput)")
-        load_model(args.model, max_tokens=args.max_tokens)
+
+    # Load model with unified server
+    load_model(
+        args.model,
+        use_batching=args.continuous_batching,
+        scheduler_config=scheduler_config,
+        stream_interval=args.stream_interval if args.continuous_batching else 1,
+        max_tokens=args.max_tokens,
+    )
 
     # Start server
     print(f"Starting server at http://{args.host}:{args.port}")
@@ -70,7 +77,7 @@ def bench_command(args):
     import asyncio
     import time
     from mlx_lm import load
-    from .engine import AsyncEngineCore, EngineConfig
+    from .engine_core import AsyncEngineCore, EngineConfig
     from .request import SamplingParams
     from .scheduler import SchedulerConfig
 
@@ -238,6 +245,13 @@ Examples:
         type=int,
         default=1000,
         help="Maximum number of cache blocks (default: 1000)",
+    )
+    # MCP options
+    serve_parser.add_argument(
+        "--mcp-config",
+        type=str,
+        default=None,
+        help="Path to MCP configuration file (JSON/YAML) for tool integration",
     )
 
     # Bench command
