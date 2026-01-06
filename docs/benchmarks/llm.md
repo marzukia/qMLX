@@ -102,6 +102,59 @@ SUMMARY
 ==================================================
 ```
 
+## Streaming Detokenizer Optimization
+
+*Phase 9.1: Replaced naive `tokenizer.decode([token])` with mlx-lm's `BPEStreamingDetokenizer`*
+
+### The Problem
+
+The naive approach calls `decode()` for each token, which has O(T²) complexity because BPE tokenizers need to re-process context for each decode call.
+
+### The Solution
+
+Use mlx-lm's `StreamingDetokenizer` which maintains state and provides O(T) complexity:
+- **BPEStreamingDetokenizer** for GPT/Qwen models (ByteLevel decoder)
+- **SPMStreamingDetokenizer** for Llama/Mistral models (SentencePiece)
+
+### Benchmark Results (M4 Max)
+
+```bash
+vllm-mlx bench-detok
+```
+
+| Sequence | Tokens | Naive decode() | Streaming | Speedup |
+|----------|--------|----------------|-----------|---------|
+| Short | 8 | 0.020ms | 0.019ms | 1.05x |
+| Medium | 103 | 0.155ms | 0.097ms | 1.59x |
+| Long | 511 | 0.752ms | 0.371ms | **2.03x** |
+| 1K tokens | 1191 | 1.743ms | 0.833ms | **2.09x** |
+| 2K tokens | 2381 | 3.493ms | 1.737ms | **2.01x** |
+| 4K tokens | 4761 | 7.125ms | 3.806ms | **1.87x** |
+
+**Average speedup: 1.77x** (up to **2.33x** in real-world generation)
+
+### Real-World Impact
+
+With ~2000 generated tokens:
+```
+Method                            Time    Speedup
+----------------------------------------------------------------------
+Naive decode():                 3.37ms      1.00x
+Streaming detokenizer:          1.45ms      2.33x
+----------------------------------------------------------------------
+Time saved per request:         1.92ms
+Per-token savings:               1.0µs
+```
+
+### Where It's Active
+
+| Mode | Command | Optimization |
+|------|---------|--------------|
+| Continuous Batching | `--continuous-batching` | Scheduler `_detokenizer_pool` |
+| Simple Mode | (default) | mlx-lm's internal streaming |
+
+Both modes automatically use the optimized detokenizer - no configuration needed.
+
 ## Metrics Reference
 
 | Metric | Description |
@@ -133,4 +186,8 @@ python tests/test_prefix_cache.py
 
 # Paged cache test
 python tests/test_paged_cache_real_inference.py
+
+# Streaming detokenizer benchmark
+vllm-mlx bench-detok
+vllm-mlx bench-detok mlx-community/Llama-3.2-1B-Instruct-4bit --iterations 5
 ```
