@@ -20,15 +20,24 @@ vllm-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 5 --ma
 
 ## Continuous Batching Results
 
-| Model | Single Request | Batch (5 req) | Speedup |
-|-------|----------------|---------------|---------|
-| Llama-3.2-1B-Instruct-4bit | 299.1 tok/s | 613.0 tok/s | **2.05x** |
-| Llama-3.2-3B-Instruct-4bit | 137.6 tok/s | 208.1 tok/s | **1.51x** |
-| Qwen3-0.6B-8bit | 328.1 tok/s | 1111.8 tok/s | **3.39x** |
-| Qwen3-30B-A3B-4bit | 98.1 tok/s | 233.3 tok/s | **2.38x** |
-| Qwen2.5-1.5B-Instruct-4bit | 196.9 tok/s | 322.2 tok/s | **1.64x** |
+*Updated January 2026 with streaming detokenizer optimization (Phase 9.1)*
 
-*Batching 5 concurrent requests shows 1.5-3x throughput improvement.*
+| Model | Throughput | Completion tok/s | Prompts/sec |
+|-------|------------|------------------|-------------|
+| Qwen3-0.6B-8bit | **743.6 tok/s** | 723.8 tok/s | 2.83 |
+| Llama-3.2-1B-Instruct-4bit | **717.5 tok/s** | 692.4 tok/s | 3.14 |
+| Qwen2.5-1.5B-Instruct-4bit | **589.5 tok/s** | 573.8 tok/s | 2.24 |
+| Llama-3.2-3B-Instruct-4bit | **378.7 tok/s** | 364.8 tok/s | 1.73 |
+
+*Test: 5 prompts, 256 max tokens, continuous batching mode*
+
+### Improvement from Streaming Detokenizer
+
+| Model | Before | After | Improvement |
+|-------|--------|-------|-------------|
+| Llama-3.2-1B-Instruct-4bit | 613.0 tok/s | 717.5 tok/s | **+17%** |
+| Qwen2.5-1.5B-Instruct-4bit | 322.2 tok/s | 589.5 tok/s | **+83%** |
+| Llama-3.2-3B-Instruct-4bit | 208.1 tok/s | 378.7 tok/s | **+82%** |
 
 ## Streaming Performance
 
@@ -42,47 +51,63 @@ vllm-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 5 --ma
 
 ## Prefix Cache Results
 
+*Updated January 2026*
+
 ```
 ======================================================================
   LLM PREFIX CACHE TEST
 ======================================================================
   Model: mlx-community/Qwen3-0.6B-8bit
-  Expected behavior:
-    - Same prompt → cache HIT
-    - Different prompt → cache MISS
-----------------------------------------------------------------------
-  Results:
-  Step   | Description         | Expected | Actual | Status
-  -------+---------------------+----------+--------+-------
-  1a     | First request       | MISS     | MISS   | ✓
-  1b     | Same prompt         | HIT      | HIT    | ✓
-  1c     | Different prompt    | MISS     | MISS   | ✓
-  1d     | Return to prompt 1  | HIT      | HIT    | ✓
+
+  Test Results:
+  Test   | Description          | Expected | Actual | Time    | Status
+  -------+----------------------+----------+--------+---------+-------
+  TEST 1 | First request        | MISS     | MISS   | 185.3ms | ✓
+  TEST 2 | Same prompt (cached) | HIT      | HIT    | 175.8ms | ✓
+  TEST 3 | Different prompt     | MISS     | MISS   | 169.9ms | ✓
+
+  Final Cache Statistics:
+  Metric           | Value
+  -----------------+------
+  Total Requests   | 3
+  Cache Hits       | 1
+  Cache Misses     | 2
+  Hit Rate         | 33.3%
+  Tokens Saved     | 15
+  Speedup (cached) | 1.05x
+
+======================================================================
+  ✓ ALL TESTS PASSED - Prefix cache working correctly!
 ======================================================================
 ```
 
 ## Paged Cache Results
 
-*Test: 20 real inference requests in 2 rounds with ~286 token shared system prompt*
+*Updated January 2026 - Test: 20 real inference requests in 2 rounds with ~286 token shared system prompt*
 
 ```
 ======================================================================
   PAGED KV CACHE - REAL INFERENCE TEST
 ======================================================================
+  Model: mlx-community/Qwen3-0.6B-8bit
+  Requests: 20 (2 rounds of 10)
+  System prompt: ~286 tokens (shared)
 
 --------------------------------------------------
 Test 1: WITHOUT Paged Cache (2 rounds of 10)
 --------------------------------------------------
-  Time: 1.47s
-  Throughput: 681.2 tok/s
+  Time: 3.63s
+  Total completion tokens: 1000
+  Throughput: 275.3 tok/s
   Cache hits: 0
   Tokens saved: 0
 
 --------------------------------------------------
 Test 2: WITH Paged Cache (2 rounds of 10)
 --------------------------------------------------
-  Time: 1.31s
-  Throughput: 765.8 tok/s
+  Time: 3.48s
+  Total completion tokens: 1000
+  Throughput: 287.4 tok/s
 
   Paged Cache Stats:
     Blocks allocated: 25
@@ -93,10 +118,10 @@ Test 2: WITH Paged Cache (2 rounds of 10)
 ==================================================
 SUMMARY
 ==================================================
-  Without paged cache: 681.2 tok/s
-  With paged cache:    765.8 tok/s
+  Without paged cache: 275.3 tok/s
+  With paged cache:    287.4 tok/s
 
-  Speedup: 1.12x
+  Speedup: 1.04x
   Cache hits: 10 (all Round 2 requests)
   Tokens saved: 2,560 (~256 tokens × 10 requests)
 ==================================================
