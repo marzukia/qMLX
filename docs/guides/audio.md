@@ -94,22 +94,22 @@ python examples/audio_separation_example.py meeting.mp3 --play
 python examples/audio_separation_example.py song.mp3 --description music -o music.wav
 ```
 
-### Guitar Separation Demo
+### Drums Separation Demo
 
-Isolate electric guitar from a rock song using SAM-Audio:
+Isolate drums from a rock song using SAM-Audio:
 
 | Audio | Description | Listen |
 |-------|-------------|--------|
 | Original | "Get Ready" by David Fesliyan (30s, royalty-free) | [🎵 rock_get_ready.mp3](../../examples/rock_get_ready.mp3) |
-| Isolated Guitar | Electric guitar extracted by SAM-Audio | [🎸 guitar_isolated.wav](../../examples/guitar_isolated.wav) |
-| Without Guitar | Track with guitar removed | [🥁 rock_no_guitar.wav](../../examples/rock_no_guitar.wav) |
+| Isolated Drums | Drums extracted by SAM-Audio | [🥁 drums_isolated.wav](../../examples/drums_isolated.wav) |
+| Without Drums | Track with drums removed | [🎸 rock_no_drums.wav](../../examples/rock_no_drums.wav) |
 
 ```bash
-# Isolate guitar from rock song
+# Isolate drums from rock song
 python examples/audio_separation_example.py examples/rock_get_ready.mp3 \
-  --description "electric guitar" \
-  --output guitar_isolated.wav \
-  --background rock_no_guitar.wav
+  --description "drums" \
+  --output drums_isolated.wav \
+  --background rock_no_drums.wav
 ```
 
 **Performance:** 30s audio processed in ~20 seconds on M4 Max.
