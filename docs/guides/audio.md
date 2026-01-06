@@ -98,20 +98,11 @@ python examples/audio_separation_example.py song.mp3 --description music -o musi
 
 Isolate electric guitar from a rock song using SAM-Audio:
 
-**Original Track:** "Get Ready" by David Fesliyan (30 sec, royalty-free)
-<audio controls>
-  <source src="../../examples/rock_get_ready.mp3" type="audio/mpeg">
-</audio>
-
-**Isolated Guitar:**
-<audio controls>
-  <source src="../../examples/guitar_isolated.wav" type="audio/wav">
-</audio>
-
-**Track Without Guitar:**
-<audio controls>
-  <source src="../../examples/rock_no_guitar.wav" type="audio/wav">
-</audio>
+| Audio | Description | Listen |
+|-------|-------------|--------|
+| Original | "Get Ready" by David Fesliyan (30s, royalty-free) | [🎵 rock_get_ready.mp3](../../examples/rock_get_ready.mp3) |
+| Isolated Guitar | Electric guitar extracted by SAM-Audio | [🎸 guitar_isolated.wav](../../examples/guitar_isolated.wav) |
+| Without Guitar | Track with guitar removed | [🥁 rock_no_guitar.wav](../../examples/rock_no_guitar.wav) |
 
 ```bash
 # Isolate guitar from rock song
@@ -294,42 +285,12 @@ python examples/tts_multilingual.py --list-languages
 
 Pre-generated voice samples with **native voices** for common business use cases:
 
-#### English - Bank Assistant (af_heart)
-<audio controls>
-  <source src="../../examples/assistant_bank_en.wav" type="audio/wav">
-</audio>
-
-> "Welcome to First National Bank. How may I assist you today?"
-
-#### Spanish - Customer Service (ef_dora)
-<audio controls>
-  <source src="../../examples/assistant_service_es.wav" type="audio/wav">
-</audio>
-
-> "Gracias por llamar a servicio al cliente. Un agente le atenderá pronto."
-
-#### French - Call Center (ff_siwis)
-<audio controls>
-  <source src="../../examples/assistant_callcenter_fr.wav" type="audio/wav">
-</audio>
-
-> "Bienvenue. Votre appel est important pour nous."
-
-#### Chinese - Tech Support (zf_xiaobei)
-<audio controls>
-  <source src="../../examples/assistant_support_zh.wav" type="audio/wav">
-</audio>
-
-> "欢迎致电技术支持中心。我们将竭诚为您服务。"
-
-**Summary:**
-
-| Language | Voice | File |
-|----------|-------|------|
-| English | af_heart | `examples/assistant_bank_en.wav` |
-| Spanish | ef_dora | `examples/assistant_service_es.wav` |
-| French | ff_siwis | `examples/assistant_callcenter_fr.wav` |
-| Chinese | zf_xiaobei | `examples/assistant_support_zh.wav` |
+| Language | Voice | Message | Listen |
+|----------|-------|---------|--------|
+| 🇺🇸 English | af_heart | "Welcome to First National Bank. How may I assist you today?" | [▶️ assistant_bank_en.wav](../../examples/assistant_bank_en.wav) |
+| 🇪🇸 Spanish | ef_dora | "Gracias por llamar a servicio al cliente. Un agente le atenderá pronto." | [▶️ assistant_service_es.wav](../../examples/assistant_service_es.wav) |
+| 🇫🇷 French | ff_siwis | "Bienvenue. Votre appel est important pour nous." | [▶️ assistant_callcenter_fr.wav](../../examples/assistant_callcenter_fr.wav) |
+| 🇨🇳 Chinese | zf_xiaobei | "欢迎致电技术支持中心。我们将竭诚为您服务。" | [▶️ assistant_support_zh.wav](../../examples/assistant_support_zh.wav) |
 
 **Generate your own with native voices:**
 ```bash
