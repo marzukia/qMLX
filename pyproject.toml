@@ -50,6 +50,8 @@ dependencies = [
     "uvicorn>=0.23.0",
     # MCP (Model Context Protocol) support
     "mcp>=1.0.0",
+    # JSON Schema validation for structured output
+    "jsonschema>=4.0.0",
 ]
 
 [project.optional-dependencies]

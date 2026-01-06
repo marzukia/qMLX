@@ -74,7 +74,12 @@ from .api.models import (
     MCPExecuteResponse,
 )
 from .api.utils import clean_output_text, extract_multimodal_content
-from .api.tool_calling import parse_tool_calls, convert_tools_for_template
+from .api.tool_calling import (
+    parse_tool_calls,
+    convert_tools_for_template,
+    parse_json_output,
+    build_json_system_prompt,
+)
 from .engine import BaseEngine, SimpleEngine, BatchedEngine
 
 logging.basicConfig(level=logging.INFO)
@@ -352,6 +357,22 @@ async def create_chat_completion(request: ChatCompletionRequest):
         ]
     }]
     ```
+
+    Structured output (JSON mode):
+    ```json
+    response_format={"type": "json_object"}
+    ```
+
+    Structured output (JSON Schema):
+    ```json
+    response_format={
+        "type": "json_schema",
+        "json_schema": {
+            "name": "my_schema",
+            "schema": {"type": "object", "properties": {...}}
+        }
+    }
+    ```
     """
     engine = get_engine()
 
@@ -359,6 +380,14 @@ async def create_chat_completion(request: ChatCompletionRequest):
     messages, images, videos = extract_multimodal_content(request.messages)
 
     has_media = bool(images or videos)
+
+    # Handle response_format - inject system prompt if needed
+    response_format = request.response_format
+    if response_format:
+        json_instruction = build_json_system_prompt(response_format)
+        if json_instruction:
+            # Inject JSON instruction into messages
+            messages = _inject_json_instruction(messages, json_instruction)
 
     # Prepare kwargs
     chat_kwargs = {
@@ -398,6 +427,18 @@ async def create_chat_completion(request: ChatCompletionRequest):
     # Parse tool calls from output
     cleaned_text, tool_calls = parse_tool_calls(output.text)
 
+    # Process response_format if specified
+    if response_format and not tool_calls:
+        cleaned_text, parsed_json, is_valid, error = parse_json_output(
+            cleaned_text or output.text,
+            response_format
+        )
+        if parsed_json is not None:
+            # Return JSON as string
+            cleaned_text = json.dumps(parsed_json)
+        if not is_valid:
+            logger.warning(f"JSON validation failed: {error}")
+
     # Determine finish reason
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
 
@@ -416,6 +457,38 @@ async def create_chat_completion(request: ChatCompletionRequest):
             total_tokens=output.prompt_tokens + output.completion_tokens,
         ),
     )
+
+
+def _inject_json_instruction(messages: list, instruction: str) -> list:
+    """
+    Inject JSON instruction into messages.
+
+    If a system message exists, append to it. Otherwise, prepend a new system message.
+    """
+    messages = list(messages)  # Make a copy
+
+    # Find existing system message
+    system_idx = None
+    for i, msg in enumerate(messages):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        if role == "system":
+            system_idx = i
+            break
+
+    if system_idx is not None:
+        # Append to existing system message
+        msg = messages[system_idx]
+        if isinstance(msg, dict):
+            existing = msg.get("content", "")
+            msg["content"] = f"{existing}\n\n{instruction}"
+        else:
+            existing = getattr(msg, "content", "") or ""
+            msg.content = f"{existing}\n\n{instruction}"
+    else:
+        # Prepend new system message
+        messages.insert(0, {"role": "system", "content": instruction})
+
+    return messages
 
 
 # =============================================================================

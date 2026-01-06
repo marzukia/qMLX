@@ -18,6 +18,9 @@ from .models import (
     FunctionCall,
     ToolCall,
     ToolDefinition,
+    # Structured output
+    ResponseFormat,
+    ResponseFormatJsonSchema,
     # Chat requests/responses
     ChatCompletionRequest,
     ChatCompletionChoice,
@@ -52,6 +55,11 @@ from .utils import (
 from .tool_calling import (
     parse_tool_calls,
     convert_tools_for_template,
+    # Structured output
+    parse_json_output,
+    validate_json_schema,
+    extract_json_from_text,
+    build_json_system_prompt,
 )
 
 __all__ = [
@@ -63,6 +71,8 @@ __all__ = [
     "FunctionCall",
     "ToolCall",
     "ToolDefinition",
+    "ResponseFormat",
+    "ResponseFormatJsonSchema",
     "ChatCompletionRequest",
     "ChatCompletionChoice",
     "ChatCompletionResponse",
@@ -89,4 +99,9 @@ __all__ = [
     # Tool calling
     "parse_tool_calls",
     "convert_tools_for_template",
+    # Structured output
+    "parse_json_output",
+    "validate_json_schema",
+    "extract_json_from_text",
+    "build_json_system_prompt",
 ]

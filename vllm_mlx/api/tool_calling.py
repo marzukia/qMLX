@@ -5,14 +5,20 @@ Tool calling parsing and conversion utilities.
 Supports parsing tool calls from multiple model formats:
 - Qwen: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
 - Llama: <function=name>{"arg": "value"}</function>
+
+Also includes structured output (JSON Schema) utilities:
+- parse_json_output: Extract JSON from model output
+- validate_json_schema: Validate JSON against a schema
 """
 
 import json
 import re
 import uuid
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from .models import FunctionCall, ToolCall, ToolDefinition
+from jsonschema import validate, ValidationError
+
+from .models import FunctionCall, ResponseFormat, ToolCall, ToolDefinition
 
 
 def parse_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
@@ -172,3 +178,215 @@ def format_tool_call_for_message(tool_call: ToolCall) -> dict:
             "arguments": tool_call.function.arguments,
         }
     }
+
+
+# =============================================================================
+# Structured Output (JSON Schema) Utilities
+# =============================================================================
+
+def validate_json_schema(
+    data: Any,
+    schema: Dict[str, Any]
+) -> Tuple[bool, Optional[str]]:
+    """
+    Validate JSON data against a JSON Schema.
+
+    Args:
+        data: The JSON data to validate (dict, list, etc.)
+        schema: JSON Schema specification
+
+    Returns:
+        Tuple of (is_valid, error_message)
+        - is_valid: True if data matches schema
+        - error_message: Error description if invalid, None if valid
+    """
+    try:
+        validate(instance=data, schema=schema)
+        return True, None
+    except ValidationError as e:
+        return False, str(e.message)
+
+
+def extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract JSON from model output text.
+
+    Tries multiple strategies:
+    1. Parse entire text as JSON
+    2. Extract JSON from markdown code blocks
+    3. Find JSON object/array in text
+
+    Args:
+        text: Raw model output text
+
+    Returns:
+        Parsed JSON data, or None if no valid JSON found
+    """
+    text = text.strip()
+
+    # Strategy 1: Try to parse entire text as JSON
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: Extract from markdown code blocks
+    # Match ```json ... ``` or ``` ... ```
+    code_block_pattern = r'```(?:json)?\s*([\s\S]*?)\s*```'
+    matches = re.findall(code_block_pattern, text)
+    for match in matches:
+        try:
+            return json.loads(match.strip())
+        except json.JSONDecodeError:
+            continue
+
+    # Strategy 3: Find JSON object or array in text
+    # Look for { ... } or [ ... ]
+    json_patterns = [
+        r'(\{[\s\S]*\})',  # Object
+        r'(\[[\s\S]*\])',  # Array
+    ]
+    for pattern in json_patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
+
+    return None
+
+
+def parse_json_output(
+    text: str,
+    response_format: Optional[Union[ResponseFormat, Dict[str, Any]]] = None
+) -> Tuple[str, Optional[Dict[str, Any]], bool, Optional[str]]:
+    """
+    Parse JSON from model output when response_format is set.
+
+    Args:
+        text: Raw model output text
+        response_format: ResponseFormat specification (optional)
+            - If type="json_object", extracts any valid JSON
+            - If type="json_schema", extracts and validates against schema
+
+    Returns:
+        Tuple of (cleaned_text, parsed_json, is_valid, error_message)
+        - cleaned_text: Original text (preserved for reference)
+        - parsed_json: Extracted JSON data, or None if extraction failed
+        - is_valid: True if JSON is valid (and matches schema if specified)
+        - error_message: Error description if invalid, None if valid
+    """
+    # Handle None or text format - just return original
+    if response_format is None:
+        return text, None, True, None
+
+    # Normalize response_format to dict
+    if isinstance(response_format, ResponseFormat):
+        rf_dict = {
+            "type": response_format.type,
+            "json_schema": None
+        }
+        if response_format.json_schema:
+            rf_dict["json_schema"] = {
+                "name": response_format.json_schema.name,
+                "description": response_format.json_schema.description,
+                "schema": response_format.json_schema.schema_,
+                "strict": response_format.json_schema.strict,
+            }
+    else:
+        rf_dict = response_format
+
+    format_type = rf_dict.get("type", "text")
+
+    # text format - no JSON extraction
+    if format_type == "text":
+        return text, None, True, None
+
+    # json_object or json_schema - extract JSON
+    parsed = extract_json_from_text(text)
+
+    if parsed is None:
+        return text, None, False, "Failed to extract valid JSON from output"
+
+    # json_object - just verify it's valid JSON (already done by extraction)
+    if format_type == "json_object":
+        return text, parsed, True, None
+
+    # json_schema - validate against schema
+    if format_type == "json_schema":
+        json_schema_spec = rf_dict.get("json_schema", {})
+        schema = json_schema_spec.get("schema", {})
+
+        if schema:
+            is_valid, error = validate_json_schema(parsed, schema)
+            if not is_valid:
+                return text, parsed, False, f"JSON Schema validation failed: {error}"
+
+        return text, parsed, True, None
+
+    # Unknown format type - treat as text
+    return text, None, True, None
+
+
+def build_json_system_prompt(
+    response_format: Optional[Union[ResponseFormat, Dict[str, Any]]] = None
+) -> Optional[str]:
+    """
+    Build a system prompt instruction for JSON output.
+
+    For models without native JSON mode support, this adds instructions
+    to the prompt to encourage proper JSON formatting.
+
+    Args:
+        response_format: ResponseFormat specification
+
+    Returns:
+        System prompt instruction string, or None if not needed
+    """
+    if response_format is None:
+        return None
+
+    # Normalize to dict
+    if isinstance(response_format, ResponseFormat):
+        rf_dict = {
+            "type": response_format.type,
+            "json_schema": None
+        }
+        if response_format.json_schema:
+            rf_dict["json_schema"] = {
+                "name": response_format.json_schema.name,
+                "description": response_format.json_schema.description,
+                "schema": response_format.json_schema.schema_,
+                "strict": response_format.json_schema.strict,
+            }
+    else:
+        rf_dict = response_format
+
+    format_type = rf_dict.get("type", "text")
+
+    if format_type == "text":
+        return None
+
+    if format_type == "json_object":
+        return (
+            "You must respond with valid JSON only. "
+            "Do not include any explanation or text outside the JSON object."
+        )
+
+    if format_type == "json_schema":
+        json_schema_spec = rf_dict.get("json_schema", {})
+        schema = json_schema_spec.get("schema", {})
+        name = json_schema_spec.get("name", "response")
+        description = json_schema_spec.get("description", "")
+
+        prompt = f"You must respond with valid JSON matching the '{name}' schema."
+        if description:
+            prompt += f" {description}"
+        prompt += (
+            f"\n\nJSON Schema:\n```json\n{json.dumps(schema, indent=2)}\n```\n\n"
+            "Respond with only the JSON object, no additional text or explanation."
+        )
+        return prompt
+
+    return None

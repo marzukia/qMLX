@@ -101,6 +101,65 @@ GET /health
 
 Returns server status.
 
+## Structured Output (JSON Mode)
+
+Force the model to return valid JSON using `response_format`:
+
+### JSON Object Mode
+
+Returns any valid JSON:
+
+```python
+response = client.chat.completions.create(
+    model="default",
+    messages=[{"role": "user", "content": "List 3 colors"}],
+    response_format={"type": "json_object"}
+)
+# Output: {"colors": ["red", "blue", "green"]}
+```
+
+### JSON Schema Mode
+
+Returns JSON matching a specific schema:
+
+```python
+response = client.chat.completions.create(
+    model="default",
+    messages=[{"role": "user", "content": "List 3 colors"}],
+    response_format={
+        "type": "json_schema",
+        "json_schema": {
+            "name": "colors",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "colors": {
+                        "type": "array",
+                        "items": {"type": "string"}
+                    }
+                },
+                "required": ["colors"]
+            }
+        }
+    }
+)
+# Output validated against schema
+data = json.loads(response.choices[0].message.content)
+assert "colors" in data
+```
+
+### Curl Example
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "List 3 colors"}],
+    "response_format": {"type": "json_object"}
+  }'
+```
+
 ## Curl Examples
 
 ### Chat

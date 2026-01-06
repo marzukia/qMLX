@@ -94,6 +94,34 @@ class ToolDefinition(BaseModel):
 
 
 # =============================================================================
+# Structured Output (JSON Schema)
+# =============================================================================
+
+class ResponseFormatJsonSchema(BaseModel):
+    """JSON Schema definition for structured output."""
+    name: str
+    description: Optional[str] = None
+    schema_: dict = Field(alias="schema")  # JSON Schema specification
+    strict: Optional[bool] = False
+
+    class Config:
+        populate_by_name = True
+
+
+class ResponseFormat(BaseModel):
+    """
+    Response format specification for structured output.
+
+    Supports:
+    - "text": Default text output (no structure enforcement)
+    - "json_object": Forces valid JSON output
+    - "json_schema": Forces JSON matching a specific schema
+    """
+    type: str = "text"  # "text", "json_object", "json_schema"
+    json_schema: Optional[ResponseFormatJsonSchema] = None
+
+
+# =============================================================================
 # Chat Completion
 # =============================================================================
 
@@ -109,6 +137,8 @@ class ChatCompletionRequest(BaseModel):
     # Tool calling
     tools: Optional[List[ToolDefinition]] = None
     tool_choice: Optional[Union[str, dict]] = None  # "auto", "none", or specific tool
+    # Structured output
+    response_format: Optional[Union[ResponseFormat, dict]] = None
     # MLLM-specific parameters
     video_fps: Optional[float] = None
     video_max_frames: Optional[int] = None
