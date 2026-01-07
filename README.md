@@ -133,6 +133,7 @@ For full documentation, see the [docs](docs/) directory:
   - [LLM Benchmarks](docs/benchmarks/llm.md)
   - [Image Benchmarks](docs/benchmarks/image.md)
   - [Video Benchmarks](docs/benchmarks/video.md)
+  - [Audio Benchmarks](docs/benchmarks/audio.md)
 
 ## Architecture
 
@@ -180,6 +181,16 @@ For full documentation, see the [docs](docs/) directory:
 |-------|--------|---------|---------|
 | Qwen3-0.6B-8bit | 328 tok/s | 1112 tok/s | **3.4x** |
 | Llama-3.2-1B-4bit | 299 tok/s | 613 tok/s | **2.0x** |
+
+**Audio - Speech-to-Text (M4 Max, 128GB):**
+
+| Model | RTF* | Use Case |
+|-------|------|----------|
+| whisper-tiny | **197x** | Real-time, low latency |
+| whisper-large-v3-turbo | **55x** | Best quality/speed balance |
+| whisper-large-v3 | **24x** | Highest accuracy |
+
+*RTF = Real-Time Factor. RTF of 100x means 1 minute transcribes in ~0.6 seconds.
 
 See [benchmarks](docs/benchmarks/) for detailed results.
 
