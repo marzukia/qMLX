@@ -237,6 +237,32 @@ curl http://localhost:8000/v1/audio/voices?model=kokoro
 
 ## CLI Examples
 
+### Live Transcription / Closed Captions
+
+Real-time speech-to-text transcription from your microphone:
+
+```bash
+# Closed captions with whisper-large-v3 (best quality)
+python examples/closed_captions.py --language es --chunk 5
+
+# Faster model for lower latency
+python examples/closed_captions.py --language en --model whisper-turbo --chunk 3
+
+# Basic mic transcription (record then transcribe)
+python examples/mic_transcribe.py --language es
+
+# Real-time chunked transcription
+python examples/mic_realtime.py --language es --chunk 3
+
+# Live transcription with voice activity detection
+python examples/mic_live.py --language es
+```
+
+**Requirements:**
+```bash
+pip install sounddevice soundfile numpy
+```
+
 ### Basic TTS
 
 ```bash
