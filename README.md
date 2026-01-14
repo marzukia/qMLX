@@ -44,6 +44,9 @@ vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
 
 # Continuous batching (multiple users)
 vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuous-batching
+
+# With API key authentication
+vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --api-key your-secret-key
 ```
 
 ### Use with OpenAI SDK
@@ -51,7 +54,11 @@ vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000 --continuous
 ```python
 from openai import OpenAI
 
+# Without API key (local development)
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+
+# With API key (production)
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="your-secret-key")
 
 response = client.chat.completions.create(
     model="default",
