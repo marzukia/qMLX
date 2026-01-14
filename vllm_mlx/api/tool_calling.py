@@ -28,6 +28,7 @@ def parse_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
     Supports multiple formats:
     - Qwen: <tool_call>{"name": "...", "arguments": {...}}</tool_call>
     - Llama: <function=name>{"arg": "value"}</function>
+    - Nemotron: <tool_call><function=name><parameter=p>v</parameter></function></tool_call>
 
     Args:
         text: Raw model output text
@@ -40,9 +41,37 @@ def parse_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
     tool_calls = []
     cleaned_text = text
 
-    # Pattern for Qwen-style tool calls: <tool_call>...</tool_call>
+    # Pattern for Nemotron-style: <tool_call><function=name><parameter=p>v</parameter></function></tool_call>
+    nemotron_pattern = r'<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>'
+    nemotron_matches = re.findall(nemotron_pattern, text, re.DOTALL)
+
+    for name, params_block in nemotron_matches:
+        # Parse parameters from <parameter=name>value</parameter> format
+        param_pattern = r'<parameter=([^>]+)>\s*(.*?)\s*</parameter>'
+        params = re.findall(param_pattern, params_block, re.DOTALL)
+        arguments = {p_name.strip(): p_value.strip() for p_name, p_value in params}
+
+        tool_calls.append(ToolCall(
+            id=f"call_{uuid.uuid4().hex[:8]}",
+            type="function",
+            function=FunctionCall(
+                name=name.strip(),
+                arguments=json.dumps(arguments)
+            )
+        ))
+
+    # Remove Nemotron tool call tags from cleaned text
+    if nemotron_matches:
+        cleaned_text = re.sub(
+            r'<tool_call>\s*<function=[^>]+>.*?</function>\s*</tool_call>',
+            '',
+            text,
+            flags=re.DOTALL
+        ).strip()
+
+    # Pattern for Qwen-style tool calls: <tool_call>{"json"}</tool_call>
     qwen_pattern = r'<tool_call>\s*(\{.*?\})\s*</tool_call>'
-    qwen_matches = re.findall(qwen_pattern, text, re.DOTALL)
+    qwen_matches = re.findall(qwen_pattern, cleaned_text, re.DOTALL)
 
     for match in qwen_matches:
         try:
@@ -60,18 +89,18 @@ def parse_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
         except json.JSONDecodeError:
             continue
 
-    # Remove tool call tags from cleaned text
+    # Remove Qwen tool call tags from cleaned text
     if qwen_matches:
         cleaned_text = re.sub(
-            r'<tool_call>.*?</tool_call>',
+            r'<tool_call>\s*\{.*?\}\s*</tool_call>',
             '',
-            text,
+            cleaned_text,
             flags=re.DOTALL
         ).strip()
 
-    # Pattern for Llama-style: <function=name>...</function>
+    # Pattern for Llama-style: <function=name>{"json"}</function>
     llama_pattern = r'<function=([^>]+)>(\{.*?\})</function>'
-    llama_matches = re.findall(llama_pattern, text, re.DOTALL)
+    llama_matches = re.findall(llama_pattern, cleaned_text, re.DOTALL)
 
     for name, args_str in llama_matches:
         try:
@@ -89,7 +118,7 @@ def parse_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
 
     if llama_matches:
         cleaned_text = re.sub(
-            r'<function=[^>]+>.*?</function>',
+            r'<function=[^>]+>\{.*?\}</function>',
             '',
             cleaned_text,
             flags=re.DOTALL
