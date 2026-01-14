@@ -98,6 +98,9 @@ _default_max_tokens: int = 32768
 _mcp_manager = None
 _mcp_executor = None
 
+# API key authentication
+_api_key: Optional[str] = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -130,6 +133,23 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+
+from fastapi import Request, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+security = HTTPBearer(auto_error=False)
+
+
+async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify API key if authentication is enabled."""
+    if _api_key is None:
+        return True  # No auth required
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="API key required")
+    if credentials.credentials != _api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return True
 
 
 def get_engine() -> BaseEngine:
@@ -263,7 +283,7 @@ async def list_mcp_servers() -> MCPServersResponse:
     return MCPServersResponse(servers=servers)
 
 
-@app.post("/v1/mcp/execute")
+@app.post("/v1/mcp/execute", dependencies=[Depends(verify_api_key)])
 async def execute_mcp_tool(request: MCPExecuteRequest) -> MCPExecuteResponse:
     """Execute an MCP tool."""
     if _mcp_manager is None:
@@ -294,7 +314,7 @@ _stt_engine = None
 _tts_engine = None
 
 
-@app.post("/v1/audio/transcriptions")
+@app.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
     file: UploadFile,
     model: str = "whisper-large-v3",
@@ -363,7 +383,7 @@ async def create_transcription(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/v1/audio/speech")
+@app.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
 async def create_speech(
     model: str = "kokoro",
     input: str = "",
@@ -435,7 +455,7 @@ async def list_voices(model: str = "kokoro"):
 # Completion Endpoints
 # =============================================================================
 
-@app.post("/v1/completions")
+@app.post("/v1/completions", dependencies=[Depends(verify_api_key)])
 async def create_completion(request: CompletionRequest):
     """Create a text completion."""
     engine = get_engine()
@@ -484,7 +504,7 @@ async def create_completion(request: CompletionRequest):
     )
 
 
-@app.post("/v1/chat/completions")
+@app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
 async def create_chat_completion(request: ChatCompletionRequest):
     """
     Create a chat completion (supports multimodal content for VLM models).
@@ -799,8 +819,18 @@ Examples:
         default=32768,
         help="Default max tokens for generation",
     )
+    parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key for authentication (if not set, no auth required)",
+    )
 
     args = parser.parse_args()
+
+    # Set API key globally
+    global _api_key
+    _api_key = args.api_key
 
     # Set MCP config for lifespan
     if args.mcp_config:
