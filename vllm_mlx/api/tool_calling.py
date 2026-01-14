@@ -95,13 +95,8 @@ def parse_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:
             flags=re.DOTALL
         ).strip()
 
-    # Remove thinking tags if present (reasoning models)
-    cleaned_text = re.sub(
-        r'<think>.*?</think>',
-        '',
-        cleaned_text,
-        flags=re.DOTALL
-    ).strip()
+    # Note: We keep <think>...</think> tags for reasoning models
+    # The user may want to see the model's reasoning process
 
     return cleaned_text, tool_calls if tool_calls else None
 

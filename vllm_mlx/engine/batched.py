@@ -139,6 +139,7 @@ class BatchedEngine(BaseEngine):
             template_kwargs = {
                 "tokenize": False,
                 "add_generation_prompt": True,
+                "enable_thinking": True,  # Enable thinking mode for reasoning models
             }
             if tools:
                 template_kwargs["tools"] = tools
@@ -146,7 +147,10 @@ class BatchedEngine(BaseEngine):
             try:
                 return self._tokenizer.apply_chat_template(messages, **template_kwargs)
             except TypeError:
-                del template_kwargs["tools"]
+                # Some templates don't support all kwargs
+                for key in ["tools", "enable_thinking"]:
+                    if key in template_kwargs:
+                        del template_kwargs[key]
                 return self._tokenizer.apply_chat_template(messages, **template_kwargs)
         else:
             prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
