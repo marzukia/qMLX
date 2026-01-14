@@ -72,8 +72,12 @@ from .api.models import (
     MCPServersResponse,
     MCPExecuteRequest,
     MCPExecuteResponse,
+    # Re-export for backwards compatibility with tests
+    ContentPart,
+    ImageUrl,
+    VideoUrl,
 )
-from .api.utils import clean_output_text, extract_multimodal_content
+from .api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
 from .api.tool_calling import (
     parse_tool_calls,
     convert_tools_for_template,
