@@ -25,8 +25,12 @@ from mlx_lm.sample_utils import make_sampler
 from .paged_cache import PagedCacheManager
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
+from .utils.mamba_cache import ensure_mamba_support
 
 logger = logging.getLogger(__name__)
+
+# Enable MambaCache batching support for models like Nemotron
+ensure_mamba_support()
 
 # Error patterns that indicate cache corruption
 CACHE_CORRUPTION_PATTERNS = [
@@ -176,8 +180,12 @@ class Scheduler:
                 stop_tokens.update(self.tokenizer.eos_token_id)
             else:
                 stop_tokens.add(self.tokenizer.eos_token_id)
-        if hasattr(self.tokenizer, 'eos_token_ids'):
-            stop_tokens.update(self.tokenizer.eos_token_ids)
+        if hasattr(self.tokenizer, 'eos_token_ids') and self.tokenizer.eos_token_ids is not None:
+            if isinstance(self.tokenizer.eos_token_ids, (list, set, tuple)):
+                stop_tokens.update(self.tokenizer.eos_token_ids)
+            else:
+                # Handle case where eos_token_ids is a single int
+                stop_tokens.add(self.tokenizer.eos_token_ids)
         return stop_tokens
 
     def _create_batch_generator(self, sampling_params: SamplingParams) -> BatchGenerator:
