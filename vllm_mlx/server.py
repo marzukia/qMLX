@@ -233,7 +233,7 @@ async def health():
     }
 
 
-@app.get("/v1/models")
+@app.get("/v1/models", dependencies=[Depends(verify_api_key)])
 async def list_models() -> ModelsResponse:
     """List available models."""
     models = []
@@ -246,7 +246,7 @@ async def list_models() -> ModelsResponse:
 # MCP Endpoints
 # =============================================================================
 
-@app.get("/v1/mcp/tools")
+@app.get("/v1/mcp/tools", dependencies=[Depends(verify_api_key)])
 async def list_mcp_tools() -> MCPToolsResponse:
     """List all available MCP tools."""
     if _mcp_manager is None:
@@ -264,7 +264,7 @@ async def list_mcp_tools() -> MCPToolsResponse:
     return MCPToolsResponse(tools=tools, count=len(tools))
 
 
-@app.get("/v1/mcp/servers")
+@app.get("/v1/mcp/servers", dependencies=[Depends(verify_api_key)])
 async def list_mcp_servers() -> MCPServersResponse:
     """Get status of all MCP servers."""
     if _mcp_manager is None:
@@ -438,7 +438,7 @@ async def create_speech(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/v1/audio/voices")
+@app.get("/v1/audio/voices", dependencies=[Depends(verify_api_key)])
 async def list_voices(model: str = "kokoro"):
     """List available voices for a TTS model."""
     from .audio.tts import KOKORO_VOICES, CHATTERBOX_VOICES
