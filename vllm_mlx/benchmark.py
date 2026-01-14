@@ -392,7 +392,7 @@ def run_benchmark(
     Returns:
         BenchmarkSummary with aggregate statistics
     """
-    from mlx_lm import load
+    from vllm_mlx.utils.tokenizer import load_model_with_fallback
     from vllm_mlx.optimizations import detect_hardware
 
     # Detect hardware
@@ -475,7 +475,7 @@ def run_benchmark(
     # Load model
     print(f"Loading model: {model_name}...")
     load_start = time.perf_counter()
-    model, tokenizer = load(model_name)
+    model, tokenizer = load_model_with_fallback(model_name)
     load_time = time.perf_counter() - load_start
     print(f"Model loaded in {load_time:.2f}s\n")
 

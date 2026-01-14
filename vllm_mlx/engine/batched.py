@@ -85,7 +85,7 @@ class BatchedEngine(BaseEngine):
             self._model = mllm.model
             self._tokenizer = mllm.processor
         else:
-            from mlx_lm import load
+            from ..utils.tokenizer import load_model_with_fallback
 
             # Build tokenizer config
             tokenizer_config = {"trust_remote_code": self._trust_remote_code}
@@ -94,7 +94,7 @@ class BatchedEngine(BaseEngine):
             if "qwen3" in self._model_name.lower() or "Qwen3" in self._model_name:
                 tokenizer_config["eos_token"] = "<|im_end|>"
 
-            self._model, self._tokenizer = load(
+            self._model, self._tokenizer = load_model_with_fallback(
                 self._model_name,
                 tokenizer_config=tokenizer_config,
             )

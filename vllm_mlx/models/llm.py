@@ -71,7 +71,7 @@ class MLXLanguageModel:
             return
 
         try:
-            from mlx_lm import load
+            from ..utils.tokenizer import load_model_with_fallback
 
             logger.info(f"Loading model: {self.model_name}")
 
@@ -84,7 +84,7 @@ class MLXLanguageModel:
                 tokenizer_config["eos_token"] = "<|im_end|>"
                 logger.info("Qwen3 detected: setting eos_token to <|im_end|>")
 
-            self.model, self.tokenizer = load(
+            self.model, self.tokenizer = load_model_with_fallback(
                 self.model_name,
                 tokenizer_config=tokenizer_config,
             )
