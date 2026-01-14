@@ -716,13 +716,25 @@ async def stream_chat_completion(
     )
     yield f"data: {first_chunk.model_dump_json()}\n\n"
 
+    # Track if we need to add <think> prefix for thinking models
+    # The template adds <think> to the prompt, so the model output starts inside the think block
+    is_thinking_model = "nemotron" in request.model.lower()
+    think_prefix_sent = False
+
     # Stream content
     async for output in engine.stream_chat(messages=messages, **kwargs):
+        content = output.new_text
+
+        # Add <think> prefix on first content chunk for thinking models
+        if is_thinking_model and not think_prefix_sent and content:
+            content = "<think>" + content
+            think_prefix_sent = True
+
         chunk = ChatCompletionChunk(
             id=response_id,
             model=request.model,
             choices=[ChatCompletionChunkChoice(
-                delta=ChatCompletionChunkDelta(content=output.new_text if output.new_text else None),
+                delta=ChatCompletionChunkDelta(content=content if content else None),
                 finish_reason=output.finish_reason if output.finished else None,
             )],
         )
