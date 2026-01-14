@@ -15,6 +15,7 @@ vllm-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit --prompts 5 --ma
 | Qwen2.5-1.5B-Instruct-4bit | 308.5 tok/s | 86.2 ms | 0.84 GB |
 | Llama-3.2-3B-Instruct-4bit | 200.1 tok/s | 81.4 ms | 1.79 GB |
 | Qwen3-30B-A3B-4bit | 123.9 tok/s | 126.9 ms | 16.05 GB |
+| NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-6Bit | 122.9 tok/s | 72.3 ms | 23.98 GB |
 
 *TTFT = Time to First Token (latency until the model starts generating)
 

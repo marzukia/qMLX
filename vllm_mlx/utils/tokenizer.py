@@ -11,6 +11,8 @@ import json
 import logging
 from pathlib import Path
 
+from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
+
 logger = logging.getLogger(__name__)
 
 # Models that require tokenizer fallback
@@ -79,11 +81,12 @@ def _load_with_tokenizer_fallback(model_name: str):
         logger.info("Loading tokenizer from tokenizer.json")
         base_tokenizer = Tokenizer.from_file(str(tokenizer_json))
 
-        # Read tokenizer_config.json for special tokens
+        # Read tokenizer_config.json for special tokens and chat template
         tokenizer_config_path = model_path / "tokenizer_config.json"
         bos_token = "<s>"
         eos_token = "</s>"
         unk_token = "<unk>"
+        chat_template = None
 
         if tokenizer_config_path.exists():
             with open(tokenizer_config_path) as f:
@@ -91,6 +94,7 @@ def _load_with_tokenizer_fallback(model_name: str):
                 bos_token = config.get("bos_token", bos_token)
                 eos_token = config.get("eos_token", eos_token)
                 unk_token = config.get("unk_token", unk_token)
+                chat_template = config.get("chat_template")
 
         tokenizer = PreTrainedTokenizerFast(
             tokenizer_object=base_tokenizer,
@@ -99,6 +103,20 @@ def _load_with_tokenizer_fallback(model_name: str):
             unk_token=unk_token,
             pad_token="<pad>",
         )
+
+        # Set chat template if available
+        if chat_template:
+            tokenizer.chat_template = chat_template
+            logger.info("Chat template loaded from tokenizer_config.json")
+        elif _needs_tokenizer_fallback(model_name):
+            # Use official Nemotron chat template with thinking support
+            tokenizer.chat_template = NEMOTRON_CHAT_TEMPLATE
+            logger.info("Using official Nemotron chat template with thinking support")
+        else:
+            # Default simple ChatML format for other models
+            tokenizer.chat_template = DEFAULT_CHATML_TEMPLATE
+            logger.info("Using default ChatML chat template")
+
         logger.info("Tokenizer loaded via fallback successfully")
         return model, tokenizer
     else:
