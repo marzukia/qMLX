@@ -15,19 +15,21 @@ from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field
 
-
 # =============================================================================
 # Content Types (for multimodal messages)
 # =============================================================================
 
+
 class ImageUrl(BaseModel):
     """Image URL with optional detail level."""
+
     url: str
     detail: Optional[str] = None
 
 
 class VideoUrl(BaseModel):
     """Video URL."""
+
     url: str
 
 
@@ -41,6 +43,7 @@ class ContentPart(BaseModel):
     - video: Video from local path
     - video_url: Video from URL or base64
     """
+
     type: str  # "text", "image_url", "video", "video_url"
     text: Optional[str] = None
     image_url: Optional[Union[ImageUrl, dict, str]] = None
@@ -52,6 +55,7 @@ class ContentPart(BaseModel):
 # Messages
 # =============================================================================
 
+
 class Message(BaseModel):
     """
     A message in a chat conversation.
@@ -62,6 +66,7 @@ class Message(BaseModel):
     - Tool call messages (assistant with tool_calls)
     - Tool response messages (role="tool" with tool_call_id)
     """
+
     role: str
     content: Optional[Union[str, List[ContentPart], List[dict]]] = None
     # For assistant messages with tool calls
@@ -74,14 +79,17 @@ class Message(BaseModel):
 # Tool Calling
 # =============================================================================
 
+
 class FunctionCall(BaseModel):
     """A function call with name and arguments."""
+
     name: str
     arguments: str  # JSON string
 
 
 class ToolCall(BaseModel):
     """A tool call from the model."""
+
     id: str
     type: str = "function"
     function: FunctionCall
@@ -89,6 +97,7 @@ class ToolCall(BaseModel):
 
 class ToolDefinition(BaseModel):
     """Definition of a tool that can be called by the model."""
+
     type: str = "function"
     function: dict
 
@@ -97,8 +106,10 @@ class ToolDefinition(BaseModel):
 # Structured Output (JSON Schema)
 # =============================================================================
 
+
 class ResponseFormatJsonSchema(BaseModel):
     """JSON Schema definition for structured output."""
+
     name: str
     description: Optional[str] = None
     schema_: dict = Field(alias="schema")  # JSON Schema specification
@@ -117,6 +128,7 @@ class ResponseFormat(BaseModel):
     - "json_object": Forces valid JSON output
     - "json_schema": Forces JSON matching a specific schema
     """
+
     type: str = "text"  # "text", "json_object", "json_schema"
     json_schema: Optional[ResponseFormatJsonSchema] = None
 
@@ -125,8 +137,10 @@ class ResponseFormat(BaseModel):
 # Chat Completion
 # =============================================================================
 
+
 class ChatCompletionRequest(BaseModel):
     """Request for chat completion."""
+
     model: str
     messages: List[Message]
     temperature: float = 0.7
@@ -142,10 +156,13 @@ class ChatCompletionRequest(BaseModel):
     # MLLM-specific parameters
     video_fps: Optional[float] = None
     video_max_frames: Optional[int] = None
+    # Request timeout in seconds (None = use server default)
+    timeout: Optional[float] = None
 
 
 class AssistantMessage(BaseModel):
     """Response message from the assistant."""
+
     role: str = "assistant"
     content: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
@@ -153,6 +170,7 @@ class AssistantMessage(BaseModel):
 
 class ChatCompletionChoice(BaseModel):
     """A single choice in chat completion response."""
+
     index: int = 0
     message: AssistantMessage
     finish_reason: Optional[str] = "stop"
@@ -160,6 +178,7 @@ class ChatCompletionChoice(BaseModel):
 
 class Usage(BaseModel):
     """Token usage statistics."""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -167,6 +186,7 @@ class Usage(BaseModel):
 
 class ChatCompletionResponse(BaseModel):
     """Response for chat completion."""
+
     id: str = Field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:8]}")
     object: str = "chat.completion"
     created: int = Field(default_factory=lambda: int(time.time()))
@@ -179,8 +199,10 @@ class ChatCompletionResponse(BaseModel):
 # Text Completion
 # =============================================================================
 
+
 class CompletionRequest(BaseModel):
     """Request for text completion."""
+
     model: str
     prompt: Union[str, List[str]]
     temperature: float = 0.7
@@ -188,10 +210,13 @@ class CompletionRequest(BaseModel):
     max_tokens: Optional[int] = None
     stream: bool = False
     stop: Optional[List[str]] = None
+    # Request timeout in seconds (None = use server default)
+    timeout: Optional[float] = None
 
 
 class CompletionChoice(BaseModel):
     """A single choice in text completion response."""
+
     index: int = 0
     text: str
     finish_reason: Optional[str] = "stop"
@@ -199,6 +224,7 @@ class CompletionChoice(BaseModel):
 
 class CompletionResponse(BaseModel):
     """Response for text completion."""
+
     id: str = Field(default_factory=lambda: f"cmpl-{uuid.uuid4().hex[:8]}")
     object: str = "text_completion"
     created: int = Field(default_factory=lambda: int(time.time()))
@@ -211,8 +237,10 @@ class CompletionResponse(BaseModel):
 # Models List
 # =============================================================================
 
+
 class ModelInfo(BaseModel):
     """Information about an available model."""
+
     id: str
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))
@@ -221,6 +249,7 @@ class ModelInfo(BaseModel):
 
 class ModelsResponse(BaseModel):
     """Response for listing models."""
+
     object: str = "list"
     data: List[ModelInfo]
 
@@ -229,8 +258,10 @@ class ModelsResponse(BaseModel):
 # MCP (Model Context Protocol)
 # =============================================================================
 
+
 class MCPToolInfo(BaseModel):
     """Information about an MCP tool."""
+
     name: str
     description: str
     server: str
@@ -239,12 +270,14 @@ class MCPToolInfo(BaseModel):
 
 class MCPToolsResponse(BaseModel):
     """Response for listing MCP tools."""
+
     tools: List[MCPToolInfo]
     count: int
 
 
 class MCPServerInfo(BaseModel):
     """Information about an MCP server."""
+
     name: str
     state: str
     transport: str
@@ -254,17 +287,20 @@ class MCPServerInfo(BaseModel):
 
 class MCPServersResponse(BaseModel):
     """Response for listing MCP servers."""
+
     servers: List[MCPServerInfo]
 
 
 class MCPExecuteRequest(BaseModel):
     """Request to execute an MCP tool."""
+
     tool_name: str
     arguments: dict = Field(default_factory=dict)
 
 
 class MCPExecuteResponse(BaseModel):
     """Response from executing an MCP tool."""
+
     tool_name: str
     content: Optional[Union[str, list, dict]] = None
     is_error: bool = False
@@ -275,8 +311,10 @@ class MCPExecuteResponse(BaseModel):
 # Streaming (for SSE responses)
 # =============================================================================
 
+
 class ChatCompletionChunkDelta(BaseModel):
     """Delta content in a streaming chunk."""
+
     role: Optional[str] = None
     content: Optional[str] = None
     tool_calls: Optional[List[dict]] = None
@@ -284,6 +322,7 @@ class ChatCompletionChunkDelta(BaseModel):
 
 class ChatCompletionChunkChoice(BaseModel):
     """A single choice in a streaming chunk."""
+
     index: int = 0
     delta: ChatCompletionChunkDelta
     finish_reason: Optional[str] = None
@@ -291,6 +330,7 @@ class ChatCompletionChunkChoice(BaseModel):
 
 class ChatCompletionChunk(BaseModel):
     """A streaming chunk for chat completion."""
+
     id: str = Field(default_factory=lambda: f"chatcmpl-{uuid.uuid4().hex[:8]}")
     object: str = "chat.completion.chunk"
     created: int = Field(default_factory=lambda: int(time.time()))

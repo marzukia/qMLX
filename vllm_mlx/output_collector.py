@@ -7,6 +7,7 @@ providing non-blocking output collection with intelligent aggregation.
 """
 
 import asyncio
+import threading
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -36,6 +37,7 @@ class RequestOutputCollector:
     # Global counter of collectors with waiting consumers
     # Used to optimize: only yield when someone is waiting
     _waiting_consumers: int = 0
+    _waiting_lock: threading.Lock = threading.Lock()
 
     def __init__(self, aggregate: bool = True):
         """
@@ -100,7 +102,8 @@ class RequestOutputCollector:
         # Track that we're waiting (for yield optimization)
         if not self._is_waiting:
             self._is_waiting = True
-            RequestOutputCollector._waiting_consumers += 1
+            with RequestOutputCollector._waiting_lock:
+                RequestOutputCollector._waiting_consumers += 1
         try:
             while self.output is None:
                 await self.ready.wait()
@@ -111,7 +114,8 @@ class RequestOutputCollector:
         finally:
             if self._is_waiting:
                 self._is_waiting = False
-                RequestOutputCollector._waiting_consumers -= 1
+                with RequestOutputCollector._waiting_lock:
+                    RequestOutputCollector._waiting_consumers -= 1
 
     def _merge_outputs(
         self,
@@ -153,7 +157,8 @@ class RequestOutputCollector:
         self.ready.clear()
         if self._is_waiting:
             self._is_waiting = False
-            RequestOutputCollector._waiting_consumers -= 1
+            with RequestOutputCollector._waiting_lock:
+                RequestOutputCollector._waiting_consumers -= 1
 
     @classmethod
     def has_waiting_consumers(cls) -> bool:
@@ -161,7 +166,8 @@ class RequestOutputCollector:
 
         Used by engine to optimize: only yield when someone is waiting.
         """
-        return cls._waiting_consumers > 0
+        with cls._waiting_lock:
+            return cls._waiting_consumers > 0
 
 
 @dataclass

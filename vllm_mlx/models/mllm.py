@@ -13,25 +13,88 @@ Features:
 - VLM KV cache for repeated image/video+prompt combinations
 """
 
+import atexit
 import base64
 import logging
 import math
+import os
 import re
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple, Union
+from typing import Iterator, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse
 
-import requests
 import numpy as np
+import requests
 
 from vllm_mlx.vlm_cache import VLMCacheManager
 
 logger = logging.getLogger(__name__)
 
 
+class TempFileManager:
+    """Thread-safe manager for tracking and cleaning up temporary files."""
+
+    def __init__(self):
+        self._files: Set[str] = set()
+        self._lock = threading.Lock()
+        atexit.register(self.cleanup_all)
+
+    def register(self, path: str) -> str:
+        """Register a temp file for tracking. Returns the path for convenience."""
+        with self._lock:
+            self._files.add(path)
+        return path
+
+    def cleanup(self, path: str) -> bool:
+        """Clean up a specific temp file. Returns True if successful."""
+        with self._lock:
+            if path in self._files:
+                self._files.discard(path)
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+                logger.debug(f"Cleaned up temp file: {path}")
+                return True
+        except OSError as e:
+            logger.warning(f"Failed to clean up temp file {path}: {e}")
+        return False
+
+    def cleanup_all(self) -> int:
+        """Clean up all tracked temp files. Returns count of cleaned files."""
+        with self._lock:
+            files_to_clean = list(self._files)
+            self._files.clear()
+
+        cleaned = 0
+        for path in files_to_clean:
+            try:
+                if os.path.exists(path):
+                    os.unlink(path)
+                    cleaned += 1
+            except OSError:
+                pass
+
+        if cleaned:
+            logger.info(f"Cleaned up {cleaned} temp files")
+        return cleaned
+
+
+# Global temp file manager
+_temp_manager = TempFileManager()
+
+
+def cleanup_temp_file(path: str) -> bool:
+    """Clean up a specific temporary file."""
+    return _temp_manager.cleanup(path)
+
+
+def cleanup_all_temp_files() -> int:
+    """Clean up all tracked temporary files. Returns count of cleaned files."""
+    return _temp_manager.cleanup_all()
 
 
 # Video processing constants
@@ -45,15 +108,17 @@ IMAGE_FACTOR = 28  # For smart resize
 @dataclass
 class MultimodalInput:
     """Input for multimodal generation."""
+
     prompt: str
     images: list[str] = field(default_factory=list)  # Paths, URLs, or base64
     videos: list[str] = field(default_factory=list)  # Paths
-    audio: list[str] = field(default_factory=list)   # Paths
+    audio: list[str] = field(default_factory=list)  # Paths
 
 
 @dataclass
 class MLLMOutput:
     """Output from multimodal language model."""
+
     text: str
     finish_reason: str | None = None
     prompt_tokens: int = 0
@@ -110,12 +175,12 @@ def download_image(url: str, timeout: int = 30) -> str:
         path = urlparse(url).path
         ext = Path(path).suffix or ".jpg"
 
-    # Save to temp file
+    # Save to temp file and register for cleanup
     temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     temp_file.write(response.content)
     temp_file.close()
 
-    return temp_file.name
+    return _temp_manager.register(temp_file.name)
 
 
 def download_video(url: str, timeout: int = 120) -> str:
@@ -154,16 +219,18 @@ def download_video(url: str, timeout: int = 120) -> str:
         path = urlparse(url).path
         ext = Path(path).suffix or ".mp4"
 
-    # Save to temp file (stream for larger files)
+    # Save to temp file (stream for larger files) and register for cleanup
     temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     for chunk in response.iter_content(chunk_size=8192):
         temp_file.write(chunk)
     temp_file.close()
 
     file_size = Path(temp_file.name).stat().st_size
-    logger.info(f"Video downloaded: {temp_file.name} ({file_size / 1024 / 1024:.1f} MB)")
+    logger.info(
+        f"Video downloaded: {temp_file.name} ({file_size / 1024 / 1024:.1f} MB)"
+    )
 
-    return temp_file.name
+    return _temp_manager.register(temp_file.name)
 
 
 def decode_base64_video(base64_string: str) -> str:
@@ -190,15 +257,17 @@ def decode_base64_video(base64_string: str) -> str:
         data = base64_string
         ext = ".mp4"
 
-    # Decode and save
+    # Decode, save, and register for cleanup
     video_bytes = base64.b64decode(data)
     temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     temp_file.write(video_bytes)
     temp_file.close()
 
-    logger.info(f"Base64 video decoded: {temp_file.name} ({len(video_bytes) / 1024 / 1024:.1f} MB)")
+    logger.info(
+        f"Base64 video decoded: {temp_file.name} ({len(video_bytes) / 1024 / 1024:.1f} MB)"
+    )
 
-    return temp_file.name
+    return _temp_manager.register(temp_file.name)
 
 
 def process_video_input(video: Union[str, dict]) -> str:
@@ -247,13 +316,13 @@ def save_base64_image(base64_string: str) -> str:
     image_bytes = decode_base64_image(base64_string)
 
     # Detect format from magic bytes
-    if image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+    if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
         ext = ".png"
-    elif image_bytes[:2] == b'\xff\xd8':
+    elif image_bytes[:2] == b"\xff\xd8":
         ext = ".jpg"
-    elif image_bytes[:6] in (b'GIF87a', b'GIF89a'):
+    elif image_bytes[:6] in (b"GIF87a", b"GIF89a"):
         ext = ".gif"
-    elif image_bytes[:4] == b'RIFF' and image_bytes[8:12] == b'WEBP':
+    elif image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
         ext = ".webp"
     else:
         ext = ".jpg"  # Default
@@ -262,7 +331,7 @@ def save_base64_image(base64_string: str) -> str:
     temp_file.write(image_bytes)
     temp_file.close()
 
-    return temp_file.name
+    return _temp_manager.register(temp_file.name)
 
 
 def process_image_input(image: Union[str, dict]) -> str:
@@ -419,7 +488,7 @@ def save_frames_to_temp(frames: list[np.ndarray]) -> list[str]:
         img = Image.fromarray(frame)
         temp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         img.save(temp_file.name, "JPEG", quality=85)
-        paths.append(temp_file.name)
+        paths.append(_temp_manager.register(temp_file.name))
 
     return paths
 
@@ -600,8 +669,8 @@ class MLXMultimodalLM:
             self.load()
 
         from mlx_vlm import generate
-        from mlx_vlm.prompt_utils import apply_chat_template
         from mlx_vlm.models import cache as vlm_cache
+        from mlx_vlm.prompt_utils import apply_chat_template
 
         images = images or []
         videos = videos or []
@@ -626,11 +695,13 @@ class MLXMultimodalLM:
             all_images.extend(frames)
             # Include video params in cache key
             video_str = video_path if isinstance(video_path, str) else str(video_path)
-            all_sources.append(f"video:{video_str}:fps{video_fps}:max{video_max_frames}")
+            all_sources.append(
+                f"video:{video_str}:fps{video_fps}:max{video_max_frames}"
+            )
             logger.info(f"Added {len(frames)} frames from video: {video_path}")
 
         # Apply chat template if needed
-        if all_images and hasattr(self.processor, 'apply_chat_template'):
+        if all_images and hasattr(self.processor, "apply_chat_template"):
             try:
                 formatted_prompt = apply_chat_template(
                     self.processor,
@@ -679,7 +750,7 @@ class MLXMultimodalLM:
         if use_cache and self._cache_manager and all_sources and not cache_hit:
             if prompt_cache is not None:
                 try:
-                    num_tokens = getattr(result, 'prompt_tokens', 0)
+                    num_tokens = getattr(result, "prompt_tokens", 0)
                     self._cache_manager.store_cache(
                         all_sources, formatted_prompt, prompt_cache, num_tokens
                     )
@@ -688,10 +759,10 @@ class MLXMultimodalLM:
                     logger.debug(f"Failed to store VLM cache: {e}")
 
         # Handle GenerationResult object or plain string
-        if hasattr(result, 'text'):
+        if hasattr(result, "text"):
             output_text = result.text
-            prompt_tokens = getattr(result, 'prompt_tokens', 0)
-            generation_tokens = getattr(result, 'generation_tokens', 0)
+            prompt_tokens = getattr(result, "prompt_tokens", 0)
+            generation_tokens = getattr(result, "generation_tokens", 0)
         else:
             output_text = str(result)
             prompt_tokens = 0
@@ -835,9 +906,9 @@ class MLXMultimodalLM:
                         continue
 
                     # Convert Pydantic models to dicts
-                    if hasattr(item, 'model_dump'):
+                    if hasattr(item, "model_dump"):
                         item = item.model_dump()
-                    elif hasattr(item, 'dict'):
+                    elif hasattr(item, "dict"):
                         item = item.dict()
 
                     if isinstance(item, dict):
@@ -868,7 +939,9 @@ class MLXMultimodalLM:
         video_fps = kwargs.pop("video_fps", DEFAULT_FPS)
         video_max_frames = kwargs.pop("video_max_frames", MAX_FRAMES)
         for video_path in videos:
-            frames = self._prepare_video(video_path, fps=video_fps, max_frames=video_max_frames)
+            frames = self._prepare_video(
+                video_path, fps=video_fps, max_frames=video_max_frames
+            )
             all_images.extend(frames)
             logger.info(f"Added {len(frames)} frames from video: {video_path}")
 
@@ -897,10 +970,10 @@ class MLXMultimodalLM:
         )
 
         # Handle GenerationResult object or plain string
-        if hasattr(result, 'text'):
+        if hasattr(result, "text"):
             output_text = result.text
-            prompt_tokens = getattr(result, 'prompt_tokens', 0)
-            generation_tokens = getattr(result, 'generation_tokens', 0)
+            prompt_tokens = getattr(result, "prompt_tokens", 0)
+            generation_tokens = getattr(result, "generation_tokens", 0)
         else:
             output_text = str(result)
             prompt_tokens = 0
@@ -1080,18 +1153,31 @@ class MLXMultimodalLM:
     def is_mllm_model(model_name: str) -> bool:
         """Check if a model name indicates an MLLM model."""
         mllm_patterns = [
-            "-VL-", "-VL/", "VL-",
-            "llava", "LLaVA",
-            "idefics", "Idefics",
-            "paligemma", "PaliGemma",
-            "pixtral", "Pixtral",
-            "molmo", "Molmo",
-            "phi3-vision", "phi-3-vision",
-            "cogvlm", "CogVLM",
-            "internvl", "InternVL",
-            "minicpm-v", "MiniCPM-V",
-            "florence", "Florence",
-            "deepseek-vl", "DeepSeek-VL",
+            "-VL-",
+            "-VL/",
+            "VL-",
+            "llava",
+            "LLaVA",
+            "idefics",
+            "Idefics",
+            "paligemma",
+            "PaliGemma",
+            "pixtral",
+            "Pixtral",
+            "molmo",
+            "Molmo",
+            "phi3-vision",
+            "phi-3-vision",
+            "cogvlm",
+            "CogVLM",
+            "internvl",
+            "InternVL",
+            "minicpm-v",
+            "MiniCPM-V",
+            "florence",
+            "Florence",
+            "deepseek-vl",
+            "DeepSeek-VL",
         ]
         model_lower = model_name.lower()
         return any(pattern.lower() in model_lower for pattern in mllm_patterns)
