@@ -12,7 +12,7 @@ Features:
 - Support for LLM and multimodal models
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # Continuous batching engine (core functionality, no torch required)
 from vllm_mlx.request import Request, RequestOutput, RequestStatus, SamplingParams
