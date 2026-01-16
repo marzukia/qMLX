@@ -81,6 +81,7 @@ _mcp_executor = None
 
 # API key authentication
 _api_key: Optional[str] = None
+_auth_warning_logged: bool = False
 
 
 @asynccontextmanager
@@ -188,8 +189,18 @@ async def check_rate_limit(request: Request):
 
 async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify API key if authentication is enabled."""
+    global _auth_warning_logged
+
     if _api_key is None:
+        # Log warning once about running without authentication
+        if not _auth_warning_logged:
+            logger.warning(
+                "SECURITY WARNING: Server running without API key authentication. "
+                "Anyone can access the API. Use --api-key to enable authentication."
+            )
+            _auth_warning_logged = True
         return True  # No auth required
+
     if credentials is None:
         raise HTTPException(status_code=401, detail="API key required")
     # Use constant-time comparison to prevent timing attacks
@@ -959,6 +970,21 @@ Examples:
         logger.info(
             f"Rate limiting enabled: {args.rate_limit} requests/minute per client"
         )
+
+    # Security summary at startup
+    logger.info("=" * 60)
+    logger.info("SECURITY CONFIGURATION")
+    logger.info("=" * 60)
+    if _api_key:
+        logger.info("  Authentication: ENABLED (API key required)")
+    else:
+        logger.warning("  Authentication: DISABLED - Use --api-key to enable")
+    if args.rate_limit > 0:
+        logger.info(f"  Rate limiting: ENABLED ({args.rate_limit} req/min)")
+    else:
+        logger.warning("  Rate limiting: DISABLED - Use --rate-limit to enable")
+    logger.info(f"  Request timeout: {args.timeout}s")
+    logger.info("=" * 60)
 
     # Set MCP config for lifespan
     if args.mcp_config:

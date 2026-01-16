@@ -104,6 +104,17 @@ MIN_FRAMES = 4
 MAX_FRAMES = 128  # Practical limit for most MLLMs
 IMAGE_FACTOR = 28  # For smart resize
 
+# Security: File size limits (in bytes)
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB max for images
+MAX_VIDEO_SIZE = 500 * 1024 * 1024  # 500 MB max for videos
+MAX_BASE64_IMAGE_LENGTH = 30 * 1024 * 1024  # 30 MB base64 string (~22 MB decoded)
+MAX_BASE64_VIDEO_LENGTH = 700 * 1024 * 1024  # 700 MB base64 string (~500 MB decoded)
+
+
+class FileSizeExceededError(Exception):
+    """Raised when a downloaded file exceeds the size limit."""
+    pass
+
 
 @dataclass
 class MultimodalInput:
@@ -142,8 +153,26 @@ def is_base64_video(s: str) -> bool:
     return s.startswith("data:video/")
 
 
-def decode_base64_image(base64_string: str) -> bytes:
-    """Decode base64 image to bytes."""
+def decode_base64_image(base64_string: str, max_length: int = MAX_BASE64_IMAGE_LENGTH) -> bytes:
+    """
+    Decode base64 image to bytes.
+
+    Args:
+        base64_string: Base64 encoded image (optionally with data URL prefix)
+        max_length: Maximum allowed length of base64 string
+
+    Returns:
+        Decoded image bytes
+
+    Raises:
+        FileSizeExceededError: If base64 string exceeds max_length
+    """
+    if len(base64_string) > max_length:
+        raise FileSizeExceededError(
+            f"Base64 image data exceeds maximum size: {len(base64_string) / 1024 / 1024:.1f} MB > "
+            f"{max_length / 1024 / 1024:.1f} MB limit"
+        )
+
     # Handle data URL format: data:image/jpeg;base64,/9j/4AAQ...
     if base64_string.startswith("data:"):
         # Extract the base64 part after the comma
@@ -152,13 +181,48 @@ def decode_base64_image(base64_string: str) -> bytes:
     return base64.b64decode(base64_string)
 
 
-def download_image(url: str, timeout: int = 30) -> str:
-    """Download image from URL and return local path."""
+def download_image(url: str, timeout: int = 30, max_size: int = MAX_IMAGE_SIZE) -> str:
+    """
+    Download image from URL and return local path.
+
+    Args:
+        url: Image URL
+        timeout: Download timeout in seconds
+        max_size: Maximum allowed file size in bytes
+
+    Returns:
+        Local file path to downloaded image
+
+    Raises:
+        FileSizeExceededError: If image exceeds max_size
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     }
-    response = requests.get(url, timeout=timeout, headers=headers)
+
+    # First, make a HEAD request to check Content-Length
+    try:
+        head_response = requests.head(url, timeout=timeout, headers=headers, allow_redirects=True)
+        content_length = head_response.headers.get("content-length")
+        if content_length and int(content_length) > max_size:
+            raise FileSizeExceededError(
+                f"Image at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+                f"{max_size / 1024 / 1024:.1f} MB limit"
+            )
+    except requests.RequestException:
+        # HEAD request failed, proceed with GET and check during download
+        pass
+
+    response = requests.get(url, timeout=timeout, headers=headers, stream=True)
     response.raise_for_status()
+
+    # Check Content-Length header from GET response
+    content_length = response.headers.get("content-length")
+    if content_length and int(content_length) > max_size:
+        raise FileSizeExceededError(
+            f"Image at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+            f"{max_size / 1024 / 1024:.1f} MB limit"
+        )
 
     # Determine extension from content type or URL
     content_type = response.headers.get("content-type", "")
@@ -175,32 +239,76 @@ def download_image(url: str, timeout: int = 30) -> str:
         path = urlparse(url).path
         ext = Path(path).suffix or ".jpg"
 
-    # Save to temp file and register for cleanup
+    # Save to temp file with size checking during download
     temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    temp_file.write(response.content)
-    temp_file.close()
+    downloaded_size = 0
+    try:
+        for chunk in response.iter_content(chunk_size=8192):
+            downloaded_size += len(chunk)
+            if downloaded_size > max_size:
+                temp_file.close()
+                os.unlink(temp_file.name)
+                raise FileSizeExceededError(
+                    f"Image at {url} exceeds maximum size during download: "
+                    f"{downloaded_size / 1024 / 1024:.1f} MB > {max_size / 1024 / 1024:.1f} MB limit"
+                )
+            temp_file.write(chunk)
+        temp_file.close()
+    except FileSizeExceededError:
+        raise
+    except Exception:
+        temp_file.close()
+        if os.path.exists(temp_file.name):
+            os.unlink(temp_file.name)
+        raise
 
     return _temp_manager.register(temp_file.name)
 
 
-def download_video(url: str, timeout: int = 120) -> str:
+def download_video(url: str, timeout: int = 120, max_size: int = MAX_VIDEO_SIZE) -> str:
     """
     Download video from URL and return local path.
 
     Args:
         url: Video URL (http/https)
         timeout: Download timeout in seconds (default 120s for larger videos)
+        max_size: Maximum allowed file size in bytes
 
     Returns:
         Local file path to downloaded video
+
+    Raises:
+        FileSizeExceededError: If video exceeds max_size
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     }
 
     logger.info(f"Downloading video from: {url}")
+
+    # First, make a HEAD request to check Content-Length
+    try:
+        head_response = requests.head(url, timeout=timeout, headers=headers, allow_redirects=True)
+        content_length = head_response.headers.get("content-length")
+        if content_length and int(content_length) > max_size:
+            raise FileSizeExceededError(
+                f"Video at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+                f"{max_size / 1024 / 1024:.1f} MB limit"
+            )
+    except requests.RequestException:
+        # HEAD request failed, proceed with GET and check during download
+        pass
+
     response = requests.get(url, timeout=timeout, headers=headers, stream=True)
     response.raise_for_status()
+
+    # Check Content-Length header from GET response
+    content_length = response.headers.get("content-length")
+    if content_length and int(content_length) > max_size:
+        raise FileSizeExceededError(
+            f"Video at {url} exceeds maximum size: {int(content_length) / 1024 / 1024:.1f} MB > "
+            f"{max_size / 1024 / 1024:.1f} MB limit"
+        )
 
     # Determine extension from content type or URL
     content_type = response.headers.get("content-type", "")
@@ -219,11 +327,28 @@ def download_video(url: str, timeout: int = 120) -> str:
         path = urlparse(url).path
         ext = Path(path).suffix or ".mp4"
 
-    # Save to temp file (stream for larger files) and register for cleanup
+    # Save to temp file (stream for larger files) with size checking
     temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    for chunk in response.iter_content(chunk_size=8192):
-        temp_file.write(chunk)
-    temp_file.close()
+    downloaded_size = 0
+    try:
+        for chunk in response.iter_content(chunk_size=8192):
+            downloaded_size += len(chunk)
+            if downloaded_size > max_size:
+                temp_file.close()
+                os.unlink(temp_file.name)
+                raise FileSizeExceededError(
+                    f"Video at {url} exceeds maximum size during download: "
+                    f"{downloaded_size / 1024 / 1024:.1f} MB > {max_size / 1024 / 1024:.1f} MB limit"
+                )
+            temp_file.write(chunk)
+        temp_file.close()
+    except FileSizeExceededError:
+        raise
+    except Exception:
+        temp_file.close()
+        if os.path.exists(temp_file.name):
+            os.unlink(temp_file.name)
+        raise
 
     file_size = Path(temp_file.name).stat().st_size
     logger.info(
@@ -233,7 +358,7 @@ def download_video(url: str, timeout: int = 120) -> str:
     return _temp_manager.register(temp_file.name)
 
 
-def decode_base64_video(base64_string: str) -> str:
+def decode_base64_video(base64_string: str, max_length: int = MAX_BASE64_VIDEO_LENGTH) -> str:
     """
     Decode base64 video to temp file and return path.
 
@@ -241,10 +366,20 @@ def decode_base64_video(base64_string: str) -> str:
 
     Args:
         base64_string: Base64-encoded video with data URL prefix
+        max_length: Maximum allowed length of base64 string
 
     Returns:
         Local file path to decoded video
+
+    Raises:
+        FileSizeExceededError: If base64 string exceeds max_length
     """
+    if len(base64_string) > max_length:
+        raise FileSizeExceededError(
+            f"Base64 video data exceeds maximum size: {len(base64_string) / 1024 / 1024:.1f} MB > "
+            f"{max_length / 1024 / 1024:.1f} MB limit"
+        )
+
     # Extract format and data
     if base64_string.startswith("data:video/"):
         # Format: data:video/mp4;base64,AAAA...
