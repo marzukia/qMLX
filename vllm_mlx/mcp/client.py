@@ -131,6 +131,12 @@ class MCPClient:
                 "MCP SDK required for MCP support. Install with: pip install mcp"
             )
 
+        # Security: Log the command being executed for audit trail
+        logger.info(
+            f"MCP SECURITY AUDIT: Server '{self.name}' executing command: "
+            f"{self.config.command} {' '.join(self.config.args or [])}"
+        )
+
         server_params = StdioServerParameters(
             command=self.config.command,
             args=self.config.args or [],

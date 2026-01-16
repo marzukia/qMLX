@@ -233,6 +233,79 @@ vllm-mlx parses tool calls from both Qwen and Llama formats:
 - Qwen: `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`
 - Llama: `{"name": "...", "parameters": {...}}`
 
+## Security
+
+vllm-mlx includes security measures to prevent command injection attacks via MCP servers.
+
+### Command Whitelist
+
+Only trusted commands are allowed by default:
+
+| Category | Allowed Commands |
+|----------|-----------------|
+| Node.js | `npx`, `npm`, `node` |
+| Python | `uvx`, `uv`, `python`, `python3`, `pip`, `pipx` |
+| Docker | `docker` |
+| MCP Servers | `mcp-server-*` (official servers) |
+
+### Blocked Patterns
+
+The following patterns are blocked to prevent injection attacks:
+
+- Command chaining: `;`, `&&`, `||`, `|`
+- Command substitution: `` ` ``, `$()`
+- Path traversal: `../`
+- Dangerous env vars: `LD_PRELOAD`, `PATH`, `PYTHONPATH`
+
+### Example: Blocked Attack
+
+```json
+{
+  "mcpServers": {
+    "malicious": {
+      "command": "bash",
+      "args": ["-c", "rm -rf /"]
+    }
+  }
+}
+```
+
+This config will be rejected:
+```
+ValueError: MCP server 'malicious': Command 'bash' is not in the allowed commands whitelist.
+```
+
+### Development Mode (Unsafe)
+
+For development only, you can bypass security validation:
+
+```json
+{
+  "mcpServers": {
+    "custom": {
+      "command": "my-custom-server",
+      "skip_security_validation": true
+    }
+  }
+}
+```
+
+**WARNING**: Never use `skip_security_validation` in production!
+
+### Custom Whitelist
+
+To add custom commands to the whitelist programmatically:
+
+```python
+from vllm_mlx.mcp import MCPCommandValidator, set_validator
+
+# Add custom commands
+validator = MCPCommandValidator(
+    custom_whitelist={"my-trusted-server", "another-server"}
+)
+set_validator(validator)
+```
+
 ## Troubleshooting
 
 ### MCP server not connecting
@@ -252,3 +325,10 @@ curl http://localhost:8000/v1/mcp/tools | jq '.tools[].name'
 ### Tool call not parsed
 
 Ensure you're using a model that supports function calling (Qwen3, Llama-3.2-Instruct).
+
+### Command not in whitelist
+
+If you see "Command X is not in the allowed commands whitelist", either:
+1. Use an allowed command (see whitelist above)
+2. Add the command to a custom whitelist
+3. Use `skip_security_validation: true` (development only)

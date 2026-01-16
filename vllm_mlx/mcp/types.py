@@ -41,6 +41,9 @@ class MCPServerConfig:
     enabled: bool = True
     timeout: float = 30.0
 
+    # Security options
+    skip_security_validation: bool = False  # WARNING: Only for development!
+
     def __post_init__(self):
         """Validate configuration."""
         if isinstance(self.transport, str):
@@ -52,6 +55,32 @@ class MCPServerConfig:
         elif self.transport == MCPTransport.SSE:
             if not self.url:
                 raise ValueError(f"MCP server '{self.name}': sse transport requires 'url'")
+
+        # Security validation
+        self._validate_security()
+
+    def _validate_security(self) -> None:
+        """Validate security of the configuration."""
+        from .security import validate_mcp_server_config, MCPSecurityError
+
+        if self.skip_security_validation:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"MCP server '{self.name}': Security validation SKIPPED. "
+                f"This is dangerous and should only be used in development!"
+            )
+            return
+
+        try:
+            validate_mcp_server_config(
+                server_name=self.name,
+                command=self.command,
+                args=self.args,
+                env=self.env,
+                url=self.url,
+            )
+        except MCPSecurityError as e:
+            raise ValueError(str(e)) from e
 
 
 @dataclass

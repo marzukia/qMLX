@@ -31,6 +31,14 @@ from .client import MCPClient
 from .manager import MCPClientManager
 from .tools import mcp_tool_to_openai, openai_call_to_mcp, format_tool_result
 from .executor import ToolExecutor
+from .security import (
+    MCPSecurityError,
+    MCPCommandValidator,
+    ALLOWED_COMMANDS,
+    validate_mcp_server_config,
+    get_validator,
+    set_validator,
+)
 
 __all__ = [
     # Types
@@ -51,4 +59,11 @@ __all__ = [
     "format_tool_result",
     # Executor
     "ToolExecutor",
+    # Security
+    "MCPSecurityError",
+    "MCPCommandValidator",
+    "ALLOWED_COMMANDS",
+    "validate_mcp_server_config",
+    "get_validator",
+    "set_validator",
 ]
