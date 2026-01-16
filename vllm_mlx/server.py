@@ -42,6 +42,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -51,40 +52,19 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 # Import from new modular API
-from .api.models import (
-    Message,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    ChatCompletionChoice,
-    ChatCompletionChunk,
-    ChatCompletionChunkChoice,
-    ChatCompletionChunkDelta,
-    AssistantMessage,
-    CompletionRequest,
-    CompletionResponse,
-    CompletionChoice,
-    Usage,
-    ModelInfo,
-    ModelsResponse,
-    MCPToolInfo,
-    MCPToolsResponse,
-    MCPServerInfo,
-    MCPServersResponse,
-    MCPExecuteRequest,
-    MCPExecuteResponse,
-    # Re-export for backwards compatibility with tests
-    ContentPart,
-    ImageUrl,
-    VideoUrl,
-)
-from .api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
-from .api.tool_calling import (
-    parse_tool_calls,
-    convert_tools_for_template,
-    parse_json_output,
-    build_json_system_prompt,
-)
-from .engine import BaseEngine, SimpleEngine, BatchedEngine
+from .api.models import (  # Re-export for backwards compatibility with tests
+    AssistantMessage, ChatCompletionChoice, ChatCompletionChunk,
+    ChatCompletionChunkChoice, ChatCompletionChunkDelta, ChatCompletionRequest,
+    ChatCompletionResponse, CompletionChoice, CompletionRequest,
+    CompletionResponse, ContentPart, ImageUrl, MCPExecuteRequest,
+    MCPExecuteResponse, MCPServerInfo, MCPServersResponse, MCPToolInfo,
+    MCPToolsResponse, Message, ModelInfo, ModelsResponse, Usage, VideoUrl)
+from .api.tool_calling import (build_json_system_prompt,
+                               convert_tools_for_template, parse_json_output,
+                               parse_tool_calls)
+from .api.utils import (clean_output_text, extract_multimodal_content,
+                        is_mllm_model)
+from .engine import BaseEngine, BatchedEngine, SimpleEngine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -93,6 +73,7 @@ logger = logging.getLogger(__name__)
 _engine: Optional[BaseEngine] = None
 _model_name: Optional[str] = None
 _default_max_tokens: int = 32768
+_default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
 
 # Global MCP manager
 _mcp_manager = None
@@ -108,7 +89,7 @@ async def lifespan(app: FastAPI):
     global _engine, _mcp_manager
 
     # Startup: Start engine if loaded (needed for BatchedEngine in uvicorn's event loop)
-    if _engine is not None and hasattr(_engine, '_loaded') and not _engine._loaded:
+    if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
         await _engine.start()
 
     # Initialize MCP if config provided
@@ -135,10 +116,74 @@ app = FastAPI(
 )
 
 
-from fastapi import Request, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import threading
+from collections import defaultdict
+
+from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 security = HTTPBearer(auto_error=False)
+
+
+class RateLimiter:
+    """Simple in-memory rate limiter using sliding window."""
+
+    def __init__(self, requests_per_minute: int = 60, enabled: bool = False):
+        self.requests_per_minute = requests_per_minute
+        self.enabled = enabled
+        self.window_size = 60.0  # 1 minute window
+        self._requests: dict[str, list[float]] = defaultdict(list)
+        self._lock = threading.Lock()
+
+    def is_allowed(self, client_id: str) -> tuple[bool, int]:
+        """
+        Check if request is allowed for client.
+
+        Returns:
+            (is_allowed, retry_after_seconds)
+        """
+        if not self.enabled:
+            return True, 0
+
+        current_time = time.time()
+        window_start = current_time - self.window_size
+
+        with self._lock:
+            # Clean old requests outside window
+            self._requests[client_id] = [
+                t for t in self._requests[client_id] if t > window_start
+            ]
+
+            # Check rate limit
+            if len(self._requests[client_id]) >= self.requests_per_minute:
+                # Calculate retry-after
+                oldest = min(self._requests[client_id])
+                retry_after = int(oldest + self.window_size - current_time) + 1
+                return False, max(1, retry_after)
+
+            # Record this request
+            self._requests[client_id].append(current_time)
+            return True, 0
+
+
+# Global rate limiter (disabled by default)
+_rate_limiter = RateLimiter(requests_per_minute=60, enabled=False)
+
+
+async def check_rate_limit(request: Request):
+    """Rate limiting dependency."""
+    # Use API key as client ID if available, otherwise use IP
+    client_id = request.headers.get(
+        "Authorization", request.client.host if request.client else "unknown"
+    )
+
+    allowed, retry_after = _rate_limiter.is_allowed(client_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Retry after {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -147,7 +192,8 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(sec
         return True  # No auth required
     if credentials is None:
         raise HTTPException(status_code=401, detail="API key required")
-    if credentials.credentials != _api_key:
+    # Use constant-time comparison to prevent timing attacks
+    if not secrets.compare_digest(credentials.credentials, _api_key):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
 
@@ -212,7 +258,9 @@ async def health():
     """Health check endpoint."""
     mcp_info = None
     if _mcp_manager is not None:
-        connected = sum(1 for s in _mcp_manager.get_server_status() if s.state.value == "connected")
+        connected = sum(
+            1 for s in _mcp_manager.get_server_status() if s.state.value == "connected"
+        )
         total = len(_mcp_manager.get_server_status())
         mcp_info = {
             "enabled": True,
@@ -246,6 +294,7 @@ async def list_models() -> ModelsResponse:
 # MCP Endpoints
 # =============================================================================
 
+
 @app.get("/v1/mcp/tools", dependencies=[Depends(verify_api_key)])
 async def list_mcp_tools() -> MCPToolsResponse:
     """List all available MCP tools."""
@@ -254,12 +303,14 @@ async def list_mcp_tools() -> MCPToolsResponse:
 
     tools = []
     for tool in _mcp_manager.get_all_tools():
-        tools.append(MCPToolInfo(
-            name=tool.full_name,
-            description=tool.description,
-            server=tool.server_name,
-            parameters=tool.input_schema,
-        ))
+        tools.append(
+            MCPToolInfo(
+                name=tool.full_name,
+                description=tool.description,
+                server=tool.server_name,
+                parameters=tool.input_schema,
+            )
+        )
 
     return MCPToolsResponse(tools=tools, count=len(tools))
 
@@ -272,13 +323,15 @@ async def list_mcp_servers() -> MCPServersResponse:
 
     servers = []
     for status in _mcp_manager.get_server_status():
-        servers.append(MCPServerInfo(
-            name=status.name,
-            state=status.state.value,
-            transport=status.transport.value,
-            tools_count=status.tools_count,
-            error=status.error,
-        ))
+        servers.append(
+            MCPServerInfo(
+                name=status.name,
+                state=status.state.value,
+                transport=status.transport.value,
+                tools_count=status.tools_count,
+                error=status.error,
+            )
+        )
 
     return MCPServersResponse(servers=servers)
 
@@ -288,8 +341,7 @@ async def execute_mcp_tool(request: MCPExecuteRequest) -> MCPExecuteResponse:
     """Execute an MCP tool."""
     if _mcp_manager is None:
         raise HTTPException(
-            status_code=503,
-            detail="MCP not configured. Start server with --mcp-config"
+            status_code=503, detail="MCP not configured. Start server with --mcp-config"
         )
 
     result = await _mcp_manager.execute_tool(
@@ -331,8 +383,8 @@ async def create_transcription(
     - parakeet-tdt-0.6b-v2 (English, fastest)
     """
     global _stt_engine
-    import tempfile
     import os
+    import tempfile
 
     try:
         from .audio.stt import STTEngine
@@ -376,7 +428,7 @@ async def create_transcription(
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="mlx-audio not installed. Install with: pip install mlx-audio"
+            detail="mlx-audio not installed. Install with: pip install mlx-audio",
         )
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
@@ -425,13 +477,15 @@ async def create_speech(
         audio = _tts_engine.generate(input, voice=voice, speed=speed)
         audio_bytes = _tts_engine.to_bytes(audio, format=response_format)
 
-        content_type = "audio/wav" if response_format == "wav" else f"audio/{response_format}"
+        content_type = (
+            "audio/wav" if response_format == "wav" else f"audio/{response_format}"
+        )
         return Response(content=audio_bytes, media_type=content_type)
 
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="mlx-audio not installed. Install with: pip install mlx-audio"
+            detail="mlx-audio not installed. Install with: pip install mlx-audio",
         )
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
@@ -441,7 +495,7 @@ async def create_speech(
 @app.get("/v1/audio/voices", dependencies=[Depends(verify_api_key)])
 async def list_voices(model: str = "kokoro"):
     """List available voices for a TTS model."""
-    from .audio.tts import KOKORO_VOICES, CHATTERBOX_VOICES
+    from .audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
 
     if "kokoro" in model.lower():
         return {"voices": KOKORO_VOICES}
@@ -455,7 +509,10 @@ async def list_voices(model: str = "kokoro"):
 # Completion Endpoints
 # =============================================================================
 
-@app.post("/v1/completions", dependencies=[Depends(verify_api_key)])
+
+@app.post(
+    "/v1/completions", dependencies=[Depends(verify_api_key), Depends(check_rate_limit)]
+)
 async def create_completion(request: CompletionRequest):
     """Create a text completion."""
     engine = get_engine()
@@ -469,30 +526,43 @@ async def create_completion(request: CompletionRequest):
             media_type="text/event-stream",
         )
 
-    # Non-streaming response with timing
+    # Non-streaming response with timing and timeout
     start_time = time.perf_counter()
+    timeout = request.timeout or _default_timeout
     choices = []
     total_completion_tokens = 0
 
     for i, prompt in enumerate(prompts):
-        output = await engine.generate(
-            prompt=prompt,
-            max_tokens=request.max_tokens or _default_max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            stop=request.stop,
-        )
+        try:
+            output = await asyncio.wait_for(
+                engine.generate(
+                    prompt=prompt,
+                    max_tokens=request.max_tokens or _default_max_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    stop=request.stop,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=504, detail=f"Request timed out after {timeout:.1f} seconds"
+            )
 
-        choices.append(CompletionChoice(
-            index=i,
-            text=output.text,
-            finish_reason=output.finish_reason,
-        ))
+        choices.append(
+            CompletionChoice(
+                index=i,
+                text=output.text,
+                finish_reason=output.finish_reason,
+            )
+        )
         total_completion_tokens += output.completion_tokens
 
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0
-    logger.info(f"Completion: {total_completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)")
+    logger.info(
+        f"Completion: {total_completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
+    )
 
     return CompletionResponse(
         model=request.model,
@@ -504,7 +574,10 @@ async def create_completion(request: CompletionRequest):
     )
 
 
-@app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
+@app.post(
+    "/v1/chat/completions",
+    dependencies=[Depends(verify_api_key), Depends(check_rate_limit)],
+)
 async def create_chat_completion(request: ChatCompletionRequest):
     """
     Create a chat completion (supports multimodal content for VLM models).
@@ -588,14 +661,24 @@ async def create_chat_completion(request: ChatCompletionRequest):
             media_type="text/event-stream",
         )
 
-    # Non-streaming response with timing
+    # Non-streaming response with timing and timeout
     start_time = time.perf_counter()
+    timeout = request.timeout or _default_timeout
 
-    output = await engine.chat(messages=messages, **chat_kwargs)
+    try:
+        output = await asyncio.wait_for(
+            engine.chat(messages=messages, **chat_kwargs), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504, detail=f"Request timed out after {timeout:.1f} seconds"
+        )
 
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = output.completion_tokens / elapsed if elapsed > 0 else 0
-    logger.info(f"Chat completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)")
+    logger.info(
+        f"Chat completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
+    )
 
     # Parse tool calls from output
     cleaned_text, tool_calls = parse_tool_calls(output.text)
@@ -603,8 +686,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
     # Process response_format if specified
     if response_format and not tool_calls:
         cleaned_text, parsed_json, is_valid, error = parse_json_output(
-            cleaned_text or output.text,
-            response_format
+            cleaned_text or output.text, response_format
         )
         if parsed_json is not None:
             # Return JSON as string
@@ -617,13 +699,15 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     return ChatCompletionResponse(
         model=request.model,
-        choices=[ChatCompletionChoice(
-            message=AssistantMessage(
-                content=clean_output_text(cleaned_text) if cleaned_text else None,
-                tool_calls=tool_calls,
-            ),
-            finish_reason=finish_reason,
-        )],
+        choices=[
+            ChatCompletionChoice(
+                message=AssistantMessage(
+                    content=clean_output_text(cleaned_text) if cleaned_text else None,
+                    tool_calls=tool_calls,
+                ),
+                finish_reason=finish_reason,
+            )
+        ],
         usage=Usage(
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
@@ -668,6 +752,7 @@ def _inject_json_instruction(messages: list, instruction: str) -> list:
 # Streaming Helpers
 # =============================================================================
 
+
 async def stream_completion(
     engine: BaseEngine,
     prompt: str,
@@ -686,11 +771,13 @@ async def stream_completion(
             "object": "text_completion",
             "created": int(time.time()),
             "model": request.model,
-            "choices": [{
-                "index": 0,
-                "text": output.new_text,
-                "finish_reason": output.finish_reason if output.finished else None,
-            }],
+            "choices": [
+                {
+                    "index": 0,
+                    "text": output.new_text,
+                    "finish_reason": output.finish_reason if output.finished else None,
+                }
+            ],
         }
         yield f"data: {json.dumps(data)}\n\n"
 
@@ -710,9 +797,11 @@ async def stream_chat_completion(
     first_chunk = ChatCompletionChunk(
         id=response_id,
         model=request.model,
-        choices=[ChatCompletionChunkChoice(
-            delta=ChatCompletionChunkDelta(role="assistant"),
-        )],
+        choices=[
+            ChatCompletionChunkChoice(
+                delta=ChatCompletionChunkDelta(role="assistant"),
+            )
+        ],
     )
     yield f"data: {first_chunk.model_dump_json()}\n\n"
 
@@ -733,10 +822,14 @@ async def stream_chat_completion(
         chunk = ChatCompletionChunk(
             id=response_id,
             model=request.model,
-            choices=[ChatCompletionChunkChoice(
-                delta=ChatCompletionChunkDelta(content=content if content else None),
-                finish_reason=output.finish_reason if output.finished else None,
-            )],
+            choices=[
+                ChatCompletionChunkChoice(
+                    delta=ChatCompletionChunkDelta(
+                        content=content if content else None
+                    ),
+                    finish_reason=output.finish_reason if output.finished else None,
+                )
+            ],
         )
         yield f"data: {chunk.model_dump_json()}\n\n"
 
@@ -747,12 +840,14 @@ async def stream_chat_completion(
 # MCP Initialization
 # =============================================================================
 
+
 async def init_mcp(config_path: str):
     """Initialize MCP manager from config file."""
     global _mcp_manager, _mcp_executor
 
     try:
-        from vllm_mlx.mcp import MCPClientManager, ToolExecutor, load_mcp_config
+        from vllm_mlx.mcp import (MCPClientManager, ToolExecutor,
+                                  load_mcp_config)
 
         config = load_mcp_config(config_path)
         _mcp_manager = MCPClientManager(config)
@@ -773,6 +868,7 @@ async def init_mcp(config_path: str):
 # =============================================================================
 # Main Entry Point
 # =============================================================================
+
 
 def main():
     """Run the server."""
@@ -837,12 +933,32 @@ Examples:
         default=None,
         help="API key for authentication (if not set, no auth required)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Default request timeout in seconds (default: 300)",
+    )
+    parser.add_argument(
+        "--rate-limit",
+        type=int,
+        default=0,
+        help="Rate limit requests per minute per client (0 = disabled)",
+    )
 
     args = parser.parse_args()
 
-    # Set API key globally
-    global _api_key
+    # Set global configuration
+    global _api_key, _default_timeout, _rate_limiter
     _api_key = args.api_key
+    _default_timeout = args.timeout
+
+    # Configure rate limiter
+    if args.rate_limit > 0:
+        _rate_limiter = RateLimiter(requests_per_minute=args.rate_limit, enabled=True)
+        logger.info(
+            f"Rate limiting enabled: {args.rate_limit} requests/minute per client"
+        )
 
     # Set MCP config for lifespan
     if args.mcp_config:
@@ -858,6 +974,7 @@ Examples:
 
     # Start server
     import uvicorn
+
     uvicorn.run(app, host=args.host, port=args.port)
 
 

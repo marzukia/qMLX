@@ -6,6 +6,7 @@ This engine wraps mlx-lm directly with zero overhead for optimal
 performance when serving a single user at a time.
 """
 
+import asyncio
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -120,7 +121,9 @@ class SimpleEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
-        output = self._model.generate(
+        # Run in thread pool to allow asyncio timeout to work
+        output = await asyncio.to_thread(
+            self._model.generate,
             prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -232,7 +235,9 @@ class SimpleEngine(BaseEngine):
 
         if self._is_mllm:
             # For MLLM, use the chat method which handles images/videos
-            output = self._model.chat(
+            # Run in thread pool to allow asyncio timeout to work
+            output = await asyncio.to_thread(
+                self._model.chat,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -247,7 +252,9 @@ class SimpleEngine(BaseEngine):
             )
         else:
             # For LLM, use the chat method
-            output = self._model.chat(
+            # Run in thread pool to allow asyncio timeout to work
+            output = await asyncio.to_thread(
+                self._model.chat,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
