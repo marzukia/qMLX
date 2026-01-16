@@ -38,6 +38,13 @@ from .security import (
     validate_mcp_server_config,
     get_validator,
     set_validator,
+    # Sandboxing
+    ToolSandbox,
+    ToolExecutionAudit,
+    get_sandbox,
+    set_sandbox,
+    DANGEROUS_TOOL_ARG_PATTERNS,
+    HIGH_RISK_TOOL_PATTERNS,
 )
 
 __all__ = [
@@ -68,4 +75,11 @@ __all__ = [
     "validate_mcp_server_config",
     "get_validator",
     "set_validator",
+    # Sandboxing
+    "ToolSandbox",
+    "ToolExecutionAudit",
+    "get_sandbox",
+    "set_sandbox",
+    "DANGEROUS_TOOL_ARG_PATTERNS",
+    "HIGH_RISK_TOOL_PATTERNS",
 ]

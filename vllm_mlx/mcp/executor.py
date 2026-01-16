@@ -5,12 +5,14 @@ Tool executor for handling tool calls from model responses.
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import jsonschema
 from jsonschema import ValidationError
 
 from .manager import MCPClientManager
+from .security import get_sandbox, MCPSecurityError, ToolSandbox
 from .tools import extract_tool_calls, format_tool_result
 from .types import MCPToolResult, MCPTool
 
@@ -73,6 +75,7 @@ class ToolExecutor:
         max_parallel: int = 5,
         default_timeout: Optional[float] = None,
         validate_arguments: bool = True,
+        sandbox: Optional[ToolSandbox] = None,
     ):
         """
         Initialize tool executor.
@@ -82,11 +85,13 @@ class ToolExecutor:
             max_parallel: Maximum parallel tool executions
             default_timeout: Default timeout for tool calls
             validate_arguments: If True, validate arguments against tool schemas
+            sandbox: Optional tool sandbox for security controls. Uses global if None.
         """
         self.manager = manager
         self.max_parallel = max_parallel
         self.default_timeout = default_timeout or manager.config.default_timeout
         self.validate_arguments = validate_arguments
+        self.sandbox = sandbox or get_sandbox()
 
     async def execute_tool_calls(
         self,
@@ -155,6 +160,34 @@ class ToolExecutor:
         except ToolArgumentValidationError as e:
             return str(e)
 
+    def _validate_sandbox(
+        self,
+        tool_name: str,
+        server_name: str,
+        arguments: Dict[str, Any],
+    ) -> Optional[str]:
+        """
+        Validate tool execution against sandbox policy.
+
+        Returns:
+            Error message if blocked, None if allowed
+        """
+        try:
+            self.sandbox.validate_tool_execution(tool_name, server_name, arguments)
+            return None
+        except MCPSecurityError as e:
+            return str(e)
+
+    def _get_server_for_tool(self, full_name: str) -> str:
+        """Extract server name from full tool name or find it."""
+        if "__" in full_name:
+            return full_name.split("__")[0]
+        # Find which server has this tool
+        for tool in self.manager.get_all_tools():
+            if tool.name == full_name:
+                return tool.server_name
+        return "unknown"
+
     async def _execute_parallel(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -164,13 +197,32 @@ class ToolExecutor:
 
         async def execute_with_semaphore(tool_call: Dict[str, Any]):
             async with semaphore:
+                func = tool_call.get("function", {})
+                name = func.get("name", "")
+                arguments = func.get("arguments", {})
+                call_id = tool_call.get("id", "")
+
+                # Parse arguments if string
+                if isinstance(arguments, str):
+                    import json
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+
+                server_name = self._get_server_for_tool(name)
+                tool_name = name.split("__")[-1] if "__" in name else name
+
                 # Validate arguments before execution
                 validation_error = self._validate_tool_call(tool_call)
                 if validation_error:
-                    call_id = tool_call.get("id", "")
+                    self.sandbox.record_execution(
+                        tool_name, server_name, arguments,
+                        success=False, error_message=validation_error,
+                    )
                     return (
                         MCPToolResult(
-                            tool_name=tool_call.get("function", {}).get("name", ""),
+                            tool_name=name,
                             content=None,
                             is_error=True,
                             error_message=validation_error,
@@ -178,11 +230,39 @@ class ToolExecutor:
                         call_id,
                     )
 
+                # Validate sandbox policy
+                sandbox_error = self._validate_sandbox(tool_name, server_name, arguments)
+                if sandbox_error:
+                    self.sandbox.record_execution(
+                        tool_name, server_name, arguments,
+                        success=False, error_message=sandbox_error,
+                    )
+                    return (
+                        MCPToolResult(
+                            tool_name=name,
+                            content=None,
+                            is_error=True,
+                            error_message=sandbox_error,
+                        ),
+                        call_id,
+                    )
+
+                # Execute with timing for audit
+                start_time = time.time()
                 result = await self.manager.execute_tool_call(
                     tool_call,
                     timeout=self.default_timeout,
                 )
-                call_id = tool_call.get("id", "")
+                execution_time_ms = (time.time() - start_time) * 1000
+
+                # Record execution in audit log
+                self.sandbox.record_execution(
+                    tool_name, server_name, arguments,
+                    success=not result.is_error,
+                    error_message=result.error_message,
+                    execution_time_ms=execution_time_ms,
+                )
+
                 return (result, call_id)
 
         tasks = [execute_with_semaphore(tc) for tc in tool_calls]
@@ -214,14 +294,32 @@ class ToolExecutor:
         """Execute tool calls sequentially."""
         results = []
         for tool_call in tool_calls:
+            func = tool_call.get("function", {})
+            name = func.get("name", "")
+            arguments = func.get("arguments", {})
             call_id = tool_call.get("id", "")
+
+            # Parse arguments if string
+            if isinstance(arguments, str):
+                import json
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+
+            server_name = self._get_server_for_tool(name)
+            tool_name = name.split("__")[-1] if "__" in name else name
 
             # Validate arguments before execution
             validation_error = self._validate_tool_call(tool_call)
             if validation_error:
+                self.sandbox.record_execution(
+                    tool_name, server_name, arguments,
+                    success=False, error_message=validation_error,
+                )
                 results.append((
                     MCPToolResult(
-                        tool_name=tool_call.get("function", {}).get("name", ""),
+                        tool_name=name,
                         content=None,
                         is_error=True,
                         error_message=validation_error,
@@ -230,16 +328,49 @@ class ToolExecutor:
                 ))
                 continue
 
+            # Validate sandbox policy
+            sandbox_error = self._validate_sandbox(tool_name, server_name, arguments)
+            if sandbox_error:
+                self.sandbox.record_execution(
+                    tool_name, server_name, arguments,
+                    success=False, error_message=sandbox_error,
+                )
+                results.append((
+                    MCPToolResult(
+                        tool_name=name,
+                        content=None,
+                        is_error=True,
+                        error_message=sandbox_error,
+                    ),
+                    call_id,
+                ))
+                continue
+
             try:
+                # Execute with timing for audit
+                start_time = time.time()
                 result = await self.manager.execute_tool_call(
                     tool_call,
                     timeout=self.default_timeout,
                 )
+                execution_time_ms = (time.time() - start_time) * 1000
+
+                # Record execution in audit log
+                self.sandbox.record_execution(
+                    tool_name, server_name, arguments,
+                    success=not result.is_error,
+                    error_message=result.error_message,
+                    execution_time_ms=execution_time_ms,
+                )
                 results.append((result, call_id))
             except Exception as e:
+                self.sandbox.record_execution(
+                    tool_name, server_name, arguments,
+                    success=False, error_message=str(e),
+                )
                 results.append((
                     MCPToolResult(
-                        tool_name=tool_call.get("function", {}).get("name", ""),
+                        tool_name=name,
                         content=None,
                         is_error=True,
                         error_message=str(e),

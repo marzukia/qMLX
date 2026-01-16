@@ -202,7 +202,7 @@ def download_image(url: str, timeout: int = 30, max_size: int = MAX_IMAGE_SIZE) 
 
     # First, make a HEAD request to check Content-Length
     try:
-        head_response = requests.head(url, timeout=timeout, headers=headers, allow_redirects=True)
+        head_response = requests.head(url, timeout=timeout, headers=headers, allow_redirects=True, verify=True)
         content_length = head_response.headers.get("content-length")
         if content_length and int(content_length) > max_size:
             raise FileSizeExceededError(
@@ -213,7 +213,7 @@ def download_image(url: str, timeout: int = 30, max_size: int = MAX_IMAGE_SIZE) 
         # HEAD request failed, proceed with GET and check during download
         pass
 
-    response = requests.get(url, timeout=timeout, headers=headers, stream=True)
+    response = requests.get(url, timeout=timeout, headers=headers, stream=True, verify=True)
     response.raise_for_status()
 
     # Check Content-Length header from GET response
@@ -288,7 +288,7 @@ def download_video(url: str, timeout: int = 120, max_size: int = MAX_VIDEO_SIZE)
 
     # First, make a HEAD request to check Content-Length
     try:
-        head_response = requests.head(url, timeout=timeout, headers=headers, allow_redirects=True)
+        head_response = requests.head(url, timeout=timeout, headers=headers, allow_redirects=True, verify=True)
         content_length = head_response.headers.get("content-length")
         if content_length and int(content_length) > max_size:
             raise FileSizeExceededError(
@@ -299,7 +299,7 @@ def download_video(url: str, timeout: int = 120, max_size: int = MAX_VIDEO_SIZE)
         # HEAD request failed, proceed with GET and check during download
         pass
 
-    response = requests.get(url, timeout=timeout, headers=headers, stream=True)
+    response = requests.get(url, timeout=timeout, headers=headers, stream=True, verify=True)
     response.raise_for_status()
 
     # Check Content-Length header from GET response

@@ -10,8 +10,12 @@ import logging
 import os
 import re
 import shutil
+import time
+from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -340,3 +344,344 @@ def validate_mcp_server_config(
 
     if url:
         validator.validate_url(url, server_name)
+
+
+# ============================================================================
+# Tool Execution Sandboxing
+# ============================================================================
+
+# Dangerous tool argument patterns (for tool execution, not command args)
+DANGEROUS_TOOL_ARG_PATTERNS: List[re.Pattern] = [
+    re.compile(r"\.\./"),  # Path traversal
+    re.compile(r"/etc/"),  # System config access
+    re.compile(r"/proc/"),  # Process info
+    re.compile(r"/sys/"),  # System info
+    re.compile(r"~root"),  # Root home
+    re.compile(r"/root/"),  # Root home directory
+]
+
+# Tools that are considered high-risk and require explicit allowlisting
+HIGH_RISK_TOOL_PATTERNS: List[str] = [
+    "execute",
+    "run_command",
+    "shell",
+    "eval",
+    "exec",
+    "system",
+    "subprocess",
+]
+
+
+@dataclass
+class ToolExecutionAudit:
+    """Record of a tool execution for audit purposes."""
+    timestamp: float
+    tool_name: str
+    server_name: str
+    arguments: Dict[str, Any]
+    success: bool
+    error_message: Optional[str] = None
+    execution_time_ms: Optional[float] = None
+
+
+class ToolSandbox:
+    """
+    Sandboxing controls for MCP tool execution.
+
+    Provides:
+    - Tool allowlisting/blocklisting
+    - Argument sanitization
+    - Audit logging
+    - Rate limiting
+    """
+
+    def __init__(
+        self,
+        allowed_tools: Optional[Set[str]] = None,
+        blocked_tools: Optional[Set[str]] = None,
+        blocked_arg_patterns: Optional[List[re.Pattern]] = None,
+        max_calls_per_minute: int = 60,
+        audit_callback: Optional[Callable[[ToolExecutionAudit], None]] = None,
+        enabled: bool = True,
+    ):
+        """
+        Initialize tool sandbox.
+
+        Args:
+            allowed_tools: If set, only these tools can be executed (whitelist mode).
+            blocked_tools: Tools that are always blocked (blacklist mode).
+            blocked_arg_patterns: Patterns to block in tool arguments.
+            max_calls_per_minute: Rate limit for tool calls (0 = unlimited).
+            audit_callback: Optional callback for audit events.
+            enabled: If False, sandbox checks are bypassed (dev mode only).
+        """
+        self.allowed_tools = allowed_tools
+        self.blocked_tools = blocked_tools or set()
+        self.blocked_arg_patterns = blocked_arg_patterns or DANGEROUS_TOOL_ARG_PATTERNS.copy()
+        self.max_calls_per_minute = max_calls_per_minute
+        self.audit_callback = audit_callback
+        self.enabled = enabled
+
+        # Rate limiting state
+        self._call_times: Dict[str, List[float]] = defaultdict(list)
+        self._rate_limit_lock = Lock()
+
+        # Audit log (in-memory, bounded)
+        self._audit_log: List[ToolExecutionAudit] = []
+        self._audit_log_max_size = 1000
+        self._audit_lock = Lock()
+
+        if not enabled:
+            logger.warning(
+                "SECURITY WARNING: Tool sandbox is DISABLED. "
+                "All tool executions will be allowed without checks."
+            )
+
+    def validate_tool_execution(
+        self,
+        tool_name: str,
+        server_name: str,
+        arguments: Dict[str, Any],
+    ) -> None:
+        """
+        Validate that a tool execution is allowed.
+
+        Args:
+            tool_name: Name of the tool to execute
+            server_name: MCP server providing the tool
+            arguments: Tool arguments
+
+        Raises:
+            MCPSecurityError: If execution is not allowed
+        """
+        if not self.enabled:
+            logger.debug(f"Sandbox disabled, allowing tool '{tool_name}'")
+            return
+
+        full_name = f"{server_name}__{tool_name}"
+
+        # Check blocklist first
+        if self._is_blocked(tool_name, full_name):
+            raise MCPSecurityError(
+                f"Tool '{tool_name}' is blocked by security policy"
+            )
+
+        # Check allowlist if configured
+        if self.allowed_tools is not None:
+            if tool_name not in self.allowed_tools and full_name not in self.allowed_tools:
+                raise MCPSecurityError(
+                    f"Tool '{tool_name}' is not in the allowed tools list"
+                )
+
+        # Check for high-risk tool patterns
+        self._check_high_risk_tool(tool_name)
+
+        # Validate arguments
+        self._validate_arguments(tool_name, arguments)
+
+        # Check rate limit
+        self._check_rate_limit(full_name)
+
+        logger.debug(f"Tool execution validated: {full_name}")
+
+    def _is_blocked(self, tool_name: str, full_name: str) -> bool:
+        """Check if tool is in blocklist."""
+        return (
+            tool_name in self.blocked_tools or
+            full_name in self.blocked_tools or
+            tool_name.lower() in self.blocked_tools
+        )
+
+    def _check_high_risk_tool(self, tool_name: str) -> None:
+        """Check if tool matches high-risk patterns."""
+        tool_lower = tool_name.lower()
+        for pattern in HIGH_RISK_TOOL_PATTERNS:
+            if pattern in tool_lower:
+                logger.warning(
+                    f"High-risk tool detected: '{tool_name}' matches pattern '{pattern}'. "
+                    f"Ensure this tool is from a trusted MCP server."
+                )
+                break
+
+    def _validate_arguments(self, tool_name: str, arguments: Dict[str, Any]) -> None:
+        """Validate tool arguments for dangerous patterns."""
+        def check_value(key: str, value: Any, path: str = "") -> None:
+            current_path = f"{path}.{key}" if path else key
+
+            if isinstance(value, str):
+                for pattern in self.blocked_arg_patterns:
+                    if pattern.search(value):
+                        raise MCPSecurityError(
+                            f"Tool '{tool_name}' argument '{current_path}' contains "
+                            f"blocked pattern: {pattern.pattern}"
+                        )
+            elif isinstance(value, dict):
+                for k, v in value.items():
+                    check_value(k, v, current_path)
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    check_value(f"[{i}]", item, current_path)
+
+        for key, value in arguments.items():
+            check_value(key, value)
+
+    def _check_rate_limit(self, full_name: str) -> None:
+        """Check and enforce rate limit for tool calls."""
+        if self.max_calls_per_minute <= 0:
+            return
+
+        now = time.time()
+        window_start = now - 60  # 1 minute window
+
+        with self._rate_limit_lock:
+            # Clean old entries
+            self._call_times[full_name] = [
+                t for t in self._call_times[full_name] if t > window_start
+            ]
+
+            # Check limit
+            if len(self._call_times[full_name]) >= self.max_calls_per_minute:
+                raise MCPSecurityError(
+                    f"Rate limit exceeded for tool '{full_name}': "
+                    f"max {self.max_calls_per_minute} calls per minute"
+                )
+
+            # Record this call
+            self._call_times[full_name].append(now)
+
+    def record_execution(
+        self,
+        tool_name: str,
+        server_name: str,
+        arguments: Dict[str, Any],
+        success: bool,
+        error_message: Optional[str] = None,
+        execution_time_ms: Optional[float] = None,
+    ) -> ToolExecutionAudit:
+        """
+        Record a tool execution for audit purposes.
+
+        Args:
+            tool_name: Name of the executed tool
+            server_name: MCP server that executed the tool
+            arguments: Arguments passed to the tool
+            success: Whether execution succeeded
+            error_message: Error message if failed
+            execution_time_ms: Execution time in milliseconds
+
+        Returns:
+            The audit record
+        """
+        audit = ToolExecutionAudit(
+            timestamp=time.time(),
+            tool_name=tool_name,
+            server_name=server_name,
+            arguments=self._sanitize_arguments_for_log(arguments),
+            success=success,
+            error_message=error_message,
+            execution_time_ms=execution_time_ms,
+        )
+
+        # Store in audit log
+        with self._audit_lock:
+            self._audit_log.append(audit)
+            # Trim if over max size
+            if len(self._audit_log) > self._audit_log_max_size:
+                self._audit_log = self._audit_log[-self._audit_log_max_size:]
+
+        # Log the execution
+        if success:
+            logger.info(
+                f"AUDIT: Tool executed - {server_name}__{tool_name} "
+                f"(took {execution_time_ms:.1f}ms)" if execution_time_ms else
+                f"AUDIT: Tool executed - {server_name}__{tool_name}"
+            )
+        else:
+            logger.warning(
+                f"AUDIT: Tool failed - {server_name}__{tool_name}: {error_message}"
+            )
+
+        # Call callback if configured
+        if self.audit_callback:
+            try:
+                self.audit_callback(audit)
+            except Exception as e:
+                logger.error(f"Audit callback failed: {e}")
+
+        return audit
+
+    def _sanitize_arguments_for_log(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize arguments for logging (redact sensitive data)."""
+        sensitive_keys = {"password", "token", "secret", "key", "credential", "auth"}
+
+        def sanitize(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {
+                    k: "[REDACTED]" if any(s in k.lower() for s in sensitive_keys) else sanitize(v)
+                    for k, v in obj.items()
+                }
+            elif isinstance(obj, list):
+                return [sanitize(item) for item in obj]
+            elif isinstance(obj, str) and len(obj) > 1000:
+                return obj[:100] + f"... [truncated, {len(obj)} chars total]"
+            return obj
+
+        return sanitize(arguments)
+
+    def get_audit_log(
+        self,
+        limit: int = 100,
+        tool_filter: Optional[str] = None,
+        server_filter: Optional[str] = None,
+        errors_only: bool = False,
+    ) -> List[ToolExecutionAudit]:
+        """
+        Get audit log entries.
+
+        Args:
+            limit: Maximum entries to return
+            tool_filter: Filter by tool name (substring match)
+            server_filter: Filter by server name
+            errors_only: Only return failed executions
+
+        Returns:
+            List of audit entries
+        """
+        with self._audit_lock:
+            entries = self._audit_log.copy()
+
+        # Apply filters
+        if tool_filter:
+            entries = [e for e in entries if tool_filter in e.tool_name]
+        if server_filter:
+            entries = [e for e in entries if server_filter in e.server_name]
+        if errors_only:
+            entries = [e for e in entries if not e.success]
+
+        # Return most recent entries
+        return entries[-limit:]
+
+    def clear_audit_log(self) -> int:
+        """Clear audit log and return number of entries cleared."""
+        with self._audit_lock:
+            count = len(self._audit_log)
+            self._audit_log.clear()
+        return count
+
+
+# Global sandbox instance
+_sandbox: Optional[ToolSandbox] = None
+
+
+def get_sandbox() -> ToolSandbox:
+    """Get the global tool sandbox instance."""
+    global _sandbox
+    if _sandbox is None:
+        _sandbox = ToolSandbox()
+    return _sandbox
+
+
+def set_sandbox(sandbox: ToolSandbox) -> None:
+    """Set a custom global sandbox."""
+    global _sandbox
+    _sandbox = sandbox

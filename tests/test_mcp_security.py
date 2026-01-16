@@ -6,12 +6,17 @@ These tests verify that the MCP command validation properly prevents
 command injection attacks and other security vulnerabilities.
 """
 
+import re
+import time
 import pytest
 from vllm_mlx.mcp.security import (
     MCPCommandValidator,
     MCPSecurityError,
     ALLOWED_COMMANDS,
     validate_mcp_server_config,
+    ToolSandbox,
+    ToolExecutionAudit,
+    DANGEROUS_TOOL_ARG_PATTERNS,
 )
 from vllm_mlx.mcp.types import MCPServerConfig, MCPTransport
 
@@ -357,3 +362,402 @@ class TestDefaultWhitelist:
         assert "rm" not in ALLOWED_COMMANDS
         assert "curl" not in ALLOWED_COMMANDS
         assert "wget" not in ALLOWED_COMMANDS
+
+
+# ============================================================================
+# Tool Sandbox Tests
+# ============================================================================
+
+
+class TestToolSandbox:
+    """Tests for ToolSandbox class."""
+
+    def test_sandbox_allows_safe_tool_execution(self):
+        """Test that safe tool execution is allowed."""
+        sandbox = ToolSandbox()
+
+        # Should not raise
+        sandbox.validate_tool_execution(
+            tool_name="read_file",
+            server_name="filesystem",
+            arguments={"path": "/tmp/test.txt"},
+        )
+
+    def test_sandbox_blocks_blocklisted_tool(self):
+        """Test that blocklisted tools are blocked."""
+        sandbox = ToolSandbox(blocked_tools={"dangerous_tool", "shell"})
+
+        with pytest.raises(MCPSecurityError) as exc_info:
+            sandbox.validate_tool_execution(
+                tool_name="dangerous_tool",
+                server_name="test",
+                arguments={},
+            )
+
+        assert "blocked by security policy" in str(exc_info.value)
+
+    def test_sandbox_allowlist_mode(self):
+        """Test that allowlist mode only permits specific tools."""
+        sandbox = ToolSandbox(allowed_tools={"safe_tool", "another_safe"})
+
+        # Allowed tool should pass
+        sandbox.validate_tool_execution(
+            tool_name="safe_tool",
+            server_name="test",
+            arguments={},
+        )
+
+        # Non-allowed tool should fail
+        with pytest.raises(MCPSecurityError) as exc_info:
+            sandbox.validate_tool_execution(
+                tool_name="unknown_tool",
+                server_name="test",
+                arguments={},
+            )
+
+        assert "not in the allowed tools list" in str(exc_info.value)
+
+    def test_sandbox_blocks_path_traversal_in_args(self):
+        """Test that path traversal in arguments is blocked."""
+        sandbox = ToolSandbox()
+
+        with pytest.raises(MCPSecurityError) as exc_info:
+            sandbox.validate_tool_execution(
+                tool_name="read_file",
+                server_name="filesystem",
+                arguments={"path": "../../etc/passwd"},
+            )
+
+        assert "blocked pattern" in str(exc_info.value)
+
+    def test_sandbox_blocks_etc_access(self):
+        """Test that /etc/ access is blocked."""
+        sandbox = ToolSandbox()
+
+        with pytest.raises(MCPSecurityError) as exc_info:
+            sandbox.validate_tool_execution(
+                tool_name="read_file",
+                server_name="filesystem",
+                arguments={"path": "/etc/shadow"},
+            )
+
+        assert "blocked pattern" in str(exc_info.value)
+
+    def test_sandbox_blocks_proc_access(self):
+        """Test that /proc/ access is blocked."""
+        sandbox = ToolSandbox()
+
+        with pytest.raises(MCPSecurityError) as exc_info:
+            sandbox.validate_tool_execution(
+                tool_name="read_file",
+                server_name="filesystem",
+                arguments={"path": "/proc/self/environ"},
+            )
+
+        assert "blocked pattern" in str(exc_info.value)
+
+    def test_sandbox_validates_nested_arguments(self):
+        """Test that nested arguments are validated."""
+        sandbox = ToolSandbox()
+
+        with pytest.raises(MCPSecurityError) as exc_info:
+            sandbox.validate_tool_execution(
+                tool_name="complex_tool",
+                server_name="test",
+                arguments={
+                    "config": {
+                        "nested": {
+                            "path": "/etc/passwd",
+                        }
+                    }
+                },
+            )
+
+        assert "blocked pattern" in str(exc_info.value)
+
+    def test_sandbox_validates_list_arguments(self):
+        """Test that list arguments are validated."""
+        sandbox = ToolSandbox()
+
+        with pytest.raises(MCPSecurityError) as exc_info:
+            sandbox.validate_tool_execution(
+                tool_name="multi_file",
+                server_name="filesystem",
+                arguments={
+                    "files": ["/tmp/safe.txt", "../../../etc/passwd"]
+                },
+            )
+
+        assert "blocked pattern" in str(exc_info.value)
+
+    def test_sandbox_disabled_allows_all(self):
+        """Test that disabled sandbox allows all executions."""
+        sandbox = ToolSandbox(enabled=False)
+
+        # Should not raise even with blocked patterns
+        sandbox.validate_tool_execution(
+            tool_name="shell",
+            server_name="dangerous",
+            arguments={"path": "/etc/passwd"},
+        )
+
+
+class TestToolSandboxRateLimiting:
+    """Tests for sandbox rate limiting."""
+
+    def test_rate_limit_allows_within_limit(self):
+        """Test that calls within rate limit are allowed."""
+        sandbox = ToolSandbox(max_calls_per_minute=10)
+
+        # Should allow up to 10 calls
+        for i in range(10):
+            sandbox.validate_tool_execution(
+                tool_name="read_file",
+                server_name="filesystem",
+                arguments={"path": f"/tmp/file{i}.txt"},
+            )
+
+    def test_rate_limit_blocks_over_limit(self):
+        """Test that calls over rate limit are blocked."""
+        sandbox = ToolSandbox(max_calls_per_minute=5)
+
+        # Make 5 calls
+        for i in range(5):
+            sandbox.validate_tool_execution(
+                tool_name="read_file",
+                server_name="filesystem",
+                arguments={"path": f"/tmp/file{i}.txt"},
+            )
+
+        # 6th call should be blocked
+        with pytest.raises(MCPSecurityError) as exc_info:
+            sandbox.validate_tool_execution(
+                tool_name="read_file",
+                server_name="filesystem",
+                arguments={"path": "/tmp/file6.txt"},
+            )
+
+        assert "Rate limit exceeded" in str(exc_info.value)
+
+    def test_rate_limit_disabled_with_zero(self):
+        """Test that rate limiting is disabled with max_calls_per_minute=0."""
+        sandbox = ToolSandbox(max_calls_per_minute=0)
+
+        # Should allow unlimited calls
+        for i in range(100):
+            sandbox.validate_tool_execution(
+                tool_name="read_file",
+                server_name="filesystem",
+                arguments={"path": f"/tmp/file{i}.txt"},
+            )
+
+
+class TestToolSandboxAuditLogging:
+    """Tests for sandbox audit logging."""
+
+    def test_record_successful_execution(self):
+        """Test recording a successful tool execution."""
+        sandbox = ToolSandbox()
+
+        audit = sandbox.record_execution(
+            tool_name="read_file",
+            server_name="filesystem",
+            arguments={"path": "/tmp/test.txt"},
+            success=True,
+            execution_time_ms=50.5,
+        )
+
+        assert audit.tool_name == "read_file"
+        assert audit.server_name == "filesystem"
+        assert audit.success is True
+        assert audit.execution_time_ms == 50.5
+        assert audit.error_message is None
+
+    def test_record_failed_execution(self):
+        """Test recording a failed tool execution."""
+        sandbox = ToolSandbox()
+
+        audit = sandbox.record_execution(
+            tool_name="write_file",
+            server_name="filesystem",
+            arguments={"path": "/tmp/test.txt", "content": "data"},
+            success=False,
+            error_message="Permission denied",
+        )
+
+        assert audit.tool_name == "write_file"
+        assert audit.success is False
+        assert audit.error_message == "Permission denied"
+
+    def test_audit_log_retrieval(self):
+        """Test retrieving audit log entries."""
+        sandbox = ToolSandbox()
+
+        # Record multiple executions
+        sandbox.record_execution("tool1", "server1", {}, True)
+        sandbox.record_execution("tool2", "server2", {}, False, "error")
+        sandbox.record_execution("tool1", "server1", {}, True)
+
+        # Get all entries
+        entries = sandbox.get_audit_log()
+        assert len(entries) == 3
+
+        # Filter by tool
+        tool1_entries = sandbox.get_audit_log(tool_filter="tool1")
+        assert len(tool1_entries) == 2
+
+        # Filter by server
+        server2_entries = sandbox.get_audit_log(server_filter="server2")
+        assert len(server2_entries) == 1
+
+        # Filter errors only
+        error_entries = sandbox.get_audit_log(errors_only=True)
+        assert len(error_entries) == 1
+        assert error_entries[0].tool_name == "tool2"
+
+    def test_audit_log_limit(self):
+        """Test audit log limit parameter."""
+        sandbox = ToolSandbox()
+
+        # Record many executions
+        for i in range(10):
+            sandbox.record_execution(f"tool{i}", "server", {}, True)
+
+        # Get limited entries
+        entries = sandbox.get_audit_log(limit=5)
+        assert len(entries) == 5
+        # Should return most recent
+        assert entries[-1].tool_name == "tool9"
+
+    def test_audit_log_sensitive_data_redaction(self):
+        """Test that sensitive data is redacted in audit log."""
+        sandbox = ToolSandbox()
+
+        audit = sandbox.record_execution(
+            tool_name="api_call",
+            server_name="test",
+            arguments={
+                "url": "https://api.example.com",
+                "api_key": "secret-key-12345",
+                "password": "my-password",
+                "data": {"token": "bearer-token"},
+            },
+            success=True,
+        )
+
+        # Sensitive fields should be redacted
+        assert audit.arguments["api_key"] == "[REDACTED]"
+        assert audit.arguments["password"] == "[REDACTED]"
+        assert audit.arguments["data"]["token"] == "[REDACTED]"
+        # Non-sensitive fields should remain
+        assert audit.arguments["url"] == "https://api.example.com"
+
+    def test_audit_log_truncates_long_values(self):
+        """Test that long argument values are truncated."""
+        sandbox = ToolSandbox()
+
+        long_content = "x" * 2000
+
+        audit = sandbox.record_execution(
+            tool_name="write_file",
+            server_name="filesystem",
+            arguments={"content": long_content},
+            success=True,
+        )
+
+        # Should be truncated
+        assert len(audit.arguments["content"]) < len(long_content)
+        assert "truncated" in audit.arguments["content"]
+
+    def test_audit_callback(self):
+        """Test that audit callback is called."""
+        callback_records = []
+
+        def callback(audit: ToolExecutionAudit):
+            callback_records.append(audit)
+
+        sandbox = ToolSandbox(audit_callback=callback)
+
+        sandbox.record_execution("tool1", "server1", {}, True)
+        sandbox.record_execution("tool2", "server2", {}, False, "error")
+
+        assert len(callback_records) == 2
+        assert callback_records[0].tool_name == "tool1"
+        assert callback_records[1].tool_name == "tool2"
+
+    def test_clear_audit_log(self):
+        """Test clearing the audit log."""
+        sandbox = ToolSandbox()
+
+        sandbox.record_execution("tool1", "server1", {}, True)
+        sandbox.record_execution("tool2", "server2", {}, True)
+
+        count = sandbox.clear_audit_log()
+        assert count == 2
+
+        entries = sandbox.get_audit_log()
+        assert len(entries) == 0
+
+
+class TestToolSandboxHighRiskTools:
+    """Tests for high-risk tool detection."""
+
+    def test_high_risk_tool_warning(self, caplog):
+        """Test that high-risk tools trigger warning."""
+        import logging
+
+        sandbox = ToolSandbox()
+
+        with caplog.at_level(logging.WARNING):
+            sandbox.validate_tool_execution(
+                tool_name="execute_command",
+                server_name="test",
+                arguments={"cmd": "ls"},
+            )
+
+        assert "High-risk tool detected" in caplog.text
+        assert "execute" in caplog.text
+
+    def test_high_risk_shell_tool(self, caplog):
+        """Test that shell tools trigger warning."""
+        import logging
+
+        sandbox = ToolSandbox()
+
+        with caplog.at_level(logging.WARNING):
+            sandbox.validate_tool_execution(
+                tool_name="run_shell",
+                server_name="test",
+                arguments={},
+            )
+
+        assert "High-risk tool detected" in caplog.text
+
+
+class TestCustomBlockedPatterns:
+    """Tests for custom blocked argument patterns."""
+
+    def test_custom_blocked_pattern(self):
+        """Test adding custom blocked patterns."""
+        custom_patterns = [
+            re.compile(r"\.\."),  # Block any ..
+            re.compile(r"~"),  # Block home dir
+        ]
+
+        sandbox = ToolSandbox(blocked_arg_patterns=custom_patterns)
+
+        # Should block ..
+        with pytest.raises(MCPSecurityError):
+            sandbox.validate_tool_execution(
+                tool_name="tool",
+                server_name="server",
+                arguments={"path": "a..b"},
+            )
+
+        # Should block ~
+        with pytest.raises(MCPSecurityError):
+            sandbox.validate_tool_execution(
+                tool_name="tool",
+                server_name="server",
+                arguments={"path": "~/secret"},
+            )

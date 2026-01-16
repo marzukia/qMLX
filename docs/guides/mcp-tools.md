@@ -306,6 +306,80 @@ validator = MCPCommandValidator(
 set_validator(validator)
 ```
 
+## Tool Execution Sandboxing
+
+Beyond command validation, vllm-mlx provides runtime sandboxing for tool executions:
+
+### Sandbox Features
+
+| Feature | Description |
+|---------|-------------|
+| Tool Allowlisting | Only permit specific tools to execute |
+| Tool Blocklisting | Block specific dangerous tools |
+| Argument Validation | Block dangerous patterns in tool arguments |
+| Rate Limiting | Limit tool calls per minute |
+| Audit Logging | Track all tool executions |
+
+### Blocked Argument Patterns
+
+Tool arguments are validated for dangerous patterns:
+
+- Path traversal: `../`
+- System directories: `/etc/`, `/proc/`, `/sys/`
+- Root access: `/root/`, `~root`
+
+### High-Risk Tool Detection
+
+Tools matching these patterns trigger security warnings:
+
+- `execute`, `run_command`, `shell`, `eval`, `exec`, `system`, `subprocess`
+
+### Custom Sandbox Configuration
+
+```python
+from vllm_mlx.mcp import ToolSandbox, set_sandbox
+
+# Create sandbox with custom settings
+sandbox = ToolSandbox(
+    # Only allow specific tools (whitelist mode)
+    allowed_tools={"read_file", "list_directory"},
+
+    # Block specific tools (blacklist mode)
+    blocked_tools={"execute_command", "run_shell"},
+
+    # Rate limit: max 30 calls per minute
+    max_calls_per_minute=30,
+
+    # Optional audit callback
+    audit_callback=lambda audit: print(f"Tool: {audit.tool_name}, Success: {audit.success}"),
+)
+set_sandbox(sandbox)
+```
+
+### Accessing Audit Logs
+
+```python
+from vllm_mlx.mcp import get_sandbox
+
+sandbox = get_sandbox()
+
+# Get recent audit entries
+entries = sandbox.get_audit_log(limit=50)
+
+# Filter by tool name
+file_ops = sandbox.get_audit_log(tool_filter="file")
+
+# Get only errors
+errors = sandbox.get_audit_log(errors_only=True)
+
+# Clear audit log
+sandbox.clear_audit_log()
+```
+
+### Sensitive Data Redaction
+
+Audit logs automatically redact sensitive fields (password, token, secret, key, credential, auth) and truncate large values.
+
 ## Troubleshooting
 
 ### MCP server not connecting
