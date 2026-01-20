@@ -170,7 +170,9 @@ class SimpleEngine(BaseEngine):
             await self.start()
 
         accumulated_text = ""
-        token_count = 0
+        prompt_tokens = 0
+        completion_tokens = 0
+        finished = False
 
         for chunk in self._model.stream_generate(
             prompt=prompt,
@@ -180,11 +182,12 @@ class SimpleEngine(BaseEngine):
             stop=stop,
             **kwargs,
         ):
-            token_count += 1
+            prompt_tokens = chunk.prompt_tokens if hasattr(chunk, 'prompt_tokens') else prompt_tokens
+            completion_tokens += 1
             new_text = chunk.text if hasattr(chunk, 'text') else str(chunk)
             accumulated_text += new_text
 
-            finished = getattr(chunk, 'finished', False) or token_count >= max_tokens
+            finished = getattr(chunk, 'finished', False) or completion_tokens >= max_tokens
             finish_reason = None
             if finished:
                 finish_reason = getattr(chunk, 'finish_reason', 'stop')
@@ -192,13 +195,26 @@ class SimpleEngine(BaseEngine):
             yield GenerationOutput(
                 text=accumulated_text,
                 new_text=new_text,
-                completion_tokens=token_count,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
                 finished=finished,
                 finish_reason=finish_reason,
             )
 
             if finished:
                 break
+
+        if not finished:
+            if prompt_tokens == 0:
+                prompt_tokens = len(self._model.tokenizer.encode(prompt))
+            yield GenerationOutput(
+                text=accumulated_text,
+                new_text="",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                finished=True,
+                finish_reason=None,
+            )
 
     async def chat(
         self,

@@ -49,6 +49,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 # Import from new modular API
@@ -64,7 +65,7 @@ from .api.tool_calling import (build_json_system_prompt,
                                parse_tool_calls)
 from .api.utils import (clean_output_text, extract_multimodal_content,
                         is_mllm_model)
-from .engine import BaseEngine, BatchedEngine, SimpleEngine
+from .engine import BaseEngine, BatchedEngine, SimpleEngine, GenerationOutput
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -262,6 +263,17 @@ def load_model(
         logger.info(f"{model_type} model loaded (simple mode): {model_name}")
 
     logger.info(f"Default max tokens: {_default_max_tokens}")
+
+
+def get_usage(output: GenerationOutput) -> Usage:
+    """Extract usage metrics from GenerationOutput."""
+    total_prompt_tokens = output.prompt_tokens if hasattr(output, 'prompt_tokens') else 0
+    total_completion_tokens = output.completion_tokens if hasattr(output, 'completion_tokens') else 0
+    return Usage(
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
+        total_tokens=total_prompt_tokens + total_completion_tokens,
+    )
 
 
 @app.get("/health")
@@ -542,6 +554,7 @@ async def create_completion(request: CompletionRequest):
     timeout = request.timeout or _default_timeout
     choices = []
     total_completion_tokens = 0
+    total_prompt_tokens = 0
 
     for i, prompt in enumerate(prompts):
         try:
@@ -568,19 +581,21 @@ async def create_completion(request: CompletionRequest):
             )
         )
         total_completion_tokens += output.completion_tokens
+        total_prompt_tokens += output.prompt_tokens if hasattr(output, 'prompt_tokens') else 0
 
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0
     logger.info(
-        f"Completion: {total_completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
+        f"Completion: {total_prompt_tokens} prompt + {total_completion_tokens} completion tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
     )
 
     return CompletionResponse(
         model=request.model,
         choices=choices,
         usage=Usage(
+            prompt_tokens=total_prompt_tokens,
             completion_tokens=total_completion_tokens,
-            total_tokens=total_completion_tokens,
+            total_tokens=total_prompt_tokens + total_completion_tokens,
         ),
     )
 
@@ -790,6 +805,8 @@ async def stream_completion(
                 }
             ],
         }
+        if output.finished:
+            data["usage"] = get_usage(output).model_dump()
         yield f"data: {json.dumps(data)}\n\n"
 
     yield "data: [DONE]\n\n"
@@ -841,6 +858,7 @@ async def stream_chat_completion(
                     finish_reason=output.finish_reason if output.finished else None,
                 )
             ],
+            usage=get_usage(output) if output.finished else None,
         )
         yield f"data: {chunk.model_dump_json()}\n\n"
 
