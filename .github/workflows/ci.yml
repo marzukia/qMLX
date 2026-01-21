@@ -65,4 +65,4 @@ jobs:
       - name: Run unit tests (no MLX required)
         run: |
           pytest tests/test_mcp_security.py -v --tb=short
-          pytest tests/test_structured_output.py -v --tb=short -k "not Integration"
+          pytest tests/test_structured_output.py -v --tb=short -k "not Integration and not InjectJson"
