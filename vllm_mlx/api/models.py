@@ -336,3 +336,4 @@ class ChatCompletionChunk(BaseModel):
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str
     choices: List[ChatCompletionChunkChoice]
+    usage: Usage | None = None
