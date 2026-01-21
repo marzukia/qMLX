@@ -10,7 +10,6 @@ import os
 import tempfile
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 from vllm_mlx.vlm_cache import (
     VLMCacheEntry,
@@ -556,14 +555,14 @@ if __name__ == "__main__":
         print_header("VLM KV CACHE TEST")
         print(f"\n  Model: {VLM_MODEL}")
         print(
-            f"  Test: Verify KV cache reuse for repeated image/video + prompt combinations"
+            "  Test: Verify KV cache reuse for repeated image/video + prompt combinations"
         )
-        print(f"  Expected behavior:")
-        print(f"    - Same image + same prompt → cache HIT")
-        print(f"    - Same image + different prompt → cache MISS")
-        print(f"    - Different image + same prompt → cache MISS")
-        print(f"    - Same video + same fps/max_frames → cache HIT")
-        print(f"    - Same video + different fps/max_frames → cache MISS")
+        print("  Expected behavior:")
+        print("    - Same image + same prompt → cache HIT")
+        print("    - Same image + different prompt → cache MISS")
+        print("    - Different image + same prompt → cache MISS")
+        print("    - Same video + same fps/max_frames → cache HIT")
+        print("    - Same video + different fps/max_frames → cache MISS")
 
         # ============================================================
         # SETUP: Load Model and Create KV Cache
@@ -581,7 +580,7 @@ if __name__ == "__main__":
         print(f"    Model loaded in {load_time:.2f}s")
         print(f"    Model type: {config.get('model_type', 'unknown')}")
 
-        print(f"\n    Creating KV cache from model.language_model...")
+        print("\n    Creating KV cache from model.language_model...")
         real_kv_cache = vlm_cache.make_prompt_cache(model.language_model)
         print(
             f"    KV cache: {len(real_kv_cache)} layers of {type(real_kv_cache[0]).__name__}"
@@ -614,7 +613,7 @@ if __name__ == "__main__":
             raise RuntimeError("No test images could be downloaded.")
 
         if base_image is not None:
-            print(f"\n    Creating resized variants for cache key testing...")
+            print("\n    Creating resized variants for cache key testing...")
             resize_sizes = [(224, 224), (336, 336), (512, 512), (768, 768)]
             for width, height in resize_sizes:
                 resized = base_image.resize((width, height), Image.Resampling.LANCZOS)
@@ -778,7 +777,7 @@ if __name__ == "__main__":
         # ============================================================
         if resized_image_entries:
             print_subheader("TEST 3: Resized Images = Different Cache Keys")
-            print(f"    (Cache uses content hash, so different sizes = different keys)")
+            print("    (Cache uses content hash, so different sizes = different keys)")
             test3_rows = []
             for idx, (image_path, width, height) in enumerate(
                 resized_image_entries, start=1
@@ -1013,7 +1012,7 @@ if __name__ == "__main__":
 
         # Access img1 to make it recently used
         small_cache.fetch_cache(["img1.jpg"], "p1")
-        print(f"    Touched img1 to make it recently used")
+        print("    Touched img1 to make it recently used")
 
         # Add new entry - should evict img2
         small_cache.store_cache(["img3.jpg"], "p3", real_kv_cache)

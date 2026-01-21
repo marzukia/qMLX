@@ -222,7 +222,6 @@ class TestContinuousBatchingIntegration:
 
 if __name__ == "__main__":
     # Quick standalone test
-    import sys
 
     MODEL_NAME = "mlx-community/Qwen3-0.6B-8bit"
     MODEL_NAME = "mlx-community/Qwen3-8B-6bit"

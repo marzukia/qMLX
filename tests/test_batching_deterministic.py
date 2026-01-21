@@ -9,7 +9,6 @@ Run with: pytest tests/test_batching_deterministic.py -v
 import asyncio
 import pytest
 import time
-from typing import List, Tuple
 
 # Model to use for tests - small model for fast testing
 TEST_MODEL = "mlx-community/Llama-3.2-1B-Instruct-4bit"
@@ -72,7 +71,7 @@ class TestDeterministicSingleRequest:
     @pytest.mark.asyncio
     async def test_token_streaming_order(self, model_and_tokenizer, sampling_params):
         """Tokens should stream in order."""
-        from vllm_mlx import AsyncEngineCore, EngineConfig
+        from vllm_mlx import AsyncEngineCore
 
         model, tokenizer = model_and_tokenizer
 
@@ -278,7 +277,7 @@ class TestRequestManagement:
     @pytest.mark.asyncio
     async def test_abort_request(self, model_and_tokenizer):
         """Test aborting a request mid-generation."""
-        from vllm_mlx import AsyncEngineCore, EngineConfig, SamplingParams
+        from vllm_mlx import AsyncEngineCore, SamplingParams
 
         model, tokenizer = model_and_tokenizer
         params = SamplingParams(max_tokens=100, temperature=0.0)

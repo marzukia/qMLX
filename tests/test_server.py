@@ -31,7 +31,7 @@ class TestRequestModels:
 
     def test_chat_message_multimodal(self):
         """Test chat message with multimodal content."""
-        from vllm_mlx.server import Message, ContentPart
+        from vllm_mlx.server import Message
 
         content = [
             {"type": "text", "text": "What's this?"},
@@ -424,7 +424,6 @@ class TestTempFileManager:
         """Test that TempFileManager is thread-safe."""
         import threading
         import tempfile
-        import os
         from vllm_mlx.models.mllm import TempFileManager
 
         manager = TempFileManager()
@@ -464,7 +463,6 @@ class TestRequestOutputCollectorThreadSafety:
     def test_waiting_consumers_thread_safe(self):
         """Test that _waiting_consumers counter is thread-safe."""
         import threading
-        import asyncio
         from vllm_mlx.output_collector import RequestOutputCollector
 
         # Reset the counter
@@ -574,7 +572,6 @@ class TestAPIKeyVerification:
     def test_verify_api_key_rejects_invalid(self):
         """Test that invalid API key is rejected with 401."""
         import asyncio
-        from unittest.mock import MagicMock
         from fastapi import HTTPException
         from fastapi.security import HTTPAuthorizationCredentials
 
@@ -637,7 +634,6 @@ class TestRateLimiterHTTPResponse:
     def test_rate_limiter_returns_retry_after(self):
         """Test that rate limiter returns retry_after when limit exceeded."""
         from vllm_mlx.server import RateLimiter
-        import time
 
         limiter = RateLimiter(requests_per_minute=2, enabled=True)
 

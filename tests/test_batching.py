@@ -8,9 +8,7 @@ for the vLLM-style continuous batching implementation.
 
 import asyncio
 import pytest
-import time
-from typing import List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from vllm_mlx.request import (
     Request,
@@ -21,7 +19,6 @@ from vllm_mlx.request import (
 from vllm_mlx.scheduler import (
     Scheduler,
     SchedulerConfig,
-    SchedulerOutput,
     SchedulingPolicy,
 )
 
@@ -464,7 +461,7 @@ class TestEngineAsync:
 
     async def test_engine_context_manager(self, mock_model_and_tokenizer):
         """Test engine as async context manager."""
-        from vllm_mlx.engine import AsyncEngineCore, EngineConfig
+        from vllm_mlx.engine import AsyncEngineCore
 
         model, tokenizer = mock_model_and_tokenizer
 

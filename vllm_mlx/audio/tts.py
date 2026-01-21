@@ -13,7 +13,7 @@ import io
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional, Union
+from typing import Iterator, Union
 
 import numpy as np
 

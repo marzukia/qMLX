@@ -52,38 +52,38 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 # Import from new modular API
-from .api.models import (  # Re-export for backwards compatibility with tests
-    AssistantMessage,
-    ChatCompletionChoice,
-    ChatCompletionChunk,
-    ChatCompletionChunkChoice,
-    ChatCompletionChunkDelta,
-    ChatCompletionRequest,
-    ChatCompletionResponse,
-    CompletionChoice,
-    CompletionRequest,
-    CompletionResponse,
-    ContentPart,
-    ImageUrl,
-    MCPExecuteRequest,
-    MCPExecuteResponse,
-    MCPServerInfo,
-    MCPServersResponse,
-    MCPToolInfo,
-    MCPToolsResponse,
-    Message,
-    ModelInfo,
-    ModelsResponse,
-    Usage,
-    VideoUrl,
-)
+# Re-export for backwards compatibility with tests
+from .api.models import AssistantMessage  # noqa: F401
+from .api.models import ChatCompletionChoice  # noqa: F401
+from .api.models import ChatCompletionChunk  # noqa: F401
+from .api.models import ChatCompletionChunkChoice  # noqa: F401
+from .api.models import ChatCompletionChunkDelta  # noqa: F401
+from .api.models import ChatCompletionRequest
+from .api.models import ChatCompletionResponse
+from .api.models import CompletionChoice  # noqa: F401
+from .api.models import CompletionRequest
+from .api.models import CompletionResponse
+from .api.models import ContentPart  # noqa: F401
+from .api.models import ImageUrl  # noqa: F401
+from .api.models import MCPExecuteRequest
+from .api.models import MCPExecuteResponse
+from .api.models import MCPServerInfo  # noqa: F401
+from .api.models import MCPServersResponse
+from .api.models import MCPToolInfo  # noqa: F401
+from .api.models import MCPToolsResponse
+from .api.models import Message  # noqa: F401
+from .api.models import ModelInfo  # noqa: F401
+from .api.models import ModelsResponse
+from .api.models import Usage  # noqa: F401
+from .api.models import VideoUrl  # noqa: F401
 from .api.tool_calling import (
     build_json_system_prompt,
     convert_tools_for_template,
     parse_json_output,
     parse_tool_calls,
 )
-from .api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
+from .api.utils import clean_output_text, extract_multimodal_content
+from .api.utils import is_mllm_model  # noqa: F401
 from .engine import BaseEngine, BatchedEngine, SimpleEngine, GenerationOutput
 
 logging.basicConfig(level=logging.INFO)
@@ -911,7 +911,7 @@ async def init_mcp(config_path: str):
         logger.info(f"MCP initialized with {len(_mcp_manager.get_all_tools())} tools")
 
     except ImportError as e:
-        logger.error(f"MCP SDK not installed. Install with: pip install mcp")
+        logger.error("MCP SDK not installed. Install with: pip install mcp")
         raise
     except Exception as e:
         logger.error(f"Failed to initialize MCP: {e}")

@@ -18,13 +18,11 @@ import base64
 import logging
 import math
 import os
-import re
 import tempfile
 import threading
 from dataclasses import dataclass, field
-from io import BytesIO
 from pathlib import Path
-from typing import Iterator, List, Optional, Set, Tuple, Union
+from typing import Iterator, Optional, Set, Union
 from urllib.parse import urlparse
 
 import numpy as np

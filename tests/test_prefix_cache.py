@@ -362,10 +362,10 @@ if __name__ == "__main__":
 
         print_header("LLM PREFIX CACHE TEST")
         print(f"\n  Model: {MODEL_NAME}")
-        print(f"  Test: Verify KV cache reuse for repeated prompts")
-        print(f"  Expected behavior:")
-        print(f"    - Same prompt → cache HIT (skip prompt processing)")
-        print(f"    - Different prompt → cache MISS (process from scratch)")
+        print("  Test: Verify KV cache reuse for repeated prompts")
+        print("  Expected behavior:")
+        print("    - Same prompt → cache HIT (skip prompt processing)")
+        print("    - Different prompt → cache MISS (process from scratch)")
 
         print_subheader("Loading Model")
         load_start = time.perf_counter()

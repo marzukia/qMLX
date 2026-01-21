@@ -78,14 +78,14 @@ def serve_command(args):
             max_cache_blocks=args.max_cache_blocks,
         )
 
-        print(f"Mode: Continuous batching (for multiple concurrent users)")
+        print("Mode: Continuous batching (for multiple concurrent users)")
         print(f"Stream interval: {args.stream_interval} tokens")
         if args.use_paged_cache:
             print(
                 f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}"
             )
     else:
-        print(f"Mode: Simple (maximum throughput)")
+        print("Mode: Simple (maximum throughput)")
 
     # Load model with unified server
     load_model(
@@ -198,7 +198,7 @@ def bench_command(args):
 
         total_tokens = total_prompt_tokens + total_completion_tokens
 
-        print(f"\nResults:")
+        print("\nResults:")
         print(f"  Total time: {total_time:.2f}s")
         print(f"  Prompts: {len(prompts)}")
         print(f"  Prompts/second: {len(prompts)/total_time:.2f}")
@@ -217,7 +217,6 @@ def bench_detok_command(args):
     import statistics
     from mlx_lm import load
     from mlx_lm.generate import generate
-    from mlx_lm.tokenizer_utils import NaiveStreamingDetokenizer
 
     print("=" * 70)
     print(" Streaming Detokenizer Benchmark")

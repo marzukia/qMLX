@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-from .multimodal_processor import MultimodalProcessor, ProcessedMultimodalInput
+from .multimodal_processor import MultimodalProcessor
 from .vision_embedding_cache import VisionEmbeddingCache
 
 logger = logging.getLogger(__name__)
@@ -616,7 +616,7 @@ class MLLMBatchGenerator:
         ]
         lengths = [len(ids) for ids in input_ids_list]
         max_length = max(lengths)
-        padding = [max_length - l for l in lengths]
+        padding = [max_length - seq_len for seq_len in lengths]
 
         self._stats.prompt_tokens += sum(lengths)
 

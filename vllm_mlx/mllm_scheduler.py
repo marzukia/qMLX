@@ -26,16 +26,14 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
-import mlx.core as mx
 
 from .mllm_batch_generator import (
     MLLMBatchGenerator,
     MLLMBatchRequest,
     MLLMBatchResponse,
-    MLLMBatchStats,
 )
-from .multimodal_processor import MultimodalProcessor, create_mllm_prompt_cache
-from .request import Request, RequestOutput, RequestStatus, SamplingParams
+from .multimodal_processor import MultimodalProcessor
+from .request import RequestOutput, RequestStatus, SamplingParams
 from .vlm_cache import VLMCacheManager
 
 logger = logging.getLogger(__name__)

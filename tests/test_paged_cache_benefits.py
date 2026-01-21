@@ -13,8 +13,7 @@ Usage:
 
 import platform
 import sys
-import time
-from typing import List, Tuple
+from typing import List
 
 # Skip if not on Apple Silicon
 if sys.platform != "darwin" or platform.machine() != "arm64":
@@ -81,8 +80,8 @@ def test_benefit_1_shared_system_prompts():
     print(
         f"\nScenario: {num_users} users with SAME system prompt (256 tokens) + different queries"
     )
-    print(f"System prompt: 256 tokens = 4 blocks")
-    print(f"User queries: 20-115 additional tokens each\n")
+    print("System prompt: 256 tokens = 4 blocks")
+    print("User queries: 20-115 additional tokens each\n")
 
     # Initialize paged cache
     paged_manager = PagedCacheManager(block_size=64, max_blocks=500)
@@ -146,7 +145,7 @@ def test_benefit_1_shared_system_prompts():
     blocks_with_sharing = final_blocks
     savings = (1 - blocks_with_sharing / blocks_without_sharing) * 100
 
-    print(f"\nMemory Analysis:")
+    print("\nMemory Analysis:")
     print(
         f"  Blocks without sharing: ~{blocks_without_sharing} ({num_users} users x {avg_blocks_per_user} blocks)"
     )
@@ -316,7 +315,7 @@ def test_benefit_3_prefix_sharing():
     block_table, remaining = cache.fetch_cache("conv-rust", rust_intro)
     root_shared = len(rust_intro) - len(remaining) if block_table else 0
 
-    print(f"\nRust conversation:")
+    print("\nRust conversation:")
     print(f"  Shares root with Python: {root_shared} tokens (system prompt)")
 
     cache.store_cache("conv-rust", rust_intro, ["rust_cache"])
@@ -350,7 +349,7 @@ def test_benefit_3_prefix_sharing():
     total_tokens_without_sharing = sum(all_token_counts)
     tokens_saved = stats["tokens_saved"]
 
-    print(f"\nPrefix Sharing Summary:")
+    print("\nPrefix Sharing Summary:")
     print_table(
         ["Metric", "Value"],
         [
@@ -402,7 +401,7 @@ def test_copy_on_write_demo():
     blocks_after_fork = paged_manager.stats.allocated_blocks
     shared_after_fork = paged_manager.stats.shared_blocks
 
-    print(f"\nAfter fork (before modification):")
+    print("\nAfter fork (before modification):")
     print(f"  Blocks allocated: {blocks_after_fork} (same as before)")
     print(f"  Shared blocks: {shared_after_fork} (both point to same data)")
 
@@ -412,7 +411,7 @@ def test_copy_on_write_demo():
     blocks_after_cow = paged_manager.stats.allocated_blocks
     cow_copies = paged_manager.stats.cow_copies
 
-    print(f"\nAfter getting cache for generation (COW triggered):")
+    print("\nAfter getting cache for generation (COW triggered):")
     print(f"  Was copied: {was_copied}")
     print(f"  Blocks allocated: {blocks_after_cow}")
     print(f"  COW copies made: {cow_copies}")

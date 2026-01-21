@@ -5,10 +5,7 @@ import pytest
 from transformers import AutoTokenizer
 from mlx_lm.tokenizer_utils import (
     NaiveStreamingDetokenizer,
-    SPMStreamingDetokenizer,
     BPEStreamingDetokenizer,
-    TokenizerWrapper,
-    StreamingDetokenizer,
 )
 
 

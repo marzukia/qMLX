@@ -15,13 +15,13 @@ import asyncio
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Optional, Set, Union
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
-from .request import Request, RequestOutput, RequestStatus, SamplingParams
-from .scheduler import Scheduler, SchedulerConfig, SchedulerOutput
+from .request import Request, RequestOutput, SamplingParams
+from .scheduler import Scheduler, SchedulerConfig
 from .output_collector import RequestOutputCollector, RequestStreamState
-from .model_registry import get_registry, ModelOwnershipError
+from .model_registry import get_registry
 
 logger = logging.getLogger(__name__)
 

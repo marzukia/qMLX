@@ -294,7 +294,6 @@ class MLXPlatform:
     def get_current_memory_usage(cls, device=None) -> float:
         """Get current memory usage in bytes."""
         try:
-            import mlx.core as mx
 
             # MLX doesn't have a direct memory query
             # Use system memory info instead

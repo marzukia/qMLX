@@ -185,7 +185,7 @@ Solution:"""
                 }
             )
             pbar.set_postfix(
-                {"acc": f"{correct_count/len(results):.1%}", "last": f"Error"}
+                {"acc": f"{correct_count/len(results):.1%}", "last": "Error"}
             )
 
     pbar.close()
@@ -288,7 +288,7 @@ Solution:"""
                     }
                 )
                 pbar.set_postfix(
-                    {"acc": f"{correct_count/len(results):.1%}", "last": f"Error"}
+                    {"acc": f"{correct_count/len(results):.1%}", "last": "Error"}
                 )
 
         pbar.close()
@@ -388,8 +388,8 @@ def main():
 
     questions = load_gsm8k_dataset(args.num_questions, use_sample=args.sample)
 
-    print(f"\nGSM8K Evaluation")
-    print(f"=" * 50)
+    print("\nGSM8K Evaluation")
+    print("=" * 50)
     print(f"Questions: {len(questions)}")
     print(f"Max tokens: {args.max_tokens}")
 
@@ -415,8 +415,8 @@ def main():
     qps = len(results) / total_time if total_time > 0 else 0
     tps = total_tokens / total_time if total_time > 0 else 0
 
-    print(f"\n" + "=" * 50)
-    print(f"Results:")
+    print("\n" + "=" * 50)
+    print("Results:")
     print(f"  Accuracy: {accuracy:.3f}")
     print(f"  Invalid responses: {invalid_rate:.3f}")
     print(f"  Total latency: {total_time:.3f} s")

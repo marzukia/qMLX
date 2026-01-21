@@ -215,7 +215,6 @@ class MLXAttentionImpl:
         """
         try:
             import mlx.core as mx
-            import mlx.nn as nn
 
             # Convert inputs to MLX arrays if needed
             if not isinstance(query, mx.array):

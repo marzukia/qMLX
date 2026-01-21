@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from jsonschema import validate, ValidationError
 
-from .models import FunctionCall, ResponseFormat, ToolCall, ToolDefinition
+from .models import FunctionCall, ResponseFormat, ToolCall
 
 
 def parse_tool_calls(text: str) -> Tuple[str, Optional[List[ToolCall]]]:

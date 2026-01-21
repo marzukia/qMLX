@@ -6,7 +6,6 @@ Note: Some tests require mlx-audio to be installed.
 """
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 import numpy as np
 
 
@@ -216,9 +215,6 @@ class TestAudioImports:
             STTEngine,
             TTSEngine,
             AudioProcessor,
-            transcribe_audio,
-            generate_speech,
-            separate_voice,
         )
 
         assert STTEngine is not None
@@ -230,9 +226,6 @@ class TestAudioImports:
         from vllm_mlx.api import (
             AudioUrl,
             AudioTranscriptionRequest,
-            AudioTranscriptionResponse,
-            AudioSpeechRequest,
-            AudioSeparationRequest,
         )
 
         assert AudioUrl is not None

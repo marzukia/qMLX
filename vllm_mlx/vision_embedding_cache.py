@@ -16,11 +16,10 @@ Performance Impact:
 
 import hashlib
 import logging
-import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import mlx.core as mx
 

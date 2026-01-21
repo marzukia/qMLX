@@ -469,7 +469,7 @@ def run_benchmark(
     test_prompts = (prompts * ((num_prompts // len(prompts)) + 1))[:num_prompts]
 
     print(f"\n{'='*60}")
-    print(f"vllm-mlx Performance Benchmark")
+    print("vllm-mlx Performance Benchmark")
     print(f"{'='*60}")
 
     # Hardware info table
@@ -498,9 +498,9 @@ def run_benchmark(
 
     # Show prompt length distribution
     prompt_lengths = [len(tokenizer.encode(p)) for p in test_prompts]
-    short = sum(1 for l in prompt_lengths if l < 20)
-    medium = sum(1 for l in prompt_lengths if 20 <= l < 100)
-    long_p = sum(1 for l in prompt_lengths if l >= 100)
+    short = sum(1 for length in prompt_lengths if length < 20)
+    medium = sum(1 for length in prompt_lengths if 20 <= length < 100)
+    long_p = sum(1 for length in prompt_lengths if length >= 100)
     print("Prompt Distribution:")
     dist_data = [
         ["Short (<20 tokens)", short],
@@ -848,7 +848,7 @@ def run_mllm_benchmark(
         ]
 
     print(f"\n{'='*70}")
-    print(f"vllm-mlx MLLM Performance Benchmark")
+    print("vllm-mlx MLLM Performance Benchmark")
     print(f"{'='*70}")
 
     # Info table
@@ -871,7 +871,7 @@ def run_mllm_benchmark(
     print(f"Model loaded in {load_time:.2f}s\n")
 
     # Download test image
-    print(f"Downloading test image...")
+    print("Downloading test image...")
     try:
         base_image = download_test_image(MLLM_TEST_IMAGE_URL)
         print(f"  Original size: {base_image.size[0]}x{base_image.size[1]}\n")
@@ -920,7 +920,7 @@ def print_mllm_summary(results: list[MLLMBenchmarkResult], model_name: str):
         return
 
     print(f"\n{'='*80}")
-    print(f"MLLM BENCHMARK RESULTS")
+    print("MLLM BENCHMARK RESULTS")
     print(f"{'='*80}\n")
 
     # Results table
@@ -1214,7 +1214,7 @@ def run_video_benchmark(
         ]
 
     print(f"\n{'='*70}")
-    print(f"vllm-mlx Video Performance Benchmark")
+    print("vllm-mlx Video Performance Benchmark")
     print(f"{'='*70}")
 
     # Info table
@@ -1241,7 +1241,7 @@ def run_video_benchmark(
     elif video_url:
         video_path = download_video(video_url)
     else:
-        print(f"Downloading default test video (Big Buck Bunny 10s)...")
+        print("Downloading default test video (Big Buck Bunny 10s)...")
         video_path = download_video(DEFAULT_VIDEO_URL)
 
     video_info = get_video_info(video_path)
@@ -1292,7 +1292,7 @@ def print_video_summary(results: list[VideoBenchmarkResult], model_name: str):
         return
 
     print(f"\n{'='*85}")
-    print(f"VIDEO BENCHMARK RESULTS")
+    print("VIDEO BENCHMARK RESULTS")
     print(f"{'='*85}\n")
 
     # Results table
@@ -1349,7 +1349,7 @@ def print_video_summary(results: list[VideoBenchmarkResult], model_name: str):
 def print_summary(summary: BenchmarkSummary):
     """Print a formatted summary of benchmark results using tabulate."""
     print(f"\n{'='*60}")
-    print(f"BENCHMARK RESULTS")
+    print("BENCHMARK RESULTS")
     print(f"{'='*60}\n")
 
     # Overview table

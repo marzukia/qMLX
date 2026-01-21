@@ -8,7 +8,7 @@ for model execution on Apple Silicon.
 
 import gc
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import torch
 

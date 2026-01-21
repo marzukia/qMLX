@@ -11,7 +11,6 @@ Usage:
 """
 
 import argparse
-import gc
 import platform
 import sys
 import time
@@ -498,7 +497,7 @@ Always explain your reasoning thoroughly and provide learning resources when hel
 
     if "paged_cache" in stats:
         pc = stats["paged_cache"]
-        print(f"\n  Paged Cache Stats:")
+        print("\n  Paged Cache Stats:")
         print(f"    Blocks allocated: {pc.get('allocated_blocks', 'N/A')}")
         print(f"    Shared blocks: {pc.get('shared_blocks', 'N/A')}")
         print(f"    Cache hits: {pc.get('hits', 0)}")

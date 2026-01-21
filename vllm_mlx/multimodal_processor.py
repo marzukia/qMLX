@@ -9,7 +9,7 @@ inputs that can be batched together efficiently.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 
@@ -304,7 +304,7 @@ class MultimodalProcessor:
         input_ids_list = [p.input_ids for p in processed_inputs]
         lengths = [ids.size if ids is not None else 0 for ids in input_ids_list]
         max_length = max(lengths) if lengths else 0
-        padding_amounts = [max_length - l for l in lengths]
+        padding_amounts = [max_length - seq_len for seq_len in lengths]
 
         # Left-pad input_ids
         padded_ids = []

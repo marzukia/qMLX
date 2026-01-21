@@ -23,7 +23,7 @@ jobs:
           pip install ruff black
 
       - name: Run ruff
-        run: ruff check vllm_mlx/ tests/ --ignore I001,F401,E402
+        run: ruff check vllm_mlx/ tests/ --select E,F,W --ignore E402,E501,E731,F811,F841
 
       - name: Run black
         run: black --check vllm_mlx/ tests/

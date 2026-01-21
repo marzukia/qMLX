@@ -175,7 +175,7 @@ async def run_benchmark(
         print("=" * 60)
         print("OVERALL SUMMARY")
         print("=" * 60)
-        print(f"Time-to-First-Token (TTFT):")
+        print("Time-to-First-Token (TTFT):")
         print(f"  Mean:   {statistics.mean(all_ttft):.1f}ms")
         print(f"  Median: {statistics.median(all_ttft):.1f}ms")
         print(f"  Min:    {min(all_ttft):.1f}ms")
@@ -185,7 +185,7 @@ async def run_benchmark(
         print()
 
         if all_itl:
-            print(f"Inter-Token Latency (ITL):")
+            print("Inter-Token Latency (ITL):")
             print(f"  Mean:   {statistics.mean(all_itl):.1f}ms")
             print(f"  Median: {statistics.median(all_itl):.1f}ms")
             print(f"  Min:    {min(all_itl):.1f}ms")
@@ -194,7 +194,7 @@ async def run_benchmark(
                 print(f"  StdDev: {statistics.stdev(all_itl):.1f}ms")
             print()
 
-        print(f"Total Generation Time:")
+        print("Total Generation Time:")
         print(f"  Mean:   {statistics.mean(all_total):.1f}ms")
         print()
 

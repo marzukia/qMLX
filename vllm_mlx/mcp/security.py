@@ -12,7 +12,7 @@ import re
 import shutil
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Set

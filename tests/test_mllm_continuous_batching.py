@@ -13,14 +13,10 @@ Test Cases:
 - Mixed text-only and multimodal requests
 """
 
-import asyncio
 import base64
 import os
 import tempfile
-import time
-from pathlib import Path
-from typing import List, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -269,7 +265,7 @@ class TestMLLMRequest:
     def test_create_request(self):
         """Test creating an MLLM request."""
         from vllm_mlx.mllm_scheduler import MLLMRequest
-        from vllm_mlx.request import SamplingParams, RequestStatus
+        from vllm_mlx.request import RequestStatus
 
         req = MLLMRequest(
             request_id="req-1",
