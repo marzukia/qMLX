@@ -27,6 +27,7 @@ import pytest
 # Skip all tests if MLX is not available
 try:
     import mlx.core as mx
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
@@ -35,9 +36,7 @@ pytestmark = pytest.mark.skipif(not HAS_MLX, reason="MLX not available")
 
 
 # Test image (small PNG)
-TEST_IMAGE_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-)
+TEST_IMAGE_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 
 def create_test_image(path: str, size: tuple = (32, 32)) -> str:
@@ -46,15 +45,13 @@ def create_test_image(path: str, size: tuple = (32, 32)) -> str:
         from PIL import Image
         import numpy as np
 
-        img = Image.fromarray(
-            np.random.randint(0, 255, (*size, 3), dtype=np.uint8)
-        )
+        img = Image.fromarray(np.random.randint(0, 255, (*size, 3), dtype=np.uint8))
         img.save(path)
         return path
     except ImportError:
         # Fallback: write a minimal valid PNG
         png_data = base64.b64decode(TEST_IMAGE_B64)
-        with open(path, 'wb') as f:
+        with open(path, "wb") as f:
             f.write(png_data)
         return path
 
@@ -175,7 +172,12 @@ class TestMLLMBatch:
             uids=[0, 1, 2, 3],
             request_ids=["req-0", "req-1", "req-2", "req-3"],
             y=mx.array([100, 200, 300, 400]),
-            logprobs=[mx.array([0.1]), mx.array([0.2]), mx.array([0.3]), mx.array([0.4])],
+            logprobs=[
+                mx.array([0.1]),
+                mx.array([0.2]),
+                mx.array([0.3]),
+                mx.array([0.4]),
+            ],
             max_tokens=[100, 100, 100, 100],
             num_tokens=[0, 0, 0, 0],
             cache=[],
@@ -482,10 +484,7 @@ class TestVisionCache:
 
 # Integration tests (require model loading)
 @pytest.mark.slow
-@pytest.mark.skipif(
-    not os.environ.get("RUN_SLOW_TESTS"),
-    reason="Slow tests disabled"
-)
+@pytest.mark.skipif(not os.environ.get("RUN_SLOW_TESTS"), reason="Slow tests disabled")
 class TestMLLMSchedulerIntegration:
     """Integration tests for MLLMScheduler with real models."""
 

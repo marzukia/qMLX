@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class VLMCacheStats:
     """Statistics for VLM cache performance."""
+
     hits: int = 0
     misses: int = 0
     tokens_saved: int = 0
@@ -56,6 +57,7 @@ class VLMCacheStats:
 @dataclass
 class VLMCacheEntry:
     """Entry in the VLM cache."""
+
     prompt_cache: List[Any]  # The KV cache state
     image_hash: str  # Hash of image content
     prompt_tokens: int  # Number of prompt tokens
@@ -149,9 +151,7 @@ class VLMCacheManager:
         return f"{image_hash}_{prompt_hash}"
 
     def fetch_cache(
-        self,
-        images: List[str],
-        prompt: str
+        self, images: List[str], prompt: str
     ) -> Tuple[Optional[List[Any]], bool]:
         """
         Fetch cached KV state for image+prompt combination.

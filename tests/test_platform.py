@@ -16,6 +16,7 @@ def test_is_apple_silicon():
         # (assuming MLX is installed)
         try:
             import mlx.core
+
             assert is_mlx_available()
         except ImportError:
             pytest.skip("MLX not installed")

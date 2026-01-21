@@ -63,7 +63,7 @@ class SimpleEngine(BaseEngine):
         if not self._loaded or self._model is None:
             return None
         if self._is_mllm:
-            return getattr(self._model, 'processor', None)
+            return getattr(self._model, "processor", None)
         return self._model.tokenizer
 
     async def start(self) -> None:
@@ -73,6 +73,7 @@ class SimpleEngine(BaseEngine):
 
         if self._is_mllm:
             from ..models.mllm import MLXMultimodalLM
+
             self._model = MLXMultimodalLM(
                 self._model_name,
                 trust_remote_code=self._trust_remote_code,
@@ -80,6 +81,7 @@ class SimpleEngine(BaseEngine):
             )
         else:
             from ..models.llm import MLXLanguageModel
+
             self._model = MLXLanguageModel(
                 self._model_name,
                 trust_remote_code=self._trust_remote_code,
@@ -137,9 +139,11 @@ class SimpleEngine(BaseEngine):
 
         return GenerationOutput(
             text=text,
-            tokens=getattr(output, 'tokens', []),
-            prompt_tokens=getattr(output, 'prompt_tokens', 0),
-            completion_tokens=getattr(output, 'completion_tokens', len(getattr(output, 'tokens', []))),
+            tokens=getattr(output, "tokens", []),
+            prompt_tokens=getattr(output, "prompt_tokens", 0),
+            completion_tokens=getattr(
+                output, "completion_tokens", len(getattr(output, "tokens", []))
+            ),
             finish_reason=output.finish_reason,
         )
 
@@ -182,15 +186,21 @@ class SimpleEngine(BaseEngine):
             stop=stop,
             **kwargs,
         ):
-            prompt_tokens = chunk.prompt_tokens if hasattr(chunk, 'prompt_tokens') else prompt_tokens
+            prompt_tokens = (
+                chunk.prompt_tokens
+                if hasattr(chunk, "prompt_tokens")
+                else prompt_tokens
+            )
             completion_tokens += 1
-            new_text = chunk.text if hasattr(chunk, 'text') else str(chunk)
+            new_text = chunk.text if hasattr(chunk, "text") else str(chunk)
             accumulated_text += new_text
 
-            finished = getattr(chunk, 'finished', False) or completion_tokens >= max_tokens
+            finished = (
+                getattr(chunk, "finished", False) or completion_tokens >= max_tokens
+            )
             finish_reason = None
             if finished:
-                finish_reason = getattr(chunk, 'finish_reason', 'stop')
+                finish_reason = getattr(chunk, "finish_reason", "stop")
 
             yield GenerationOutput(
                 text=accumulated_text,
@@ -337,7 +347,7 @@ class SimpleEngine(BaseEngine):
 
         # For LLM, apply chat template and stream
         tokenizer = self._model.tokenizer
-        if hasattr(tokenizer, 'apply_chat_template'):
+        if hasattr(tokenizer, "apply_chat_template"):
             template_kwargs = {
                 "tokenize": False,
                 "add_generation_prompt": True,

@@ -107,7 +107,9 @@ class TestArgumentValidation:
         validator = MCPCommandValidator()
 
         # These should not raise
-        validator.validate_args(["-y", "@modelcontextprotocol/server-filesystem", "/tmp"], "test")
+        validator.validate_args(
+            ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"], "test"
+        )
         validator.validate_args(["--db-path", "data.db"], "test")
         validator.validate_args(["--port", "8080"], "test")
 
@@ -483,9 +485,7 @@ class TestToolSandbox:
             sandbox.validate_tool_execution(
                 tool_name="multi_file",
                 server_name="filesystem",
-                arguments={
-                    "files": ["/tmp/safe.txt", "../../../etc/passwd"]
-                },
+                arguments={"files": ["/tmp/safe.txt", "../../../etc/passwd"]},
             )
 
         assert "blocked pattern" in str(exc_info.value)

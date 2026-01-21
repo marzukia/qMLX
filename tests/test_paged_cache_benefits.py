@@ -29,11 +29,15 @@ def print_header(title: str) -> None:
     print("=" * 70)
 
 
-def print_table(headers: List[str], rows: List[List[str]], col_widths: List[int] = None) -> None:
+def print_table(
+    headers: List[str], rows: List[List[str]], col_widths: List[int] = None
+) -> None:
     """Print a formatted table."""
     if col_widths is None:
-        col_widths = [max(len(str(row[i])) for row in [headers] + rows) + 2
-                      for i in range(len(headers))]
+        col_widths = [
+            max(len(str(row[i])) for row in [headers] + rows) + 2
+            for i in range(len(headers))
+        ]
 
     # Header
     header_line = "|".join(h.center(w) for h, w in zip(headers, col_widths))
@@ -72,9 +76,11 @@ def test_benefit_1_shared_system_prompts():
     for i in range(num_users):
         # Each user has different query length: 20-115 tokens
         query_len = 20 + (i * 5)
-        user_queries.append(list(range(256 + i*200, 256 + i*200 + query_len)))
+        user_queries.append(list(range(256 + i * 200, 256 + i * 200 + query_len)))
 
-    print(f"\nScenario: {num_users} users with SAME system prompt (256 tokens) + different queries")
+    print(
+        f"\nScenario: {num_users} users with SAME system prompt (256 tokens) + different queries"
+    )
     print(f"System prompt: 256 tokens = 4 blocks")
     print(f"User queries: 20-115 additional tokens each\n")
 
@@ -105,13 +111,15 @@ def test_benefit_1_shared_system_prompts():
         # Store the new request
         cache.store_cache(f"req-{i}", full_tokens, [f"kv_cache_data_{i}"])
 
-        results.append([
-            f"User {i+1}",
-            str(len(full_tokens)),
-            str(shared_tokens),
-            str(shared_blocks),
-            str(len(remaining)),
-        ])
+        results.append(
+            [
+                f"User {i+1}",
+                str(len(full_tokens)),
+                str(shared_tokens),
+                str(shared_blocks),
+                str(len(remaining)),
+            ]
+        )
 
     final_blocks = paged_manager.stats.allocated_blocks
     stats = cache.get_stats()
@@ -121,14 +129,14 @@ def test_benefit_1_shared_system_prompts():
     print_table(
         ["User", "Total Tokens", "Shared", "Shared Blocks", "New Tokens"],
         results[:5],
-        [10, 15, 10, 15, 12]
+        [10, 15, 10, 15, 12],
     )
     print("\n... (10 more users) ...")
     print("\nResults (last 5 users):")
     print_table(
         ["User", "Total Tokens", "Shared", "Shared Blocks", "New Tokens"],
         results[-5:],
-        [10, 15, 10, 15, 12]
+        [10, 15, 10, 15, 12],
     )
 
     # Calculate memory savings
@@ -139,7 +147,9 @@ def test_benefit_1_shared_system_prompts():
     savings = (1 - blocks_with_sharing / blocks_without_sharing) * 100
 
     print(f"\nMemory Analysis:")
-    print(f"  Blocks without sharing: ~{blocks_without_sharing} ({num_users} users x {avg_blocks_per_user} blocks)")
+    print(
+        f"  Blocks without sharing: ~{blocks_without_sharing} ({num_users} users x {avg_blocks_per_user} blocks)"
+    )
     print(f"  Blocks with sharing:    {blocks_with_sharing}")
     print(f"  Memory saved:           {savings:.1f}%")
     print(f"  Cache hits:             {stats['hits']}")
@@ -163,7 +173,9 @@ def test_benefit_2_memory_efficiency():
     num_requests = 50
     tokens_per_request = 256  # 4 blocks per request
     print(f"\nScenario: Simulating {num_requests} concurrent requests")
-    print(f"Each request: {tokens_per_request} tokens ({tokens_per_request // 64} blocks)\n")
+    print(
+        f"Each request: {tokens_per_request} tokens ({tokens_per_request // 64} blocks)\n"
+    )
 
     # Compare standard allocation vs paged allocation
 
@@ -186,15 +198,15 @@ def test_benefit_2_memory_efficiency():
 
     for i in range(20):
         # Each request: 128 shared + 128 unique = 256 total
-        tokens = common_prefix_1 + list(range(5000 + i*200, 5128 + i*200))
+        tokens = common_prefix_1 + list(range(5000 + i * 200, 5128 + i * 200))
         cache.store_cache(f"group1-req-{i}", tokens, [f"cache_{i}"])
 
     for i in range(15):
-        tokens = common_prefix_2 + list(range(10000 + i*200, 10128 + i*200))
+        tokens = common_prefix_2 + list(range(10000 + i * 200, 10128 + i * 200))
         cache.store_cache(f"group2-req-{i}", tokens, [f"cache_{i}"])
 
     for i in range(15):
-        tokens = common_prefix_3 + list(range(15000 + i*200, 15128 + i*200))
+        tokens = common_prefix_3 + list(range(15000 + i * 200, 15128 + i * 200))
         cache.store_cache(f"group3-req-{i}", tokens, [f"cache_{i}"])
 
     paged_total = paged_manager.stats.allocated_blocks
@@ -208,11 +220,15 @@ def test_benefit_2_memory_efficiency():
         [
             ["Requests", str(num_requests), str(num_requests)],
             ["Tokens/request", str(tokens_per_request), str(tokens_per_request)],
-            ["Total tokens", str(num_requests * tokens_per_request), str(num_requests * tokens_per_request)],
+            [
+                "Total tokens",
+                str(num_requests * tokens_per_request),
+                str(num_requests * tokens_per_request),
+            ],
             ["Blocks allocated", str(standard_total), str(paged_total)],
             ["Shared blocks", "0", str(shared_blocks)],
         ],
-        [20, 12, 15]
+        [20, 12, 15],
     )
 
     savings = (1 - paged_total / standard_total) * 100
@@ -288,7 +304,9 @@ def test_benefit_3_prefix_sharing():
     for i, tokens in enumerate(python_followups):
         block_table, remaining = cache.fetch_cache(f"python-followup-{i}", tokens)
         shared = len(tokens) - len(remaining) if block_table else 0
-        print(f"    Follow-up {i+1}: {len(tokens)} tokens, {shared} shared ({shared*100//len(tokens)}%)")
+        print(
+            f"    Follow-up {i+1}: {len(tokens)} tokens, {shared} shared ({shared*100//len(tokens)}%)"
+        )
         cache.store_cache(f"python-followup-{i}", tokens, [f"followup_{i}"])
 
     # Second conversation: Rust discussion
@@ -311,7 +329,9 @@ def test_benefit_3_prefix_sharing():
     for i, tokens in enumerate(rust_followups):
         block_table, remaining = cache.fetch_cache(f"rust-followup-{i}", tokens)
         shared = len(tokens) - len(remaining) if block_table else 0
-        print(f"    Follow-up {i+1}: {len(tokens)} tokens, {shared} shared ({shared*100//len(tokens)}%)")
+        print(
+            f"    Follow-up {i+1}: {len(tokens)} tokens, {shared} shared ({shared*100//len(tokens)}%)"
+        )
         cache.store_cache(f"rust-followup-{i}", tokens, [f"rust_followup_{i}"])
 
     # Summary
@@ -328,7 +348,7 @@ def test_benefit_3_prefix_sharing():
         *[len(t) for t in rust_followups],
     ]
     total_tokens_without_sharing = sum(all_token_counts)
-    tokens_saved = stats['tokens_saved']
+    tokens_saved = stats["tokens_saved"]
 
     print(f"\nPrefix Sharing Summary:")
     print_table(
@@ -337,14 +357,18 @@ def test_benefit_3_prefix_sharing():
             ["Total conversations", str(total_conversations)],
             ["Tokens without sharing", str(total_tokens_without_sharing)],
             ["Tokens saved by sharing", str(tokens_saved)],
-            ["Cache hits", str(stats['hits'])],
-            ["Blocks allocated", str(usage['allocated_blocks'])],
-            ["Shared blocks", str(usage['shared_blocks'])],
+            ["Cache hits", str(stats["hits"])],
+            ["Blocks allocated", str(usage["allocated_blocks"])],
+            ["Shared blocks", str(usage["shared_blocks"])],
         ],
-        [25, 15]
+        [25, 15],
     )
 
-    efficiency = tokens_saved / total_tokens_without_sharing * 100 if total_tokens_without_sharing > 0 else 0
+    efficiency = (
+        tokens_saved / total_tokens_without_sharing * 100
+        if total_tokens_without_sharing > 0
+        else 0
+    )
     print(f"\nCompute saved by prefix sharing: {efficiency:.1f}%")
 
     return efficiency
@@ -406,9 +430,9 @@ def main():
     results = {}
 
     # Run each test
-    results['shared_prompts'] = test_benefit_1_shared_system_prompts()
-    results['memory_efficiency'] = test_benefit_2_memory_efficiency()
-    results['prefix_sharing'] = test_benefit_3_prefix_sharing()
+    results["shared_prompts"] = test_benefit_1_shared_system_prompts()
+    results["memory_efficiency"] = test_benefit_2_memory_efficiency()
+    results["prefix_sharing"] = test_benefit_3_prefix_sharing()
     test_copy_on_write_demo()
 
     # Final summary
@@ -422,7 +446,7 @@ def main():
             ["2. Memory Efficiency", f"{results['memory_efficiency']:.1f}%"],
             ["3. Prefix Sharing", f"{results['prefix_sharing']:.1f}%"],
         ],
-        [30, 20]
+        [30, 20],
     )
 
     print("\nKey Features:")

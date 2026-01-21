@@ -53,17 +53,37 @@ from fastapi.responses import StreamingResponse
 
 # Import from new modular API
 from .api.models import (  # Re-export for backwards compatibility with tests
-    AssistantMessage, ChatCompletionChoice, ChatCompletionChunk,
-    ChatCompletionChunkChoice, ChatCompletionChunkDelta, ChatCompletionRequest,
-    ChatCompletionResponse, CompletionChoice, CompletionRequest,
-    CompletionResponse, ContentPart, ImageUrl, MCPExecuteRequest,
-    MCPExecuteResponse, MCPServerInfo, MCPServersResponse, MCPToolInfo,
-    MCPToolsResponse, Message, ModelInfo, ModelsResponse, Usage, VideoUrl)
-from .api.tool_calling import (build_json_system_prompt,
-                               convert_tools_for_template, parse_json_output,
-                               parse_tool_calls)
-from .api.utils import (clean_output_text, extract_multimodal_content,
-                        is_mllm_model)
+    AssistantMessage,
+    ChatCompletionChoice,
+    ChatCompletionChunk,
+    ChatCompletionChunkChoice,
+    ChatCompletionChunkDelta,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    CompletionChoice,
+    CompletionRequest,
+    CompletionResponse,
+    ContentPart,
+    ImageUrl,
+    MCPExecuteRequest,
+    MCPExecuteResponse,
+    MCPServerInfo,
+    MCPServersResponse,
+    MCPToolInfo,
+    MCPToolsResponse,
+    Message,
+    ModelInfo,
+    ModelsResponse,
+    Usage,
+    VideoUrl,
+)
+from .api.tool_calling import (
+    build_json_system_prompt,
+    convert_tools_for_template,
+    parse_json_output,
+    parse_tool_calls,
+)
+from .api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
 from .engine import BaseEngine, BatchedEngine, SimpleEngine, GenerationOutput
 
 logging.basicConfig(level=logging.INFO)
@@ -266,8 +286,12 @@ def load_model(
 
 def get_usage(output: GenerationOutput) -> Usage:
     """Extract usage metrics from GenerationOutput."""
-    total_prompt_tokens = output.prompt_tokens if hasattr(output, 'prompt_tokens') else 0
-    total_completion_tokens = output.completion_tokens if hasattr(output, 'completion_tokens') else 0
+    total_prompt_tokens = (
+        output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
+    )
+    total_completion_tokens = (
+        output.completion_tokens if hasattr(output, "completion_tokens") else 0
+    )
     return Usage(
         prompt_tokens=total_prompt_tokens,
         completion_tokens=total_completion_tokens,
@@ -580,7 +604,9 @@ async def create_completion(request: CompletionRequest):
             )
         )
         total_completion_tokens += output.completion_tokens
-        total_prompt_tokens += output.prompt_tokens if hasattr(output, 'prompt_tokens') else 0
+        total_prompt_tokens += (
+            output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
+        )
 
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0
@@ -874,8 +900,7 @@ async def init_mcp(config_path: str):
     global _mcp_manager, _mcp_executor
 
     try:
-        from vllm_mlx.mcp import (MCPClientManager, ToolExecutor,
-                                  load_mcp_config)
+        from vllm_mlx.mcp import MCPClientManager, ToolExecutor, load_mcp_config
 
         config = load_mcp_config(config_path)
         _mcp_manager = MCPClientManager(config)

@@ -345,6 +345,7 @@ class TestSchedulerIntegration:
         """Load a small test model."""
         try:
             from mlx_lm import load
+
             model, tokenizer = load("mlx-community/Llama-3.2-1B-Instruct-4bit")
             return model, tokenizer
         except Exception as e:
