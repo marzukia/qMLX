@@ -49,7 +49,6 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 # Import from new modular API
