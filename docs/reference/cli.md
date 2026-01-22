@@ -28,6 +28,9 @@ vllm-mlx serve <model> [options]
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
 | `--timeout` | Request timeout in seconds | 300 |
 | `--continuous-batching` | Enable batching for multi-user | False |
+| `--cache-memory-mb` | Cache memory limit in MB | Auto |
+| `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
+| `--no-memory-aware-cache` | Use legacy entry-count cache | False |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--max-tokens` | Default max tokens | 32768 |
 | `--stream-interval` | Tokens per stream chunk | 1 |
@@ -44,6 +47,11 @@ vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
 
 # Continuous batching (multiple users)
 vllm-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --continuous-batching
+
+# With memory limit for large models
+vllm-mlx serve mlx-community/GLM-4.7-Flash-4bit \
+  --continuous-batching \
+  --cache-memory-mb 2048
 
 # Production with paged cache
 vllm-mlx serve mlx-community/Qwen3-0.6B-8bit \
