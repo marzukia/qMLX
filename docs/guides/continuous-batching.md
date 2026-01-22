@@ -138,10 +138,10 @@ python tests/test_prefix_cache.py
   Results:
   Step   | Description         | Expected | Actual | Status
   -------+---------------------+----------+--------+-------
-  1a     | First request       | MISS     | MISS   | ✓
-  1b     | Same prompt         | HIT      | HIT    | ✓
-  1c     | Different prompt    | MISS     | MISS   | ✓
-  1d     | Return to prompt 1  | HIT      | HIT    | ✓
+  1a     | First request       | MISS     | MISS   | PASS
+  1b     | Same prompt         | HIT      | HIT    | PASS
+  1c     | Different prompt    | MISS     | MISS   | PASS
+  1d     | Return to prompt 1  | HIT      | HIT    | PASS
 ======================================================================
 ```
 
