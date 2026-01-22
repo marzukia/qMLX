@@ -79,6 +79,27 @@ vllm-mlx serve model --continuous-batching --stream-interval 5
 | `2-5` | Batch tokens before sending |
 | `10+` | Maximum throughput, chunkier output |
 
+## Memory Management
+
+For large models, the prefix cache can consume significant memory. The memory-aware cache automatically manages this:
+
+```bash
+# Auto-detect (uses 20% of available RAM)
+vllm-mlx serve model --continuous-batching
+
+# Explicit limit
+vllm-mlx serve model --continuous-batching --cache-memory-mb 2048
+
+# Custom percentage
+vllm-mlx serve model --continuous-batching --cache-memory-percent 0.10
+```
+
+| Option | Description |
+|--------|-------------|
+| `--cache-memory-mb` | Set explicit limit in MB |
+| `--cache-memory-percent` | Fraction of available RAM (default: 0.20) |
+| `--no-memory-aware-cache` | Use legacy entry-count based cache |
+
 ## Prefix Cache
 
 Prefix caching reuses KV cache for repeated prompts.
@@ -140,6 +161,7 @@ python tests/test_prefix_cache.py
 |----------|------|
 | Single user, maximum speed | Simple (default) |
 | Multiple concurrent users | `--continuous-batching` |
+| Large models (7B+) | `--continuous-batching --cache-memory-mb 2048` |
 | Production with shared prompts | `--continuous-batching --use-paged-cache` |
 
 ## Production Setup
