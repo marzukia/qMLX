@@ -6,6 +6,7 @@ vllm-mlx supports vision-language models for image and video understanding.
 
 - Qwen3-VL (recommended)
 - Qwen2-VL
+- Gemma 3
 - LLaVA
 - Idefics
 - PaliGemma
@@ -192,6 +193,116 @@ output = mllm.generate(
 - Lower FPS = faster processing
 - Fewer frames = less memory usage
 - 64 frames is practical maximum (96+ causes GPU timeout)
+
+## Benchmarks
+
+Tested on Apple M4 Max with 128 GB unified memory.
+
+### Qwen3-VL-4B-Instruct-3bit
+
+| Resolution | Time | Tokens | Speed | Memory |
+|------------|------|--------|-------|--------|
+| 224x224 | 0.87s | 124 | 143 tok/s | 2.6 GB |
+| 448x448 | 1.01s | 107 | 106 tok/s | 3.1 GB |
+| 768x768 | 1.42s | 127 | 89 tok/s | 3.4 GB |
+| 1024x1024 | 1.85s | 116 | 63 tok/s | 3.6 GB |
+
+### Qwen3-VL-8B-Instruct-4bit
+
+| Resolution | Time | Tokens | Speed | Memory |
+|------------|------|--------|-------|--------|
+| 224x224 | 1.08s | 78 | 73 tok/s | 5.6 GB |
+| 448x448 | 1.41s | 70 | 50 tok/s | 6.1 GB |
+| 768x768 | 2.06s | 91 | 44 tok/s | 6.5 GB |
+| 1024x1024 | 3.02s | 76 | 25 tok/s | 7.6 GB |
+
+### Gemma 3 4B 4bit
+
+| Resolution | Time | Tokens | Speed | Memory |
+|------------|------|--------|-------|--------|
+| 224x224 | 0.95s | 30 | 32 tok/s | 5.2 GB |
+| 448x448 | 0.99s | 34 | 34 tok/s | 5.2 GB |
+| 768x768 | 0.99s | 32 | 32 tok/s | 5.2 GB |
+| 1024x1024 | 0.95s | 28 | 29 tok/s | 5.2 GB |
+
+### Running Benchmarks
+
+```bash
+# Quick benchmark
+vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --quick
+
+# Full benchmark with more resolutions
+vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit
+
+# Video benchmark
+vllm-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video
+```
+
+## MLLM Cache
+
+vllm-mlx includes a prefix cache system for multimodal models that can significantly speed up repeated requests with the same images.
+
+### How It Works
+
+When you send an image to the model, the vision encoder processes it into embeddings. This processing takes 1-2 seconds. The MLLM cache stores these embeddings along with the KV cache state, so subsequent requests with the same image skip the vision encoder entirely.
+
+The cache uses content-based hashing (similar to LMCache) to identify identical images regardless of how they're provided (URL, base64, or file path).
+
+### Enabling the Cache
+
+```bash
+# Enable with default settings (512 MB max)
+vllm-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --enable-mllm-cache
+
+# With custom memory limit
+vllm-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit \
+    --enable-mllm-cache \
+    --mllm-cache-max-mb 1024
+```
+
+### Python API
+
+```python
+from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
+
+# Create cache manager
+cache = MLLMPrefixCacheManager(max_memory_mb=512)
+
+# Store embeddings and KV cache after processing
+cache.store(
+    images=["photo.jpg"],
+    prompt="Describe this image",
+    vision_embeddings=embeddings,
+    kv_cache=kv_state,
+    num_tokens=128
+)
+
+# Fetch from cache on subsequent requests
+entry, match_len = cache.fetch(images=["photo.jpg"], prompt="Describe this image")
+if entry:
+    # Use cached embeddings, skip vision encoder
+    embeddings = entry.vision_embeddings
+    kv_state = entry.kv_cache
+```
+
+### Cache Statistics
+
+```python
+stats = cache.get_stats()
+print(f"Hit rate: {stats.hit_rate:.1%}")
+print(f"Memory used: {stats.memory_used_mb:.1f} MB")
+print(f"Tokens saved: {stats.tokens_saved}")
+```
+
+### Memory Management
+
+The cache uses LRU (Least Recently Used) eviction when memory limit is reached. Each entry tracks:
+
+- Vision embeddings size
+- KV cache size per layer
+- Access frequency for LRU ordering
+
+When memory pressure occurs, least recently accessed entries are evicted first.
 
 ## Gradio Chat UI
 
