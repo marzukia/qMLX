@@ -111,6 +111,30 @@ _engine: BaseEngine | None = None
 _model_name: str | None = None
 _default_max_tokens: int = 32768
 _default_timeout: float = 300.0  # Default request timeout in seconds (5 minutes)
+_default_temperature: float | None = None  # Set via --default-temperature
+_default_top_p: float | None = None  # Set via --default-top-p
+
+_FALLBACK_TEMPERATURE = 0.7
+_FALLBACK_TOP_P = 0.9
+
+
+def _resolve_temperature(request_value: float | None) -> float:
+    """Resolve temperature: request > CLI default > fallback."""
+    if request_value is not None:
+        return request_value
+    if _default_temperature is not None:
+        return _default_temperature
+    return _FALLBACK_TEMPERATURE
+
+
+def _resolve_top_p(request_value: float | None) -> float:
+    """Resolve top_p: request > CLI default > fallback."""
+    if request_value is not None:
+        return request_value
+    if _default_top_p is not None:
+        return _default_top_p
+    return _FALLBACK_TOP_P
+
 
 # Global MCP manager
 _mcp_manager = None
@@ -902,8 +926,8 @@ async def create_completion(request: CompletionRequest):
                 engine.generate(
                     prompt=prompt,
                     max_tokens=request.max_tokens or _default_max_tokens,
-                    temperature=request.temperature,
-                    top_p=request.top_p,
+                    temperature=_resolve_temperature(request.temperature),
+                    top_p=_resolve_top_p(request.top_p),
                     stop=request.stop,
                 ),
                 timeout=timeout,
@@ -1020,8 +1044,8 @@ async def create_chat_completion(request: ChatCompletionRequest):
     # Prepare kwargs
     chat_kwargs = {
         "max_tokens": request.max_tokens or _default_max_tokens,
-        "temperature": request.temperature,
-        "top_p": request.top_p,
+        "temperature": _resolve_temperature(request.temperature),
+        "top_p": _resolve_top_p(request.top_p),
     }
 
     # Add multimodal content
@@ -1153,8 +1177,8 @@ async def stream_completion(
     async for output in engine.stream_generate(
         prompt=prompt,
         max_tokens=request.max_tokens or _default_max_tokens,
-        temperature=request.temperature,
-        top_p=request.top_p,
+        temperature=_resolve_temperature(request.temperature),
+        top_p=_resolve_top_p(request.top_p),
         stop=request.stop,
     ):
         data = {
@@ -1425,13 +1449,30 @@ Examples:
         default=None,
         help="Pre-load an embedding model at startup (e.g. mlx-community/all-MiniLM-L6-v2-4bit)",
     )
+    parser.add_argument(
+        "--default-temperature",
+        type=float,
+        default=None,
+        help="Default temperature for generation when not specified in request",
+    )
+    parser.add_argument(
+        "--default-top-p",
+        type=float,
+        default=None,
+        help="Default top_p for generation when not specified in request",
+    )
 
     args = parser.parse_args()
 
     # Set global configuration
     global _api_key, _default_timeout, _rate_limiter
+    global _default_temperature, _default_top_p
     _api_key = args.api_key
     _default_timeout = args.timeout
+    if args.default_temperature is not None:
+        _default_temperature = args.default_temperature
+    if args.default_top_p is not None:
+        _default_top_p = args.default_top_p
 
     # Configure rate limiter
     if args.rate_limit > 0:

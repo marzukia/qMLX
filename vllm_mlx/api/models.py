@@ -156,8 +156,8 @@ class ChatCompletionRequest(BaseModel):
 
     model: str
     messages: list[Message]
-    temperature: float = 0.7
-    top_p: float = 0.9
+    temperature: float | None = None
+    top_p: float | None = None
     max_tokens: int | None = None
     stream: bool = False
     stream_options: StreamOptions | None = (
@@ -230,8 +230,8 @@ class CompletionRequest(BaseModel):
 
     model: str
     prompt: str | list[str]
-    temperature: float = 0.7
-    top_p: float = 0.9
+    temperature: float | None = None
+    top_p: float | None = None
     max_tokens: int | None = None
     stream: bool = False
     stop: list[str] | None = None
