@@ -8,7 +8,6 @@ pre-computed templates.
 """
 
 import json
-import pytest
 
 
 class TestStreamingJSONEncoder:
