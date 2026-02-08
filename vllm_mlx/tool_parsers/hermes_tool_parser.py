@@ -36,12 +36,23 @@ class HermesToolParser(ToolParser):
     Used when --enable-auto-tool-choice --tool-call-parser hermes are set.
     """
 
+    # Qwen3 / Hermes chat templates handle role="tool" and tool_calls natively.
+    # Without this, tool history is converted to "[Calling tool: ...]" text,
+    # which causes the model to mimic that text format instead of producing
+    # proper <tool_call> XML after a few rounds of tool use.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
+
     # Standard format: <tool_call>{"name": ..., "arguments": ...}</tool_call>
     TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
     # Lenient format: <tool_call or <tool_call> followed by JSON (handles malformed tags)
     TOOL_CALL_LENIENT_PATTERN = re.compile(
         r'<tool_call[^{]*(\{"name":\s*"[^"]+",\s*"arguments":\s*\{[^}]*\}\})', re.DOTALL
     )
+    # Nemotron XML: <tool_call><function=name><parameter=p>v</parameter></function></tool_call>
+    NEMOTRON_PATTERN = re.compile(
+        r"<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>", re.DOTALL
+    )
+    PARAM_PATTERN = re.compile(r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>", re.DOTALL)
     REASONING_PATTERN = re.compile(
         r"<tool_call_reasoning>(.*?)</tool_call_reasoning>", re.DOTALL
     )
@@ -91,7 +102,29 @@ class HermesToolParser(ToolParser):
         if matches:
             cleaned_text = self.TOOL_CALL_PATTERN.sub("", cleaned_text).strip()
 
-        # Fallback 1: try lenient pattern for malformed tags like <tool_call without >
+        # Try Nemotron XML format if no JSON tool calls found
+        if not tool_calls:
+            nemotron_matches = self.NEMOTRON_PATTERN.findall(cleaned_text)
+            for name, params_block in nemotron_matches:
+                params = self.PARAM_PATTERN.findall(params_block)
+                arguments = {}
+                for p_name, p_value in params:
+                    val = p_value.strip()
+                    try:
+                        arguments[p_name.strip()] = json.loads(val)
+                    except (json.JSONDecodeError, ValueError):
+                        arguments[p_name.strip()] = val
+                tool_calls.append(
+                    {
+                        "id": generate_tool_id(),
+                        "name": name.strip(),
+                        "arguments": json.dumps(arguments, ensure_ascii=False),
+                    }
+                )
+            if nemotron_matches:
+                cleaned_text = self.NEMOTRON_PATTERN.sub("", cleaned_text).strip()
+
+        # Fallback: try lenient pattern for malformed tags like <tool_call without >
         if not tool_calls:
             lenient_matches = self.TOOL_CALL_LENIENT_PATTERN.findall(cleaned_text)
             for match in lenient_matches[:1]:  # Only first to avoid hallucinations
@@ -117,16 +150,14 @@ class HermesToolParser(ToolParser):
                 except json.JSONDecodeError:
                     continue
 
-        # Fallback 2: try raw JSON format if no tagged tool calls found
+        # Fallback: try raw JSON format if no tagged tool calls found
         # Only parse the FIRST valid tool call to avoid hallucinated multiple calls
         if not tool_calls:
             raw_matches = self.RAW_JSON_TOOL_PATTERN.findall(cleaned_text)
             if raw_matches:
-                # Only take the first match to avoid hallucinated tool calls
                 name, args_str = raw_matches[0]
                 try:
                     arguments = json.loads(args_str)
-                    # Validate: only accept if tool name exists in request tools
                     valid_tool = True
                     if request and "tools" in request:
                         tool_names = [
@@ -144,7 +175,6 @@ class HermesToolParser(ToolParser):
                                 "arguments": json.dumps(arguments, ensure_ascii=False),
                             }
                         )
-                        # Remove the matched tool call from text
                         cleaned_text = self.RAW_JSON_TOOL_PATTERN.sub(
                             "", cleaned_text, count=1
                         ).strip()

@@ -24,7 +24,9 @@ Example:
 
 from __future__ import annotations
 
+import bisect
 import logging
+import math
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -57,12 +59,38 @@ def _get_available_memory() -> int:
         return 0
 
 
+def _array_memory(arr) -> int:
+    """
+    Estimate array memory from shape+dtype without triggering lazy eval.
+
+    Accessing .nbytes on a lazy MLX array forces evaluation of the entire
+    computation graph, causing a VRAM spike. This function uses shape and
+    dtype metadata (which are always available without eval) to compute
+    the same value.
+
+    Args:
+        arr: An MLX array or similar object.
+
+    Returns:
+        Estimated memory in bytes.
+    """
+    if hasattr(arr, "shape") and hasattr(arr, "dtype"):
+        dtype = arr.dtype
+        if hasattr(dtype, "size"):
+            return math.prod(arr.shape) * dtype.size
+    # Fallback for non-MLX arrays or objects without shape/dtype
+    if hasattr(arr, "nbytes"):
+        return arr.nbytes
+    return 0
+
+
 def estimate_kv_cache_memory(cache: list[Any]) -> int:
     """
     Estimate memory usage of a KV cache in bytes.
 
     This function inspects MLX arrays in the cache and calculates their
-    total memory footprint.
+    total memory footprint using shape+dtype metadata to avoid triggering
+    lazy evaluation (which would cause a VRAM spike).
 
     Args:
         cache: List of layer cache objects, each containing keys/values tensors.
@@ -81,18 +109,14 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
         if isinstance(layer_cache, dict) and "state" in layer_cache:
             # Extracted state dict
             keys, values = layer_cache["state"]
-            if hasattr(keys, "nbytes"):
-                total_bytes += keys.nbytes
-            if hasattr(values, "nbytes"):
-                total_bytes += values.nbytes
+            total_bytes += _array_memory(keys)
+            total_bytes += _array_memory(values)
         elif hasattr(layer_cache, "state") and not isinstance(layer_cache, dict):
             # Cache with state property returning (keys, values)
             try:
                 keys, values = layer_cache.state
-                if hasattr(keys, "nbytes"):
-                    total_bytes += keys.nbytes
-                if hasattr(values, "nbytes"):
-                    total_bytes += values.nbytes
+                total_bytes += _array_memory(keys)
+                total_bytes += _array_memory(values)
             except (TypeError, ValueError):
                 pass
         elif hasattr(layer_cache, "keys") and hasattr(layer_cache, "values"):
@@ -100,10 +124,10 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
             keys_attr = layer_cache.keys
             values_attr = layer_cache.values
             # Ensure these are arrays, not methods
-            if not callable(keys_attr) and hasattr(keys_attr, "nbytes"):
-                total_bytes += keys_attr.nbytes
-            if not callable(values_attr) and hasattr(values_attr, "nbytes"):
-                total_bytes += values_attr.nbytes
+            if not callable(keys_attr):
+                total_bytes += _array_memory(keys_attr)
+            if not callable(values_attr):
+                total_bytes += _array_memory(values_attr)
 
     return total_bytes
 
@@ -209,6 +233,28 @@ class _CacheEntry:
         )
 
 
+def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
+    """Create shallow copies of KVCache layers with offset reduced by *trim_by*.
+
+    This is used when returning a cached KV state to the scheduler so that
+    the last N positions are "freed" and the model will recompute them on the
+    next forward pass (preventing duplicate KV entries).
+    """
+    from mlx_lm.models.cache import KVCache
+
+    trimmed: list[Any] = []
+    for layer_cache in cache:
+        if hasattr(layer_cache, "offset") and hasattr(layer_cache, "keys"):
+            tc = KVCache.__new__(KVCache)
+            tc.keys = layer_cache.keys
+            tc.values = layer_cache.values
+            tc.offset = max(layer_cache.offset - trim_by, 0)
+            trimmed.append(tc)
+        else:
+            trimmed.append(layer_cache)
+    return trimmed
+
+
 class MemoryAwarePrefixCache:
     """
     Prefix cache with memory-based eviction.
@@ -246,12 +292,20 @@ class MemoryAwarePrefixCache:
         # Key: tuple(tokens), Value: _CacheEntry
         self._entries: OrderedDict[tuple[int, ...], _CacheEntry] = OrderedDict()
 
+        # Sorted index of token keys for efficient prefix/supersequence lookup.
+        # Tuple lexicographic ordering means a prefix key P is always < any
+        # extension of P, so bisect gives O(log N) range scans instead of O(N).
+        self._sorted_keys: list[tuple[int, ...]] = []
+
         # Memory tracking
         self._max_memory = self._config.compute_memory_limit()
         self._current_memory = 0
 
         # Statistics
         self._stats = CacheStats(max_memory_bytes=self._max_memory)
+
+        # Track the match type from the last fetch() call
+        self._last_match_type: str | None = None
 
         logger.info(
             f"MemoryAwarePrefixCache initialized: "
@@ -263,7 +317,10 @@ class MemoryAwarePrefixCache:
         """
         Find cached KV state for the given tokens.
 
-        This method searches for exact matches and prefix matches.
+        This method searches for exact matches, prefix matches, supersequence
+        matches, and longest-common-prefix (LCP) matches.  Uses a sorted key
+        index for O(log N) lookup instead of scanning all entries.
+
         Returns the cached KV state directly (no copy) since MLX arrays
         are immutable and safe to share.
 
@@ -277,47 +334,175 @@ class MemoryAwarePrefixCache:
         """
         if not tokens:
             self._stats.misses += 1
+            self._last_match_type = "miss"
             return None, tokens
 
         tokens_key = tuple(tokens)
 
-        # Check for exact match
+        # --- O(1) exact match ---
         if tokens_key in self._entries:
             entry = self._entries[tokens_key]
-            # Move to end (most recently used)
             self._entries.move_to_end(tokens_key)
             self._stats.hits += 1
             self._stats.tokens_saved += len(tokens)
-            # Return reference directly - MLX arrays are immutable
+            self._last_match_type = "exact"
             return entry.cache, []
 
-        # Check for prefix matches (shorter cached sequences)
+        # --- O(log N) prefix & supersequence match via sorted index ---
         best_match: _CacheEntry | None = None
         best_length = 0
+        best_super: _CacheEntry | None = None
 
-        for cached_key, entry in self._entries.items():
-            cached_len = len(cached_key)
-            # Check if cached sequence is a prefix of requested tokens
-            if (
-                cached_len < len(tokens)
-                and cached_len > best_length
-                and tokens_key[:cached_len] == cached_key
-            ):
-                best_match = entry
-                best_length = cached_len
+        sorted_keys = self._sorted_keys
+        if sorted_keys:
+            # Find insertion point for tokens_key in the sorted list.
+            # Keys that are prefixes of tokens_key or supersequences will be
+            # clustered around this position due to lexicographic ordering.
+            idx = bisect.bisect_left(sorted_keys, tokens_key)
 
+            # Scan backwards from idx to find cached keys that are PREFIXES
+            # of tokens_key (shorter cached sequences).  A prefix P of T
+            # satisfies P <= T lexicographically, so P is at idx-1 or earlier.
+            for i in range(idx - 1, -1, -1):
+                cached_key = sorted_keys[i]
+                cached_len = len(cached_key)
+                if cached_len >= len(tokens_key):
+                    continue  # Not a prefix (same length or longer)
+                # Check if cached_key is a prefix of tokens_key
+                if tokens_key[:cached_len] == cached_key:
+                    if cached_len > best_length:
+                        best_match = self._entries[cached_key]
+                        best_length = cached_len
+                    # Found best prefix — shorter entries can't be longer
+                    break
+                # Once we go past the prefix range, stop
+                if cached_key[0] != tokens_key[0]:
+                    break
+
+            # Scan forward from idx to find cached keys that are SUPERSEQUENCES
+            # of tokens_key (longer cached sequences starting with tokens_key).
+            for i in range(idx, len(sorted_keys)):
+                cached_key = sorted_keys[i]
+                cached_len = len(cached_key)
+                if cached_len < len(tokens_key):
+                    continue
+                # Check if tokens_key is a prefix of cached_key
+                if cached_key[: len(tokens_key)] == tokens_key:
+                    if best_super is None or cached_len > len(best_super.tokens):
+                        best_super = self._entries[cached_key]
+                else:
+                    # Past the supersequence range
+                    break
+
+        # --- Supersequence match handling ---
+        if best_super is not None:
+            n_cached = len(best_super.tokens)
+            n_requested = len(tokens)
+            excess = n_cached - n_requested
+
+            has_non_trimmable = any(
+                not (hasattr(lc, "offset") and hasattr(lc, "keys"))
+                for lc in best_super.cache
+            )
+
+            if excess > 0 and has_non_trimmable:
+                logger.debug(
+                    "[cache_fetch] supersequence match skipped: "
+                    "non-trimmable cache layers (hybrid model)"
+                )
+            elif excess > 0:
+                trimmed_cache = _trim_cache_offset(best_super.cache, excess)
+                self._entries.move_to_end(best_super.tokens)
+                self._stats.hits += 1
+                self._stats.tokens_saved += n_requested
+                self._last_match_type = "supersequence"
+                return trimmed_cache, []
+            else:
+                self._entries.move_to_end(best_super.tokens)
+                self._stats.hits += 1
+                self._stats.tokens_saved += n_requested
+                self._last_match_type = "supersequence"
+                return best_super.cache, []
+
+        # --- Prefix match ---
         if best_match is not None:
-            # Move matched entry to end (most recently used)
             self._entries.move_to_end(best_match.tokens)
             self._stats.hits += 1
             self._stats.tokens_saved += best_length
             remaining = tokens[best_length:]
+            self._last_match_type = "prefix"
             return best_match.cache, remaining
 
+        # --- LCP (Longest Common Prefix) for divergent sequences ---
+        # This handles the agentic pattern: same system+context prefix
+        # but different final user message.  Use the sorted index to find
+        # the nearest neighbor which likely shares the longest prefix.
+        best_lcp_entry: _CacheEntry | None = None
+        best_lcp_length = 0
+
+        if sorted_keys:
+            idx = bisect.bisect_left(sorted_keys, tokens_key)
+            # Check neighbors around insertion point (they share the most
+            # common prefix due to lexicographic ordering).
+            for i in (idx - 1, idx):
+                if i < 0 or i >= len(sorted_keys):
+                    continue
+                cached_key = sorted_keys[i]
+                if cached_key == tokens_key:
+                    continue  # Skip exact (already handled)
+                min_len = min(len(cached_key), len(tokens_key))
+                if min_len <= best_lcp_length:
+                    continue
+                # Compute LCP length
+                lcp = 0
+                for j in range(min_len):
+                    if cached_key[j] != tokens_key[j]:
+                        break
+                    lcp = j + 1
+                if lcp > best_lcp_length:
+                    best_lcp_entry = self._entries[cached_key]
+                    best_lcp_length = lcp
+                    logger.debug(
+                        f"[cache_fetch] LCP scan: cached_len={len(cached_key)} "
+                        f"req_len={len(tokens_key)} lcp={lcp}"
+                    )
+
+        if best_lcp_entry is not None and best_lcp_length > 0:
+            excess = len(best_lcp_entry.tokens) - best_lcp_length
+
+            has_non_trimmable = any(
+                not (hasattr(lc, "offset") and hasattr(lc, "keys"))
+                for lc in best_lcp_entry.cache
+            )
+            logger.debug(
+                f"[cache_fetch] LCP candidate: lcp={best_lcp_length} "
+                f"entry_len={len(best_lcp_entry.tokens)} excess={excess} "
+                f"non_trimmable={has_non_trimmable} "
+                f"cache_layers={len(best_lcp_entry.cache)} "
+                f"layer_types={[type(lc).__name__ for lc in best_lcp_entry.cache[:3]]}"
+            )
+
+            if not has_non_trimmable:
+                trimmed_cache = _trim_cache_offset(best_lcp_entry.cache, excess)
+                self._entries.move_to_end(best_lcp_entry.tokens)
+                self._stats.hits += 1
+                self._stats.tokens_saved += best_lcp_length
+                remaining = tokens[best_lcp_length:]
+                logger.debug(
+                    f"[cache_fetch] LCP hit: shared={best_lcp_length} "
+                    f"trimmed={excess} remaining={len(remaining)}"
+                )
+                self._last_match_type = "lcp"
+                return trimmed_cache, remaining
+
         self._stats.misses += 1
+        self._last_match_type = "miss"
+
         return None, tokens
 
-    def store(self, tokens: list[int], cache: list[Any]) -> bool:
+    def store(
+        self, tokens: list[int], cache: list[Any], evict_prefixes: bool = True
+    ) -> bool:
         """
         Store KV cache for future reuse.
 
@@ -328,6 +513,11 @@ class MemoryAwarePrefixCache:
         Args:
             tokens: Token sequence that was processed.
             cache: The computed KV cache to store.
+            evict_prefixes: If True, evict existing entries whose token
+                sequence is a strict prefix of ``tokens``.  Set to False
+                when storing prompt+output entries to preserve prompt-only
+                entries created by prompt_cache_save (those are the entries
+                that future requests will actually match).
 
         Returns:
             True if stored successfully, False if rejected.
@@ -353,6 +543,36 @@ class MemoryAwarePrefixCache:
             )
             return False
 
+        # Prefix-subset eviction: remove entries whose token sequence
+        # is a strict prefix of the new entry.  Uses sorted index for
+        # O(log N + K) lookup instead of O(N) scan.
+        if evict_prefixes and self._sorted_keys:
+            to_remove = []
+            idx = bisect.bisect_left(self._sorted_keys, tokens_key)
+            # Scan backwards — prefixes of tokens_key are immediately before idx
+            for i in range(idx - 1, -1, -1):
+                key = self._sorted_keys[i]
+                klen = len(key)
+                if klen >= len(tokens_key):
+                    continue
+                if tokens_key[:klen] == key:
+                    to_remove.append(key)
+                elif key[0] != tokens_key[0]:
+                    break
+            for key in to_remove:
+                old = self._entries.pop(key)
+                self._current_memory -= old.memory_bytes
+                self._stats.evictions += 1
+                self._remove_from_sorted(key)
+                logger.debug(
+                    f"[prefix_evict] removed {len(key)} tokens, "
+                    f"freed {old.memory_bytes / _BYTES_PER_MB:.2f}MB, "
+                    f"new_entry={len(tokens_key)} tokens"
+                )
+            if to_remove:
+                self._stats.entry_count = len(self._entries)
+                self._stats.current_memory_bytes = self._current_memory
+
         # Evict until we have room
         while (
             self._current_memory + entry.memory_bytes > self._max_memory
@@ -363,6 +583,7 @@ class MemoryAwarePrefixCache:
         # Store entry
         self._entries[tokens_key] = entry
         self._current_memory += entry.memory_bytes
+        bisect.insort(self._sorted_keys, tokens_key)
         self._stats.entry_count = len(self._entries)
         self._stats.current_memory_bytes = self._current_memory
 
@@ -374,6 +595,12 @@ class MemoryAwarePrefixCache:
 
         return True
 
+    def _remove_from_sorted(self, key: tuple[int, ...]) -> None:
+        """Remove a key from the sorted index using bisect for O(log N)."""
+        idx = bisect.bisect_left(self._sorted_keys, key)
+        if idx < len(self._sorted_keys) and self._sorted_keys[idx] == key:
+            self._sorted_keys.pop(idx)
+
     def _evict_lru(self) -> None:
         """Evict the least recently used entry."""
         if not self._entries:
@@ -382,12 +609,13 @@ class MemoryAwarePrefixCache:
         # popitem(last=False) removes oldest entry (FIFO order = LRU)
         tokens_key, entry = self._entries.popitem(last=False)
         self._current_memory -= entry.memory_bytes
+        self._remove_from_sorted(tokens_key)
         self._stats.evictions += 1
         self._stats.entry_count = len(self._entries)
         self._stats.current_memory_bytes = self._current_memory
 
         logger.debug(
-            f"Evicted cache: {len(tokens_key)} tokens, "
+            f"[lru_evict] removed {len(tokens_key)} tokens, "
             f"freed {entry.memory_bytes / _BYTES_PER_MB:.2f}MB"
         )
 
@@ -405,6 +633,7 @@ class MemoryAwarePrefixCache:
         entry = self._entries.pop(tokens_key, None)
         if entry is not None:
             self._current_memory -= entry.memory_bytes
+            self._remove_from_sorted(tokens_key)
             self._stats.entry_count = len(self._entries)
             self._stats.current_memory_bytes = self._current_memory
             return True
@@ -413,6 +642,7 @@ class MemoryAwarePrefixCache:
     def clear(self) -> None:
         """Clear all cached entries."""
         self._entries.clear()
+        self._sorted_keys.clear()
         self._current_memory = 0
         self._stats = CacheStats(max_memory_bytes=self._max_memory)
         logger.debug("Cache cleared")
@@ -446,3 +676,184 @@ class MemoryAwarePrefixCache:
     def __contains__(self, tokens: list[int]) -> bool:
         """Check if tokens are cached."""
         return tuple(tokens) in self._entries
+
+    # -----------------------------------------------------------------
+    # Disk persistence — survives server restarts
+    # -----------------------------------------------------------------
+
+    def save_to_disk(self, cache_dir: str) -> bool:
+        """Save all cache entries to disk using mlx_lm's safetensors format.
+
+        Directory layout::
+
+            cache_dir/
+              index.json          # token keys + metadata per entry
+              entry_0.safetensors # KV arrays for entry 0
+              entry_1.safetensors
+              ...
+
+        Returns True if at least one entry was saved.
+        """
+        import json
+        import os
+        import time as _time
+
+        if not self._entries:
+            logger.info("[cache_persist] nothing to save (0 entries)")
+            return False
+
+        t0 = _time.monotonic()
+        os.makedirs(cache_dir, exist_ok=True)
+
+        try:
+            from mlx_lm.models.cache import save_prompt_cache
+        except ImportError:
+            logger.warning("[cache_persist] mlx_lm not available, cannot save")
+            return False
+
+        index = {
+            "version": 2,
+            "num_entries": len(self._entries),
+            "total_memory_bytes": self._current_memory,
+            "entries": [],
+        }
+
+        saved = 0
+        for i, (tokens_key, entry) in enumerate(self._entries.items()):
+            entry_path = os.path.join(cache_dir, f"entry_{i}.safetensors")
+            try:
+                save_prompt_cache(
+                    entry_path,
+                    entry.cache,
+                    metadata={"num_tokens": str(len(tokens_key))},
+                )
+                # Save tokens separately (can be 100K+ ints → binary is smaller)
+                tokens_path = os.path.join(cache_dir, f"entry_{i}_tokens.bin")
+                import array as _array
+
+                arr = _array.array("i", tokens_key)  # 32-bit signed ints
+                with open(tokens_path, "wb") as f:
+                    arr.tofile(f)
+
+                index["entries"].append(
+                    {
+                        "index": i,
+                        "num_tokens": len(tokens_key),
+                        "memory_bytes": entry.memory_bytes,
+                    }
+                )
+                saved += 1
+                logger.info(
+                    f"[cache_persist] saved entry {i}: "
+                    f"{len(tokens_key)} tokens, "
+                    f"{entry.memory_bytes / _BYTES_PER_MB:.1f}MB KV, "
+                    f"file={entry_path}"
+                )
+            except Exception as e:
+                logger.warning(f"[cache_persist] failed to save entry {i}: {e}")
+
+        index_path = os.path.join(cache_dir, "index.json")
+        with open(index_path, "w") as f:
+            json.dump(index, f, indent=2)
+
+        dt = _time.monotonic() - t0
+        logger.info(
+            f"[cache_persist] SAVED {saved}/{len(self._entries)} entries "
+            f"to {cache_dir} in {dt:.1f}s "
+            f"({self._current_memory / _BYTES_PER_MB:.0f}MB total)"
+        )
+        return saved > 0
+
+    def load_from_disk(self, cache_dir: str) -> int:
+        """Load cache entries from disk.
+
+        Returns the number of entries successfully loaded.
+        """
+        import json
+        import os
+        import time as _time
+
+        index_path = os.path.join(cache_dir, "index.json")
+        if not os.path.exists(index_path):
+            logger.info(f"[cache_persist] no index at {index_path}, nothing to load")
+            return 0
+
+        t0 = _time.monotonic()
+
+        try:
+            from mlx_lm.models.cache import load_prompt_cache
+        except ImportError:
+            logger.warning("[cache_persist] mlx_lm not available, cannot load")
+            return 0
+
+        with open(index_path) as f:
+            index = json.load(f)
+
+        version = index.get("version", 1)
+        if version < 2:
+            logger.warning(f"[cache_persist] unsupported version {version}, skipping")
+            return 0
+
+        loaded = 0
+        for entry_meta in index.get("entries", []):
+            i = entry_meta["index"]
+            entry_path = os.path.join(cache_dir, f"entry_{i}.safetensors")
+            tokens_path = os.path.join(cache_dir, f"entry_{i}_tokens.bin")
+
+            if not os.path.exists(entry_path) or not os.path.exists(tokens_path):
+                logger.warning(f"[cache_persist] missing files for entry {i}, skipping")
+                continue
+
+            try:
+                # Load tokens from binary
+                import array as _array
+
+                arr = _array.array("i")
+                with open(tokens_path, "rb") as f:
+                    arr.fromfile(f, entry_meta["num_tokens"])
+                tokens = list(arr)
+
+                # Load KV cache
+                cache = load_prompt_cache(entry_path)
+
+                # Estimate memory
+                memory = estimate_kv_cache_memory(cache)
+
+                # Check if it fits
+                if self._current_memory + memory > self._max_memory:
+                    logger.info(
+                        f"[cache_persist] entry {i} would exceed memory limit "
+                        f"({(self._current_memory + memory) / _BYTES_PER_MB:.0f}MB > "
+                        f"{self._max_memory / _BYTES_PER_MB:.0f}MB), stopping load"
+                    )
+                    break
+
+                tokens_key = tuple(tokens)
+                entry = _CacheEntry(
+                    tokens=tokens_key,
+                    cache=cache,
+                    memory_bytes=memory,
+                )
+                self._entries[tokens_key] = entry
+                self._current_memory += memory
+                bisect.insort(self._sorted_keys, tokens_key)
+                loaded += 1
+
+                logger.info(
+                    f"[cache_persist] loaded entry {i}: "
+                    f"{len(tokens)} tokens, "
+                    f"{memory / _BYTES_PER_MB:.1f}MB KV"
+                )
+
+            except Exception as e:
+                logger.warning(f"[cache_persist] failed to load entry {i}: {e}")
+
+        self._stats.entry_count = len(self._entries)
+        self._stats.current_memory_bytes = self._current_memory
+
+        dt = _time.monotonic() - t0
+        logger.info(
+            f"[cache_persist] LOADED {loaded} entries from {cache_dir} "
+            f"in {dt:.1f}s ({self._current_memory / _BYTES_PER_MB:.0f}MB total)"
+        )
+        return loaded
