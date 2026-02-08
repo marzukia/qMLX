@@ -550,26 +550,14 @@ Examples:
             "nemotron",
             "xlam",
             "functionary",
+            "glm47",
         ],
         help=(
             "Select the tool call parser for the model. Options: "
             "auto (auto-detect), mistral, qwen, llama, hermes, deepseek, "
-            "kimi, granite, nemotron, xlam, functionary. "
+            "kimi, granite, nemotron, xlam, functionary, glm47. "
             "Required for --enable-auto-tool-choice."
         ),
-    )
-    # Generation defaults
-    serve_parser.add_argument(
-        "--default-temperature",
-        type=float,
-        default=None,
-        help="Default temperature for generation when not specified in request",
-    )
-    serve_parser.add_argument(
-        "--default-top-p",
-        type=float,
-        default=None,
-        help="Default top_p for generation when not specified in request",
     )
     # Reasoning parser options - choices loaded dynamically from registry
     from .reasoning import list_parsers
@@ -593,7 +581,6 @@ Examples:
         default=None,
         help="Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit)",
     )
-
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")
     bench_parser.add_argument("model", type=str, help="Model to benchmark")
