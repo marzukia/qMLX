@@ -45,9 +45,10 @@ class MLLMSchedulerConfig:
 
     # Maximum concurrent MLLM requests in the batch
     max_num_seqs: int = 16
-    # Prefill batch size (all queued requests are prefilled together)
+    # Prefill batch size - set equal to max_num_seqs to avoid batch extend issues
+    # (VLM KV cache transfer between batches is complex and model-specific)
     prefill_batch_size: int = 16
-    # Completion batch size
+    # Completion batch size (same as prefill for consistency)
     completion_batch_size: int = 16
     # Prefill step size for chunked prefill
     prefill_step_size: int = 1024
