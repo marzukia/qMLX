@@ -107,6 +107,12 @@ def serve_command(args):
         print(f"MCP config: {args.mcp_config}")
         os.environ["VLLM_MLX_MCP_CONFIG"] = args.mcp_config
 
+    # Pre-load embedding model if specified
+    if args.embedding_model:
+        print(f"Pre-loading embedding model: {args.embedding_model}")
+        server.load_embedding_model(args.embedding_model, lock=True)
+        print(f"Embedding model loaded: {args.embedding_model}")
+
     # Build scheduler config for batched mode
     scheduler_config = None
     if args.continuous_batching:
@@ -560,6 +566,13 @@ Examples:
             "Extracts <think>...</think> tags into reasoning_content field. "
             f"Options: {', '.join(reasoning_choices)}."
         ),
+    )
+    # Embedding model option
+    serve_parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default=None,
+        help="Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit)",
     )
 
     # Bench command
