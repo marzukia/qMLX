@@ -47,22 +47,57 @@ jobs:
         run: mypy vllm_mlx/ --ignore-missing-imports --no-error-summary
         continue-on-error: true
 
-  unit-tests:
+  test-matrix:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pydantic fastapi jsonschema
+          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil
 
       - name: Run unit tests (no MLX required)
         run: |
-          pytest tests/test_mcp_security.py -v --tb=short
-          pytest tests/test_structured_output.py -v --tb=short -k "not Integration and not InjectJson"
+          pytest \
+            tests/test_mcp_security.py \
+            tests/test_structured_output.py \
+            tests/test_reasoning_parser.py \
+            tests/test_tool_parsers.py \
+            tests/test_streaming_json_encoder.py \
+            tests/test_native_tool_format.py \
+            tests/test_memory_cache.py \
+            tests/test_prefix_cache.py \
+            tests/test_mllm_cache.py \
+            -v --tb=short \
+            -k "not Integration and not InjectJson" \
+            --cov=vllm_mlx \
+            --cov-report=term-missing \
+            --cov-report=xml
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.11'
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  tests:
+    needs: test-matrix
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test-matrix.result }}" != "success" ]; then
+            echo "Tests failed"
+            exit 1
+          fi
