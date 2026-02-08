@@ -77,6 +77,9 @@ jobs:
             tests/test_memory_cache.py \
             tests/test_prefix_cache.py \
             tests/test_mllm_cache.py \
+            tests/test_api_models.py \
+            tests/test_api_utils.py \
+            tests/test_request.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
@@ -121,6 +124,10 @@ jobs:
             tests/test_paged_cache.py \
             tests/test_mllm_continuous_batching.py \
             tests/test_mllm_cache.py \
+            tests/test_optimizations.py \
+            tests/test_simple_engine.py \
+            tests/test_batching.py \
+            tests/test_continuous_batching.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"
