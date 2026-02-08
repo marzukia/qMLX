@@ -35,6 +35,7 @@ vllm-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 - [Multimodal (Images & Video)](guides/multimodal.md)
 - [Audio (STT/TTS)](guides/audio.md)
 - [Embeddings](guides/embeddings.md)
+- [Tool Calling](guides/tool-calling.md)
 - [MCP & Tool Calling](guides/mcp-tools.md)
 - [Continuous Batching](guides/continuous-batching.md)
 
