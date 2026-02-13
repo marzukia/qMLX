@@ -551,15 +551,20 @@ class MLLMBatchGenerator:
             f"({processing_time:.2f}s)"
         )
 
-    def _run_vision_encoding(self, request: MLLMBatchRequest) -> mx.array:
+    def _run_vision_encoding(
+        self, request: MLLMBatchRequest, cache: Optional[List[Any]] = None
+    ) -> mx.array:
         """
         Run the initial VLM forward pass to encode vision and get first logits.
 
         This runs the full VLM model (vision + language) on the prompt,
-        which encodes the images and prepares the language model cache.
+        which encodes the images and fills the provided KV cache.
 
         Args:
             request: Preprocessed request with input_ids and pixel_values
+            cache: KV cache list for the language model. If provided, the
+                   language model writes its KV state directly into this cache
+                   during the forward pass.
 
         Returns:
             Logits from the forward pass
@@ -574,13 +579,14 @@ class MLLMBatchGenerator:
         if request.image_grid_thw is not None:
             kwargs["image_grid_thw"] = request.image_grid_thw
 
-        # Run full VLM forward pass
-        # This processes vision inputs and fills the language model cache
+        # Run full VLM forward pass with cache.
+        # The VLM passes cache= through to self.language_model(),
+        # so the language model writes KV state directly into our cache.
         input_ids = request.input_ids
         if input_ids.ndim == 1:
             input_ids = input_ids[None, :]
 
-        output = self.model(input_ids, **kwargs)
+        output = self.model(input_ids, cache=cache, **kwargs)
         request.vision_encoded = True
 
         # Handle LanguageModelOutput or plain tensor
@@ -594,8 +600,8 @@ class MLLMBatchGenerator:
 
         For MLLM, this is more complex than LLM:
         1. Preprocess each request (tokenize, process images)
-        2. Run vision encoding for each request (cannot batch vision yet)
-        3. Set up BatchKVCache for language model generation
+        2. Run vision encoding per-request with individual KVCache objects
+        3. Merge individual caches into a BatchKVCache for generation
 
         Args:
             requests: Requests to process
@@ -603,38 +609,46 @@ class MLLMBatchGenerator:
         Returns:
             MLLMBatch ready for generation
         """
+        from mlx_lm.models.cache import make_prompt_cache
+
         tic = time.perf_counter()
 
         # Preprocess all requests
         for req in requests:
             self._preprocess_request(req)
 
-        # Get token sequences and lengths
-        input_ids_list = [
-            req.input_ids.tolist() if req.input_ids is not None else [0]
-            for req in requests
-        ]
-        lengths = [len(ids) for ids in input_ids_list]
-        max_length = max(lengths)
-        padding = [max_length - seq_len for seq_len in lengths]
+        total_prompt_tokens = sum(
+            req.input_ids.size if req.input_ids is not None else 1 for req in requests
+        )
+        self._stats.prompt_tokens += total_prompt_tokens
 
-        self._stats.prompt_tokens += sum(lengths)
+        # Guard against excessive memory usage during cache merge.
+        # Each token in the batch requires KV entries across all layers.
+        max_batch_tokens = self.prefill_step_size * len(requests)
+        if total_prompt_tokens > max_batch_tokens:
+            raise ValueError(
+                f"Total prompt tokens ({total_prompt_tokens}) exceeds safe limit "
+                f"({max_batch_tokens}) for {len(requests)} requests. "
+                f"Reduce prompt length or batch size."
+            )
 
-        # Create batch cache for language model
-        batch_cache = _make_batch_cache(self.language_model, padding)
-
-        # Run vision encoding for each request and fill cache
-        # This must be done per-request because vision inputs differ
+        # Run vision encoding for each request with its own KVCache.
+        # Vision encoding cannot be batched because each request may have
+        # different images/pixel values. We pass a per-request KVCache to
+        # the VLM so the language model writes its KV state directly into it.
         first_tokens = []
         all_logprobs = []
+        per_request_caches = []
 
-        for i, req in enumerate(requests):
-            # Run full VLM forward pass for this request
-            # This fills the cache for layer i with this request's KV states
+        for req in requests:
+            # Create a fresh KVCache for this request's language model prefill
+            request_cache = make_prompt_cache(self.language_model)
+
             with mx.stream(MLLMBatchGenerator._stream):
-                logits = self._run_vision_encoding(req)
+                # Run VLM forward pass — cache= flows through to language_model
+                logits = self._run_vision_encoding(req, cache=request_cache)
 
-                # Extract last token logits
+                # Extract last token logits and sample
                 last_logits = logits[:, -1, :]
                 logprobs = last_logits - mx.logsumexp(
                     last_logits, axis=-1, keepdims=True
@@ -645,6 +659,35 @@ class MLLMBatchGenerator:
 
                 first_tokens.append(sampled.item())
                 all_logprobs.append(logprobs.squeeze(0))
+
+            per_request_caches.append(request_cache)
+
+        # Merge per-request KVCaches into a single BatchKVCache.
+        # KVCache.merge() creates a BatchKVCache with proper left-padding
+        # alignment, so all requests share a single batched cache for
+        # subsequent generation steps.
+        from mlx_lm.models.cache import KVCache
+
+        sample_cache = per_request_caches[0][0]
+        if not isinstance(sample_cache, KVCache):
+            raise ValueError(
+                f"MLLM continuous batching requires standard KVCache but got "
+                f"{type(sample_cache).__name__}. Disable --kv-cache-quantization "
+                f"when using multimodal models with --continuous-batching."
+            )
+
+        try:
+            batch_cache = [
+                per_request_caches[0][layer_idx].merge(
+                    [c[layer_idx] for c in per_request_caches]
+                )
+                for layer_idx in range(len(per_request_caches[0]))
+            ]
+        except Exception as e:
+            logger.error(
+                f"Failed to merge per-request KV caches: {type(e).__name__}: {e}"
+            )
+            raise
 
         # Create initial y (first generated tokens)
         y = mx.array(first_tokens)
@@ -710,10 +753,10 @@ class MLLMBatchGenerator:
         num_active = len(batch) if batch else 0
 
         # Only start a new batch when there is no active batch generating.
-        # MLLM vision encoding produces per-request KV caches that cannot be
-        # safely extended into an active batch's cache (shape mismatch in
-        # attention layers). Instead, queued requests wait until the current
-        # batch finishes, then all get processed together in one prefill.
+        # Per-request KV caches are created during vision encoding and then
+        # merged into a single BatchKVCache. Merging into an active batch
+        # mid-generation would cause shape mismatches in attention layers,
+        # so queued requests wait until the current batch finishes.
         if num_active == 0:
             requests = self.unprocessed_requests[: self.completion_batch_size]
 
