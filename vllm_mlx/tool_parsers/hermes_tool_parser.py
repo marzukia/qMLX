@@ -5,6 +5,7 @@ Hermes/Nous tool call parser for vllm-mlx.
 Handles Hermes-style tool calling format used by NousResearch models.
 """
 
+import ast
 import json
 import re
 import uuid
@@ -21,6 +22,31 @@ from .abstract_tool_parser import (
 def generate_tool_id() -> str:
     """Generate a unique tool call ID."""
     return f"call_{uuid.uuid4().hex[:8]}"
+
+
+def _parse_param_value(val: str) -> Any:
+    """Parse a tool call parameter value, handling both JSON and Python literals.
+
+    Tries json.loads first. If that fails, falls back to ast.literal_eval
+    for Python literal syntax (single quotes, True/False, None). Converts
+    sets to lists and rejects types that are not JSON-serializable (complex,
+    bytes) to avoid crashes during json.dumps later.
+    """
+    try:
+        return json.loads(val)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    try:
+        python_val = ast.literal_eval(val)
+        if isinstance(python_val, set):
+            python_val = sorted(python_val, key=str)
+        if isinstance(python_val, (complex, bytes)):
+            return val
+        json.dumps(python_val)
+        return python_val
+    except (ValueError, SyntaxError, TypeError):
+        return val
 
 
 @ToolParserManager.register_module(["hermes", "nous", "qwen3_coder"])
@@ -111,11 +137,7 @@ class HermesToolParser(ToolParser):
                 params = self.PARAM_PATTERN.findall(params_block)
                 arguments = {}
                 for p_name, p_value in params:
-                    val = p_value.strip()
-                    try:
-                        arguments[p_name.strip()] = json.loads(val)
-                    except (json.JSONDecodeError, ValueError):
-                        arguments[p_name.strip()] = val
+                    arguments[p_name.strip()] = _parse_param_value(p_value.strip())
                 tool_calls.append(
                     {
                         "id": generate_tool_id(),
@@ -135,11 +157,7 @@ class HermesToolParser(ToolParser):
                 params = self.PARAM_PATTERN.findall(params_block)
                 arguments = {}
                 for p_name, p_value in params:
-                    val = p_value.strip()
-                    try:
-                        arguments[p_name.strip()] = json.loads(val)
-                    except (json.JSONDecodeError, ValueError):
-                        arguments[p_name.strip()] = val
+                    arguments[p_name.strip()] = _parse_param_value(p_value.strip())
                 tool_calls.append(
                     {
                         "id": generate_tool_id(),
