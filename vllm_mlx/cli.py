@@ -141,6 +141,11 @@ def serve_command(args):
             max_cache_blocks=args.max_cache_blocks,
             # Chunked prefill
             chunked_prefill_tokens=args.chunked_prefill_tokens,
+            # KV cache quantization
+            kv_cache_quantization=args.kv_cache_quantization,
+            kv_cache_quantization_bits=args.kv_cache_quantization_bits,
+            kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
+            kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
         )
 
         print("Mode: Continuous batching (for multiple concurrent users)")
@@ -158,6 +163,11 @@ def serve_command(args):
                 else f"{args.cache_memory_percent*100:.0f}% of RAM"
             )
             print(f"Memory-aware cache: {cache_info}")
+            if args.kv_cache_quantization:
+                print(
+                    f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
+                    f"group_size={args.kv_cache_quantization_group_size}"
+                )
         elif enable_prefix_cache:
             print(f"Prefix cache: max_entries={args.prefix_cache_size}")
     else:
@@ -209,6 +219,11 @@ def bench_command(args):
             use_paged_cache=args.use_paged_cache,
             paged_cache_block_size=args.paged_cache_block_size,
             max_cache_blocks=args.max_cache_blocks,
+            # KV cache quantization
+            kv_cache_quantization=args.kv_cache_quantization,
+            kv_cache_quantization_bits=args.kv_cache_quantization_bits,
+            kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
+            kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
         )
         engine_config = EngineConfig(
             model_name=args.model,
@@ -408,6 +423,152 @@ def bench_detok_command(args):
             print(f"    Batch: {repr(batch_result[:100])}...")
 
 
+def bench_kv_cache_command(args):
+    """Benchmark KV cache quantization memory savings and quality."""
+    import time
+
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    from .memory_cache import (
+        _dequantize_cache,
+        _quantize_cache,
+        estimate_kv_cache_memory,
+    )
+
+    print("=" * 70)
+    print(" KV Cache Quantization Benchmark")
+    print("=" * 70)
+    print()
+
+    n_layers = args.layers
+    seq_len = args.seq_len
+    n_heads = args.heads
+    head_dim = args.head_dim
+
+    print(
+        f"Config: {n_layers} layers, seq_len={seq_len}, "
+        f"n_heads={n_heads}, head_dim={head_dim}"
+    )
+    print()
+
+    # Create synthetic KV cache with random data
+    print("Creating synthetic KV cache...")
+    cache = []
+    for _ in range(n_layers):
+        kv = KVCache()
+        kv.keys = mx.random.normal((1, n_heads, seq_len, head_dim))
+        kv.values = mx.random.normal((1, n_heads, seq_len, head_dim))
+        kv.offset = seq_len
+        cache.append(kv)
+    mx.eval(*[kv.keys for kv in cache], *[kv.values for kv in cache])
+
+    fp16_mem = estimate_kv_cache_memory(cache)
+    print(f"FP16 cache memory: {fp16_mem / 1024 / 1024:.2f} MB")
+    print()
+
+    # Test each bit width
+    results = []
+    for bits in [8, 4]:
+        group_size = args.group_size
+
+        # Quantize
+        start = time.perf_counter()
+        quantized = _quantize_cache(cache, bits=bits, group_size=group_size)
+        mx.eval(
+            *[
+                layer.keys[0]
+                for layer in quantized
+                if hasattr(layer, "keys") and layer.keys is not None
+            ]
+        )
+        quant_time = (time.perf_counter() - start) * 1000
+
+        quant_mem = estimate_kv_cache_memory(quantized)
+
+        # Dequantize
+        start = time.perf_counter()
+        restored = _dequantize_cache(quantized)
+        mx.eval(
+            *[
+                layer.keys
+                for layer in restored
+                if hasattr(layer, "keys") and layer.keys is not None
+            ]
+        )
+        dequant_time = (time.perf_counter() - start) * 1000
+
+        # Measure quality
+        total_error = 0.0
+        max_error = 0.0
+        count = 0
+        for orig, rest in zip(cache, restored):
+            if orig.keys is not None and rest.keys is not None:
+                mx.eval(orig.keys, rest.keys, orig.values, rest.values)
+                key_err = mx.abs(orig.keys - rest.keys).mean().item()
+                val_err = mx.abs(orig.values - rest.values).mean().item()
+                key_max = mx.abs(orig.keys - rest.keys).max().item()
+                val_max = mx.abs(orig.values - rest.values).max().item()
+                total_error += (key_err + val_err) / 2
+                max_error = max(max_error, key_max, val_max)
+                count += 1
+
+        mean_error = total_error / count if count > 0 else 0.0
+        ratio = fp16_mem / quant_mem if quant_mem > 0 else 0.0
+
+        results.append(
+            {
+                "bits": bits,
+                "mem_mb": quant_mem / 1024 / 1024,
+                "ratio": ratio,
+                "mean_err": mean_error,
+                "max_err": max_error,
+                "quant_ms": quant_time,
+                "dequant_ms": dequant_time,
+            }
+        )
+
+    # Print results
+    fp16_mb = fp16_mem / 1024 / 1024
+    print(
+        f"{'Mode':<12} {'Memory':>10} {'Savings':>10} "
+        f"{'Mean Err':>10} {'Max Err':>10} {'Quant':>10} {'Dequant':>10}"
+    )
+    print("-" * 72)
+    print(
+        f"{'FP16':<12} {fp16_mb:>8.2f}MB {'1.00x':>10} "
+        f"{'0.000':>10} {'0.000':>10} {'-':>10} {'-':>10}"
+    )
+
+    for r in results:
+        print(
+            f"{r['bits']}-bit{'':<7} {r['mem_mb']:>8.2f}MB "
+            f"{r['ratio']:>9.2f}x "
+            f"{r['mean_err']:>10.5f} {r['max_err']:>10.5f} "
+            f"{r['quant_ms']:>8.1f}ms {r['dequant_ms']:>8.1f}ms"
+        )
+
+    print()
+
+    # Recommendation
+    best = results[0]  # 8-bit
+    print(
+        f"Recommendation: 8-bit quantization gives {best['ratio']:.1f}x memory savings "
+        f"with mean error {best['mean_err']:.5f}"
+    )
+    print(
+        f"Use 4-bit for maximum compression if quality loss of "
+        f"{results[1]['mean_err']:.4f} is acceptable."
+    )
+    print()
+    print("Usage:")
+    print("  vllm-mlx serve <model> --continuous-batching --kv-cache-quantization")
+    print(
+        "  vllm-mlx serve <model> --continuous-batching --kv-cache-quantization "
+        "--kv-cache-quantization-bits 4"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="vllm-mlx: Apple Silicon MLX backend for vLLM",
@@ -470,6 +631,31 @@ Examples:
         "--no-memory-aware-cache",
         action="store_true",
         help="Disable memory-aware cache, use legacy entry-count based cache",
+    )
+    # KV cache quantization options
+    serve_parser.add_argument(
+        "--kv-cache-quantization",
+        action="store_true",
+        help="Quantize stored KV caches to reduce memory (8-bit by default)",
+    )
+    serve_parser.add_argument(
+        "--kv-cache-quantization-bits",
+        type=int,
+        default=8,
+        choices=[4, 8],
+        help="Bit width for KV cache quantization (default: 8)",
+    )
+    serve_parser.add_argument(
+        "--kv-cache-quantization-group-size",
+        type=int,
+        default=64,
+        help="Group size for KV cache quantization (default: 64)",
+    )
+    serve_parser.add_argument(
+        "--kv-cache-min-quantize-tokens",
+        type=int,
+        default=256,
+        help="Minimum tokens for quantization to apply (default: 256)",
     )
     serve_parser.add_argument(
         "--stream-interval",
@@ -660,6 +846,31 @@ Examples:
         action="store_true",
         help="Disable memory-aware cache, use legacy entry-count based cache",
     )
+    # KV cache quantization options
+    bench_parser.add_argument(
+        "--kv-cache-quantization",
+        action="store_true",
+        help="Quantize stored KV caches to reduce memory (8-bit by default)",
+    )
+    bench_parser.add_argument(
+        "--kv-cache-quantization-bits",
+        type=int,
+        default=8,
+        choices=[4, 8],
+        help="Bit width for KV cache quantization (default: 8)",
+    )
+    bench_parser.add_argument(
+        "--kv-cache-quantization-group-size",
+        type=int,
+        default=64,
+        help="Group size for KV cache quantization (default: 64)",
+    )
+    bench_parser.add_argument(
+        "--kv-cache-min-quantize-tokens",
+        type=int,
+        default=256,
+        help="Minimum tokens for quantization to apply (default: 256)",
+    )
     # Paged cache options (experimental)
     bench_parser.add_argument(
         "--use-paged-cache",
@@ -694,6 +905,29 @@ Examples:
         "--iterations", type=int, default=5, help="Benchmark iterations (default: 5)"
     )
 
+    # KV cache quantization benchmark
+    kv_cache_parser = subparsers.add_parser(
+        "bench-kv-cache", help="Benchmark KV cache quantization memory savings"
+    )
+    kv_cache_parser.add_argument(
+        "--layers", type=int, default=32, help="Number of layers (default: 32)"
+    )
+    kv_cache_parser.add_argument(
+        "--seq-len", type=int, default=512, help="Sequence length (default: 512)"
+    )
+    kv_cache_parser.add_argument(
+        "--heads", type=int, default=32, help="Number of attention heads (default: 32)"
+    )
+    kv_cache_parser.add_argument(
+        "--head-dim", type=int, default=128, help="Head dimension (default: 128)"
+    )
+    kv_cache_parser.add_argument(
+        "--group-size",
+        type=int,
+        default=64,
+        help="Quantization group size (default: 64)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -702,6 +936,8 @@ Examples:
         bench_command(args)
     elif args.command == "bench-detok":
         bench_detok_command(args)
+    elif args.command == "bench-kv-cache":
+        bench_kv_cache_command(args)
     else:
         parser.print_help()
         sys.exit(1)

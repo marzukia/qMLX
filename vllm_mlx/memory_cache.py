@@ -111,6 +111,15 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
             keys, values = layer_cache["state"]
             total_bytes += _array_memory(keys)
             total_bytes += _array_memory(values)
+        # Handle QuantizedKVCache: keys/values are tuples of (data, scales, biases)
+        elif hasattr(layer_cache, "keys") and isinstance(
+            getattr(layer_cache, "keys", None), (list, tuple)
+        ):
+            for arr in layer_cache.keys:
+                total_bytes += _array_memory(arr)
+            for arr in layer_cache.values:
+                total_bytes += _array_memory(arr)
+            continue
         elif hasattr(layer_cache, "state") and not isinstance(layer_cache, dict):
             # Cache with state property returning (keys, values)
             try:
@@ -142,12 +151,20 @@ class MemoryCacheConfig:
         max_memory_percent: Fraction of available RAM to use (0.0-1.0).
         max_entries: Hard limit on number of entries (safety net).
         enable_memory_tracking: Whether to track per-entry memory.
+        kv_quantize: Whether to quantize KV cache layers for reduced memory.
+        kv_bits: Number of bits for KV cache quantization.
+        kv_group_size: Group size for KV cache quantization.
+        kv_min_quantize_tokens: Minimum sequence length for quantization to apply.
     """
 
     max_memory_mb: int | None = None
     max_memory_percent: float = _DEFAULT_MEMORY_PERCENT
     max_entries: int = 1000  # Safety limit
     enable_memory_tracking: bool = True
+    kv_quantize: bool = False
+    kv_bits: int = 8
+    kv_group_size: int = 64
+    kv_min_quantize_tokens: int = 256
 
     def __post_init__(self) -> None:
         if not 0.0 < self.max_memory_percent <= 1.0:
@@ -156,6 +173,10 @@ class MemoryCacheConfig:
             )
         if self.max_entries < 1:
             raise ValueError(f"max_entries must be >= 1, got {self.max_entries}")
+        if self.kv_min_quantize_tokens < 0:
+            raise ValueError(
+                f"kv_min_quantize_tokens must be >= 0, got {self.kv_min_quantize_tokens}"
+            )
 
     def compute_memory_limit(self) -> int:
         """
@@ -234,17 +255,37 @@ class _CacheEntry:
 
 
 def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
-    """Create shallow copies of KVCache layers with offset reduced by *trim_by*.
+    """Create shallow copies of KVCache/QuantizedKVCache layers with offset reduced.
 
     This is used when returning a cached KV state to the scheduler so that
     the last N positions are "freed" and the model will recompute them on the
     next forward pass (preventing duplicate KV entries).
+
+    Supports both KVCache (keys/values are arrays) and QuantizedKVCache
+    (keys/values are 3-tuples of arrays).
     """
     from mlx_lm.models.cache import KVCache
 
+    try:
+        from mlx_lm.models.cache import QuantizedKVCache
+    except ImportError:
+        QuantizedKVCache = None  # noqa: N806
+
     trimmed: list[Any] = []
     for layer_cache in cache:
-        if hasattr(layer_cache, "offset") and hasattr(layer_cache, "keys"):
+        if QuantizedKVCache is not None and isinstance(layer_cache, QuantizedKVCache):
+            tc = QuantizedKVCache.__new__(QuantizedKVCache)
+            tc.keys = layer_cache.keys
+            tc.values = layer_cache.values
+            tc.offset = max(layer_cache.offset - trim_by, 0)
+            tc.group_size = layer_cache.group_size
+            tc.bits = layer_cache.bits
+            trimmed.append(tc)
+        elif (
+            hasattr(layer_cache, "offset")
+            and hasattr(layer_cache, "keys")
+            and not isinstance(layer_cache.keys, (list, tuple))
+        ):
             tc = KVCache.__new__(KVCache)
             tc.keys = layer_cache.keys
             tc.values = layer_cache.values
@@ -253,6 +294,98 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
         else:
             trimmed.append(layer_cache)
     return trimmed
+
+
+def _needs_kv_trim(layer: Any) -> bool:
+    """Check if a cache layer has oversized KV arrays (duck-typed, no MLX import)."""
+    keys = getattr(layer, "keys", None)
+    offset = getattr(layer, "offset", None)
+    if keys is None or offset is None:
+        return False
+    if isinstance(keys, (list, tuple)):
+        return False  # QuantizedKVCache — skip
+    shape = getattr(keys, "shape", None)
+    if shape is None or len(shape) < 3:
+        return False
+    return 0 < offset < shape[2]
+
+
+def _trim_to_offset(cache: list[Any]) -> list[Any]:
+    """Trim KV arrays to their actual used size (offset) before storage.
+
+    KV arrays are often pre-allocated larger than needed (e.g. 4096 slots
+    when only 100 are used).  This slices them down to ``offset`` and
+    evaluates the result so the original large buffer can be freed.
+
+    Args:
+        cache: List of cache layer objects (KVCache or other types).
+
+    Returns:
+        New list with KVCache layers trimmed to their offset.
+        Non-KVCache layers are passed through unchanged.
+    """
+    if not any(_needs_kv_trim(layer) for layer in cache):
+        return cache
+
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    trimmed = []
+    eval_targets = []
+    for layer in cache:
+        if isinstance(layer, KVCache) and layer.keys is not None:
+            offset = layer.offset
+            if offset <= 0 or offset >= layer.keys.shape[2]:
+                trimmed.append(layer)
+                continue
+            tc = KVCache()
+            tc.keys = layer.keys[:, :, :offset, :]
+            tc.values = layer.values[:, :, :offset, :]
+            tc.offset = offset
+            eval_targets.extend([tc.keys, tc.values])
+            trimmed.append(tc)
+        else:
+            trimmed.append(layer)
+
+    if eval_targets:
+        mx.eval(*eval_targets)
+
+    return trimmed
+
+
+def _quantize_cache(cache: list[Any], bits: int = 8, group_size: int = 64) -> list[Any]:
+    """Quantize KVCache layers to reduce memory. Non-KVCache layers are kept as-is."""
+    from mlx_lm.models.cache import KVCache
+
+    quantized = []
+    for layer in cache:
+        if isinstance(layer, KVCache) and layer.keys is not None:
+            quantized.append(layer.to_quantized(group_size=group_size, bits=bits))
+        else:
+            quantized.append(layer)
+    return quantized
+
+
+def _dequantize_cache(cache: list[Any]) -> list[Any]:
+    """Dequantize QuantizedKVCache layers back to regular KVCache."""
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache, QuantizedKVCache
+
+    result = []
+    for layer in cache:
+        if isinstance(layer, QuantizedKVCache) and layer.keys is not None:
+            kv = KVCache()
+            kv.keys = mx.dequantize(
+                *layer.keys, group_size=layer.group_size, bits=layer.bits
+            )
+            kv.values = mx.dequantize(
+                *layer.values, group_size=layer.group_size, bits=layer.bits
+            )
+            kv.offset = layer.offset
+            result.append(kv)
+        else:
+            result.append(layer)
+    return result
 
 
 class MemoryAwarePrefixCache:
@@ -346,7 +479,12 @@ class MemoryAwarePrefixCache:
             self._stats.hits += 1
             self._stats.tokens_saved += len(tokens)
             self._last_match_type = "exact"
-            return entry.cache, []
+            cache_out = (
+                _dequantize_cache(entry.cache)
+                if self._config.kv_quantize
+                else entry.cache
+            )
+            return cache_out, []
 
         # --- O(log N) prefix & supersequence match via sorted index ---
         best_match: _CacheEntry | None = None
@@ -416,13 +554,23 @@ class MemoryAwarePrefixCache:
                 self._stats.hits += 1
                 self._stats.tokens_saved += n_requested
                 self._last_match_type = "supersequence"
+                trimmed_cache = (
+                    _dequantize_cache(trimmed_cache)
+                    if self._config.kv_quantize
+                    else trimmed_cache
+                )
                 return trimmed_cache, []
             else:
                 self._entries.move_to_end(best_super.tokens)
                 self._stats.hits += 1
                 self._stats.tokens_saved += n_requested
                 self._last_match_type = "supersequence"
-                return best_super.cache, []
+                cache_out = (
+                    _dequantize_cache(best_super.cache)
+                    if self._config.kv_quantize
+                    else best_super.cache
+                )
+                return cache_out, []
 
         # --- Prefix match ---
         if best_match is not None:
@@ -431,7 +579,12 @@ class MemoryAwarePrefixCache:
             self._stats.tokens_saved += best_length
             remaining = tokens[best_length:]
             self._last_match_type = "prefix"
-            return best_match.cache, remaining
+            cache_out = (
+                _dequantize_cache(best_match.cache)
+                if self._config.kv_quantize
+                else best_match.cache
+            )
+            return cache_out, remaining
 
         # --- LCP (Longest Common Prefix) for divergent sequences ---
         # This handles the agentic pattern: same system+context prefix
@@ -493,6 +646,11 @@ class MemoryAwarePrefixCache:
                     f"trimmed={excess} remaining={len(remaining)}"
                 )
                 self._last_match_type = "lcp"
+                trimmed_cache = (
+                    _dequantize_cache(trimmed_cache)
+                    if self._config.kv_quantize
+                    else trimmed_cache
+                )
                 return trimmed_cache, remaining
 
         self._stats.misses += 1
@@ -527,10 +685,22 @@ class MemoryAwarePrefixCache:
 
         tokens_key = tuple(tokens)
 
-        # If already cached, just update LRU order
+        # If already cached, just update LRU order (skip expensive trim/quantize)
         if tokens_key in self._entries:
             self._entries.move_to_end(tokens_key)
             return True
+
+        # Trim oversized KV arrays to actual used size
+        cache = _trim_to_offset(cache)
+
+        # Quantize if enabled and sequence is long enough
+        if (
+            self._config.kv_quantize
+            and len(tokens) >= self._config.kv_min_quantize_tokens
+        ):
+            cache = _quantize_cache(
+                cache, self._config.kv_bits, self._config.kv_group_size
+            )
 
         # Create entry and estimate memory
         entry = _CacheEntry.create(tokens, cache)
