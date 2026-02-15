@@ -186,6 +186,7 @@ def serve_command(args):
         scheduler_config=scheduler_config,
         stream_interval=args.stream_interval if args.continuous_batching else 1,
         max_tokens=args.max_tokens,
+        force_mllm=args.mllm,
     )
 
     # Start server
@@ -799,6 +800,12 @@ Examples:
             "Extracts <think>...</think> tags into reasoning_content field. "
             f"Options: {', '.join(reasoning_choices)}."
         ),
+    )
+    # Multimodal option
+    serve_parser.add_argument(
+        "--mllm",
+        action="store_true",
+        help="Force load model as multimodal (vision) even if name doesn't match auto-detection patterns",
     )
     # Generation defaults
     serve_parser.add_argument(
