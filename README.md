@@ -377,6 +377,88 @@ Submit PRs to: [https://github.com/waybarrios/vllm-mlx](https://github.com/wayba
 
 Apache 2.0 - see [LICENSE](LICENSE) for details.
 
+## Baseline Benchmark — MiniMax-M2.5 on M3 Ultra
+
+Benchmark measured on **Mac Studio M3 Ultra (256GB)** running **MiniMax-M2.5-MLX-4bit (229B MoE, ~120GB)** with `--reasoning-parser deepseek_r1 --tool-call-parser minimax --enable-auto-tool-choice --enable-prefix-cache`.
+
+Date: 2026-02-24 | Branch: `feat-minimax-parser` | Server mode: Simple (no continuous batching)
+
+### TTFT (Time To First Token)
+
+| Prompt Size | TTFT | Decode Speed |
+|-------------|------|-------------|
+| Short (~50 tok) | 0.331s | 54.1 tok/s |
+| Medium (~500 tok) | 0.753s | 53.5 tok/s |
+| Long (~2K tok) | 1.396s | 52.1 tok/s |
+
+### Decode Throughput
+
+| Output Length | Speed | Total Time |
+|--------------|-------|------------|
+| 128 tokens | 52.8 tok/s | 2.8s |
+| 512 tokens | 52.0 tok/s | 10.2s |
+| 2048 tokens | 49.6 tok/s | 41.7s |
+
+### Prefix Cache (Multi-Turn Conversation)
+
+| Turn | TTFT | Prompt Growth |
+|------|------|--------------|
+| Turn 1 | 0.497s | baseline |
+| Turn 2 | 0.585s | +assistant reply |
+| Turn 3 | 0.871s | +2 turns |
+| Turn 4 | 1.040s | +3 turns |
+
+Turn 4 / Turn 1 TTFT ratio: **2.09x** (ideally should stay close to 1.0x with perfect cache hits)
+
+### Tool Calling
+
+| Test | Result | Latency | Tools Called |
+|------|--------|---------|-------------|
+| Simple (weather) | OK | 2.00s | get_weather |
+| Multi-arg (search) | OK | 2.51s | search_web |
+| Code execution | OK | 3.99s | run_python |
+| Multi-tool selection | OK | 3.04s | get_weather, search_web |
+
+Accuracy: **4/4 (100%)**  |  Avg latency: **2.89s**
+
+### Reasoning Separation (deepseek_r1 parser)
+
+| Test | Reasoning | Content | Separated |
+|------|-----------|---------|-----------|
+| Math (17*23) | 1013 chars | 259 chars | OK |
+| Logic | 2154 chars | 0 chars | PARTIAL |
+| Code | 2011 chars | 0 chars | PARTIAL |
+
+Properly separated: **1/3** (reasoning parser needs improvement for non-math tasks)
+
+### Long Generation Stability
+
+| Metric | Value |
+|--------|-------|
+| Max tokens | 8192 |
+| Completed | Yes (finish_reason=length) |
+| Decode speed | 33.0 tok/s |
+| Total time | 249.0s |
+| Output chars | 36,609 |
+
+### Run the Benchmark
+
+```bash
+# Start server
+python -m vllm_mlx.cli serve <model> \
+  --tool-call-parser minimax --enable-auto-tool-choice \
+  --reasoning-parser deepseek_r1 --enable-prefix-cache
+
+# Run all tests
+python benchmark_minmax.py --output results.json
+
+# Run specific test
+python benchmark_minmax.py --test ttft
+python benchmark_minmax.py --test tool_call
+```
+
+---
+
 ## Citation
 
 If you use vLLM-MLX in your research or project, please cite:
