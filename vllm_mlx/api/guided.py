@@ -86,6 +86,7 @@ def json_schema_to_pydantic(schema: dict[str, Any]) -> type | None:
 
     except Exception as e:
         logger.warning(f"Failed to convert JSON schema to Pydantic: {e}")
+        logger.debug(f"Problematic schema: {schema}")
         return None
 
 

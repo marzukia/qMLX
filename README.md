@@ -459,6 +459,54 @@ python benchmark_minmax.py --test tool_call
 
 ---
 
+## Optimization Roadmap
+
+Prioritized optimization plan based on analysis of upstream vLLM features, adapted for MLX on Apple Silicon. Focused on large-model serving (MiniMax-M2.5 229B MoE, ~120GB on M3 Ultra 256GB).
+
+See [docs/plans/](docs/plans/) for detailed implementation plans.
+
+### Tier 0: Quick Wins (In Progress)
+
+Low-risk, high-impact changes. [Full plan](docs/plans/tier0-pinned-prefix-cache.md).
+
+| Optimization | Impact | Upstream Ref |
+|-------------|--------|-------------|
+| **GC Control** -- disable Python GC during generation | Eliminates latency spikes | [vLLM #33575](https://github.com/vllm-project/vllm/pull/33575) |
+| **Detokenizer Caching** -- incremental token counting | O(n^2) -> O(1) per chunk | [vLLM #20413](https://github.com/vllm-project/vllm/pull/20413) |
+| **Schema Error Hardening** -- graceful fallback on bad schemas | Prevents server crashes | [vLLM #30346](https://github.com/vllm-project/vllm/pull/30346) |
+| **Pinned Prefix Cache** -- prevent system prompt eviction | Turn4/Turn1 TTFT 2.09x -> ~1.0x | [vLLM #27097](https://github.com/vllm-project/vllm/pull/27097) |
+
+### Tier 1: Implement Soon (High Impact, Medium Complexity)
+
+| Optimization | Expected Impact | Upstream Ref |
+|-------------|----------------|-------------|
+| **Jump-Forward Decoding** -- skip constrained tokens in guided gen | 2-5x faster JSON generation | [vLLM #15490](https://github.com/vllm-project/vllm/pull/15490) |
+| **Structural Tags for Tool Calling** -- guarantee valid JSON args | <1% tool call failure rate | [vLLM #32202](https://github.com/vllm-project/vllm/pull/32202) |
+| **Frequency-Aware Cache Eviction** -- smarter LRU for multi-turn | Better cache retention for conversations | [vLLM #27539](https://github.com/vllm-project/vllm/pull/27539) |
+| **KV Block Reuse Ordering** -- improved prefix cache hit rates | Higher cache hit ratio | [vLLM #33710](https://github.com/vllm-project/vllm/pull/33710) |
+| **Fix Streaming Tool Truncation** -- reliable streaming tool calls | Eliminates truncated tool args | [vLLM #34101](https://github.com/vllm-project/vllm/pull/34101) |
+| **LogitsProcessor Interface** -- clean extensibility for custom logits | Plugin architecture for constrained decoding | [vLLM #13360](https://github.com/vllm-project/vllm/pull/13360) |
+
+### Tier 2: Evaluate Later (High Potential, High Complexity)
+
+| Optimization | Expected Impact | Upstream Ref |
+|-------------|----------------|-------------|
+| **Beam Search + Structured Output** -- best-quality tool arguments | Highest quality constrained generation | [vLLM #35022](https://github.com/vllm-project/vllm/pull/35022) |
+| **Draft Model Speculative Decoding** -- faster generation overall | 1.5-2x decode speedup | [vLLM #32662](https://github.com/vllm-project/vllm/pull/32662) |
+| **Inter-Prefill-Budget** -- better TTFT under concurrent load | 37% TTFT reduction for concurrent requests | [vLLM #33743](https://github.com/vllm-project/vllm/pull/33743) |
+| **Tool Calling Redesign** -- better architecture for tool call parsing | Cleaner, more maintainable tool call path | [vLLM #22977](https://github.com/vllm-project/vllm/pull/22977) |
+
+### Estimated Combined Impact (Tier 0 + Tier 1)
+
+For 10-turn agentic conversations with tool calling (e.g., OpenClaw on MiniMax-M2.5):
+
+- **TTFT**: 2x improvement (pinned prefix cache + GC control)
+- **Tool call reliability**: 95% -> 99%+ (structural tags + streaming fix)
+- **Throughput consistency**: Eliminate GC-induced spikes
+- **Long generation**: O(n^2) -> O(1) per-chunk overhead
+
+---
+
 ## Citation
 
 If you use vLLM-MLX in your research or project, please cite:

@@ -52,6 +52,13 @@ def serve_command(args):
             requests_per_minute=args.rate_limit, enabled=True
         )
 
+    # Configure GC control
+    gc_control = args.gc_control and not args.no_gc_control
+    server._gc_control = gc_control
+
+    # Configure system prompt pinning
+    server._pin_system_prompt = args.pin_system_prompt
+
     # Configure tool calling
     if args.enable_auto_tool_choice and args.tool_call_parser:
         server._enable_auto_tool_choice = True
@@ -110,6 +117,9 @@ def serve_command(args):
         print(f"  Reasoning: ENABLED (parser: {args.reasoning_parser})")
     else:
         print("  Reasoning: Use --reasoning-parser to enable")
+    print(f"  GC control: {'ENABLED' if gc_control else 'DISABLED'}")
+    if args.pin_system_prompt:
+        print("  Pin system prompt: ENABLED")
     print("=" * 60)
 
     print(f"Loading model: {args.model}")
@@ -836,6 +846,25 @@ Examples:
             "Extracts <think>...</think> tags into reasoning_content field. "
             f"Options: {', '.join(reasoning_choices)}."
         ),
+    )
+    # GC control (Tier 0 optimization)
+    serve_parser.add_argument(
+        "--gc-control",
+        action="store_true",
+        default=True,
+        help="Disable Python GC during generation to avoid latency spikes (default: enabled)",
+    )
+    serve_parser.add_argument(
+        "--no-gc-control",
+        action="store_true",
+        help="Disable GC control (allow normal GC during generation)",
+    )
+    # Pinned prefix cache (Tier 0 optimization)
+    serve_parser.add_argument(
+        "--pin-system-prompt",
+        action="store_true",
+        default=False,
+        help="Auto-pin system prompt in prefix cache to prevent eviction under memory pressure",
     )
     # Multimodal option
     serve_parser.add_argument(

@@ -39,6 +39,8 @@ The server provides:
 
 import argparse
 import asyncio
+import gc
+import hashlib
 import json
 import logging
 import os
@@ -167,6 +169,82 @@ _enable_auto_tool_choice: bool = False
 _tool_call_parser: str | None = None  # Parser name: auto, mistral, qwen, llama, hermes
 _tool_parser_instance = None  # Instantiated parser
 
+# GC control (Tier 0 optimization)
+_gc_control: bool = True  # Disable GC during generation to avoid latency spikes
+
+# Pinned prefix cache (Tier 0 optimization)
+_pin_system_prompt: bool = False  # Auto-pin system prompt prefix cache blocks
+_pinned_system_prompt_hash: str | None = None  # Hash of pinned system prompt
+
+
+def _maybe_pin_system_prompt(messages: list) -> None:
+    """Auto-pin system prompt prefix cache blocks on first request."""
+    global _pinned_system_prompt_hash
+
+    if not _pin_system_prompt or _engine is None:
+        return
+
+    # Extract system message content
+    system_content = None
+    for msg in messages:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+        if role == "system":
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+            if isinstance(content, str):
+                system_content = content
+                break
+
+    if not system_content:
+        return
+
+    # Check if this system prompt is already pinned
+    prompt_hash = hashlib.sha256(system_content.encode()).hexdigest()[:16]
+    if prompt_hash == _pinned_system_prompt_hash:
+        return  # Already pinned
+
+    # Try to pin via engine's cache manager
+    try:
+        # Get the tokenizer to encode the system prompt
+        tokenizer = None
+        if hasattr(_engine, "_tokenizer"):
+            tokenizer = _engine._tokenizer
+        elif hasattr(_engine, "_model") and hasattr(_engine._model, "tokenizer"):
+            tokenizer = _engine._model.tokenizer
+
+        if tokenizer is None:
+            return
+
+        system_tokens = tokenizer.encode(system_content)
+        if not system_tokens or len(system_tokens) < 16:
+            return  # Too short to pin
+
+        # Try BlockAwarePrefixCache (paged cache mode)
+        if hasattr(_engine, "_prefix_cache") and _engine._prefix_cache is not None:
+            cache = _engine._prefix_cache
+            if hasattr(cache, "pin_prefix"):
+                if cache.pin_prefix(system_tokens):
+                    _pinned_system_prompt_hash = prompt_hash
+                    logger.info(
+                        f"Auto-pinned system prompt: {len(system_tokens)} tokens, "
+                        f"hash={prompt_hash}"
+                    )
+                    return
+
+        # Try PrefixCacheManager (trie-based cache mode)
+        if hasattr(_engine, "_cache_manager") and _engine._cache_manager is not None:
+            cache = _engine._cache_manager
+            if hasattr(cache, "pin_prefix"):
+                if cache.pin_prefix(system_tokens):
+                    _pinned_system_prompt_hash = prompt_hash
+                    logger.info(
+                        f"Auto-pinned system prompt (trie): {len(system_tokens)} tokens, "
+                        f"hash={prompt_hash}"
+                    )
+                    return
+
+    except Exception as e:
+        logger.debug(f"System prompt pinning failed: {e}")
+
 
 def _load_prefix_cache_from_disk() -> None:
     """Load prefix cache from disk during startup."""
@@ -215,6 +293,11 @@ def _get_cache_dir() -> str:
 async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager
+
+    # GC control: raise thresholds to reduce GC frequency with large models
+    if _gc_control:
+        gc.set_threshold(100_000, 50, 50)
+        logger.info("GC control enabled: thresholds set to (100000, 50, 50)")
 
     # Startup: Start engine if loaded (needed for BatchedEngine in uvicorn's event loop)
     if _engine is not None and hasattr(_engine, "_loaded") and not _engine._loaded:
@@ -1392,6 +1475,10 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
 
     has_media = bool(images or videos)
 
+    # Auto-pin system prompt prefix cache blocks (non-blocking, first request only)
+    if _pin_system_prompt:
+        _maybe_pin_system_prompt(messages)
+
     # Handle response_format - inject system prompt if needed
     response_format = request.response_format
     if response_format:
@@ -1433,6 +1520,11 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     start_time = time.perf_counter()
     timeout = request.timeout or _default_timeout
 
+    # Disable GC during generation to avoid latency spikes
+    gc_was_enabled = gc.isenabled()
+    if _gc_control and gc_was_enabled:
+        gc.disable()
+
     # Check if we should use guided generation for JSON schema
     use_guided = False
     json_schema = None
@@ -1443,24 +1535,42 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             if use_guided:
                 logger.info("Using guided generation for JSON schema enforcement")
 
-    if use_guided and json_schema:
-        # Use guided generation for constrained JSON output
-        output = await _wait_with_disconnect(
-            engine.generate_with_schema(
-                messages=messages,
-                json_schema=json_schema,
-                **chat_kwargs,
-            ),
-            raw_request,
-            timeout=timeout,
-        )
-    else:
-        # Standard generation
-        output = await _wait_with_disconnect(
-            engine.chat(messages=messages, **chat_kwargs),
-            raw_request,
-            timeout=timeout,
-        )
+    try:
+        if use_guided and json_schema:
+            # Use guided generation for constrained JSON output
+            # Fall back to standard generation if guided fails (bad schema, etc.)
+            try:
+                output = await _wait_with_disconnect(
+                    engine.generate_with_schema(
+                        messages=messages,
+                        json_schema=json_schema,
+                        **chat_kwargs,
+                    ),
+                    raw_request,
+                    timeout=timeout,
+                )
+            except Exception as guided_err:
+                logger.warning(
+                    f"Guided generation failed, falling back to standard: {guided_err}"
+                )
+                logger.debug(f"Problematic schema: {json_schema}")
+                output = await _wait_with_disconnect(
+                    engine.chat(messages=messages, **chat_kwargs),
+                    raw_request,
+                    timeout=timeout,
+                )
+        else:
+            # Standard generation
+            output = await _wait_with_disconnect(
+                engine.chat(messages=messages, **chat_kwargs),
+                raw_request,
+                timeout=timeout,
+            )
+    finally:
+        if _gc_control and gc_was_enabled:
+            gc.enable()
+            gc.collect()
+
     if output is None:
         return Response(status_code=499)  # Client closed request
 
@@ -1949,6 +2059,10 @@ async def stream_chat_completion(
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response."""
+    gc_was_enabled = gc.isenabled()
+    if _gc_control and gc_was_enabled:
+        gc.disable()
+
     response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     start_time = time.perf_counter()
 
@@ -2261,6 +2375,11 @@ async def stream_chat_completion(
         yield f"data: {usage_chunk.model_dump_json()}\n\n"
 
     yield "data: [DONE]\n\n"
+
+    # Re-enable GC and collect after generation completes
+    if _gc_control and gc_was_enabled:
+        gc.enable()
+        gc.collect()
 
 
 # =============================================================================
