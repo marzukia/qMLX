@@ -222,17 +222,18 @@ class MiniMaxReasoningParser(ReasoningParser):
             if self._DIRECT_CONTENT_RE.match(self._buffer):
                 self._decided = True
                 self._is_reasoning = False
-                return DeltaMessage(content=delta_text)
-            # Buffer without emitting
-            return DeltaMessage(reasoning=delta_text)
+                # Flush entire buffer as content
+                return DeltaMessage(content=current_text)
+            # Buffer silently — don't emit anything until we decide
+            return None
 
         # Enough text to decide
         self._decided = True
 
         if not self._REASONING_START_RE.match(self._buffer):
-            # Not reasoning - emit everything as content
+            # Not reasoning - flush entire buffer as content
             self._is_reasoning = False
-            return DeltaMessage(content=delta_text)
+            return DeltaMessage(content=current_text)
 
         # It IS reasoning - check for transition already in buffer
         self._is_reasoning = True
@@ -240,26 +241,30 @@ class MiniMaxReasoningParser(ReasoningParser):
         if match:
             self._is_reasoning = False
             abs_pos = match.start()
-            prev_len = len(previous_text)
-            if abs_pos >= prev_len:
-                reasoning_part = delta_text[: abs_pos - prev_len]
-                content_part = delta_text[abs_pos - prev_len :].lstrip("\n")
-                return DeltaMessage(
-                    reasoning=reasoning_part if reasoning_part else None,
-                    content=content_part if content_part else None,
-                )
-            return DeltaMessage(content=delta_text)
+            # Flush entire buffer: reasoning before transition, content after
+            reasoning_part = current_text[:abs_pos].strip()
+            content_part = current_text[abs_pos:].lstrip("\n")
+            return DeltaMessage(
+                reasoning=reasoning_part if reasoning_part else None,
+                content=content_part if content_part else None,
+            )
 
         self._transition_pos = max(0, len(self._buffer) - 20)
-        return DeltaMessage(reasoning=delta_text)
+        # Flush entire buffer as reasoning
+        return DeltaMessage(reasoning=current_text)
 
     def finalize_streaming(
         self, accumulated_text: str
     ) -> DeltaMessage | None:
         """
-        Finalize streaming - if everything was classified as reasoning
-        with no content ever emitted, try to extract the answer portion.
+        Finalize streaming - handle cases where content was never emitted:
+        1. Still buffering (never decided) - emit buffer as content
+        2. Everything classified as reasoning - try to extract answer
         """
+        if not self._decided:
+            # Never reached decision threshold — emit as content
+            return DeltaMessage(content=accumulated_text) if accumulated_text else None
+
         if not self._is_reasoning:
             return None
 
