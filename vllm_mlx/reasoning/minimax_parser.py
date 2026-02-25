@@ -38,6 +38,7 @@ class MiniMaxReasoningParser(ReasoningParser):
     _REASONING_START_RE = re.compile(
         r"^(?:\s*)"  # optional whitespace
         r"(?:"
+        # English reasoning patterns
         r"(?:The\s+user\s+(?:asks|wants|is\s+asking|requests|said|query|question))"
         r"|(?:I\s+(?:need\s+to|should|will|can|want\s+to|have\s+to|must|am\s+going\s+to))"
         r"|(?:Let\s+me\s+(?:think|check|analyze|figure|consider|look|read|review|process))"
@@ -46,6 +47,14 @@ class MiniMaxReasoningParser(ReasoningParser):
         r"|(?:(?:So|Now|OK|Okay|Alright|Well),?\s+(?:the\s+user|I\s+need|let\s+me|I\s+should))"
         r"|(?:what's\s+worth\s+storing)"
         r"|(?:(?:Analyzing|Thinking|Processing|Considering|Evaluating|Extracting)\s)"
+        # Chinese reasoning patterns (MiniMax is a Chinese model)
+        r"|(?:用户(?:想|要|需要|问|请求|说|希望|让我))"
+        r"|(?:我(?:需要|应该|将|可以|要|得|必须))"
+        r"|(?:让我(?:想|看|分析|检查|考虑|读|处理|review))"
+        r"|(?:这(?:是一个|需要|似乎|看起来|个))"
+        r"|(?:首先[，,]?(?:我|让|我们))"
+        r"|(?:(?:好的|那么|现在|所以)[，,]?(?:用户|我需要|让我|我应该))"
+        r"|(?:(?:分析|思考|处理|考虑|评估|提取)(?:一下|中|着))"
         r")",
         re.IGNORECASE,
     )
@@ -72,6 +81,10 @@ class MiniMaxReasoningParser(ReasoningParser):
         r"|(?:^|\n\n)(?:##\s)"  # markdown heading
         # MiniMax meta-reasoning followed by actual answer
         r"|(?:^|\n\n)\*\*"  # bold text start (often the answer)
+        # Chinese transition patterns
+        r"|(?:^|\n\n)(?:(?:答案|结果|输出|响应|解决方案)\s*(?:是|：|:))"
+        r"|(?:^|\n\n)(?:(?:好的|当然|没问题)[！!，,]?\s)"
+        r"|(?:^|\n\n)(?:以下是)"
         r")",
         re.IGNORECASE | re.MULTILINE,
     )
