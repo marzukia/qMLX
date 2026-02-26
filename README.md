@@ -337,6 +337,77 @@ python -m vllm_mlx.server \
 
 ---
 
+## Roadmap
+
+Research-backed optimizations we plan to implement, ranked by impact-to-effort ratio. Papers and techniques surveyed from ICLR 2025, ICML 2025, NeurIPS 2025, ACL 2025, and recent arXiv preprints.
+
+### Priority 1: ReDrafter — Apple's Speculative Decoding
+
+Apple's own speculative decoding method using a lightweight RNN conditioned on the LLM's hidden states. Uses dynamic tree attention over beam search results to eliminate duplicate prefixes.
+
+- **Paper**: [Recurrent Drafter (Apple, 2024)](https://arxiv.org/abs/2403.09919) | [GitHub](https://github.com/apple/ml-recurrent-drafter)
+- **Expected gain**: 1.37x on M1 Max, 1.52x on M2 Ultra (MLX-tested by Apple)
+- **Why first**: Apple provides an official MLX implementation. Unlike traditional speculative decoding (which requires a matching-architecture draft model), ReDrafter uses a tiny RNN trained via knowledge distillation on the target model's hidden states — no architecture mismatch issues.
+- **Status**: Not started
+
+### Priority 2: KVSplit — Mixed-Precision KV Cache
+
+Differentiated precision for keys vs. values: 8-bit keys and 4-bit values. Based on the empirical finding that keys are more sensitive to quantization than values.
+
+- **Paper**: [KVSplit (2025)](https://github.com/dipampaul17/KVSplit) | Related: [KVTuner (ICML 2025)](https://icml.cc/virtual/2025/poster/43487), [MixKVQ](https://arxiv.org/html/2512.19206v1)
+- **Expected gain**: 59% KV cache memory reduction, <1% quality loss, 5-15% speed improvement
+- **Why**: We already have `--kv-bits` infrastructure. This extends it to use different bit-widths for K vs V tensors. Designed for Apple Silicon.
+- **Status**: Not started
+
+### Priority 3: DuoAttention — Per-Head Adaptive KV Cache
+
+Classifies attention heads into Retrieval Heads (need full KV cache) and Streaming Heads (only need recent tokens + attention sinks). Full cache only for retrieval heads.
+
+- **Paper**: [DuoAttention (MIT, ICLR 2025)](https://arxiv.org/abs/2410.10819) | [GitHub](https://github.com/mit-han-lab/duo-attention)
+- **Expected gain**: Memory 2.55x reduction (MHA) / 1.67x (GQA). Decode 2.18x speedup (MHA) / 1.50x (GQA). Enables 3.3M context on single GPU.
+- **Why**: No custom Metal kernels needed — pure cache management logic. Head classification done once offline via synthetic passkey-retrieval task. Pre-trained patterns available for Llama/Mistral families.
+- **Status**: Not started
+
+### Priority 4: FastKV — Token-Selective Propagation
+
+Different KV cache strategies at early vs. later layers. Early layers attend to full context; later layers receive only critical tokens.
+
+- **Paper**: [FastKV (2025)](https://arxiv.org/abs/2502.01068) | [GitHub](https://github.com/dongwonjo/FastKV)
+- **Expected gain**: 1.82x prefill speedup, 2.87x decode speedup, <1% accuracy drop
+- **Why**: Standard MLX gather/scatter operations. Layer-discriminative approach maps well to MLX's lazy evaluation.
+- **Status**: Not started
+
+### Priority 5: xKV — Cross-Layer SVD Compression
+
+Exploits aligned singular vectors across transformer layers. Applies SVD across grouped layers to consolidate KV caches into a shared low-rank subspace.
+
+- **Paper**: [xKV (2025)](https://arxiv.org/abs/2503.18893) | [GitHub](https://github.com/abdelfattah-lab/xKV)
+- **Expected gain**: Up to 8x KV cache compression while maintaining accuracy
+- **Why**: Post-training method (no retraining). SVD natively supported in MLX (`mx.linalg.svd`). Compatible with MLA architectures.
+- **Status**: Not started
+
+### Priority 6: Medusa — Multiple Decoding Heads
+
+Augments the LLM with extra lightweight FFN heads that predict multiple future tokens in parallel.
+
+- **Paper**: [Medusa (2024)](https://arxiv.org/abs/2401.10774) | [GitHub](https://github.com/FasterDecoding/Medusa)
+- **Expected gain**: 2.2-2.8x decode speedup without quality loss
+- **Why**: No separate draft model needed. Small FFN heads, minimal memory overhead. Simpler than EAGLE but requires fine-tuning heads per model.
+- **Status**: Not started
+
+### Future Considerations
+
+| Technique | Paper | Potential | Blocker |
+|-----------|-------|-----------|---------|
+| SageAttention (quantized attention) | [ICLR 2025](https://arxiv.org/abs/2410.02367) | 2-5x over FlashAttention | Requires custom Metal kernels, CUDA-specific |
+| NSA Sparse Attention (DeepSeek) | [ACL 2025 Best Paper](https://arxiv.org/abs/2502.11089) | 9x forward speedup | Three-branch architecture, high complexity |
+| EAGLE-3 | [NeurIPS 2025](https://arxiv.org/html/2503.01840v1) | 2-6x decode | Requires training draft head per model |
+| DeltaKV residual compression | [arXiv 2026](https://arxiv.org/abs/2602.08005) | 2x throughput | Complex integration with attention mechanism |
+| Ring Attention | [ICLR 2024](https://proceedings.iclr.cc/paper_files/paper/2024/file/1119587863e78451f080da2a768c4935-Paper-Conference.pdf) | Linear context scaling | Requires multiple Macs |
+| M5 Neural Accelerators | [Apple ML Research](https://machinelearning.apple.com/research/exploring-llms-mlx-m5) | 19-27% over M4 | Hardware upgrade (M5 chip) |
+
+---
+
 ## Contributing
 
 This fork is actively maintained. Issues and PRs welcome at [github.com/raullenchai/vllm-mlx](https://github.com/raullenchai/vllm-mlx).
