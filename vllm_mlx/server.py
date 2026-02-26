@@ -2451,14 +2451,18 @@ async def stream_chat_completion(
             # blocks, so reasoning parser captures tool call XML as
             # reasoning while content stays None.  Redirect reasoning
             # to the content stream so the tool parser can handle it.
-            if tool_parser and reasoning and not content:
+            # Check even when content is present (e.g. "\n" from
+            # </think> boundary) to avoid XML leaking as reasoning.
+            if tool_parser and reasoning:
                 _check = tool_accumulated_text + reasoning
                 if (
                     "<minimax:tool_call>" in _check
                     or "<tool_call>" in _check
                     or '<invoke name="' in _check
                 ):
-                    content = reasoning
+                    # Merge: prepend any existing content, then the
+                    # redirected reasoning (which contains tool XML).
+                    content = (content or "") + reasoning
                     reasoning = None
 
             # Tool call parsing on content portion
@@ -2645,13 +2649,16 @@ async def stream_chat_completion(
     # (e.g., closing tag never arrived - incomplete tool call).
     # Use parser-aware check so non-standard markers (MiniMax, Llama, etc.)
     # are detected instead of only checking for "<tool_call>".
+    # Also check accumulated_text (full output including reasoning) as a
+    # safety net — tool XML may have leaked into reasoning stream.
+    _fallback_text = tool_accumulated_text or accumulated_text
     if (
         tool_parser
-        and tool_accumulated_text
+        and _fallback_text
         and not tool_calls_detected
-        and tool_parser.has_pending_tool_call(tool_accumulated_text)
+        and tool_parser.has_pending_tool_call(_fallback_text)
     ):
-        result = tool_parser.extract_tool_calls(tool_accumulated_text)
+        result = tool_parser.extract_tool_calls(_fallback_text)
         if result.tools_called:
             tool_chunk = ChatCompletionChunk(
                 id=response_id,
