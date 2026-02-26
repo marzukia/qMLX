@@ -1,6 +1,6 @@
 # vLLM-MLX
 
-**OpenAI-compatible LLM server for Apple Silicon — with tool calling, reasoning separation, and prompt caching**
+**Production-grade OpenAI-compatible LLM server for Apple Silicon**
 
 [![Fork](https://img.shields.io/badge/Fork-raullenchai%2Fvllm--mlx-orange?logo=github)](https://github.com/raullenchai/vllm-mlx)
 [![Upstream](https://img.shields.io/badge/Upstream-waybarrios%2Fvllm--mlx-blue?logo=github)](https://github.com/waybarrios/vllm-mlx)
@@ -9,18 +9,23 @@
 [![Tests](https://img.shields.io/badge/tests-1500%2B-brightgreen.svg)](tests/)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple)](https://support.apple.com/en-us/HT211814)
 
-Built on [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-mlx) — GPU-accelerated LLM inference on Mac via [MLX](https://github.com/ml-explore/mlx). This fork adds 37 commits with production-grade tool calling, reasoning separation, prompt caching, and multi-model support.
+GPU-accelerated LLM inference on Mac via [MLX](https://github.com/ml-explore/mlx). Built on [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-mlx), this fork adds **40+ commits** with tool calling, reasoning separation, prompt caching, smart cloud routing, and 1500+ tests.
 
 ---
 
-## Why This Fork?
+## Highlights vs. Upstream
 
-vllm-mlx gives you an OpenAI-compatible server on Apple Silicon. **This fork makes it production-ready** for coding agents like [OpenClaw](https://github.com/openclaw):
-
-- **Tool calling that works** — streaming + non-streaming, MiniMax and Hermes/Qwen3 formats
-- **Reasoning separation** — `reasoning` field cleanly separated from `content` (0% leak rate)
-- **10-15x faster multi-turn** — persistent prompt cache saves 20K+ tokens of prefill on cache hit
-- **65 tok/s decode** on M3 Ultra with Qwen3-Coder-Next-6bit
+| Capability | Upstream | This Fork |
+|-----------|----------|-----------|
+| Tool calling | Not supported | Streaming + non-streaming, 7 parser formats |
+| Reasoning separation | Not supported | Clean `reasoning_content` field (0% leak rate) |
+| Multi-turn TTFT | Full prefill every turn | **10-30x faster** — persistent prompt cache |
+| Long-context prefill | 50s for 52K tokens | **<1s** — smart cloud routing offloads to GPT-5/Claude |
+| Decode speed | Baseline | 65-70 tok/s on M3 Ultra (Qwen3-Coder-Next-6bit) |
+| KV cache quantization | Not available | 4-bit and 8-bit, halves memory for long contexts |
+| Speculative decoding | Not available | `--draft-model` with prompt cache compatibility |
+| Logprobs API | Not available | Per-token `logprobs` + `top_logprobs` |
+| Test coverage | Minimal | **1500+ tests** |
 
 ---
 
@@ -40,17 +45,10 @@ cd vllm-mlx
 pip install -e .
 ```
 
-### 2. Pick a model and start the server
-
-#### Option A: Qwen3-Coder-Next (recommended for coding agents)
-
-80B MoE model (3B active parameters) — fast decode, excellent tool calling, strong code generation.
+### 2. Start the server
 
 ```bash
-# Download
-python -c "from mlx_lm import load; load('lmstudio-community/Qwen3-Coder-Next-MLX-6bit')"
-
-# Start server
+# Qwen3-Coder-Next — fast coding model (80B MoE, 3B active)
 python -m vllm_mlx.server \
   --model lmstudio-community/Qwen3-Coder-Next-MLX-6bit \
   --tool-call-parser hermes \
@@ -59,62 +57,32 @@ python -m vllm_mlx.server \
   --port 8000
 ```
 
-Quantization options:
+That's it. You now have an OpenAI-compatible server on `localhost:8000`.
 
-| Variant | RAM | Decode Speed | Notes |
-|---------|-----|-------------|-------|
-| `Qwen3-Coder-Next-MLX-4bit` | 42GB | ~70 tok/s | Fastest |
-| `Qwen3-Coder-Next-MLX-6bit` | 60GB | ~65 tok/s | **Recommended** |
-| `Qwen3-Coder-Next-MLX-8bit` | 75GB | ~45 tok/s | Highest quality |
-
-#### Option B: MiniMax-M2.5 (best for deep reasoning)
-
-229B MoE model with built-in chain-of-thought. Best for complex multi-step reasoning.
-
-```bash
-# Download
-python -c "from mlx_lm import load; load('lmstudio-community/MiniMax-M2.5-MLX-4bit')"
-
-# Start server
-python -m vllm_mlx.server \
-  --model lmstudio-community/MiniMax-M2.5-MLX-4bit \
-  --reasoning-parser minimax \
-  --prefill-step-size 4096 \
-  --kv-bits 4 \
-  --port 8000
-```
-
-`--reasoning-parser minimax` auto-enables the matching tool call parser — zero extra flags.
-
-> **Note:** MiniMax requires ~120GB RAM. Recommended for M3/M4 Ultra with 192GB+.
-
-### 3. Test it
-
-```bash
-# Simple chat
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "default", "messages": [{"role": "user", "content": "Hello!"}]}'
-```
+### 3. Use it
 
 ```python
-# OpenAI SDK
 from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
 
 response = client.chat.completions.create(
     model="default",
-    messages=[{"role": "user", "content": "What is 15 * 37?"}],
+    messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)
 ```
 
-### 4. Tool calling
+Works with any OpenAI-compatible client — Cursor, Continue, Aider, LangChain, or your own code.
+
+---
+
+## Features
+
+### Tool Calling
+
+Full OpenAI-compatible tool calling with streaming support. Works out of the box with 7 parser formats.
 
 ```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
-
 tools = [{
     "type": "function",
     "function": {
@@ -123,7 +91,7 @@ tools = [{
         "parameters": {
             "type": "object",
             "properties": {
-                "city": {"type": "string", "description": "City name"}
+                "city": {"type": "string"}
             },
             "required": ["city"]
         }
@@ -141,141 +109,147 @@ print(tool_call.function.name)       # "get_weather"
 print(tool_call.function.arguments)  # '{"city": "Tokyo"}'
 ```
 
----
+Supported parsers: `hermes`, `minimax`, `qwen`, `qwen3_coder`, `llama`, `deepseek`, `functionary`, and more. Use `--tool-call-parser <name>` to select.
 
-## What This Fork Adds
+### Reasoning Separation
 
-### Tool Calling & Reasoning
+Models with chain-of-thought (MiniMax-M2.5, Qwen3, DeepSeek-R1) output reasoning in a separate `reasoning_content` field — never mixed into `content`. 0% leak rate.
 
-| Feature | Description |
-|---------|-------------|
-| MiniMax reasoning parser | Heuristic no-tag stripping for inline reasoning (0% leak rate, was 60%) |
-| MiniMax tool call parser | Streaming + non-streaming XML tool call extraction |
-| `--tool-call-parser` flag | Explicit parser selection for any model (e.g. `hermes` for Qwen3) |
-| Auto-infer tool parser | `--reasoning-parser minimax` auto-selects the matching tool parser |
-| Chunk-boundary leak fix | Prevents tool call XML leaking into reasoning stream at chunk boundaries |
-| Chinese reasoning patterns | Recognizes Chinese-language reasoning prefixes |
-| Tool-use system prompt | Auto-injected instructions (100% tool call rate, was 67%) |
+```bash
+python -m vllm_mlx.server \
+  --model lmstudio-community/MiniMax-M2.5-MLX-4bit \
+  --reasoning-parser minimax \
+  --port 8000
+```
 
-### Performance
+### Prompt Cache (10-30x Faster Multi-Turn)
 
-| Feature | Description |
-|---------|-------------|
-| Prompt cache (SimpleEngine) | Persistent KV cache across requests — 10-15x faster multi-turn TTFT |
-| `--prefill-step-size` flag | Configurable prefill chunk size for TTFT tuning |
-| `--kv-bits` flag | KV cache quantization (4 or 8 bit) for long contexts |
-| Speculative decoding | `--draft-model` support with prompt cache compatibility |
-| Tool logits bias | Jump-forward decoding for structured XML — 2-5x faster tool calls |
-| Frequency-aware cache eviction | LRU-LFU hybrid keeps system prompt blocks alive under pressure |
+Persistent KV cache across requests. When consecutive requests share a prefix (system prompt + conversation history), only new tokens are prefilled:
 
-### Reliability
-
-| Feature | Description |
-|---------|-------------|
-| Logprobs API | `logprobs` + `top_logprobs` per-token log probabilities |
-| Streaming disconnect guard | Graceful handling of client disconnects mid-stream |
-| Prompt cache EOS fix | Cache saved correctly on EOS for tool call responses |
-| `developer` role normalization | `developer` → `system` for chat template compatibility |
-| `prompt_tokens` reporting | Accurate token counts in usage response (was always 0) |
-| Server crash prevention | Graceful fallback on malformed `response_format` schemas |
-| Test suite | 1500+ unit tests across parsers, engine, server, and tool calling |
-
----
-
-## Performance
-
-All benchmarks on **Mac Studio M3 Ultra (256GB)** — 800 GB/s memory bandwidth.
-
-### Model Comparison
-
-| Model | Quant | RAM | Decode | Prefill | Best For |
-|-------|-------|-----|--------|---------|----------|
-| Qwen3-Coder-Next | 4bit | 42GB | **70 tok/s** | 1270 tok/s | Speed-first, coding agents |
-| Qwen3-Coder-Next | 6bit | 60GB | 65 tok/s | 1090-1440 tok/s | **Recommended** — speed + quality |
-| Qwen3-Coder-Next | 8bit | 75GB | ~45 tok/s | ~900 tok/s | Highest quality |
-| MiniMax-M2.5 | 4bit | 120GB | 33-38 tok/s | 430-500 tok/s | Deep reasoning |
-
-> **Why the speed difference?** Decode is memory-bandwidth-bound: 800 GB/s ÷ model size = max throughput. Smaller model = faster decode.
-
-### Prompt Cache (Multi-Turn)
-
-The prompt cache reuses KV state across requests. When a new request shares the same system prompt + conversation history, only the new tokens are prefilled:
-
-| Context Size | Cache Miss TTFT | Cache Hit TTFT | Speedup |
-|-------------|----------------|----------------|---------|
+| Context Size | Without Cache | With Cache | Speedup |
+|-------------|---------------|------------|---------|
 | 1K tokens | 0.7s | 0.3s | 2.3x |
 | 4K tokens | 2.4s | 0.3s | 8x |
 | 33K tokens | 28s | 0.3-0.9s | **30-90x** |
 
-On OpenClaw workloads with 22K+ token contexts: **23-30s → ~0.5s TTFT**.
+Always on in SimpleEngine (default mode). No flags needed.
 
-### Tool Calling Accuracy
+### Smart Cloud Routing
 
-| Test | MiniMax | Qwen3-Coder-Next |
-|------|---------|-------------------|
-| Single tool (weather) | Pass | Pass |
-| Multi-arg (search) | Pass | Pass |
-| Code execution | Pass | Pass |
-| Multi-tool selection | Pass | Pass |
+**New.** Large-context requests are automatically routed to a cloud LLM when local prefill would be too slow. The routing decision is based on **new tokens** (after cache hit), not total input — so a 50K-token conversation with 2K new tokens stays local.
 
-**4/4 accuracy** on both models.
+```bash
+pip install litellm
+
+# Route to GPT-5 when >20K new tokens need prefilling
+OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
+  --model lmstudio-community/Qwen3-Coder-Next-MLX-6bit \
+  --cloud-model openai/gpt-5 \
+  --cloud-threshold 20000 \
+  --port 8000
+```
+
+```
+Short request (44 new tokens)  → [LOCAL]  Qwen3 responds in 0.3s
+Large request (15K new tokens) → [CLOUD]  GPT-5 responds in 3s (vs 50s local)
+Next turn (cache hit, 200 new) → [LOCAL]  Back to local, 0.3s
+```
+
+Works with any litellm-supported provider: OpenAI, Anthropic, Google, Groq, etc. Clients see no difference — same API, transparent routing.
+
+Disabled by default. Cost estimate: ~$0.02-0.05 per cloud-routed request with GPT-5.
 
 ---
 
-## OpenClaw Integration
+## Supported Models
 
-This fork was built to power [OpenClaw](https://github.com/openclaw) — the open-source AI agent with 145K+ GitHub stars.
+### Recommended
 
-Add this to your `openclaw.json`:
+| Model | Quant | RAM | Decode | Best For |
+|-------|-------|-----|--------|----------|
+| Qwen3-Coder-Next | 4bit | 42GB | **70 tok/s** | Speed-first |
+| Qwen3-Coder-Next | 6bit | 60GB | 65 tok/s | **Best balance** |
+| Qwen3-Coder-Next | 8bit | 75GB | ~45 tok/s | Highest quality |
+| MiniMax-M2.5 | 4bit | 120GB | 33-38 tok/s | Deep reasoning (192GB+ recommended) |
 
-```json
-{
-  "models": {
-    "providers": {
-      "vllm-mlx": {
-        "baseUrl": "http://127.0.0.1:8000/v1",
-        "apiKey": "no-key",
-        "api": "openai-completions",
-        "models": [{
-          "id": "Qwen3-Coder-Next-MLX-6bit",
-          "name": "Qwen3 Coder Next 6bit via vllm-mlx",
-          "reasoning": false,
-          "input": ["text"],
-          "contextWindow": 40960,
-          "maxTokens": 8192
-        }]
-      }
-    }
-  }
-}
+Benchmarks on Mac Studio M3 Ultra (256GB), 800 GB/s memory bandwidth.
+
+### Any MLX Model
+
+Any model from [mlx-community](https://huggingface.co/mlx-community) works:
+
+```bash
+# Llama
+python -m vllm_mlx.server --model mlx-community/Llama-3.2-3B-Instruct-4bit
+
+# Mistral
+python -m vllm_mlx.server --model mlx-community/Mistral-7B-Instruct-v0.3-4bit
+
+# Vision models
+python -m vllm_mlx.server --model mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit --mllm
 ```
-
-> For MiniMax-M2.5, set `"reasoning": true` to get reasoning traces.
 
 ---
 
 ## Server Flags
 
+### Core
+
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--model` | HuggingFace model name or local path | *(required)* |
-| `--host` | Host to bind to | `127.0.0.1` |
+| `--host` | Host to bind to | `0.0.0.0` |
 | `--port` | Port to bind to | `8000` |
-| `--reasoning-parser` | Reasoning parser: `minimax`, `qwen3`, `deepseek_r1`, `gpt_oss`, `harmony` | *(none)* |
-| `--tool-call-parser` | Tool call parser: `hermes`, `minimax`, etc. | *(none)* |
+| `--max-tokens` | Default max tokens for generation | `32768` |
+| `--continuous-batching` | Multi-user mode with scheduler | off |
+
+### Tool Calling & Reasoning
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--tool-call-parser` | Parser: `hermes`, `minimax`, `qwen`, `qwen3_coder`, `llama`, `deepseek`, etc. | *(none)* |
 | `--enable-auto-tool-choice` | Enable automatic tool choice (implied by `--tool-call-parser`) | off |
-| `--enable-tool-logits-bias` | Jump-forward decoding bias for tool call tokens | off |
-| `--continuous-batching` | Enable batched engine for concurrent users | off |
-| `--max-tokens` | Default max tokens for generation | model default |
+| `--enable-tool-logits-bias` | Jump-forward decoding for faster tool calls | off |
+| `--reasoning-parser` | Parser: `minimax`, `qwen3`, `deepseek_r1`, `gpt_oss`, `harmony` | *(none)* |
+
+### Performance
+
+| Flag | Description | Default |
+|------|-------------|---------|
 | `--prefill-step-size` | Tokens per prefill chunk | `2048` |
 | `--kv-bits` | KV cache quantization: `4` or `8` bit | *(full precision)* |
 | `--draft-model` | Draft model for speculative decoding | *(none)* |
-| `--num-draft-tokens` | Tokens to generate speculatively per step | `4` |
-| `--api-key` | API key for authentication | *(no auth)* |
-| `--mllm` | Force multimodal mode | auto-detect |
-| `--mcp-config` | MCP configuration file (JSON/YAML) | *(none)* |
+| `--num-draft-tokens` | Speculative tokens per step | `4` |
 
-**Qwen3-Coder-Next (full setup):**
+### Cloud Routing
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--cloud-model` | litellm model string (e.g. `openai/gpt-5`, `anthropic/claude-sonnet-4-5-20250929`) | *(disabled)* |
+| `--cloud-threshold` | New token threshold to trigger cloud routing | `20000` |
+
+### Security
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--api-key` | API key for authentication | *(no auth)* |
+| `--rate-limit` | Requests per minute per client | *(unlimited)* |
+| `--timeout` | Request timeout in seconds | `300` |
+
+### Other
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--mllm` | Force multimodal (vision) mode | auto-detect |
+| `--mcp-config` | MCP configuration file for tool integration | *(none)* |
+| `--embedding-model` | Pre-load embedding model at startup | *(none)* |
+| `--default-temperature` | Override default temperature | model default |
+
+---
+
+## Full Example Configurations
+
+**Qwen3-Coder-Next — coding agent setup:**
 
 ```bash
 python -m vllm_mlx.server \
@@ -286,7 +260,7 @@ python -m vllm_mlx.server \
   --port 8000
 ```
 
-**MiniMax-M2.5 (full setup):**
+**MiniMax-M2.5 — deep reasoning setup:**
 
 ```bash
 python -m vllm_mlx.server \
@@ -297,122 +271,115 @@ python -m vllm_mlx.server \
   --port 8000
 ```
 
+**Hybrid local + cloud — best of both worlds:**
+
+```bash
+OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
+  --model lmstudio-community/Qwen3-Coder-Next-MLX-6bit \
+  --tool-call-parser hermes \
+  --cloud-model openai/gpt-5 \
+  --cloud-threshold 15000 \
+  --port 8000
+```
+
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    OpenAI-compatible API                     │
-│              /v1/chat/completions, /v1/models                │
-└─────────────────────────────────┬───────────────────────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    ▼                           ▼
-             ┌─────────────┐           ┌──────────────┐
-             │ SimpleEngine│           │ BatchedEngine │
-             │ (single user│           │ (multi-user)  │
-             │  + KV cache)│           │ + scheduler)  │
-             └──────┬──────┘           └──────┬───────┘
-                    │                         │
-                    └────────────┬─────────────┘
-                                │
-                    ┌───────────┴───────────┐
-                    ▼                       ▼
-              ┌──────────┐          ┌────────────┐
-              │  mlx-lm  │          │   mlx-vlm  │
-              │  (text)  │          │  (vision)  │
-              └────┬─────┘          └─────┬──────┘
-                   └───────────┬──────────┘
-                               ▼
-                    ┌──────────────────┐
-                    │     MLX + Metal  │
-                    │  (Apple Silicon) │
-                    └──────────────────┘
+                    ┌──────────────────────────────────────┐
+                    │     OpenAI-compatible API (port 8000) │
+                    │    /v1/chat/completions, /v1/models   │
+                    └──────────────────┬───────────────────┘
+                                       │
+                              ┌────────┴────────┐
+                              │  Cloud Router   │ (optional)
+                              │  new_tokens >   │
+                              │  threshold?     │
+                              └───┬─────────┬───┘
+                            yes   │         │  no
+                     ┌────────────┘         └──────────────┐
+                     ▼                                     ▼
+          ┌─────────────────┐               ┌──────────────────────┐
+          │  Cloud LLM      │               │   Local MLX Engine   │
+          │  (via litellm)  │               │                      │
+          │  GPT-5, Claude, │               │  ┌────────────────┐  │
+          │  Gemini, etc.   │               │  │ SimpleEngine   │  │
+          └─────────────────┘               │  │ + prompt cache │  │
+                                            │  └───────┬────────┘  │
+                                            │          │           │
+                                            │  ┌───────┴────────┐  │
+                                            │  │  mlx-lm/mlx-vlm│  │
+                                            │  │  MLX + Metal   │  │
+                                            │  └────────────────┘  │
+                                            └──────────────────────┘
 ```
 
-**SimpleEngine** — Single-user mode. Calls mlx-lm with persistent prompt cache. Best for dedicated setups (one user + OpenClaw).
+**SimpleEngine** (default) — Single-user, persistent prompt cache, maximum throughput.
 
-**BatchedEngine** — Multi-user mode (`--continuous-batching`). Paged KV cache with prefix sharing. Best for serving concurrent clients.
+**BatchedEngine** (`--continuous-batching`) — Multi-user, paged KV cache with prefix sharing.
+
+**Cloud Router** (`--cloud-model`) — Routes large-context cold requests to cloud. Routing based on new tokens after cache hit, not total input.
+
+---
+
+## What This Fork Adds (vs. Upstream)
+
+### Tool Calling & Reasoning (12 features)
+
+- MiniMax reasoning parser — heuristic no-tag stripping (0% leak rate, was 60%)
+- MiniMax tool call parser — streaming + non-streaming XML extraction
+- `--tool-call-parser` flag — explicit parser selection for any model
+- Auto-infer tool parser — `--reasoning-parser minimax` auto-selects matching tool parser
+- Chunk-boundary leak fix — prevents XML leaking into reasoning stream
+- Chinese reasoning pattern recognition
+- Tool-use system prompt auto-injection (100% tool call rate, was 67%)
+- Tool logits bias — jump-forward decoding for 2-5x faster structured output
+- Hermes, Qwen, Qwen3-Coder, Llama, DeepSeek, Functionary parser support
+- `developer` role normalization for chat template compatibility
+- Logprobs API — per-token `logprobs` + `top_logprobs`
+- Streaming disconnect guard — graceful handling of client disconnects
+
+### Performance (6 features)
+
+- Prompt cache (SimpleEngine) — persistent KV cache, 10-30x faster multi-turn
+- `--prefill-step-size` — configurable prefill chunks for TTFT tuning
+- `--kv-bits` — KV cache quantization (4/8 bit) for long contexts
+- Speculative decoding — `--draft-model` with prompt cache compatibility
+- Smart cloud routing — `--cloud-model` offloads large prefills to cloud LLMs
+- Frequency-aware cache eviction — LRU-LFU hybrid under memory pressure
+
+### Reliability (6 features)
+
+- Accurate `prompt_tokens` reporting (was always 0)
+- Prompt cache EOS fix — cache saved correctly on EOS
+- Server crash prevention on malformed `response_format`
+- GC control during generation to avoid latency spikes
+- System prompt pinning in prefix cache
+- **1500+ unit tests** across parsers, engine, server, and tool calling
 
 ---
 
 ## Roadmap
 
-Research-backed optimizations we plan to implement, ranked by impact-to-effort ratio. Papers and techniques surveyed from ICLR 2025, ICML 2025, NeurIPS 2025, ACL 2025, and recent arXiv preprints.
+Research-backed optimizations ranked by impact-to-effort ratio. Papers surveyed from ICLR 2025, ICML 2025, NeurIPS 2025, ACL 2025.
 
-### Priority 1: ReDrafter — Apple's Speculative Decoding
-
-Apple's own speculative decoding method using a lightweight RNN conditioned on the LLM's hidden states. Uses dynamic tree attention over beam search results to eliminate duplicate prefixes.
-
-- **Paper**: [Recurrent Drafter (Apple, 2024)](https://arxiv.org/abs/2403.09919) | [GitHub](https://github.com/apple/ml-recurrent-drafter)
-- **Expected gain**: 1.37x on M1 Max, 1.52x on M2 Ultra (MLX-tested by Apple)
-- **Why first**: Apple provides an official MLX implementation. Unlike traditional speculative decoding (which requires a matching-architecture draft model), ReDrafter uses a tiny RNN trained via knowledge distillation on the target model's hidden states — no architecture mismatch issues.
-- **Status**: Not started
-
-### Priority 2: KVSplit — Mixed-Precision KV Cache
-
-Differentiated precision for keys vs. values: 8-bit keys and 4-bit values. Based on the empirical finding that keys are more sensitive to quantization than values.
-
-- **Paper**: [KVSplit (2025)](https://github.com/dipampaul17/KVSplit) | Related: [KVTuner (ICML 2025)](https://icml.cc/virtual/2025/poster/43487), [MixKVQ](https://arxiv.org/html/2512.19206v1)
-- **Expected gain**: 59% KV cache memory reduction, <1% quality loss, 5-15% speed improvement
-- **Why**: We already have `--kv-bits` infrastructure. This extends it to use different bit-widths for K vs V tensors. Designed for Apple Silicon.
-- **Status**: Not started
-
-### Priority 3: DuoAttention — Per-Head Adaptive KV Cache
-
-Classifies attention heads into Retrieval Heads (need full KV cache) and Streaming Heads (only need recent tokens + attention sinks). Full cache only for retrieval heads.
-
-- **Paper**: [DuoAttention (MIT, ICLR 2025)](https://arxiv.org/abs/2410.10819) | [GitHub](https://github.com/mit-han-lab/duo-attention)
-- **Expected gain**: Memory 2.55x reduction (MHA) / 1.67x (GQA). Decode 2.18x speedup (MHA) / 1.50x (GQA). Enables 3.3M context on single GPU.
-- **Why**: No custom Metal kernels needed — pure cache management logic. Head classification done once offline via synthetic passkey-retrieval task. Pre-trained patterns available for Llama/Mistral families.
-- **Status**: Not started
-
-### Priority 4: FastKV — Token-Selective Propagation
-
-Different KV cache strategies at early vs. later layers. Early layers attend to full context; later layers receive only critical tokens.
-
-- **Paper**: [FastKV (2025)](https://arxiv.org/abs/2502.01068) | [GitHub](https://github.com/dongwonjo/FastKV)
-- **Expected gain**: 1.82x prefill speedup, 2.87x decode speedup, <1% accuracy drop
-- **Why**: Standard MLX gather/scatter operations. Layer-discriminative approach maps well to MLX's lazy evaluation.
-- **Status**: Not started
-
-### Priority 5: xKV — Cross-Layer SVD Compression
-
-Exploits aligned singular vectors across transformer layers. Applies SVD across grouped layers to consolidate KV caches into a shared low-rank subspace.
-
-- **Paper**: [xKV (2025)](https://arxiv.org/abs/2503.18893) | [GitHub](https://github.com/abdelfattah-lab/xKV)
-- **Expected gain**: Up to 8x KV cache compression while maintaining accuracy
-- **Why**: Post-training method (no retraining). SVD natively supported in MLX (`mx.linalg.svd`). Compatible with MLA architectures.
-- **Status**: Not started
-
-### Priority 6: Medusa — Multiple Decoding Heads
-
-Augments the LLM with extra lightweight FFN heads that predict multiple future tokens in parallel.
-
-- **Paper**: [Medusa (2024)](https://arxiv.org/abs/2401.10774) | [GitHub](https://github.com/FasterDecoding/Medusa)
-- **Expected gain**: 2.2-2.8x decode speedup without quality loss
-- **Why**: No separate draft model needed. Small FFN heads, minimal memory overhead. Simpler than EAGLE but requires fine-tuning heads per model.
-- **Status**: Not started
-
-### Future Considerations
-
-| Technique | Paper | Potential | Blocker |
-|-----------|-------|-----------|---------|
-| SageAttention (quantized attention) | [ICLR 2025](https://arxiv.org/abs/2410.02367) | 2-5x over FlashAttention | Requires custom Metal kernels, CUDA-specific |
-| NSA Sparse Attention (DeepSeek) | [ACL 2025 Best Paper](https://arxiv.org/abs/2502.11089) | 9x forward speedup | Three-branch architecture, high complexity |
-| EAGLE-3 | [NeurIPS 2025](https://arxiv.org/html/2503.01840v1) | 2-6x decode | Requires training draft head per model |
-| DeltaKV residual compression | [arXiv 2026](https://arxiv.org/abs/2602.08005) | 2x throughput | Complex integration with attention mechanism |
-| Ring Attention | [ICLR 2024](https://proceedings.iclr.cc/paper_files/paper/2024/file/1119587863e78451f080da2a768c4935-Paper-Conference.pdf) | Linear context scaling | Requires multiple Macs |
-| M5 Neural Accelerators | [Apple ML Research](https://machinelearning.apple.com/research/exploring-llms-mlx-m5) | 19-27% over M4 | Hardware upgrade (M5 chip) |
+| Priority | Technique | Expected Gain | Status |
+|----------|-----------|---------------|--------|
+| 1 | [ReDrafter](https://arxiv.org/abs/2403.09919) — Apple's speculative decoding (RNN draft head) | 1.4-1.5x decode | Not started |
+| 2 | [KVSplit](https://github.com/dipampaul17/KVSplit) — Mixed-precision KV cache (8-bit K, 4-bit V) | 59% memory reduction | Not started |
+| 3 | [DuoAttention](https://arxiv.org/abs/2410.10819) — Per-head adaptive KV cache | 2.5x memory, 2.2x decode | Not started |
+| 4 | [FastKV](https://arxiv.org/abs/2502.01068) — Token-selective propagation | 1.8x prefill, 2.9x decode | Not started |
+| 5 | [xKV](https://arxiv.org/abs/2503.18893) — Cross-layer SVD compression | 8x KV compression | Not started |
+| 6 | [Medusa](https://arxiv.org/abs/2401.10774) — Multiple decoding heads | 2.2-2.8x decode | Not started |
 
 ---
 
 ## Contributing
 
-This fork is actively maintained. Issues and PRs welcome at [github.com/raullenchai/vllm-mlx](https://github.com/raullenchai/vllm-mlx).
+Issues and PRs welcome at [github.com/raullenchai/vllm-mlx](https://github.com/raullenchai/vllm-mlx).
 
-Based on [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-mlx) — all upstream features (multimodal, audio, embeddings, Anthropic API, MCP) are available.
+Built on [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-mlx) — all upstream features (multimodal, audio, embeddings, Anthropic API, MCP) are available.
 
 ## License
 
