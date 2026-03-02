@@ -9,7 +9,15 @@
 [![Tests](https://img.shields.io/badge/tests-1500%2B-brightgreen.svg)](tests/)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple)](https://support.apple.com/en-us/HT211814)
 
-Run local LLMs as a **drop-in replacement for OpenAI** — with the reliability that agent frameworks demand. GPU-accelerated on Mac via [MLX](https://github.com/ml-explore/mlx), built for tools like **Claude Code, Cursor, OpenClaw, Aider, LangChain, and any OpenAI-compatible client**.
+Run local LLMs as a **drop-in replacement for OpenAI** — with the reliability that agent frameworks demand. GPU-accelerated on Mac via [MLX](https://github.com/ml-explore/mlx), built for tools like **Claude Code, Cursor, Open WebUI, OpenClaw, Aider, LangChain, and any OpenAI-compatible client**.
+
+```bash
+# Install (one-liner, Apple Silicon only)
+curl -fsSL https://raw.githubusercontent.com/raullenchai/vllm-mlx/main/install.sh | bash
+
+# Start serving
+vllm-mlx serve lmstudio-community/Qwen3-Coder-Next-MLX-4bit --tool-call-parser hermes --port 8000
+```
 
 The upstream [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-mlx) is a solid MLX inference wrapper. This fork transforms it into a **production agent server** — the kind of infrastructure you need when AI agents call tools, reason through problems, and run multi-turn sessions that last hours.
 
