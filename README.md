@@ -58,17 +58,27 @@ Local models are fast and private, but they break in agent workflows. Quantized 
 
 ### 1. Install
 
+**One-liner** (recommended — checks Apple Silicon, Python, sets up everything):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/raullenchai/vllm-mlx/main/install.sh | bash
+```
+
+**Or with pip** (if you manage your own venv):
+
 ```bash
 pip install git+https://github.com/raullenchai/vllm-mlx.git
 ```
 
-Or clone for development:
+<details>
+<summary>Clone for development</summary>
 
 ```bash
 git clone https://github.com/raullenchai/vllm-mlx.git
 cd vllm-mlx
 pip install -e .
 ```
+</details>
 
 ### 2. Start the server
 
