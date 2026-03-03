@@ -860,7 +860,9 @@ class TestHarmonyStreaming:
         result = self.parser.extract_reasoning_streaming(
             "", "<|channel|>commentary", "<|channel|>commentary"
         )
-        assert result is None
+        # Commentary passes through as content for tool parser
+        assert result is not None
+        assert result.content == "<|channel|>commentary"
         assert self.parser._current_channel == "commentary"
 
     def test_message_start_skipped(self):
@@ -905,13 +907,15 @@ class TestHarmonyStreaming:
         assert result is None
         assert self.parser._in_message is False
 
-    def test_commentary_suppressed(self):
+    def test_commentary_passed_through(self):
         self.parser._current_channel = "commentary"
         self.parser._in_message = True
         result = self.parser.extract_reasoning_streaming(
             "prev", "prev tool_call", " tool_call"
         )
-        assert result is None
+        # Commentary passes through as content for tool parser
+        assert result is not None
+        assert result.content == " tool_call"
 
     def test_control_tokens_skipped(self):
         result = self.parser.extract_reasoning_streaming(

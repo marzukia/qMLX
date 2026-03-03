@@ -191,36 +191,21 @@ class MLXLanguageModel:
         if not self._loaded:
             self.load()
 
-        from mlx_lm import generate
-
-        # Create sampler with parameters
-        sampler = self._create_sampler(temperature, top_p)
-
-        # Note: mlx_lm.generate() doesn't support draft_model directly,
-        # speculative decoding is only available via stream_generate()
-        if self.draft_model is not None:
-            # Use streaming with draft model and collect result
-            output_text = ""
-            for chunk in self.stream_generate(
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stop=stop,
-            ):
-                output_text += chunk.text
-                if chunk.finished:
-                    break
-        else:
-            # Generate text without speculative decoding
-            output_text = generate(
-                self.model,
-                self.tokenizer,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                sampler=sampler,
-                verbose=False,
-            )
+        # Always use stream_generate to collect results.  This ensures
+        # special tokens (e.g. Harmony's <|channel|>, <|call|>) are
+        # preserved via skip_special_tokens=False decoding, and the
+        # prompt cache is properly managed.
+        output_text = ""
+        for chunk in self.stream_generate(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop,
+        ):
+            output_text += chunk.text
+            if chunk.finished:
+                break
 
         # Tokenize output to get token IDs
         tokens = self.tokenizer.encode(output_text)
@@ -396,6 +381,11 @@ class MLXLanguageModel:
 
         token_count = 0
         accumulated_text = ""
+        # Track generated token IDs for raw decoding (preserving special tokens).
+        # mlx_lm's detokenizer strips special tokens, which breaks parsers
+        # (like Harmony) that need control tokens like <|channel|>, <|call|>.
+        _generated_ids: list[int] = []
+        _prev_raw_text = ""
 
         # Build generation kwargs
         gen_kwargs = {
@@ -447,8 +437,16 @@ class MLXLanguageModel:
                         f"(prompt={len(full_token_ids)} tokens, "
                         f"prefilled={len(prompt_to_send)} tokens)"
                     )
-                # response.text is the new token text (not accumulated)
-                new_text = response.text
+                # Decode with skip_special_tokens=False to preserve control
+                # tokens (e.g. Harmony's <|channel|>, <|call|>) that tool
+                # parsers need. mlx_lm's detokenizer strips these.
+                token_id = response.token if hasattr(response, "token") else 0
+                _generated_ids.append(token_id)
+                _raw_text = self.tokenizer.decode(
+                    _generated_ids, skip_special_tokens=False
+                )
+                new_text = _raw_text[len(_prev_raw_text):]
+                _prev_raw_text = _raw_text
                 accumulated_text += new_text
 
                 # Check for stop sequences

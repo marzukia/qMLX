@@ -110,7 +110,8 @@ class HarmonyReasoningParser(ReasoningParser):
             elif "commentary" in delta_text:
                 self._current_channel = "commentary"
                 self._in_message = False
-                return None
+                # Pass through so tool parser can see the channel marker
+                return DeltaMessage(content=delta_text)
 
         # Detect channel from full context if not yet determined
         if self._current_channel is None and "<|channel|>" in current_text:
@@ -123,7 +124,12 @@ class HarmonyReasoningParser(ReasoningParser):
             elif after.startswith("commentary"):
                 self._current_channel = "commentary"
 
-        # Handle message start
+        # Commentary channel: pass everything through as content
+        # so the tool parser can accumulate and detect tool calls.
+        if self._current_channel == "commentary":
+            return DeltaMessage(content=delta_text)
+
+        # Handle message start (analysis/final channels only)
         if "<|message|>" in delta_text:
             self._in_message = True
             # Don't emit the token itself
@@ -148,7 +154,7 @@ class HarmonyReasoningParser(ReasoningParser):
         if self._in_message and self._current_channel == "final":
             return DeltaMessage(content=delta_text)
 
-        # In commentary or unknown channel, suppress
+        # Unknown channel, suppress
         return None
 
     def reset_state(self):

@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ..api.tool_calling import convert_tools_for_template
-from ..api.utils import clean_output_text, is_mllm_model
+from ..api.utils import is_mllm_model
 from .base import BaseEngine, GenerationOutput
 
 logger = logging.getLogger(__name__)
@@ -183,11 +183,10 @@ class SimpleEngine(BaseEngine):
                 **kwargs,
             )
 
-            # Clean output text
-            text = clean_output_text(output.text)
-
+            # Return raw text — the server pipeline handles cleaning
+            # AFTER tool parsing and reasoning extraction.
             return GenerationOutput(
-                text=text,
+                text=output.text,
                 tokens=getattr(output, "tokens", []),
                 prompt_tokens=getattr(output, "prompt_tokens", 0),
                 completion_tokens=getattr(
@@ -326,9 +325,8 @@ class SimpleEngine(BaseEngine):
                     temperature=temperature,
                     **kwargs,
                 )
-                text = clean_output_text(output.text)
                 return GenerationOutput(
-                    text=text,
+                    text=output.text,
                     prompt_tokens=output.prompt_tokens,
                     completion_tokens=output.completion_tokens,
                     finish_reason=output.finish_reason,
@@ -345,7 +343,9 @@ class SimpleEngine(BaseEngine):
                     tools=template_tools,
                     **kwargs,
                 )
-                text = clean_output_text(output.text)
+                # Return raw text — server handles cleaning after
+                # tool parsing and reasoning extraction.
+                text = output.text
 
                 # Compute prompt tokens from the chat template
                 prompt_tokens = getattr(output, "prompt_tokens", 0)

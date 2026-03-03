@@ -25,14 +25,16 @@ Different models require different server flags for tool calling. Use the correc
 | Model Family | Server Flags |
 |-------------|-------------|
 | **Qwen / Hermes** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
-| **GPT-OSS / MiniMax** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
+| **GPT-OSS** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser harmony` |
+| **MiniMax** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser minimax` |
 | **GLM-4** | `vllm-mlx serve <model> --port 8000 --enable-auto-tool-choice --tool-call-parser glm47` |
 | **Other / No tools** | `vllm-mlx serve <model> --port 8000` |
 
 Then pass the matching `--parser` to the eval script:
 ```bash
 python evals/run_eval.py --model "X" --parser hermes    # for Qwen/Hermes models
-python evals/run_eval.py --model "X" --parser minimax   # for GPT-OSS/MiniMax models
+python evals/run_eval.py --model "X" --parser harmony   # for GPT-OSS models
+python evals/run_eval.py --model "X" --parser minimax   # for MiniMax models
 python evals/run_eval.py --model "X" --parser glm47     # for GLM-4 models
 ```
 
