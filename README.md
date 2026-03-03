@@ -416,6 +416,30 @@ Tested on Mac Studio M3 Ultra (256GB) with OpenClaw (14 tools, multi-turn agent 
 
 **Verdict:** Qwen3.5-122B is the recommended model for agent workloads — faster decode on long outputs, half the memory, and no tool-call loops. MiniMax-M2.5 is slightly faster on short outputs but prone to agentic instability.
 
+### Eval Framework
+
+Standardized eval framework covering speed, tool calling (30 scenarios), coding, reasoning, and instruction following. Run on your own Apple Silicon Mac and submit results!
+
+| Model | Quant | Decode | Tools | Code | Reason | General |
+|-------|-------|--------|-------|------|--------|---------|
+| Qwen3.5-122B-A10B | 8bit | 43 t/s | **100%** | 70% | 30% | 50% |
+| Qwen3.5-122B-A10B | mxfp4 | 58 t/s | 97% | 90% | 40% | 70% |
+| Qwen3.5-35B-A3B | 8bit | 82 t/s | 97% | 90% | 40% | 70% |
+| Qwen3.5-35B-A3B | 4bit | 105 t/s | 93% | **100%** | 40% | 60% |
+| Qwen3-Coder-Next | 4bit | 74 t/s | 90% | **100%** | 80% | **100%** |
+| Qwen3-Coder-Next | 6bit | 68 t/s | 87% | **100%** | **90%** | **100%** |
+| MiniMax-M2.5 | 4bit | 51 t/s | 87% | 40% | 60% | 90% |
+| Qwen3-0.6B | 4bit | 372 t/s | 50% | 0% | 30% | 50% |
+
+*Tested on Apple M3 Ultra (256GB). See full [scorecard](evals/SCORECARD.md) for details.*
+
+```bash
+# Run all eval suites against a running server (~5 min)
+python evals/run_eval.py --model "My-Model" --quantization 4bit --port 8000
+```
+
+See **[evals/](evals/)** for methodology, prompts, and how to contribute your results.
+
 ### Quick Start Commands
 
 ```bash

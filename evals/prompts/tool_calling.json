@@ -1,0 +1,453 @@
+[
+  {
+    "id": "tc01",
+    "category": "single_tool",
+    "level": 1,
+    "description": "Single tool, simple args — web search",
+    "messages": [
+      {"role": "user", "content": "What's the weather like in Tokyo right now?"}
+    ],
+    "expected_tool": "web_search",
+    "expected_args": {"query": "weather Tokyo"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "Tokyo weather: Partly cloudy, 18°C (64°F), humidity 62%, wind 8 km/h NE.",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc02",
+    "category": "single_tool",
+    "level": 1,
+    "description": "Single tool, simple args — translate",
+    "messages": [
+      {"role": "user", "content": "Translate 'Good morning' to Japanese"}
+    ],
+    "expected_tool": "translate",
+    "expected_args": {"text": "Good morning", "to": "Japanese"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "おはようございます (Ohayou gozaimasu)",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc03",
+    "category": "single_tool",
+    "level": 1,
+    "description": "Single tool, simple args — image generation",
+    "messages": [
+      {"role": "user", "content": "Generate an image of a sunset over the ocean with palm trees"}
+    ],
+    "expected_tool": "image_gen",
+    "expected_args": {"prompt": "sunset ocean palm trees"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "Image generated: sunset_ocean_palms.png (1024x1024)",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc04",
+    "category": "single_tool",
+    "level": 1,
+    "description": "Single tool, explicit code — code_run",
+    "messages": [
+      {"role": "user", "content": "Run this Python code: print(sum(range(1, 101)))"}
+    ],
+    "expected_tool": "code_run",
+    "expected_args": {"language": "python", "code": "print(sum(range(1, 101)))"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "5050",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc05",
+    "category": "function_selection",
+    "level": 2,
+    "description": "Function selection — memory_store not write or send_message",
+    "messages": [
+      {"role": "user", "content": "Store this for later: my API key is sk-abc123def456"}
+    ],
+    "expected_tool": "memory_store",
+    "expected_args": {"key": "API key", "value": "sk-abc123def456"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "Stored: api_key = sk-abc123def456",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc06",
+    "category": "function_selection",
+    "level": 2,
+    "description": "Function selection — browse not web_search",
+    "messages": [
+      {"role": "user", "content": "Open https://example.com and tell me what's on the page"}
+    ],
+    "expected_tool": "browse",
+    "expected_args": {"url": "https://example.com"},
+    "arg_match_mode": "exact",
+    "fake_result": "Example Domain. This domain is for use in illustrative examples in documents.",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc07",
+    "category": "function_selection",
+    "level": 2,
+    "description": "Function selection — exec not read for listing files",
+    "messages": [
+      {"role": "user", "content": "List all files in the /tmp directory"}
+    ],
+    "expected_tool": "exec",
+    "expected_args": {"command": "ls /tmp"},
+    "arg_match_mode": "contains",
+    "fake_result": "cache.txt\ndata.csv\nhello.py\nrequirements.txt",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc08",
+    "category": "function_selection",
+    "level": 2,
+    "description": "Function selection — code_run not exec for Python",
+    "messages": [
+      {"role": "user", "content": "Run this Python snippet and show me the output:\nimport math\nprint(math.factorial(10))"}
+    ],
+    "expected_tool": "code_run",
+    "expected_args": {"language": "python", "code": "math.factorial"},
+    "arg_match_mode": "contains",
+    "fake_result": "3628800",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc09",
+    "category": "function_selection",
+    "level": 2,
+    "description": "Function selection — create_reminder not calendar_create or send_message",
+    "messages": [
+      {"role": "user", "content": "Remind me tomorrow at 3pm to call Bob"}
+    ],
+    "expected_tool": "create_reminder",
+    "expected_args": {"text": "call Bob", "time": "3pm"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "Reminder set: 'Call Bob' at 2026-03-03 15:00",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc10",
+    "category": "complex_args",
+    "level": 3,
+    "description": "Complex args — write file with multi-line code content",
+    "messages": [
+      {"role": "user", "content": "Write a Python hello world script to /tmp/hello.py"}
+    ],
+    "expected_tool": "write",
+    "expected_args": {"path": "/tmp/hello.py", "content": "print"},
+    "arg_match_mode": "contains",
+    "fake_result": "File written: /tmp/hello.py (28 bytes)",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc11",
+    "category": "complex_args",
+    "level": 3,
+    "description": "Complex args — calendar with natural date/time",
+    "messages": [
+      {"role": "user", "content": "Create a calendar event: Team standup meeting next Tuesday at 2:30pm"}
+    ],
+    "expected_tool": "calendar_create",
+    "expected_args": {"title": "Team standup meeting", "start": "2:30"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "Calendar event created: 'Team standup meeting' on 2026-03-10 at 14:30",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc12",
+    "category": "complex_args",
+    "level": 3,
+    "description": "Complex args — exec with piped command",
+    "messages": [
+      {"role": "user", "content": "Show me all running Python processes"}
+    ],
+    "expected_tool": "exec",
+    "expected_args": {"command": "ps"},
+    "arg_match_mode": "contains",
+    "fake_result": "  PID TTY           TIME CMD\n12345 ttys000    0:01.23 python server.py\n12346 ttys001    0:00.45 python eval.py",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc13",
+    "category": "complex_args",
+    "level": 3,
+    "description": "Complex args — code_run with multi-line Python and imports",
+    "messages": [
+      {"role": "user", "content": "Run this code:\nimport json\ndata = {\"name\": \"Alice\", \"age\": 30}\nprint(json.dumps(data, indent=2))"}
+    ],
+    "expected_tool": "code_run",
+    "expected_args": {"language": "python", "code": "json.dumps"},
+    "arg_match_mode": "contains",
+    "fake_result": "{\n  \"name\": \"Alice\",\n  \"age\": 30\n}",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc14",
+    "category": "parallel",
+    "level": 3,
+    "type": "parallel",
+    "description": "Parallel — two web searches",
+    "messages": [
+      {"role": "user", "content": "What's the weather in Tokyo and what's the weather in Paris?"}
+    ],
+    "expected_tools": [
+      {"tool": "web_search", "expected_args": {"query": "weather Tokyo"}, "arg_match_mode": "fuzzy"},
+      {"tool": "web_search", "expected_args": {"query": "weather Paris"}, "arg_match_mode": "fuzzy"}
+    ],
+    "fake_results": [
+      "Tokyo weather: Partly cloudy, 18°C, humidity 62%.",
+      "Paris weather: Rainy, 12°C, humidity 78%."
+    ],
+    "expect_final_text": true
+  },
+  {
+    "id": "tc15",
+    "category": "parallel",
+    "level": 3,
+    "type": "parallel",
+    "description": "Parallel — three translations",
+    "messages": [
+      {"role": "user", "content": "Translate 'hello' to Japanese, Korean, and French"}
+    ],
+    "expected_tools": [
+      {"tool": "translate", "expected_args": {"text": "hello", "to": "Japanese"}, "arg_match_mode": "fuzzy"},
+      {"tool": "translate", "expected_args": {"text": "hello", "to": "Korean"}, "arg_match_mode": "fuzzy"},
+      {"tool": "translate", "expected_args": {"text": "hello", "to": "French"}, "arg_match_mode": "fuzzy"}
+    ],
+    "fake_results": [
+      "こんにちは (Konnichiwa)",
+      "안녕하세요 (Annyeonghaseyo)",
+      "Bonjour"
+    ],
+    "expect_final_text": true
+  },
+  {
+    "id": "tc16",
+    "category": "parallel",
+    "level": 3,
+    "type": "parallel",
+    "description": "Parallel — web_search + image_gen (different tools)",
+    "messages": [
+      {"role": "user", "content": "Search for the latest MLX news and also generate an image of the Apple M3 Ultra chip"}
+    ],
+    "expected_tools": [
+      {"tool": "web_search", "expected_args": {"query": "MLX"}, "arg_match_mode": "fuzzy"},
+      {"tool": "image_gen", "expected_args": {"prompt": "Apple M3 Ultra"}, "arg_match_mode": "fuzzy"}
+    ],
+    "fake_results": [
+      "MLX v0.25.0 released with improved Metal shaders and 2x faster attention.",
+      "Image generated: apple_m3_ultra_chip.png (1024x1024)"
+    ],
+    "expect_final_text": true
+  },
+  {
+    "id": "tc17",
+    "category": "parallel",
+    "level": 3,
+    "type": "parallel",
+    "description": "Parallel — two file reads",
+    "messages": [
+      {"role": "user", "content": "Read /tmp/a.txt and /tmp/b.txt and compare their contents"}
+    ],
+    "expected_tools": [
+      {"tool": "read", "expected_args": {"path": "/tmp/a.txt"}, "arg_match_mode": "exact"},
+      {"tool": "read", "expected_args": {"path": "/tmp/b.txt"}, "arg_match_mode": "exact"}
+    ],
+    "fake_results": [
+      "Hello from file A. Version 1.0.",
+      "Hello from file B. Version 2.0."
+    ],
+    "expect_final_text": true
+  },
+  {
+    "id": "tc18",
+    "category": "irrelevance",
+    "level": 2,
+    "type": "irrelevance",
+    "description": "Irrelevance — factual question, no tool needed",
+    "messages": [
+      {"role": "user", "content": "What is the capital of France?"}
+    ],
+    "expect_no_tool": true
+  },
+  {
+    "id": "tc19",
+    "category": "irrelevance",
+    "level": 2,
+    "type": "irrelevance",
+    "description": "Irrelevance — knowledge question, no tool needed",
+    "messages": [
+      {"role": "user", "content": "Explain how neural networks work in 2-3 sentences"}
+    ],
+    "expect_no_tool": true
+  },
+  {
+    "id": "tc20",
+    "category": "irrelevance",
+    "level": 2,
+    "type": "irrelevance",
+    "description": "Irrelevance — conversation closer, no tool needed",
+    "messages": [
+      {"role": "user", "content": "Thank you, that's all I needed for now. Have a great day!"}
+    ],
+    "expect_no_tool": true
+  },
+  {
+    "id": "tc21",
+    "category": "sequential",
+    "level": 4,
+    "description": "Sequential — web_search then browse",
+    "messages": [
+      {"role": "user", "content": "Find the latest MLX framework release notes and summarize them"}
+    ],
+    "expected_tool": "web_search",
+    "expected_args": {"query": "MLX framework release"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "1. MLX v0.25.0 Release Notes - https://github.com/ml-explore/mlx/releases/tag/v0.25.0\n2. Apple MLX Documentation - https://ml-explore.github.io/mlx/",
+    "followup_expected_tool": "browse",
+    "followup_fake_result": "MLX v0.25.0: New features include improved Metal shaders, 2x faster attention, new quantization formats (mxfp4, mxfp6), and ARM NEON optimizations.",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc22",
+    "category": "sequential",
+    "level": 4,
+    "description": "Sequential — read then exec",
+    "messages": [
+      {"role": "user", "content": "Read the file /tmp/requirements.txt and install the packages listed in it"}
+    ],
+    "expected_tool": "read",
+    "expected_args": {"path": "/tmp/requirements.txt"},
+    "arg_match_mode": "exact",
+    "fake_result": "flask==3.0.0\nrequests>=2.31.0\npydantic~=2.5",
+    "followup_expected_tool": "exec",
+    "followup_fake_result": "Successfully installed flask-3.0.0 requests-2.31.0 pydantic-2.5.0",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc23",
+    "category": "sequential",
+    "level": 5,
+    "description": "Sequential 3-step — exec + memory_store + send_message",
+    "messages": [
+      {"role": "user", "content": "Check my Python version, remember it, and send a message to Alice with the version info"}
+    ],
+    "expected_tool": "exec",
+    "expected_args": {"command": "python"},
+    "arg_match_mode": "contains",
+    "fake_result": "Python 3.11.5",
+    "followup_expected_tool": "memory_store",
+    "followup_fake_result": "Stored: python_version = Python 3.11.5",
+    "followup2_expected_tool": "send_message",
+    "followup2_fake_result": "Message sent to Alice: 'Python version is 3.11.5'",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc24",
+    "category": "sequential",
+    "level": 5,
+    "description": "Sequential 3-step — web_search + code_run + write",
+    "messages": [
+      {"role": "user", "content": "Search for how to calculate Fibonacci in Python, then run the code for fib(10), and save the result to /tmp/fib_result.txt"}
+    ],
+    "expected_tool": "web_search",
+    "expected_args": {"query": "Fibonacci Python"},
+    "arg_match_mode": "fuzzy",
+    "fake_result": "def fib(n): return n if n < 2 else fib(n-1) + fib(n-2)\nExample: fib(10) = 55",
+    "followup_expected_tool": "code_run",
+    "followup_fake_result": "55",
+    "followup2_expected_tool": "write",
+    "followup2_fake_result": "File written: /tmp/fib_result.txt (3 bytes)",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc25",
+    "category": "missing_params",
+    "level": 3,
+    "type": "missing_params",
+    "description": "Missing params — send_message with no recipient or text",
+    "messages": [
+      {"role": "user", "content": "Send a message"}
+    ],
+    "expect_no_tool": true
+  },
+  {
+    "id": "tc26",
+    "category": "missing_params",
+    "level": 3,
+    "type": "missing_params",
+    "description": "Missing params — write with no path or content",
+    "messages": [
+      {"role": "user", "content": "Write to a file"}
+    ],
+    "expect_no_tool": true
+  },
+  {
+    "id": "tc27",
+    "category": "error_recovery",
+    "level": 4,
+    "type": "error_recovery",
+    "description": "Error recovery — permission denied, model should explain or retry",
+    "messages": [
+      {"role": "user", "content": "Delete the file /etc/important_config"}
+    ],
+    "expected_tool": "exec",
+    "expected_args": {"command": "rm"},
+    "arg_match_mode": "contains",
+    "error_result": "Error: Permission denied. Cannot delete /etc/important_config. Operation requires root privileges.",
+    "expect_recovery_text": true
+  },
+  {
+    "id": "tc28",
+    "category": "error_recovery",
+    "level": 4,
+    "type": "error_recovery",
+    "description": "Error recovery — 404 not found, model should try alternative",
+    "messages": [
+      {"role": "user", "content": "Open https://example.com/nonexistent-page and show me the content"}
+    ],
+    "expected_tool": "browse",
+    "expected_args": {"url": "https://example.com/nonexistent-page"},
+    "arg_match_mode": "exact",
+    "error_result": "Error: 404 Not Found. The page at https://example.com/nonexistent-page does not exist.",
+    "recovery_expected_tool": "web_search",
+    "recovery_fake_result": "1. Example.com - Main Page: https://example.com\n2. Example.com Documentation: https://example.com/docs",
+    "expect_recovery_text": true
+  },
+  {
+    "id": "tc29",
+    "category": "nested_dependent",
+    "level": 4,
+    "description": "Nested dependent — read URL from file then browse it",
+    "messages": [
+      {"role": "user", "content": "Read the file /tmp/url.txt and browse to the URL that's inside it"}
+    ],
+    "expected_tool": "read",
+    "expected_args": {"path": "/tmp/url.txt"},
+    "arg_match_mode": "exact",
+    "fake_result": "https://example.com/api/status",
+    "followup_expected_tool": "browse",
+    "followup_expected_args": {"url": "https://example.com/api/status"},
+    "followup_arg_match_mode": "exact",
+    "followup_fake_result": "{\"status\": \"healthy\", \"uptime\": \"99.9%\", \"version\": \"2.1.0\"}",
+    "expect_final_text": true
+  },
+  {
+    "id": "tc30",
+    "category": "nested_dependent",
+    "level": 4,
+    "description": "Nested dependent — exec output becomes memory_store value",
+    "messages": [
+      {"role": "user", "content": "Find my Python version and store it in memory for later"}
+    ],
+    "expected_tool": "exec",
+    "expected_args": {"command": "python"},
+    "arg_match_mode": "contains",
+    "fake_result": "Python 3.12.1",
+    "followup_expected_tool": "memory_store",
+    "followup_expected_args": {"value": "Python 3.12.1"},
+    "followup_arg_match_mode": "contains",
+    "followup_fake_result": "Stored: python_version = Python 3.12.1",
+    "expect_final_text": true
+  }
+]
