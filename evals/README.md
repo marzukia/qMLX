@@ -48,6 +48,15 @@ python evals/run_eval.py --model "X" --parser glm47     # for GLM-4 models
 | **Reasoning** | 10 problems | GSM8K math (grade school word problems) | % correct answer |
 | **General** | 10 tasks | Instruction following, factual, JSON output | % checks pass |
 
+### Thinking Mode Disabled
+
+**All eval suites send `enable_thinking: false` to every model.** This is critical for fair comparison:
+
+- Models like Qwen3.5 default to extended internal deliberation ("Thinking Process") that can produce thousands of tokens before the actual answer
+- With thinking enabled, models hit `max_tokens` limits and get truncated before answering, causing artificially low scores (e.g. 30-40% instead of 90% on reasoning)
+- Disabling thinking ensures every model uses its full token budget for the actual response
+- This applies to **all suites** (tool calling, coding, reasoning, general), not just reasoning
+
 ## Tool Calling Categories (30 scenarios)
 
 | Category | IDs | Count | What it tests |

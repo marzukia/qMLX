@@ -7,6 +7,7 @@ integrating with vLLM's model execution system.
 """
 
 import copy
+import itertools
 import logging
 import time
 from dataclasses import dataclass
@@ -361,8 +362,19 @@ class MLXLanguageModel:
 
         t_tokenize = _time.perf_counter()
 
-        # Prepare cache and get only the tokens that need processing
-        suffix_tokens = self._prepare_cache_for_prompt(full_token_ids)
+        # Prepare cache and get only the tokens that need processing.
+        # Some models (e.g. Qwen3.5-122B-A10B with vision tower weights)
+        # can hit broadcast_shapes errors on cache reuse.  Fall back to a
+        # fresh cache so the request still succeeds.
+        try:
+            suffix_tokens = self._prepare_cache_for_prompt(full_token_ids)
+        except Exception as cache_err:
+            logger.warning(
+                "Prompt cache error (%s), resetting cache", cache_err
+            )
+            self._prompt_cache = None
+            self._cached_token_ids = []
+            suffix_tokens = self._prepare_cache_for_prompt(full_token_ids)
         prefix_len = len(full_token_ids) - len(suffix_tokens)
 
         if prefix_len > 0 and len(suffix_tokens) < len(full_token_ids):
@@ -420,13 +432,38 @@ class MLXLanguageModel:
 
         t_first_token = None
         cache_saved = False
-        try:
-            for response in stream_generate(
+
+        def _make_generator():
+            return stream_generate(
                 self.model,
                 self.tokenizer,
                 prompt=prompt_to_send,
                 **gen_kwargs,
-            ):
+            )
+
+        try:
+            gen = _make_generator()
+            # Attempt first iteration eagerly so cache errors surface here
+            try:
+                first_response = next(gen)
+            except Exception as gen_err:
+                if self._prompt_cache is not None and prefix_len > 0:
+                    logger.warning(
+                        "Generation failed with cached prompt (%s), "
+                        "retrying with fresh cache", gen_err,
+                    )
+                    # Reset cache and retry with full prompt
+                    self._prompt_cache = None
+                    self._cached_token_ids = []
+                    suffix_tokens = self._prepare_cache_for_prompt(full_token_ids)
+                    prompt_to_send = suffix_tokens or full_token_ids
+                    gen_kwargs["prompt_cache"] = self._prompt_cache
+                    gen = _make_generator()
+                    first_response = next(gen)
+                else:
+                    raise
+
+            for response in itertools.chain([first_response], gen):
                 token_count += 1
                 if token_count == 1:
                     t_first_token = _time.perf_counter()

@@ -119,6 +119,7 @@ def chat_request(host: str, port: int, messages: list, *, tools=None,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": stream,
+        "enable_thinking": False,
     }
     if tools:
         body["tools"] = tools
@@ -142,6 +143,7 @@ def stream_chat(host: str, port: int, messages: list, *, tools=None,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": True,
+        "enable_thinking": False,
     }
     if tools:
         body["tools"] = tools
@@ -761,7 +763,7 @@ def run_coding_suite(host: str, port: int, verbose: bool = False) -> dict:
 def extract_answer(text: str):
     """Extract numerical answer from model response (reuse gsm8k_eval logic)."""
     patterns = [
-        r"####\s*(\d+(?:,\d+)*(?:\.\d+)?)",
+        r"####\s*\$?(\d+(?:,\d+)*(?:\.\d+)?)",
         r"answer is[:\s]+\$?(\d+(?:,\d+)*(?:\.\d+)?)",
         r"=\s*\$?(\d+(?:,\d+)*(?:\.\d+)?)\s*$",
         r"(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:dollars?|eggs?|cups?|bolts?|sheep|minutes?|hours?|meters?)?\s*$",
@@ -809,10 +811,10 @@ def run_reasoning_suite(host: str, port: int, verbose: bool = False) -> dict:
             resp = chat_request(
                 host, port,
                 [
-                    {"role": "system", "content": "You are a math tutor. Solve problems step by step, then give the final numerical answer after ####. Do not show internal thinking or drafts."},
+                    {"role": "system", "content": "You are a math tutor. Solve problems step by step, then give the final numerical answer after ####."},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=512, temperature=0.0,
+                max_tokens=1024, temperature=0.0,
             )
             output = _strip_thinking(resp["choices"][0]["message"]["content"])
             extracted = extract_answer(output)

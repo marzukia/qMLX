@@ -1,7 +1,7 @@
 {
   "model": "GPT-OSS-20B-mxfp4-q8",
   "quantization": "mxfp4-q8",
-  "parser": "minimax",
+  "parser": "harmony",
   "hardware": "Apple M3 Ultra (256GB)",
   "hardware_detail": {
     "chip": "Apple M3 Ultra",
@@ -10,7 +10,7 @@
   },
   "date": "2026-03-03",
   "server": "http://localhost:8000",
-  "server_flags": "--enable-auto-tool-choice --tool-call-parser minimax",
+  "server_flags": "--enable-auto-tool-choice --tool-call-parser harmony",
   "speed": {
     "ttft_cold_s": 0.43,
     "ttft_warm_s": 0.248,
@@ -18,8 +18,8 @@
     "decode_long_tps": 124.0
   },
   "tool_calling": {
-    "score": 0.17,
-    "passed": 5,
+    "score": 0.77,
+    "passed": 23,
     "total": 30,
     "details": [
       {

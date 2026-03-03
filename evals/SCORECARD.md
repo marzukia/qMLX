@@ -1,32 +1,34 @@
 # vllm-mlx Model Scorecard
 
-*Auto-generated on 2026-03-03 01:33 UTC*
+*Auto-generated on 2026-03-03 05:10 UTC*
+
+> **Methodology**: All evals run with `enable_thinking: false` across all models for fair comparison. See [README](README.md) for details.
 
 ## Comparison Table
 
 | Model | Quant | Hardware | Decode (s) | Decode (l) | Tools | Coding | Reasoning | General | Parser | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| GPT-OSS-20B-mxfp4-q8 | mxfp4-q8 | Apple M3 Ultra (256GB) | 89.1 t/s | 124 t/s | 17% | 90% | 90% | 100% | minimax | 2026-03-03 |
+| GPT-OSS-20B-mxfp4-q8 | mxfp4-q8 | Apple M3 Ultra (256GB) | 89.1 t/s | 124 t/s | 77% | 90% | 90% | 100% | harmony | 2026-03-03 |
 | MiniMax-M2.5-4bit | 4bit | Apple M3 Ultra (256GB) | 44.9 t/s | 50.6 t/s | 87% | 40% | 60% | 90% | minimax | 2026-03-03 |
 | Qwen3-0.6B-4bit | 4bit | Apple M3 Ultra (256GB) | 293.8 t/s | 372.3 t/s | 50% | 0% | 30% | 50% | hermes | 2026-03-03 |
 | Qwen3-Coder-Next-4bit | 4bit | Apple M3 Ultra (256GB) | 35.5 t/s | 73.9 t/s | 90% | 100% | 80% | 100% | hermes | 2026-03-03 |
 | Qwen3-Coder-Next-6bit | 6bit | Apple M3 Ultra (256GB) | 33.1 t/s | 67.7 t/s | 87% | 100% | 90% | 100% | hermes | 2026-03-03 |
-| Qwen3.5-122B-A10B-8bit | 8bit | Apple M3 Ultra (256GB) | 39.8 t/s | 43.3 t/s | 100% | 70% | 30% | 50% | hermes | 2026-03-03 |
-| Qwen3.5-122B-A10B-mxfp4 | mxfp4 | Apple M3 Ultra (256GB) | 52.3 t/s | 57.7 t/s | 97% | 90% | 40% | 70% | hermes | 2026-03-03 |
-| Qwen3.5-35B-A3B-4bit | 4bit | Apple M3 Ultra (256GB) | 92.3 t/s | 104.5 t/s | 93% | 100% | 40% | 60% | hermes | 2026-03-03 |
-| Qwen3.5-35B-A3B-8bit | 8bit | Apple M3 Ultra (256GB) | 74.3 t/s | 82 t/s | 97% | 90% | 40% | 70% | hermes | 2026-03-03 |
+| Qwen3.5-122B-A10B-8bit | 8bit | Apple M3 Ultra (256GB) | 20.8 t/s | 43.9 t/s | 93% | 60% | 90% | 60% | hermes | 2026-03-03 |
+| Qwen3.5-122B-A10B-mxfp4 | mxfp4 | Apple M3 Ultra (256GB) | 28.3 t/s | 57.7 t/s | 90% | 90% | 90% | 80% | hermes | 2026-03-03 |
+| Qwen3.5-35B-A3B-4bit | 4bit | Apple M3 Ultra (256GB) | 38.6 t/s | 103.6 t/s | 77% | 100% | 90% | 80% | hermes | 2026-03-03 |
+| Qwen3.5-35B-A3B-8bit | 8bit | Apple M3 Ultra (256GB) | 34.2 t/s | 81.5 t/s | 77% | 100% | 90% | 90% | hermes | 2026-03-03 |
 
 ## Details
 
 ### GPT-OSS-20B-mxfp4-q8
 
 - **Hardware**: Apple M3 Ultra (256GB)
-- **Parser**: minimax
-- **Server flags**: `--enable-auto-tool-choice --tool-call-parser minimax`
+- **Parser**: harmony
+- **Server flags**: `--enable-auto-tool-choice --tool-call-parser harmony`
 - **Date**: 2026-03-03
 - **TTFT**: cold=0.4s, warm=0.2s
 - **Decode**: short=89.1 t/s, long=124 t/s
-- **Tool Calling**: 17% (5/30)
+- **Tool Calling**: 77% (23/30)
 - **Coding**: 90% (9/10)
 - **Reasoning**: 90% (9/10)
 - **General**: 100% (10/10)
@@ -94,13 +96,13 @@
 - **Parser**: hermes
 - **Server flags**: `--enable-auto-tool-choice --tool-call-parser hermes`
 - **Date**: 2026-03-03
-- **TTFT**: cold=1.6s, warm=0.0s
-- **Decode**: short=39.8 t/s, long=43.3 t/s
-- **Tool Calling**: 100% (30/30)
-- **Coding**: 70% (7/10)
-- **Reasoning**: 30% (3/10)
-- **General**: 50% (5/10)
-- **Eval time**: 512.8s
+- **TTFT**: cold=1.8s, warm=0.0s
+- **Decode**: short=20.8 t/s, long=43.9 t/s
+- **Tool Calling**: 93% (28/30)
+- **Coding**: 60% (6/10)
+- **Reasoning**: 90% (9/10)
+- **General**: 60% (6/10)
+- **Eval time**: 555.0s
 
 ### Qwen3.5-122B-A10B-mxfp4
 
@@ -109,12 +111,12 @@
 - **Server flags**: `--enable-auto-tool-choice --tool-call-parser hermes`
 - **Date**: 2026-03-03
 - **TTFT**: cold=1.0s, warm=0.0s
-- **Decode**: short=52.3 t/s, long=57.7 t/s
-- **Tool Calling**: 97% (29/30)
+- **Decode**: short=28.3 t/s, long=57.7 t/s
+- **Tool Calling**: 90% (27/30)
 - **Coding**: 90% (9/10)
-- **Reasoning**: 40% (4/10)
-- **General**: 70% (7/10)
-- **Eval time**: 375.5s
+- **Reasoning**: 90% (9/10)
+- **General**: 80% (8/10)
+- **Eval time**: 233.6s
 
 ### Qwen3.5-35B-A3B-4bit
 
@@ -123,12 +125,12 @@
 - **Server flags**: `--enable-auto-tool-choice --tool-call-parser hermes`
 - **Date**: 2026-03-03
 - **TTFT**: cold=0.5s, warm=0.0s
-- **Decode**: short=92.3 t/s, long=104.5 t/s
-- **Tool Calling**: 93% (28/30)
+- **Decode**: short=38.6 t/s, long=103.6 t/s
+- **Tool Calling**: 77% (23/30)
 - **Coding**: 100% (10/10)
-- **Reasoning**: 40% (4/10)
-- **General**: 60% (6/10)
-- **Eval time**: 207.8s
+- **Reasoning**: 90% (9/10)
+- **General**: 80% (8/10)
+- **Eval time**: 147.0s
 
 ### Qwen3.5-35B-A3B-8bit
 
@@ -136,13 +138,13 @@
 - **Parser**: hermes
 - **Server flags**: `--enable-auto-tool-choice --tool-call-parser hermes`
 - **Date**: 2026-03-03
-- **TTFT**: cold=0.6s, warm=0.0s
-- **Decode**: short=74.3 t/s, long=82 t/s
-- **Tool Calling**: 97% (29/30)
-- **Coding**: 90% (9/10)
-- **Reasoning**: 40% (4/10)
-- **General**: 70% (7/10)
-- **Eval time**: 271.9s
+- **TTFT**: cold=0.7s, warm=0.0s
+- **Decode**: short=34.2 t/s, long=81.5 t/s
+- **Tool Calling**: 77% (23/30)
+- **Coding**: 100% (10/10)
+- **Reasoning**: 90% (9/10)
+- **General**: 90% (9/10)
+- **Eval time**: 108.0s
 
 ---
 
