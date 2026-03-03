@@ -1,6 +1,6 @@
 # vllm-mlx Model Scorecard
 
-*Auto-generated on 2026-03-03 05:32 UTC*
+*Auto-generated on 2026-03-03 14:04 UTC*
 
 > **Methodology**: All evals run with `enable_thinking: false` across all models for fair comparison. See [README](README.md) for details.
 
