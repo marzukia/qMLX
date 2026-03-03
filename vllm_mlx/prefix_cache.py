@@ -110,6 +110,9 @@ class PrefixCacheManager:
         # LRU tracking: (model_key, tuple(tokens)) ordered by access time
         self._lru: deque = deque()
 
+        # Pinned entries: keys excluded from LRU eviction
+        self._pinned: set = set()
+
         # Statistics
         self.stats = PrefixCacheStats()
 
@@ -243,20 +246,24 @@ class PrefixCacheManager:
             current = current[tok]
 
         # Store or update cache entry
+        key = (self.model_key, tokens_tuple)
         if "cache" in current:
             current["cache"].count += 1
-            # Update LRU position
-            try:
-                self._lru.remove((self.model_key, tokens_tuple))
-            except ValueError:
-                pass
+            # Update LRU position (skip if pinned)
+            if key not in self._pinned:
+                try:
+                    self._lru.remove(key)
+                except ValueError:
+                    pass
         else:
             current["cache"] = CacheEntry(prompt_cache, 1)
 
-        self._lru.append((self.model_key, tokens_tuple))
+        # Only add to LRU if not pinned
+        if key not in self._pinned:
+            self._lru.append(key)
 
-        # Evict if over capacity
-        while len(self._lru) > self.max_size:
+        # Evict if over capacity (count pinned entries toward total)
+        while len(self._lru) + len(self._pinned) > self.max_size and len(self._lru) > 0:
             self._evict_lru()
 
     def _get_cache_entry(self, tokens: List[int]) -> Optional[CacheEntry]:
@@ -275,6 +282,8 @@ class PrefixCacheManager:
     def _touch_lru(self, tokens_tuple: tuple) -> None:
         """Move entry to end of LRU queue (most recently used)."""
         key = (self.model_key, tokens_tuple)
+        if key in self._pinned:
+            return  # Pinned entries stay out of LRU
         try:
             self._lru.remove(key)
         except ValueError:
@@ -345,6 +354,7 @@ class PrefixCacheManager:
         """Clear all cached entries."""
         self._cache.clear()
         self._lru.clear()
+        self._pinned.clear()
         self.reset_stats()
 
     def pin_prefix(self, tokens: List[int]) -> bool:
@@ -354,6 +364,11 @@ class PrefixCacheManager:
         For the trie-based cache, this removes the entry from the LRU queue
         so it is never evicted. The entry remains accessible for lookups.
 
+        Note: Pinned entries count toward max_size capacity. If the number of
+        pinned entries already equals max_size, this method returns False to
+        prevent capacity from becoming unenforceable. Unpin existing entries
+        first to make room.
+
         Args:
             tokens: Token sequence of the prefix to pin
 
@@ -362,13 +377,25 @@ class PrefixCacheManager:
         """
         tokens_tuple = tuple(tokens)
         key = (self.model_key, tokens_tuple)
-        try:
-            self._lru.remove(key)
-            logger.info(f"Pinned prefix ({len(tokens)} tokens) - removed from LRU")
-            return True
-        except ValueError:
+        # Verify entry exists in trie
+        entry = self._get_cache_entry(tokens)
+        if entry is None:
             logger.warning(f"Cannot pin prefix: not found in cache")
             return False
+        # Reject if pinning would make capacity unenforceable
+        if key not in self._pinned and len(self._pinned) >= self.max_size:
+            logger.warning(
+                f"Cannot pin prefix: pinned count ({len(self._pinned)}) "
+                f"already at capacity ({self.max_size})"
+            )
+            return False
+        try:
+            self._lru.remove(key)
+        except ValueError:
+            pass  # May already be removed from LRU
+        self._pinned.add(key)
+        logger.info(f"Pinned prefix ({len(tokens)} tokens)")
+        return True
 
     def unpin_prefix(self, tokens: List[int]) -> bool:
         """
@@ -382,20 +409,18 @@ class PrefixCacheManager:
         """
         tokens_tuple = tuple(tokens)
         key = (self.model_key, tokens_tuple)
-        # Check the entry exists in the trie
-        entry = self._get_cache_entry(tokens)
-        if entry is None:
+        if key not in self._pinned:
             return False
+        self._pinned.discard(key)
         # Re-add to LRU (at MRU end)
         if key not in self._lru:
             self._lru.append(key)
-            logger.info(f"Unpinned prefix ({len(tokens)} tokens) - added back to LRU")
-            return True
-        return False
+        logger.info(f"Unpinned prefix ({len(tokens)} tokens) - added back to LRU")
+        return True
 
     def __len__(self) -> int:
-        """Return number of cached entries."""
-        return len(self._lru)
+        """Return number of cached entries (including pinned)."""
+        return len(self._lru) + len(self._pinned)
 
 
 # =============================================================================
