@@ -4,16 +4,11 @@ Harmony tool call parser for GPT-OSS models.
 
 Harmony uses control tokens and channels for tool calling:
 
-    <|channel|>commentary to=functions.get_weather
-    <|constrain|>json
-    <|message|>{"location": "San Francisco"}
-    <|call|>
+    <|start|>assistant to=functions.get_weather<|channel|>commentary json<|message|>{"location": "SF"}<|call|>
 
 The final response is in the 'final' channel:
 
-    <|channel|>final
-    <|message|>The weather is 72F.
-    <|return|>
+    <|start|>assistant<|channel|>final<|message|>The weather is 72F.<|end|>
 """
 
 import json
@@ -34,17 +29,23 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
-# Pattern: <|channel|>commentary to=functions.tool_name ... <|call|>
+# Tool call pattern — supports both formats from the harmony spec:
+#   Model-generated: <|channel|>commentary to=functions.NAME <|constrain|>json<|message|>ARGS<|call|>
+#   Template-encoded (history): to=functions.NAME<|channel|>commentary json<|message|>ARGS<|call|>
 _COMMENTARY_BLOCK_PATTERN = re.compile(
-    r"<\|channel\|>commentary\s+to=functions\.(\w+)"
-    r"(?:\s*<\|constrain\|>\w+)?"
-    r"\s*<\|message\|>(.*?)<\|call\|>",
+    r"(?:"
+    # Real format: to=functions.NAME<|channel|>commentary [content_type]<|message|>
+    r"to=functions\.(\w+)<\|channel\|>commentary(?:\s+\w+)?<\|message\|>(.*?)<\|call\|>"
+    r"|"
+    # Legacy format: <|channel|>commentary to=functions.NAME ... <|message|>
+    r"<\|channel\|>commentary\s+to=functions\.(\w+)(?:\s*<\|constrain\|>\w+)?\s*<\|message\|>(.*?)<\|call\|>"
+    r")",
     re.DOTALL,
 )
 
-# Pattern: <|channel|>final ... <|return|>
+# Final channel — both <|end|> and <|return|> terminators
 _FINAL_BLOCK_PATTERN = re.compile(
-    r"<\|channel\|>final\s*<\|message\|>(.*?)<\|return\|>",
+    r"<\|channel\|>final\s*<\|message\|>(.*?)(?:<\|end\|>|<\|return\|>)",
     re.DOTALL,
 )
 
@@ -62,7 +63,11 @@ class HarmonyToolParser(ToolParser):
     Used when --enable-auto-tool-choice --tool-call-parser harmony are set.
     """
 
-    SUPPORTS_NATIVE_TOOL_FORMAT = False
+    # GPT-OSS chat template natively handles tool_calls and role="tool"
+    # messages using harmony channel tokens (to=functions.NAME, <|call|>).
+    # Without this, tool history is converted to "[Calling tool: ...]" text
+    # which breaks the model's understanding of the tool flow.
+    SUPPORTS_NATIVE_TOOL_FORMAT = True
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -76,9 +81,10 @@ class HarmonyToolParser(ToolParser):
         tool_calls = []
 
         # Extract tool calls from commentary channel blocks
+        # Regex has 4 groups: (1,2) for real format, (3,4) for legacy format
         for match in _COMMENTARY_BLOCK_PATTERN.finditer(model_output):
-            tool_name = match.group(1)
-            args_str = match.group(2).strip()
+            tool_name = match.group(1) or match.group(3)
+            args_str = (match.group(2) or match.group(4) or "").strip()
 
             try:
                 arguments = json.loads(args_str)
@@ -193,7 +199,7 @@ class HarmonyToolParser(ToolParser):
 
     def has_pending_tool_call(self, text: str) -> bool:
         """Check if text contains incomplete Harmony tool call markup."""
-        return "commentary to=functions." in text
+        return "to=functions." in text
 
 
 def _strip_control_tokens(text: str) -> str:
