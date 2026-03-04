@@ -2657,6 +2657,10 @@ async def stream_chat_completion(
                         # Normal content from tool parser
                         content = tool_result.get("content", "")
 
+                # Filter special tokens from reasoning parser output
+                if content:
+                    content = SPECIAL_TOKENS_PATTERN.sub("", content)
+
                 # Skip empty deltas (e.g. reasoning-only chunks with no content)
                 finish_reason = (
                     "tool_calls"
@@ -2742,6 +2746,12 @@ async def stream_chat_completion(
 
                         # Normal content from tool parser
                         content = tool_result.get("content", "")
+
+                # Final special-token filter — catches tokens that may have
+                # bypassed the earlier filter (e.g. via tool parser path
+                # which operates on raw delta_text).
+                if content:
+                    content = SPECIAL_TOKENS_PATTERN.sub("", content)
 
                 # Skip empty-string content but preserve whitespace/newlines
                 # (newlines are significant for markdown formatting)
