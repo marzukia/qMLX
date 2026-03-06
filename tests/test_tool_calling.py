@@ -1,19 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for tool_calling.py"""
 
-import json
-import pytest
 from unittest.mock import MagicMock
 
 from vllm_mlx.api.tool_calling import (
     _is_tool_call_json,
     _parse_raw_json_tool_calls,
-    parse_tool_calls,
     convert_tools_for_template,
     format_tool_call_for_message,
+    parse_tool_calls,
     validate_json_schema,
-    extract_json_from_text,
-    parse_json_output,
 )
 
 
@@ -148,7 +144,9 @@ class TestParseRawJsonToolCalls:
 
     def test_text_with_mixed_content(self):
         """Test text with mixed valid and invalid JSON objects."""
-        text = '{"name": "func1", "arguments": {}} some text {"name": "John", "age": 30}'
+        text = (
+            '{"name": "func1", "arguments": {}} some text {"name": "John", "age": 30}'
+        )
         result = _parse_raw_json_tool_calls(text)
         # Should only return the valid tool call
         assert result is not None
@@ -177,7 +175,7 @@ class TestParseToolCalls:
         """Test Qwen-style XML tool call."""
         text = '<tool_call>{"name": "get_weather", "arguments": {"city": "NYC"}}</tool_call>Some text'
         cleaned, tool_calls = parse_tool_calls(text)
-        
+
         assert tool_calls is not None
         assert len(tool_calls) == 1
         assert tool_calls[0].function.name == "get_weather"
@@ -187,16 +185,16 @@ class TestParseToolCalls:
         """Test Llama-style XML tool call."""
         text = '<function=get_weather>{"city": "NYC"}</function>Some text'
         cleaned, tool_calls = parse_tool_calls(text)
-        
+
         assert tool_calls is not None
         assert len(tool_calls) == 1
         assert tool_calls[0].function.name == "get_weather"
 
     def test_nemotron_style_tool_call(self):
         """Test Nemotron-style XML tool call."""
-        text = '<tool_call><function=get_weather><parameter=city>NYC</parameter></function></tool_call>'
+        text = "<tool_call><function=get_weather><parameter=city>NYC</parameter></function></tool_call>"
         cleaned, tool_calls = parse_tool_calls(text)
-        
+
         assert tool_calls is not None
         assert len(tool_calls) == 1
         assert tool_calls[0].function.name == "get_weather"
@@ -206,7 +204,7 @@ class TestParseToolCalls:
         """Test Qwen3 bracket-style tool call."""
         text = '[Calling tool: get_weather({"city": "NYC"})] Some response'
         cleaned, tool_calls = parse_tool_calls(text)
-        
+
         assert tool_calls is not None
         assert len(tool_calls) == 1
         assert tool_calls[0].function.name == "get_weather"
@@ -216,7 +214,7 @@ class TestParseToolCalls:
         """Test multiple tool calls in same text."""
         text = '<tool_call>{"name": "func1", "arguments": {"a": 1}}</tool_call><tool_call>{"name": "func2", "arguments": {"b": 2}}</tool_call>'
         cleaned, tool_calls = parse_tool_calls(text)
-        
+
         assert tool_calls is not None
         assert len(tool_calls) == 2
 
@@ -224,7 +222,7 @@ class TestParseToolCalls:
         """Test text with no tool calls returns None."""
         text = "This is just regular text without any tool calls."
         cleaned, tool_calls = parse_tool_calls(text)
-        
+
         assert tool_calls is None
         assert cleaned == text
 
@@ -232,7 +230,7 @@ class TestParseToolCalls:
         """Test that cleaned text has tool call tags removed."""
         text = '<tool_call>{"name": "func", "arguments": {}}</tool_call>Hello world'
         cleaned, tool_calls = parse_tool_calls(text)
-        
+
         assert "Hello world" in cleaned
         assert "<tool_call>" not in cleaned
 
@@ -240,25 +238,25 @@ class TestParseToolCalls:
         """Test raw JSON fallback when no XML tags matched."""
         text = '{"name": "get_weather", "arguments": {"city": "NYC"}}'
         cleaned, tool_calls = parse_tool_calls(text)
-        
+
         assert tool_calls is not None
         assert len(tool_calls) == 1
         assert tool_calls[0].function.name == "get_weather"
 
-    def test_invalid_json_in_tags_still_parsed(self):
-        """Test that XML tags are matched even with non-tool JSON inside."""
+    def test_invalid_json_in_tags_not_parsed_as_tool_call(self):
+        """Test that JSON without name+arguments is not parsed as a tool call."""
         text = '<tool_call>{"invalid": "json"}</tool_call>'
         cleaned, tool_calls = parse_tool_calls(text)
 
-        # The tag is still matched — parser extracts what it can
-        assert tool_calls is not None
+        # JSON missing "name" and "arguments" keys is not a valid tool call
+        assert tool_calls is None
 
     def test_with_request_context(self):
         """Test parse_tool_calls with request context (currently unused but tests the param)."""
         text = '<tool_call>{"name": "func", "arguments": {}}</tool_call>'
         request = {"temperature": 0.5}
         cleaned, tool_calls = parse_tool_calls(text, request=request)
-        
+
         assert tool_calls is not None
 
 
@@ -283,15 +281,13 @@ class TestConvertToolsForTemplate:
                     "description": "Get weather for a city",
                     "parameters": {
                         "type": "object",
-                        "properties": {
-                            "city": {"type": "string"}
-                        }
-                    }
-                }
+                        "properties": {"city": {"type": "string"}},
+                    },
+                },
             }
         ]
         result = convert_tools_for_template(tools)
-        
+
         assert result is not None
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_weather"
@@ -305,31 +301,34 @@ class TestConvertToolsForTemplate:
                 "function": {
                     "name": "func1",
                     "description": "Description 1",
-                    "parameters": {"type": "object", "properties": {}}
-                }
+                    "parameters": {"type": "object", "properties": {}},
+                },
             },
             {
                 "type": "function",
                 "function": {
                     "name": "func2",
                     "description": "Description 2",
-                    "parameters": {"type": "object", "properties": {}}
-                }
-            }
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
         ]
         result = convert_tools_for_template(tools)
-        
+
         assert result is not None
         assert len(result) == 2
 
     def test_non_function_type_filtered(self):
         """Test that non-function types are filtered out."""
         tools = [
-            {"type": "function", "function": {"name": "func1", "description": "", "parameters": {}}},
-            {"type": "unknown", "data": "something"}
+            {
+                "type": "function",
+                "function": {"name": "func1", "description": "", "parameters": {}},
+            },
+            {"type": "unknown", "data": "something"},
         ]
         result = convert_tools_for_template(tools)
-        
+
         assert result is not None
         assert len(result) == 1
 
@@ -339,14 +338,17 @@ class TestConvertToolsForTemplate:
         mock_function = MagicMock()
         mock_function.name = "get_weather"
         mock_function.description = "Get weather"
-        mock_function.parameters = {"type": "object", "properties": {"city": {"type": "string"}}}
-        
+        mock_function.parameters = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+        }
+
         mock_tool = MagicMock()
         mock_tool.type = "function"
         mock_tool.function = mock_function
-        
+
         result = convert_tools_for_template([mock_tool])
-        
+
         assert result is not None
         assert len(result) == 1
 
@@ -354,7 +356,7 @@ class TestConvertToolsForTemplate:
         """Test tool dict without function key is handled."""
         tools = [{"type": "function"}]
         result = convert_tools_for_template(tools)
-        
+
         # Should return None or empty list since no valid function
         assert result is None or result == []
 
@@ -366,11 +368,11 @@ class TestConvertToolsForTemplate:
                 "function": {
                     "name": "func"
                     # No description or parameters
-                }
+                },
             }
         ]
         result = convert_tools_for_template(tools)
-        
+
         assert result is not None
         assert result[0]["function"]["name"] == "func"
         assert result[0]["function"]["description"] == ""
@@ -385,14 +387,14 @@ class TestFormatToolCallForMessage:
         mock_function = MagicMock()
         mock_function.name = "get_weather"
         mock_function.arguments = '{"city": "NYC"}'
-        
+
         mock_tool_call = MagicMock()
         mock_tool_call.id = "call_abc123"
         mock_tool_call.type = "function"
         mock_tool_call.function = mock_function
-        
+
         result = format_tool_call_for_message(mock_tool_call)
-        
+
         assert result["id"] == "call_abc123"
         assert result["type"] == "function"
         assert result["function"]["name"] == "get_weather"
@@ -402,15 +404,17 @@ class TestFormatToolCallForMessage:
         """Test formatting with complex arguments."""
         mock_function = MagicMock()
         mock_function.name = "search"
-        mock_function.arguments = '{"query": "weather", "limit": 10, "filters": {"type": "news"}}'
-        
+        mock_function.arguments = (
+            '{"query": "weather", "limit": 10, "filters": {"type": "news"}}'
+        )
+
         mock_tool_call = MagicMock()
         mock_tool_call.id = "call_xyz789"
         mock_tool_call.type = "function"
         mock_tool_call.function = mock_function
-        
+
         result = format_tool_call_for_message(mock_tool_call)
-        
+
         assert result["function"]["name"] == "search"
         assert "query" in result["function"]["arguments"]
 
@@ -423,24 +427,16 @@ class TestValidateJsonSchema:
         data = {"name": "John", "age": 30}
         schema = {
             "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "age": {"type": "number"}
-            }
+            "properties": {"name": {"type": "string"}, "age": {"type": "number"}},
         }
         is_valid, error = validate_json_schema(data, schema)
-        
+
         assert is_valid is True
         assert error is None
 
     def test_valid_nested_object(self):
         """Test valid JSON against nested schema."""
-        data = {
-            "user": {
-                "name": "John",
-                "address": {"city": "NYC", "zip": "10001"}
-            }
-        }
+        data = {"user": {"name": "John", "address": {"city": "NYC", "zip": "10001"}}}
         schema = {
             "type": "object",
             "properties": {
@@ -452,15 +448,15 @@ class TestValidateJsonSchema:
                             "type": "object",
                             "properties": {
                                 "city": {"type": "string"},
-                                "zip": {"type": "string"}
-                            }
-                        }
-                    }
+                                "zip": {"type": "string"},
+                            },
+                        },
+                    },
                 }
-            }
+            },
         }
         is_valid, error = validate_json_schema(data, schema)
-        
+
         assert is_valid is True
 
     def test_invalid_type(self):
@@ -468,13 +464,9 @@ class TestValidateJsonSchema:
         data = {"name": "John", "age": "thirty"}  # age should be number
         schema = {
             "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "age": {"type": "number"}
-            }
+            "properties": {"name": {"type": "string"}, "age": {"type": "number"}},
         }
         is_valid, error = validate_json_schema(data, schema)
-        
+
         assert is_valid is False
         assert error is not None
-
