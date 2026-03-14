@@ -18,7 +18,7 @@ Run local LLMs as a **drop-in replacement for OpenAI** on your Mac. 2.7x faster 
 
 ```bash
 # Install (one-liner, Apple Silicon only)
-curl -fsSL https://raw.githubusercontent.com/raullenchai/rapid-mlx/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/install.sh | bash
 
 # Start serving
 rapid-mlx serve lmstudio-community/Qwen3-Coder-Next-MLX-4bit --tool-call-parser hermes --port 8000
@@ -50,7 +50,7 @@ Qwen3.5-9B 4bit
 
 > **Why the gap?** Ollama uses llama.cpp (C++ with generic Metal shaders). Rapid-MLX uses Apple's [MLX framework](https://github.com/ml-explore/mlx) — purpose-built for Apple Silicon unified memory, with native Metal compute kernels and zero-copy GPU access. The result is **2-3x faster decode** on every model we've tested. Multi-turn speedup comes from our persistent prompt cache — Ollama re-prefills the full context every turn.
 
-*Tested on Mac Studio M3 Ultra (256GB). Both engines running the same Qwen3.5-9B at 4-bit quantization. Benchmark script: [`scripts/benchmark_engines.py`](scripts/benchmark_engines.py). More models coming — [help us expand the table](https://github.com/raullenchai/rapid-mlx/issues).*
+*Tested on Mac Studio M3 Ultra (256GB). Both engines running the same Qwen3.5-9B at 4-bit quantization. Benchmark script: [`scripts/benchmark_engines.py`](scripts/benchmark_engines.py). More models coming — [help us expand the table](https://github.com/raullenchai/Rapid-MLX/issues).*
 
 ---
 
@@ -84,7 +84,7 @@ Faster inference is just the start. Local models break in agent workflows — qu
 | [LangChain](https://langchain.com) | Compatible | Standard OpenAI client |
 | Any OpenAI SDK client | Compatible | Drop-in `base_url` swap |
 
-> **Community-maintained tables.** Tested on M3 Ultra so far — if you verify a client or model on your hardware, [open an issue](https://github.com/raullenchai/rapid-mlx/issues) or PR to update. We can't test every Mac + model + client combo alone.
+> **Community-maintained tables.** Tested on M3 Ultra so far — if you verify a client or model on your hardware, [open an issue](https://github.com/raullenchai/Rapid-MLX/issues) or PR to update. We can't test every Mac + model + client combo alone.
 
 ---
 
@@ -95,20 +95,20 @@ Faster inference is just the start. Local models break in agent workflows — qu
 **One-liner** (recommended — checks Apple Silicon, Python, sets up everything):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/raullenchai/rapid-mlx/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/raullenchai/Rapid-MLX/main/install.sh | bash
 ```
 
 **Or with pip** (if you manage your own venv):
 
 ```bash
-pip install git+https://github.com/raullenchai/rapid-mlx.git
+pip install git+https://github.com/raullenchai/Rapid-MLX.git
 ```
 
 <details>
 <summary>Clone for development</summary>
 
 ```bash
-git clone https://github.com/raullenchai/rapid-mlx.git
+git clone https://github.com/raullenchai/Rapid-MLX.git
 cd rapid-mlx
 pip install -e .
 ```
@@ -408,7 +408,7 @@ How much RAM do you need? Model weights must fit in unified memory, plus ~20% he
 
 #### Help Us Fill This Table
 
-These numbers are from a single M3 Ultra (256GB). We need community data for other configs — M1, M2, M4, MacBook Air/Pro, different RAM tiers. If you test a model, **copy the template below into a [new issue](https://github.com/raullenchai/rapid-mlx/issues/new):**
+These numbers are from a single M3 Ultra (256GB). We need community data for other configs — M1, M2, M4, MacBook Air/Pro, different RAM tiers. If you test a model, **copy the template below into a [new issue](https://github.com/raullenchai/Rapid-MLX/issues/new):**
 
 ```
 **Hardware:** Mac ___ (___GB RAM), macOS ___
@@ -795,7 +795,7 @@ Fixed in this fork. The streaming disconnect guard ensures that when a client di
 
 ## Contributing
 
-Issues and PRs welcome at [github.com/raullenchai/rapid-mlx](https://github.com/raullenchai/rapid-mlx).
+Issues and PRs welcome at [github.com/raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX).
 
 **We need your help.** The hardware tables, model benchmarks, and client configs in this README are based on one M3 Ultra (256GB). There are dozens of Mac + model + client combos we haven't tested. The easiest way to contribute:
 
