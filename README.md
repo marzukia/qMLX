@@ -68,113 +68,115 @@ print(response.choices[0].message.content)
 
 ### Performance — 21 models, 5 engines
 
-All benchmarks on Mac Studio M3 Ultra (256GB). Sorted by model size. Decode speed (tok/s) + TTFT in parentheses.
+All benchmarks on Mac Studio M3 Ultra (256GB). Sorted by model size.
 
 ```
-Llama 3.2 3B                 coming soon
+█ = decode speed (tok/s)  ▒ = TTFT responsiveness (longer = lower latency)
 
-Qwen3.5-4B                    Rapid-MLX  ███████████████████████████████████████████████  158 tok/s (0.76s)
-                              vllm-mlx   ██████████████████████████████████████████████   155 tok/s (0.19s)
-                              mlx-lm     ██████████████████████████████████████████████████  168 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Llama 3.2 3B                coming soon
 
-Mistral 7B                   coming soon
+Qwen3.5-4B                  Rapid-MLX  ████████████████████████████████████                      158 tok/s · 0.76s
+                            vllm-mlx   ████████████████████████████████████▒▒▒▒▒▒▒▒▒▒            155 tok/s · 0.19s
+                            mlx-lm     ███████████████████████████████████████                   168 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-Hermes-3-Llama 8B             Rapid-MLX  █████████████████████████████████████  123 tok/s (0.08s)
-                              vllm-mlx   ████████████████████████████████████   122 tok/s (0.18s)
-                              mlx-lm     ██████████████████████████████████████  127 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Mistral 7B                  coming soon
 
-Qwen3.5-9B                  ⚡ Rapid-MLX  █████████████████████████████████  109 tok/s (0.18s)
-                              vllm-mlx   ███████████████████████████████    104 tok/s (0.26s)
-                              mlx-lm     ██████████████████                  61 tok/s
-                              llama.cpp  not supported
-                              Ollama     ████████                            26 tok/s (0.27s)
+Hermes-3-Llama 8B           Rapid-MLX  ████████████████████████████▒▒▒▒▒▒▒▒▒▒▒▒▒                 123 tok/s · 0.08s
+                            vllm-mlx   ████████████████████████████▒▒▒▒▒▒▒▒▒▒                    122 tok/s · 0.18s
+                            mlx-lm     █████████████████████████████                             127 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-GLM-4.7-Flash 9B            ⚡ Rapid-MLX  ██████████████████  60 tok/s (0.15s)
-                              vllm-mlx   █████████████████   56 tok/s (0.23s)
-                              mlx-lm     not supported
-                              llama.cpp  not supported
-                              Ollama     not supported
+Qwen3.5-9B                ⚡ Rapid-MLX  █████████████████████████▒▒▒▒▒▒▒▒▒▒                       109 tok/s · 0.18s
+                            vllm-mlx   ████████████████████████▒▒▒▒▒▒▒▒                          104 tok/s · 0.26s
+                            mlx-lm     ██████████████                                            61 tok/s
+                            llama.cpp  not supported
+                            Ollama     ██████▒▒▒▒▒▒▒                                             26 tok/s · 0.27s
 
-Gemma 3 12B                   Rapid-MLX  ███████████████  49 tok/s (0.32s)
-                              vllm-mlx   not supported
-                              mlx-lm     ██████████████████████  73 tok/s
-                              llama.cpp  not supported
-                              Ollama     ████████████████  54 tok/s (0.14s)
+GLM-4.7-Flash 9B          ⚡ Rapid-MLX  ██████████████▒▒▒▒▒▒▒▒▒▒▒                                 60 tok/s · 0.15s
+                            vllm-mlx   █████████████▒▒▒▒▒▒▒▒▒                                    56 tok/s · 0.23s
+                            mlx-lm     not supported
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-Phi-4 Mini 14B              ⚡ Rapid-MLX  ████████████████████████████████████████████████████  174 tok/s (0.10s)
-                              vllm-mlx   ███████████████████████████████████████████████████   170 tok/s (0.15s)
-                              mlx-lm     ███████████████████████  77 tok/s
-                              llama.cpp  ████████████████  55 tok/s (0.03s)
-                              Ollama     ███████████████   51 tok/s (0.06s)
+Gemma 3 12B                 Rapid-MLX  ███████████▒▒▒▒▒▒                                         49 tok/s · 0.32s
+                            vllm-mlx   not supported
+                            mlx-lm     █████████████████                                         73 tok/s
+                            llama.cpp  not supported
+                            Ollama     ████████████▒▒▒▒▒▒▒▒▒▒▒▒                                  54 tok/s · 0.14s
 
-DeepSeek-R1-Distill 14B      coming soon
+Phi-4 Mini 14B            ⚡ Rapid-MLX  ████████████████████████████████████████▒▒▒▒▒▒▒▒▒▒▒▒▒     174 tok/s · 0.10s
+                            vllm-mlx   ███████████████████████████████████████▒▒▒▒▒▒▒▒▒▒▒        170 tok/s · 0.15s
+                            mlx-lm     ██████████████████                                        77 tok/s
+                            llama.cpp  █████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒                              55 tok/s · 0.03s
+                            Ollama     ████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒                                51 tok/s · 0.06s
 
-Qwen 2.5 Coder 14B           coming soon
+DeepSeek-R1 14B             coming soon
 
-GPT-OSS 20B                 ⚡ Rapid-MLX  █████████████████████████████████████  123 tok/s (0.12s)
-                              vllm-mlx   ████████████████████████               79 tok/s (0.27s)
-                              mlx-lm     ████████████████████████               79 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Qwen 2.5 Coder 14B          coming soon
 
-Mistral Small 24B           ⚡ Rapid-MLX  ██████████████  48 tok/s (0.10s)
-                              vllm-mlx   ██████████████  47 tok/s (0.38s)
-                              mlx-lm     ████████████    41 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+GPT-OSS 20B               ⚡ Rapid-MLX  ████████████████████████████▒▒▒▒▒▒▒▒▒▒▒▒                  123 tok/s · 0.12s
+                            vllm-mlx   ██████████████████▒▒▒▒▒▒▒                                 79 tok/s · 0.27s
+                            mlx-lm     ██████████████████                                        79 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-Devstral-Small-2 24B          Rapid-MLX  ██████████████  48 tok/s (0.10s)
-                              vllm-mlx   ██████████████  48 tok/s (0.38s)
-                              mlx-lm     ███████████████  49 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Mistral Small 24B         ⚡ Rapid-MLX  ███████████▒▒▒▒▒▒▒▒▒▒▒▒▒                                  48 tok/s · 0.10s
+                            vllm-mlx   ███████████▒▒▒▒                                           47 tok/s · 0.38s
+                            mlx-lm     █████████                                                 41 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-Gemma 3 27B                  coming soon
+Devstral-Small-2 24B        Rapid-MLX  ███████████▒▒▒▒▒▒▒▒▒▒▒▒▒                                  48 tok/s · 0.10s
+                            vllm-mlx   ███████████▒▒▒▒                                           48 tok/s · 0.38s
+                            mlx-lm     ███████████                                               49 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-Qwen3.5-27B                 ⚡ Rapid-MLX  ████████████  39 tok/s (1.46s)
-                              vllm-mlx   ███████████   38 tok/s (0.60s)
-                              mlx-lm     ████████████  39 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Gemma 3 27B                 coming soon
 
-Qwen3.5-35B-A3B               Rapid-MLX  █████████████████████████  82 tok/s (0.19s)
-                              vllm-mlx   ████████████████████████   80 tok/s (0.24s)
-                              mlx-lm     █████████████████████████  85 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Qwen3.5-27B               ⚡ Rapid-MLX  █████████                                                 39 tok/s · 1.46s
+                            vllm-mlx   █████████                                                 38 tok/s · 0.60s
+                            mlx-lm     █████████                                                 39 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-Llama 3.3 70B                coming soon
+Qwen3.5-35B-A3B             Rapid-MLX  ███████████████████▒▒▒▒▒▒▒▒▒▒                             82 tok/s · 0.19s
+                            vllm-mlx   ██████████████████▒▒▒▒▒▒▒▒                                80 tok/s · 0.24s
+                            mlx-lm     ████████████████████                                      85 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-Qwen3-Coder-Next 80B 4bit     Rapid-MLX  ██████████████████████  74 tok/s (0.10s)
-                              vllm-mlx   █████████████████████   69 tok/s (0.27s)
-                              mlx-lm     ███████████████████████  76 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Llama 3.3 70B               coming soon
 
-Qwen3-Coder-Next 80B 6bit     Rapid-MLX  ████████████████████  68 tok/s (0.10s)
-                              vllm-mlx   not supported
-                              mlx-lm     █████████████████████  69 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Qwen3-Coder 80B 4bit        Rapid-MLX  █████████████████▒▒▒▒▒▒▒▒▒▒▒▒▒                            74 tok/s · 0.10s
+                            vllm-mlx   ████████████████▒▒▒▒▒▒▒                                   69 tok/s · 0.27s
+                            mlx-lm     █████████████████                                         76 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-GLM-4.5-Air                   Rapid-MLX  ██████████████  46 tok/s (0.12s)
-                              vllm-mlx   ████████████████  54 tok/s (0.47s)
-                              mlx-lm     █████████████████  56 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+Qwen3-Coder 80B 6bit        Rapid-MLX  ████████████████▒▒▒▒▒▒▒▒▒▒▒▒▒                             68 tok/s · 0.10s
+                            vllm-mlx   not supported
+                            mlx-lm     ████████████████                                          69 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 
-Qwen3.5-122B-A10B             Rapid-MLX  █████████████  44 tok/s (1.28s)
-                              vllm-mlx   █████████████  43 tok/s (0.51s)
-                              mlx-lm     █████████████  45 tok/s
-                              llama.cpp  not supported
-                              Ollama     not supported
+GLM-4.5-Air                 Rapid-MLX  ███████████▒▒▒▒▒▒▒▒▒▒▒▒                                   46 tok/s · 0.12s
+                            vllm-mlx   ████████████▒                                             54 tok/s · 0.47s
+                            mlx-lm     █████████████                                             56 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
+
+Qwen3.5-122B-A10B           Rapid-MLX  ██████████                                                44 tok/s · 1.28s
+                            vllm-mlx   ██████████                                                43 tok/s · 0.51s
+                            mlx-lm     ██████████                                                45 tok/s
+                            llama.cpp  not supported
+                            Ollama     not supported
 ```
 
-*⚡ = fastest across all engines. TTFT = multi-turn time to first token. Rapid-MLX TTFT is **1.3-4.1x faster** than upstream vllm-mlx on most models thanks to prompt caching. Ollama has no prompt cache — every turn re-prefills the full context. Engines: [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX), [vllm-mlx](https://github.com/waybarrios/vllm-mlx) (upstream), [mlx-lm](https://github.com/ml-explore/mlx-examples), [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp).*
+*⚡ = fastest decode across all engines. TTFT capped at 0.5s for bar scale — models with thinking mode (Qwen3.5-4B/27B/122B) have higher TTFT due to reasoning tokens. Rapid-MLX TTFT is **1.3-4.1x faster** than upstream vllm-mlx on most models thanks to prompt caching. Ollama has no prompt cache. Engines: [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX), [vllm-mlx](https://github.com/waybarrios/vllm-mlx) (upstream), [mlx-lm](https://github.com/ml-explore/mlx-examples), [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp).*
 
 ### What fits my Mac?
 
