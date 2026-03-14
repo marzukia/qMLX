@@ -1,64 +1,90 @@
-# vLLM-MLX
+```
+  ≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋
 
-**Production-grade agent inference server for Apple Silicon**
+       ⚡  R A P I D · M L X
 
-[![Fork](https://img.shields.io/badge/Fork-raullenchai%2Fvllm--mlx-orange?logo=github)](https://github.com/raullenchai/vllm-mlx)
-[![Upstream](https://img.shields.io/badge/Upstream-waybarrios%2Fvllm--mlx-blue?logo=github)](https://github.com/waybarrios/vllm-mlx)
+       The fastest local AI engine
+       for Apple Silicon
+
+  ≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋≈~≋
+```
+
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://img.shields.io/badge/tests-1500%2B-brightgreen.svg)](tests/)
 [![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple)](https://support.apple.com/en-us/HT211814)
 
-Run local LLMs as a **drop-in replacement for OpenAI** — with the reliability that agent frameworks demand. GPU-accelerated on Mac via [MLX](https://github.com/ml-explore/mlx), built for tools like **Claude Code, Cursor, Open WebUI, OpenClaw, Aider, LangChain, and any OpenAI-compatible client**.
+Run local LLMs as a **drop-in replacement for OpenAI** on your Mac. 2.7x faster than Ollama, GPU-accelerated via [MLX](https://github.com/ml-explore/mlx), with the tool calling, streaming, and reliability that agent frameworks demand. Works with **Claude Code, Cursor, Aider, Open WebUI, Continue.dev, LangChain, and any OpenAI-compatible client**.
 
 ```bash
 # Install (one-liner, Apple Silicon only)
-curl -fsSL https://raw.githubusercontent.com/raullenchai/vllm-mlx/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/raullenchai/rapid-mlx/main/install.sh | bash
 
 # Start serving
-vllm-mlx serve lmstudio-community/Qwen3-Coder-Next-MLX-4bit --tool-call-parser hermes --port 8000
+rapid-mlx serve lmstudio-community/Qwen3-Coder-Next-MLX-4bit --tool-call-parser hermes --port 8000
 ```
-
-The upstream [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-mlx) is a solid MLX inference wrapper. This fork transforms it into a **production agent server** — the kind of infrastructure you need when AI agents call tools, reason through problems, and run multi-turn sessions that last hours.
-
-### Why This Fork?
-
-Local models are fast and private, but they break in agent workflows. Quantized models forget their tool format after a few rounds. Streaming responses leak XML into content. Disconnected clients lock the server. Multi-turn conversations re-prefill the entire context every time.
-
-**We fix all of that at the server level**, so every client — Cursor, Claude Code, your custom agent — just works.
 
 ---
 
-## Highlights vs. Upstream
+## Performance: Rapid-MLX vs Ollama
 
-| Capability | Upstream | This Fork |
-|-----------|----------|-----------|
-| **Tool calling** | Not supported | 17 parser formats, streaming, **auto-recovery of degraded outputs** |
-| **Agent reliability** | N/A | Disconnect guard, think-tag filtering, text-format tool call recovery |
-| **Reasoning separation** | Not supported | Clean `reasoning_content` field (0% leak rate) |
-| **Multi-turn TTFT** | Full prefill every turn | **10-30x faster** — persistent prompt cache |
-| **Long-context prefill** | 50s for 52K tokens | **<1s** — smart cloud routing offloads to GPT-5/Claude |
-| **Decode speed** | Baseline | 43-74 tok/s on M3 Ultra (model-dependent) |
-| **KV cache quantization** | Not available | 4-bit and 8-bit, halves memory for long contexts |
-| **Speculative decoding** | Not available | `--draft-model` with prompt cache compatibility |
-| **Logprobs API** | Not available | Per-token `logprobs` + `top_logprobs` |
-| **Test coverage** | Minimal | **1500+ tests** (unit + end-to-end agent simulation) |
+Same model, same Mac, same quantization — **Rapid-MLX is up to 2.7x faster**.
 
-### Tested With
+### Decode Speed (tok/s) — Higher is Better
+
+```
+Qwen3.5-9B 4bit
+  Rapid-MLX ████████████████████████████████████████████████████████  108 tok/s
+  Ollama    ████████████████████                                      41 tok/s
+```
+
+### Benchmark Details — Qwen3.5-9B 4bit on M3 Ultra
+
+| Metric | Rapid-MLX | Ollama | Speedup |
+|--------|----------|--------|---------|
+| Decode (short gen) | **108 tok/s** | 41 tok/s | **2.6x** |
+| Decode (long gen) | **106 tok/s** | 39 tok/s | **2.7x** |
+| Time to first token (cold) | **0.31s** | 0.38s | 1.2x |
+| Time to first token (cached) | **0.14s** | 0.19s | 1.4x |
+| Multi-turn TTFT (cached) | **0.14s** | 0.28s | **2.0x** |
+
+> **Why the gap?** Ollama uses llama.cpp (C++ with generic Metal shaders). Rapid-MLX uses Apple's [MLX framework](https://github.com/ml-explore/mlx) — purpose-built for Apple Silicon unified memory, with native Metal compute kernels and zero-copy GPU access. The result is **2-3x faster decode** on every model we've tested. Multi-turn speedup comes from our persistent prompt cache — Ollama re-prefills the full context every turn.
+
+*Tested on Mac Studio M3 Ultra (256GB). Both engines running the same Qwen3.5-9B at 4-bit quantization. Benchmark script: [`scripts/benchmark_engines.py`](scripts/benchmark_engines.py). More models coming — [help us expand the table](https://github.com/raullenchai/rapid-mlx/issues).*
+
+---
+
+## Why Rapid-MLX?
+
+Faster inference is just the start. Local models break in agent workflows — quantized models forget their tool format, streaming leaks XML into content, disconnected clients lock the server. **Rapid-MLX fixes all of that at the server level**, so every client just works.
+
+| Capability | What You Get |
+|-----------|-------------|
+| **2-3x faster decode** | MLX + Metal vs llama.cpp — [see benchmarks above](#performance-rapid-mlx-vs-ollama) |
+| **Tool calling** | 17 parser formats, streaming, auto-recovery of degraded outputs |
+| **Agent reliability** | Disconnect guard, think-tag filtering, text-format tool call recovery |
+| **Reasoning separation** | Clean `reasoning_content` field (0% leak rate) |
+| **Prompt cache** | Persistent KV cache — **2x faster multi-turn** vs Ollama |
+| **Cloud routing** | Auto-offload large prefills to GPT-5/Claude when local would be slow |
+| **KV cache quantization** | 4-bit and 8-bit, halves memory for long contexts |
+| **Multimodal** | Vision, audio (STT/TTS), video, embeddings |
+| **1500+ tests** | Unit tests + end-to-end agent simulation |
+
+### Works With
 
 | Client | Status | Notes |
 |--------|--------|-------|
-| [OpenClaw](https://github.com/nicepkg/openclaw) | Verified | 14 tools, multi-round, streaming |
-| [Aider](https://aider.chat) | Verified | Code editing agent |
-| [LangChain](https://langchain.com) | Compatible | Standard OpenAI client |
 | [Claude Code](https://claude.ai/claude-code) | Verified | Env var config, streaming tools |
 | [Cursor](https://cursor.com) | Verified | Settings UI config |
-| [Continue.dev](https://continue.dev) | Verified | YAML config, VS Code + JetBrains |
+| [Aider](https://aider.chat) | Verified | Code editing agent |
 | [Open WebUI](https://github.com/open-webui/open-webui) | Verified | Self-hosted ChatGPT UI, Docker one-liner |
+| [Continue.dev](https://continue.dev) | Verified | YAML config, VS Code + JetBrains |
+| [OpenClaw](https://github.com/nicepkg/openclaw) | Verified | 14 tools, multi-round, streaming |
 | [OpenCode](https://github.com/opencode-ai/opencode) | Verified | JSON config |
+| [LangChain](https://langchain.com) | Compatible | Standard OpenAI client |
 | Any OpenAI SDK client | Compatible | Drop-in `base_url` swap |
 
-> **These tables are community-maintained.** Tested on M3 Ultra so far — if you verify a client or model on your hardware, [open an issue](https://github.com/raullenchai/vllm-mlx/issues) or PR to update the tables. We can't test every Mac + model + client combo alone.
+> **Community-maintained tables.** Tested on M3 Ultra so far — if you verify a client or model on your hardware, [open an issue](https://github.com/raullenchai/rapid-mlx/issues) or PR to update. We can't test every Mac + model + client combo alone.
 
 ---
 
@@ -69,21 +95,21 @@ Local models are fast and private, but they break in agent workflows. Quantized 
 **One-liner** (recommended — checks Apple Silicon, Python, sets up everything):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/raullenchai/vllm-mlx/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/raullenchai/rapid-mlx/main/install.sh | bash
 ```
 
 **Or with pip** (if you manage your own venv):
 
 ```bash
-pip install git+https://github.com/raullenchai/vllm-mlx.git
+pip install git+https://github.com/raullenchai/rapid-mlx.git
 ```
 
 <details>
 <summary>Clone for development</summary>
 
 ```bash
-git clone https://github.com/raullenchai/vllm-mlx.git
-cd vllm-mlx
+git clone https://github.com/raullenchai/rapid-mlx.git
+cd rapid-mlx
 pip install -e .
 ```
 </details>
@@ -92,7 +118,7 @@ pip install -e .
 
 ```bash
 # Qwen3-Coder-Next — fast coding model (80B MoE, 3B active)
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model lmstudio-community/Qwen3-Coder-Next-MLX-6bit \
   --tool-call-parser hermes \
   --prefill-step-size 8192 \
@@ -166,7 +192,7 @@ Add to `~/.continue/config.yaml`:
 
 ```yaml
 models:
-  - name: vllm-mlx
+  - name: rapid-mlx
     provider: openai
     model: default
     apiBase: http://localhost:8000/v1
@@ -185,7 +211,7 @@ Add to `~/.config/opencode/opencode.json`:
       "models": {
         "default": {
           "id": "default",
-          "name": "vllm-mlx local",
+          "name": "rapid-mlx local",
           "api_base": "http://localhost:8000/v1"
         }
       }
@@ -196,7 +222,7 @@ Add to `~/.config/opencode/opencode.json`:
 
 ### Open WebUI (Self-Hosted ChatGPT)
 
-Use vllm-mlx as the backend for [Open WebUI](https://github.com/open-webui/open-webui) — a self-hosted ChatGPT-style interface with chat history, multi-user support, and RAG. No Ollama required.
+Use Rapid-MLX as the backend for [Open WebUI](https://github.com/open-webui/open-webui) — a self-hosted ChatGPT-style interface with chat history, multi-user support, and RAG. No Ollama required.
 
 ```bash
 docker run -d -p 3000:8080 \
@@ -209,9 +235,9 @@ docker run -d -p 3000:8080 \
   ghcr.io/open-webui/open-webui:main
 ```
 
-Then open `http://localhost:3000`, create an account, and start chatting. Your vllm-mlx model appears automatically in the model dropdown. Streaming, markdown rendering, and tool calling all work out of the box.
+Then open `http://localhost:3000`, create an account, and start chatting. Your Rapid-MLX model appears automatically in the model dropdown. Streaming, markdown rendering, and tool calling all work out of the box.
 
-> **Migrating from Ollama?** Just swap the backend — Open WebUI works identically with vllm-mlx, but you get prompt caching (10-30x faster multi-turn), reliable tool calling, and better agent stability.
+> **Migrating from Ollama?** Just swap the backend — Open WebUI works identically with Rapid-MLX, but you get prompt caching (10-30x faster multi-turn), reliable tool calling, and better agent stability.
 
 ### Aider
 
@@ -268,14 +294,14 @@ Supported parsers: `hermes`, `minimax`, `qwen`, `qwen3_coder`, `llama`, `deepsee
 
 A common pain point with local models: **quantized models (4-bit, 6-bit) degrade after multiple tool call rounds** and start outputting tool calls as plain text instead of structured format. This breaks agent frameworks like OpenClaw, Claude Code, Cursor, and LangChain — the client receives text instead of a `tool_calls` response.
 
-vllm-mlx solves this at the server level. **All parsers** automatically detect and recover degraded tool calls — no configuration needed, works with any model:
+Rapid-MLX solves this at the server level. **All parsers** automatically detect and recover degraded tool calls — no configuration needed, works with any model:
 
 ```
 # Model outputs broken text instead of structured XML/JSON:
 [Calling tool="web_search" query="weather tonight"]
 [Calling tool: exec({"command":"python3 --version"})]
 
-# vllm-mlx auto-detects and converts to proper OpenAI tool_calls:
+# Rapid-MLX auto-detects and converts to proper OpenAI tool_calls:
 → finish_reason: "tool_calls"
 → tool_calls: [{"name": "web_search", "arguments": "{\"query\": \"weather tonight\"}"}]
 ```
@@ -292,7 +318,7 @@ Tested end-to-end with 14 tools across 8+ rounds — see [`tests/test_tool_call_
 Models with chain-of-thought (MiniMax-M2.5, Qwen3, DeepSeek-R1) output reasoning in a separate `reasoning_content` field — never mixed into `content`. 0% leak rate.
 
 ```bash
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model mlx-community/Qwen3.5-122B-A10B-8bit \
   --reasoning-parser qwen3 \
   --port 8000
@@ -312,13 +338,13 @@ Always on in SimpleEngine (default mode). No flags needed.
 
 ### Smart Cloud Routing
 
-**New.** Large-context requests are automatically routed to a cloud LLM when local prefill would be too slow. The routing decision is based on **new tokens** (after cache hit), not total input — so a 50K-token conversation with 2K new tokens stays local.
+Large-context requests are automatically routed to a cloud LLM when local prefill would be too slow. The routing decision is based on **new tokens** (after cache hit), not total input — so a 50K-token conversation with 2K new tokens stays local.
 
 ```bash
 pip install litellm
 
 # Route to GPT-5 when >20K new tokens need prefilling
-OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
+OPENAI_API_KEY=sk-... rapid-mlx serve \
   --model lmstudio-community/Qwen3-Coder-Next-MLX-6bit \
   --cloud-model openai/gpt-5 \
   --cloud-threshold 20000 \
@@ -334,6 +360,18 @@ Next turn (cache hit, 200 new) → [LOCAL]  Back to local, 0.3s
 Works with any litellm-supported provider: OpenAI, Anthropic, Google, Groq, etc. Clients see no difference — same API, transparent routing.
 
 Disabled by default. Cost estimate: ~$0.02-0.05 per cloud-routed request with GPT-5.
+
+### Multimodal
+
+Vision, audio (speech-to-text, text-to-speech), video understanding, and text embeddings — all through the same OpenAI-compatible API.
+
+```bash
+# Vision + Language model
+rapid-mlx serve \
+  --model mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit \
+  --mllm \
+  --port 8000
+```
 
 ---
 
@@ -370,12 +408,12 @@ How much RAM do you need? Model weights must fit in unified memory, plus ~20% he
 
 #### Help Us Fill This Table
 
-These numbers are from a single M3 Ultra (256GB). We need community data for other configs — M1, M2, M4, MacBook Air/Pro, different RAM tiers. If you test a model, **copy the template below into a [new issue](https://github.com/raullenchai/vllm-mlx/issues/new):**
+These numbers are from a single M3 Ultra (256GB). We need community data for other configs — M1, M2, M4, MacBook Air/Pro, different RAM tiers. If you test a model, **copy the template below into a [new issue](https://github.com/raullenchai/rapid-mlx/issues/new):**
 
 ```
 **Hardware:** Mac ___ (___GB RAM), macOS ___
 **Model:** ___ (quantization: ___)
-**Server flags:** `python -m vllm_mlx.server --model ___ ...`
+**Server flags:** `rapid-mlx serve --model ___ ...`
 **Decode speed:** ___ tok/s
 **TTFT (cold / cached):** ___s / ___s
 **Agent client tested:** Claude Code / Cursor / Aider / other
@@ -383,41 +421,9 @@ These numbers are from a single M3 Ultra (256GB). We need community data for oth
 **Notes:** ___
 ```
 
-### Model Comparison: Qwen3.5-122B vs MiniMax-M2.5
+### Eval Benchmarks
 
-Tested on Mac Studio M3 Ultra (256GB). Eval scores from standardized benchmark suites (HumanEval+, MATH-500, MMLU-Pro):
-
-**Eval scores (enable_thinking=false):**
-
-| Suite | Qwen3.5-122B 8bit | Qwen3.5-122B mxfp4 | MiniMax-M2.5 4bit |
-|-------|-------------------|---------------------|-------------------|
-| Tool Calling (30 scenarios) | 87% | **90%** | 87% |
-| Coding (HumanEval+) | **90%** | **90%** | 10% |
-| Reasoning (MATH-500) | **90%** | 80% | 80% |
-| General (MMLU-Pro) | **90%** | **90%** | **90%** |
-
-**Speed (eval framework):**
-
-| Metric | Qwen3.5-122B 8bit | Qwen3.5-122B mxfp4 | MiniMax-M2.5 4bit |
-|--------|-------------------|---------------------|-------------------|
-| Decode (short) | 20 t/s | 27 t/s | 47 t/s |
-| Decode (long) | 43 t/s | **57 t/s** | 51 t/s |
-| TTFT (cold) | 1.8s | 0.7s | 1.3s |
-| TTFT (warm) | 0.0s | 0.0s | 0.1s |
-
-**Resource usage:**
-
-| Metric | Qwen3.5-122B 8bit | Qwen3.5-122B mxfp4 | MiniMax-M2.5 4bit |
-|--------|-------------------|---------------------|-------------------|
-| Model weight RAM | 130 GB | **74 GB** | 130 GB |
-| KV cache headroom (256GB) | ~120 GB | **~180 GB** | ~120 GB |
-| Active params per token | 10B | 10B | 10B |
-
-**Verdict:** Qwen3.5-122B is the recommended model for agent workloads — 89% average across all eval suites, and the mxfp4 variant needs only half the RAM. MiniMax-M2.5 has strong reasoning and general knowledge; its low coding score (10%) is likely a code extraction parser issue rather than model capability — investigation ongoing.
-
-### Eval Framework
-
-Standardized eval framework: speed, tool calling (30 scenarios), coding ([HumanEval+](https://github.com/openai/human-eval)), reasoning ([MATH-500](https://huggingface.co/datasets/HuggingFaceH4/MATH-500)), and general knowledge ([MMLU-Pro](https://huggingface.co/datasets/TIGER-Lab/MMLU-Pro)). All suites run with `enable_thinking: false`. Run on your own Apple Silicon Mac and submit results!
+17 models benchmarked across 4 eval suites: tool calling (30 scenarios), coding (HumanEval+), reasoning (MATH-500), and general knowledge (MMLU-Pro). All run with `enable_thinking: false` on Mac Studio M3 Ultra (256GB).
 
 | Model | Quant | RAM | Decode | Tools | Code | Reason | General | Avg |
 |-------|-------|-----|--------|-------|------|--------|---------|-----|
@@ -441,8 +447,6 @@ Standardized eval framework: speed, tool calling (30 scenarios), coding ([HumanE
 
 \* *MiniMax coding score likely affected by a code extraction parser issue, not model capability.*
 
-*17 models tested on Apple M3 Ultra (256GB). Decode = long generation speed. See full [scorecard](evals/SCORECARD.md) for details.*
-
 ```bash
 # Run all eval suites against a running server (~5 min)
 python evals/run_eval.py --model "My-Model" --quantization 4bit --port 8000
@@ -454,7 +458,7 @@ See **[evals/](evals/)** for methodology, prompts, and how to contribute your re
 
 ```bash
 # Qwen3.5-122B — best overall for agent workloads (74GB, 41-47 tok/s)
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx \
   --tool-call-parser hermes \
   --reasoning-parser qwen3 \
@@ -463,14 +467,14 @@ python -m vllm_mlx.server \
   --port 8000
 
 # Qwen3-Coder-Next — fast coding agent (3B active, ~100 tok/s)
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model lmstudio-community/Qwen3-Coder-Next-MLX-4bit \
   --tool-call-parser hermes \
   --prefill-step-size 8192 \
   --port 8000
 
 # Qwen3.5-35B-A3B — best for 64GB Macs (85% avg, 80 tok/s)
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model mlx-community/Qwen3.5-35B-A3B-8bit \
   --tool-call-parser hermes \
   --reasoning-parser qwen3 \
@@ -478,21 +482,21 @@ python -m vllm_mlx.server \
   --port 8000
 
 # Qwen3.5-9B — lightweight, fits any Mac (71% avg, 106 tok/s)
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model mlx-community/Qwen3.5-9B-4bit \
   --tool-call-parser hermes \
   --reasoning-parser qwen3 \
   --port 8000
 
 # DeepSeek-R1 — reasoning-focused
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit \
   --tool-call-parser deepseek \
   --reasoning-parser deepseek_r1 \
   --port 8000
 
 # Qwen3 VL — vision + language
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model mlx-community/Qwen3-VL-4B-Instruct-MLX-4bit \
   --mllm \
   --port 8000
@@ -580,7 +584,7 @@ All 17 parsers include automatic text-format tool call recovery — if a quantiz
 **Production agent setup (best tool calling):**
 
 ```bash
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx \
   --tool-call-parser hermes \
   --prefill-step-size 8192 \
@@ -592,7 +596,7 @@ python -m vllm_mlx.server \
 **Fast coding agent:**
 
 ```bash
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model lmstudio-community/Qwen3-Coder-Next-MLX-6bit \
   --tool-call-parser hermes \
   --prefill-step-size 8192 \
@@ -603,7 +607,7 @@ python -m vllm_mlx.server \
 **64GB Mac — best balance of quality + speed:**
 
 ```bash
-python -m vllm_mlx.server \
+rapid-mlx serve \
   --model mlx-community/Qwen3.5-35B-A3B-8bit \
   --tool-call-parser hermes \
   --reasoning-parser qwen3 \
@@ -614,7 +618,7 @@ python -m vllm_mlx.server \
 **Hybrid local + cloud — best of both worlds:**
 
 ```bash
-OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
+OPENAI_API_KEY=sk-... rapid-mlx serve \
   --model nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx \
   --tool-call-parser hermes \
   --cloud-model openai/gpt-5 \
@@ -663,7 +667,7 @@ OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
 
 ---
 
-## What This Fork Adds (vs. Upstream)
+## Feature Details
 
 <details>
 <summary><strong>Agent-Grade Tool Calling (13 features)</strong></summary>
@@ -725,6 +729,18 @@ OPENAI_API_KEY=sk-... python -m vllm_mlx.server \
 
 </details>
 
+<details>
+<summary><strong>Multimodal (4 capabilities)</strong></summary>
+
+### Multimodal
+
+- Vision — image understanding via Qwen-VL and other VLMs
+- Audio STT — speech-to-text via Whisper
+- Audio TTS — text-to-speech via Kokoro
+- Embeddings — text embedding models for RAG and similarity search
+
+</details>
+
 ---
 
 ## Roadmap
@@ -762,7 +778,7 @@ This happens when a reasoning parser is set (e.g. `--reasoning-parser qwen3`) bu
 
 ### Tool calls appear as plain text in responses
 
-The model is outputting tool calls in text format instead of structured `tool_calls`. This usually means `--tool-call-parser` is not set, or is set to the wrong parser. Check the [Tool Parser Selection Guide](#tool-parser-selection-guide) for the correct parser for your model. Even when this happens, vllm-mlx auto-recovers degraded tool calls — but setting the correct parser gives the best results.
+The model is outputting tool calls in text format instead of structured `tool_calls`. This usually means `--tool-call-parser` is not set, or is set to the wrong parser. Check the [Tool Parser Selection Guide](#tool-parser-selection-guide) for the correct parser for your model. Even when this happens, Rapid-MLX auto-recovers degraded tool calls — but setting the correct parser gives the best results.
 
 ### Slow time-to-first-token (TTFT) on first request
 
@@ -779,7 +795,7 @@ Fixed in this fork. The streaming disconnect guard ensures that when a client di
 
 ## Contributing
 
-Issues and PRs welcome at [github.com/raullenchai/vllm-mlx](https://github.com/raullenchai/vllm-mlx).
+Issues and PRs welcome at [github.com/raullenchai/rapid-mlx](https://github.com/raullenchai/rapid-mlx).
 
 **We need your help.** The hardware tables, model benchmarks, and client configs in this README are based on one M3 Ultra (256GB). There are dozens of Mac + model + client combos we haven't tested. The easiest way to contribute:
 
@@ -787,7 +803,7 @@ Issues and PRs welcome at [github.com/raullenchai/vllm-mlx](https://github.com/r
 2. **Verify a client** — if you get Claude Code, Cursor, Continue.dev, or another client working, let us know what worked (and what didn't)
 3. **Fix a doc** — if something in this README is wrong or missing, PRs are welcome
 
-Built on [waybarrios/vllm-mlx](https://github.com/waybarrios/vllm-mlx) — all upstream features (multimodal, audio, embeddings, Anthropic API, MCP) are available.
+Built on [mlx-lm](https://github.com/ml-explore/mlx-examples) and [mlx-vlm](https://github.com/Blaizzy/mlx-vlm) — Apple's MLX framework for efficient on-device inference.
 
 ## License
 
