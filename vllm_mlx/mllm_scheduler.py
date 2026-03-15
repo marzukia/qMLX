@@ -476,6 +476,7 @@ class MLLMScheduler:
 
             # Check text-based stop sequences
             finish_reason = response.finish_reason
+            stop_trimmed = False
             if finish_reason is None and request.stop:
                 decoded_so_far = tokenizer.decode(request.output_tokens)
                 for stop_str in request.stop:
@@ -484,9 +485,16 @@ class MLLMScheduler:
                         # Trim output at stop string
                         idx = decoded_so_far.index(stop_str)
                         request.output_text = decoded_so_far[:idx]
-                        # Trim new_text so the stop string isn't streamed
-                        # to the client in the final chunk.
-                        output.new_text = ""
+                        stop_trimmed = True
+                        # Emit only the valid prefix before the stop marker
+                        # in new_text so streaming clients don't lose content.
+                        # Compute what was already streamed vs the trimmed total.
+                        prev_text = tokenizer.decode(request.output_tokens[:-1])
+                        trimmed_total = decoded_so_far[:idx]
+                        if len(trimmed_total) > len(prev_text):
+                            output.new_text = trimmed_total[len(prev_text):]
+                        else:
+                            output.new_text = ""
                         break
 
             # Check if finished
@@ -500,12 +508,14 @@ class MLLMScheduler:
                 output.finish_reason = finish_reason
                 finished_ids.add(request_id)
 
-                # Use trimmed output if set by stop-string check, else decode
-                if not request.output_text:
+                # Use trimmed output if set by stop-string check, else decode.
+                # Use explicit flag instead of string truthiness — empty string
+                # is a valid trimmed result (stop at position 0).
+                if stop_trimmed:
+                    output.output_text = request.output_text
+                else:
                     output.output_text = tokenizer.decode(request.output_tokens)
                     request.output_text = output.output_text
-                else:
-                    output.output_text = request.output_text
                 request.finish_reason = finish_reason
 
                 self.total_completion_tokens += request.num_output_tokens
@@ -538,17 +548,16 @@ class MLLMScheduler:
             self.finished_req_ids.add(request_id)
             self.requests.pop(request_id, None)
 
-    def step(self) -> MLLMSchedulerOutput:
-        """
-        Execute one scheduling step.
+    def _step_no_queue(self) -> MLLMSchedulerOutput:
+        """Execute one scheduling step WITHOUT queue distribution.
 
-        This method:
-        1. Schedules waiting requests into the batch
-        2. Runs one generation step via MLLMBatchGenerator
-        3. Processes outputs and handles finished requests
+        This is the thread-safe core of ``step()``.  It performs all
+        GPU/CPU-heavy work (scheduling, vision encoding, generation)
+        but does NOT touch ``self.output_queues`` (which are
+        ``asyncio.Queue`` instances and not thread-safe).
 
         Returns:
-            MLLMSchedulerOutput with results of this step
+            MLLMSchedulerOutput with results of this step.
         """
         output = MLLMSchedulerOutput()
 
@@ -578,21 +587,17 @@ class MLLMScheduler:
                     if uids_to_remove:
                         self.batch_generator.remove(uids_to_remove)
 
+                # Create error outputs (queue delivery deferred to caller)
                 for request_id in error_ids:
-                    queue = self.output_queues.get(request_id)
-                    if queue is not None:
-                        try:
-                            queue.put_nowait(
-                                RequestOutput(
-                                    request_id=request_id,
-                                    output_text="",
-                                    finished=True,
-                                    finish_reason="error",
-                                )
-                            )
-                            queue.put_nowait(None)  # Signal end
-                        except asyncio.QueueFull:
-                            pass
+                    output.outputs.append(
+                        RequestOutput(
+                            request_id=request_id,
+                            output_text="",
+                            finished=True,
+                            finish_reason="error",
+                        )
+                    )
+                output.finished_request_ids = error_ids
                 self._cleanup_finished(error_ids)
                 return output
 
@@ -603,17 +608,6 @@ class MLLMScheduler:
                 output.outputs = outputs
                 output.finished_request_ids = finished_ids
 
-                # Push to async queues
-                for req_output in outputs:
-                    queue = self.output_queues.get(req_output.request_id)
-                    if queue is not None:
-                        try:
-                            queue.put_nowait(req_output)
-                            if req_output.finished:
-                                queue.put_nowait(None)  # Signal end
-                        except asyncio.QueueFull:
-                            pass
-
                 self._cleanup_finished(finished_ids)
                 if finished_ids:
                     mx.clear_cache()
@@ -621,6 +615,37 @@ class MLLMScheduler:
         # Clear finished tracking for next step
         self.finished_req_ids = set()
 
+        return output
+
+    def _distribute_outputs(self, output: MLLMSchedulerOutput) -> None:
+        """Push step outputs to async queues.
+
+        MUST be called on the event loop thread (asyncio.Queue is not
+        thread-safe).
+        """
+        for req_output in output.outputs:
+            queue = self.output_queues.get(req_output.request_id)
+            if queue is not None:
+                try:
+                    queue.put_nowait(req_output)
+                    if req_output.finished:
+                        queue.put_nowait(None)  # Signal end
+                except asyncio.QueueFull:
+                    pass
+
+    def step(self) -> MLLMSchedulerOutput:
+        """
+        Execute one scheduling step (includes queue distribution).
+
+        Convenience wrapper that calls ``_step_no_queue`` followed by
+        ``_distribute_outputs``.  Safe to call from the event loop
+        thread (the original sync API).
+
+        Returns:
+            MLLMSchedulerOutput with results of this step
+        """
+        output = self._step_no_queue()
+        self._distribute_outputs(output)
         return output
 
     def get_request(self, request_id: str) -> MLLMRequest | None:
@@ -666,6 +691,9 @@ class MLLMScheduler:
         Uses a thread executor for steps that involve vision encoding
         (prefill) to prevent blocking the asyncio event loop.  Pure
         generation steps (~1-3ms) run inline for lower latency.
+
+        Queue distribution always happens on the event loop thread to
+        avoid thread-safety issues with asyncio.Queue.
         """
         import concurrent.futures
 
@@ -682,9 +710,17 @@ class MLLMScheduler:
                     # are fast and can run inline.
                     has_waiting = len(self.waiting) > 0
                     if has_waiting:
-                        await loop.run_in_executor(_executor, self.step)
+                        output = await loop.run_in_executor(
+                            _executor, self._step_no_queue
+                        )
                     else:
-                        self.step()
+                        output = self._step_no_queue()
+
+                    # Distribute outputs to queues ON the event loop thread
+                    # (asyncio.Queue is not thread-safe).
+                    if output is not None:
+                        self._distribute_outputs(output)
+
                     # Yield to other tasks
                     await asyncio.sleep(0)
                 else:
