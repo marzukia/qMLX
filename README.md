@@ -66,7 +66,7 @@ print(response.choices[0].message.content)
 
 ## Choose Your Model
 
-### Performance — 21 models, 5 engines
+### Performance — 21 models, 6 engines
 
 All benchmarks on Mac Studio M3 Ultra (256GB). Sorted by model size. Engines ranked by total bar length per model. **Rapid-MLX is #1 on 15 of 17 benchmarked models.**
 
@@ -75,6 +75,7 @@ All benchmarks on Mac Studio M3 Ultra (256GB). Sorted by model size. Engines ran
 
 Llama 3.2 3B            ⚡ Rapid-MLX   █████████████████████████████████▒▒▒▒▒▒▒▒▒▒               225 tok/s · 0.07s · 0%
                           mlx-lm      ███████████████████████████████████                       238 tok/s
+                          oMLX        █████████████████████████████                             196 tok/s
                           vllm-mlx    not supported
                           Ollama      not supported
                           llama.cpp   not supported
@@ -82,17 +83,20 @@ Llama 3.2 3B            ⚡ Rapid-MLX   █████████████�
 Qwen3.5-4B                vllm-mlx    ███████████████████████▒▒▒▒▒▒▒░░░░░░░░                    155 tok/s · 0.19s · 100%
                           Rapid-MLX   ███████████████████████░░░░░░░░                           158 tok/s · 0.76s · 100%
                           mlx-lm      █████████████████████████                                 168 tok/s
+                          oMLX        ██████████████████████                                    149 tok/s
                           Ollama      not supported
                           llama.cpp   not supported
 
 Hermes-3-Llama 8B       ⚡ Rapid-MLX   ██████████████████▒▒▒▒▒▒▒▒▒▒                              123 tok/s · 0.08s · 0%
                           vllm-mlx    ██████████████████▒▒▒▒▒▒▒▒                                122 tok/s · 0.18s · 0%
                           mlx-lm      ███████████████████                                       127 tok/s
+                          oMLX        █████████████████                                         113 tok/s
                           Ollama      not supported
                           llama.cpp   not supported
 
 Qwen3.5-9B              ⚡ Rapid-MLX   ████████████████▒▒▒▒▒▒▒▒░░░░░░░░                          109 tok/s · 0.18s · 100%
                           vllm-mlx    ███████████████▒▒▒▒▒▒░░░░░░░░                             104 tok/s · 0.26s · 100%
+                          oMLX        ███████████████                                           102 tok/s
                           Ollama      ████▒▒▒▒▒▒░░░░░░░░                                        26 tok/s · 0.27s · 100%
                           mlx-lm      █████████                                                 61 tok/s
                           llama.cpp   not supported
@@ -103,7 +107,8 @@ GLM-4.7-Flash 9B        ⚡ Rapid-MLX   █████████▒▒▒▒�
                           Ollama      not supported
                           llama.cpp   not supported
 
-Gemma 3 12B               Ollama      ████████▒▒▒▒▒▒▒▒▒                                         54 tok/s · 0.14s · 0%
+Gemma 3 12B               oMLX        ██████████                                                67 tok/s
+                          Ollama      ████████▒▒▒▒▒▒▒▒▒                                         54 tok/s · 0.14s · 0%
                           Rapid-MLX   ███████▒▒▒▒                                               49 tok/s · 0.32s · 0%
                           mlx-lm      ███████████                                               73 tok/s
                           vllm-mlx    not supported
@@ -120,6 +125,7 @@ DeepSeek-R1 14B           coming soon
 Qwen 2.5 Coder 14B        coming soon
 
 GPT-OSS 20B             ⚡ Rapid-MLX   ██████████████████▒▒▒▒▒▒▒▒▒                               123 tok/s · 0.12s · 0%
+                          oMLX        ████████████████                                          106 tok/s
                           vllm-mlx    ████████████▒▒▒▒▒▒                                        79 tok/s · 0.27s · 0%
                           mlx-lm      ████████████                                              79 tok/s
                           Ollama      not supported
@@ -134,6 +140,7 @@ Mistral Small 24B       ⚡ Rapid-MLX   ███████▒▒▒▒▒▒�
 Devstral-Small-2 24B    ⚡ Rapid-MLX   ███████▒▒▒▒▒▒▒▒▒▒                                         48 tok/s · 0.10s · 0%
                           vllm-mlx    ███████▒▒▒                                                48 tok/s · 0.38s · 0%
                           mlx-lm      ███████                                                   49 tok/s
+                          oMLX        ███████                                                    46 tok/s
                           Ollama      not supported
                           llama.cpp   not supported
 
@@ -148,6 +155,7 @@ Qwen3.5-27B             ⚡ Rapid-MLX   ██████░░░░░░░�
 Qwen3.5-35B-A3B         ⚡ Rapid-MLX   ████████████▒▒▒▒▒▒▒░░░░░░░░                               82 tok/s · 0.19s · 100%
                           vllm-mlx    ████████████▒▒▒▒▒▒░░░░░░░░                                80 tok/s · 0.24s · 100%
                           mlx-lm      ████████████                                              85 tok/s
+                          oMLX        ███████████                                                75 tok/s
                           Ollama      not supported
                           llama.cpp   not supported
 
@@ -184,7 +192,7 @@ Qwen3.5-122B-A10B       ⚡ Rapid-MLX   ██████░░░░░░░�
                           llama.cpp   not supported
 ```
 
-*⚡ = best combined score (decode + TTFT + tools). Longer bar = better overall experience. TTFT capped at 0.5s — thinking models have higher TTFT due to reasoning tokens. mlx-lm has no TTFT or tool data (library, not server). Engines: [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX), [vllm-mlx](https://github.com/waybarrios/vllm-mlx) (upstream), [mlx-lm](https://github.com/ml-explore/mlx-examples), [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp).*
+*⚡ = best combined score (decode + TTFT + tools). Longer bar = better overall experience. TTFT capped at 0.5s — thinking models have higher TTFT due to reasoning tokens. mlx-lm/oMLX have no TTFT or tool data (library/decode-only server). Engines: [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX), [vllm-mlx](https://github.com/waybarrios/vllm-mlx) (upstream), [mlx-lm](https://github.com/ml-explore/mlx-examples), [oMLX](https://github.com/jundot/omlx), [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp).*
 
 ### What fits my Mac?
 
@@ -324,16 +332,16 @@ docker run -d -p 3000:8080 \
 
 *This section is for ML engineers who want the numbers. If you just want to run models, see [Quick Start](#quick-start) and [Choose Your Model](#choose-your-model) above.*
 
-17 models tested across 5 engines on **Mac Studio M3 Ultra (256GB)**. Same model, same hardware, head-to-head.
+17 models tested across 6 engines on **Mac Studio M3 Ultra (256GB)**. Same model, same hardware, head-to-head.
 
-**Rapid-MLX is the fastest or tied on 15 of 17 models** vs upstream vllm-mlx, mlx-lm, Ollama, and llama.cpp.
+**Rapid-MLX is the fastest or tied on 15 of 17 models** vs upstream vllm-mlx, mlx-lm, oMLX, Ollama, and llama.cpp.
 
 | Model | Rapid-MLX | Best Alternative | Speedup |
 |-------|----------|-----------------|---------|
-| **Llama 3.2 3B** | **225** tok/s | 238 (mlx-lm) | ~1.0x |
+| **Llama 3.2 3B** | **225** tok/s | 238 (mlx-lm) / 196 (oMLX) | ~1.0x / **1.1x** |
 | **Phi-4 Mini 14B** | **174** tok/s | 77 (mlx-lm) / 51 (Ollama) | **2.3x** / **3.4x** |
 | **Qwen3.5-4B** | **~158** tok/s | 168 (mlx-lm) | ~1.0x |
-| **GPT-OSS 20B** | **123** tok/s | 79 (mlx-lm / upstream) | **1.6x** |
+| **GPT-OSS 20B** | **123** tok/s | 106 (oMLX) / 79 (upstream) | **1.2x** / **1.6x** |
 | **Hermes-3-Llama 8B** | **123** tok/s | 127 (mlx-lm) | ~1.0x |
 | **Qwen3.5-9B** | **109** tok/s | 61 (mlx-lm) / 26 (Ollama) | **1.8x** / **4.2x** |
 | **Qwen3.5-35B-A3B** | **82** tok/s | 85 (mlx-lm) | ~1.0x |
@@ -368,18 +376,18 @@ Prompt cache keeps multi-turn conversations fast. Ollama and mlx-lm re-prefill t
 
 ### Capability Comparison
 
-| Feature | Rapid-MLX | Ollama | llama.cpp | mlx-lm |
-|---------|-----------|--------|-----------|--------|
-| **Tool calling** | 100% (Qwen) | 100% (Qwen) | 80% (Phi-4) | N/A |
-| **Tool call recovery** | 100% | 100% | 100% | N/A |
-| **Think-tag leak** | 0% | 0% | 0% | N/A |
-| **Prompt cache** | ✓ (0.1s TTFT) | ✗ (0.27s) | ✗ | ✗ |
-| **Vision** | ✓ | ✓ | ✗ | ✗ |
-| **Audio (STT/TTS)** | ✓ | ✗ | ✗ | ✗ |
-| **17 tool parsers** | ✓ | ✗ | ✗ | ✗ |
-| **Cloud routing** | ✓ | ✗ | ✗ | ✗ |
-| **Streaming** | ✓ | ✓ | ✓ | ✗ |
-| **OpenAI API** | ✓ | ✓ | ✓ | ✗ |
+| Feature | Rapid-MLX | oMLX | Ollama | llama.cpp | mlx-lm |
+|---------|-----------|------|--------|-----------|--------|
+| **Tool calling** | 100% (Qwen) | N/A | 100% (Qwen) | 80% (Phi-4) | N/A |
+| **Tool call recovery** | 100% | N/A | 100% | 100% | N/A |
+| **Think-tag leak** | 0% | N/A | 0% | 0% | N/A |
+| **Prompt cache** | ✓ (0.1s TTFT) | ✗ | ✗ (0.27s) | ✗ | ✗ |
+| **Vision** | ✓ | ✓ | ✓ | ✗ | ✗ |
+| **Audio (STT/TTS)** | ✓ | ✗ | ✗ | ✗ | ✗ |
+| **17 tool parsers** | ✓ | ✗ | ✗ | ✗ | ✗ |
+| **Cloud routing** | ✓ | ✗ | ✗ | ✗ | ✗ |
+| **Streaming** | ✓ | ✓ | ✓ | ✓ | ✗ |
+| **OpenAI API** | ✓ | ✓ | ✓ | ✓ | ✗ |
 
 <details>
 <summary><strong>Eval benchmarks (17 models, 4 suites)</strong></summary>
