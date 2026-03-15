@@ -243,6 +243,47 @@ class TestPrepareCacheHybrid:
 
         model._cache_is_trimmable = original_is_trimmable
 
+    def test_hybrid_cache_exact_repeat_returns_one_suffix_token(self):
+        """Exact-repeat on hybrid cache must NOT return empty suffix.
+
+        The generic trim(1) path only rolls back trimmable KV layers;
+        non-trimmable RNN layers cannot be trimmed, so the last prompt
+        token would be processed twice in recurrent layers.  Instead,
+        effective_len is capped at len(prompt) - 1, ensuring at least
+        1 suffix token that passes through both RNN and KV once.
+
+        When snap_len == common_len, the reduced effective_len (common_len - 1)
+        is less than snap_len, so restore fails and falls through to
+        _prefill_and_snapshot which needs a model.  To test without a real
+        model, we set snap_len = common_len - 1 (as if a previous
+        exact-repeat already built this snapshot).
+        """
+        model = make_model()
+        cache = make_hybrid_cache(num_rnn=2, num_kv=1, kv_offset=50)
+        model._prompt_cache = cache
+        model._cached_token_ids = [1, 2, 3, 4, 5]
+
+        # Snapshot at 4 tokens (simulating a prior exact-repeat that built
+        # a snapshot at common_len - 1)
+        model._snapshot_rnn_layers([1, 2, 3, 4])
+
+        # Simulate generation mutating the cache
+        cache[0].data[0] = 999.0
+        cache[2].offset = 80
+
+        model._cache_is_trimmable = lambda: False
+
+        # EXACT same prompt → common_len == len(prompt) == 5
+        # effective_len = 5 - 1 = 4 == snap_len → restore succeeds
+        prompt = [1, 2, 3, 4, 5]
+        suffix = model._prepare_cache_for_prompt(prompt)
+
+        # Must NOT be empty — should be [5] (last token as suffix)
+        assert len(suffix) >= 1
+        assert suffix == [5]
+        # RNN restored from snapshot
+        assert model._prompt_cache[0].data[0] == 0.0
+
     def test_hybrid_cache_different_prefix_recreates(self):
         model = make_model()
         model._prompt_cache = make_hybrid_cache(num_rnn=2, num_kv=1, kv_offset=50)

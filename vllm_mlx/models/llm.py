@@ -397,16 +397,27 @@ class MLXLanguageModel:
         common_len = self._find_common_prefix_len(prompt_token_ids)
 
         if not self._cache_is_trimmable():
-            if self._is_hybrid_cache():
+            if self._is_hybrid_cache() and common_len > 0:
                 # Hybrid cache (e.g. Qwen3.5): mix of trimmable KVCache +
-                # non-trimmable ArraysCache.  Try to restore from snapshot.
-                if common_len > 0 and self._restore_rnn_layers(prompt_token_ids, common_len):
-                    suffix = prompt_token_ids[common_len:]
-                    return suffix
-                # No usable snapshot but there IS a common prefix — do a
-                # prefix-only prefill to build the snapshot for next time.
-                if common_len > 0:
-                    return self._prefill_and_snapshot(prompt_token_ids, common_len)
+                # non-trimmable ArraysCache.
+                #
+                # For exact-repeat (common_len == len(prompt)), use
+                # common_len - 1 so the last token becomes a suffix.
+                # The generic trim(1) exact-repeat path only rolls back
+                # trimmable KV layers — non-trimmable RNN layers cannot
+                # be trimmed, so the last prompt token would be processed
+                # twice in recurrent layers.  Keeping 1 suffix token
+                # ensures both RNN and KV process it exactly once.
+                effective_len = common_len
+                if common_len == len(prompt_token_ids):
+                    effective_len = common_len - 1
+
+                # Try to restore from snapshot
+                if self._restore_rnn_layers(prompt_token_ids, effective_len):
+                    return prompt_token_ids[effective_len:]
+                # No usable snapshot — do a prefix-only prefill to build
+                # the snapshot for next time.
+                return self._prefill_and_snapshot(prompt_token_ids, effective_len)
             # Pure non-trimmable or no overlap — recreate
             self._prompt_cache = self._make_fresh_cache()
             self._cached_token_ids = []
