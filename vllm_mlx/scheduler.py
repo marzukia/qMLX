@@ -704,9 +704,16 @@ def _install_mtp(
             for _ci, _c in enumerate(prompt_cache):
                 if not (hasattr(_c, "is_trimmable") and _c.is_trimmable()):
                     if hasattr(_c, "state"):
-                        _rnn_snapshots[_ci] = [
-                            s.copy() if s is not None else None for s in _c.state
+                        _orig_state = _c.state
+                        _copied = [
+                            s.copy() if s is not None else None
+                            for s in _orig_state
                         ]
+                        # Preserve original type (tuple vs list) so downstream
+                        # code that does `h, c = cache.state` doesn't break.
+                        if isinstance(_orig_state, tuple):
+                            _copied = tuple(_copied)
+                        _rnn_snapshots[_ci] = _copied
 
             verify_input = mx.concatenate(
                 [primary_tokens[:, None], draft_tokens[:, None]], axis=1
@@ -826,6 +833,10 @@ def _install_mtp(
         except Exception as e:
             logger.debug(f"[MTP] draft/verify failed: {e}")
             _skip_state[0] = None
+            # Clear deferred drafts from this failed attempt to prevent
+            # stale tokens from being emitted in the next _mtp_next call.
+            for uid in current_uids:
+                _deferred_drafts.pop(uid, None)
             _mtp_stats["errors"] += 1
 
         return primary_tokens, list(logprobs)
