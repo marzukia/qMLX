@@ -2,7 +2,7 @@
 
 import pytest
 
-from vllm_mlx.model_auto_config import ModelConfig, detect_model_config
+from vllm_mlx.model_auto_config import detect_model_config
 
 
 class TestDetectModelConfig:
@@ -127,6 +127,13 @@ class TestDetectModelConfig:
         config = detect_model_config("mlx-community/Meta-Llama-3.1-8B-Instruct-4bit")
         assert config is not None
         assert config.tool_call_parser == "llama"
+        assert config.reasoning_parser is None
+
+    # Kimi
+    def test_kimi(self):
+        config = detect_model_config("mlx-community/Kimi-Linear-48B-A3B-Instruct-6bit")
+        assert config is not None
+        assert config.tool_call_parser == "kimi"
         assert config.reasoning_parser is None
 
     # Gemma
