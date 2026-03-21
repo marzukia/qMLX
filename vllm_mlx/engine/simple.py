@@ -392,6 +392,7 @@ class SimpleEngine(BaseEngine):
                     max_tokens=max_tokens,
                     temperature=temperature,
                     top_p=top_p,
+                    stop=stop,
                     **kwargs_copy,
                 )
                 # Return raw text — server handles cleaning after
@@ -557,6 +558,7 @@ class SimpleEngine(BaseEngine):
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            stop=stop,
             **kwargs,
         ):
             yield output

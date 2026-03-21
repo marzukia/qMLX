@@ -1710,6 +1710,29 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 detail=f"Invalid role '{msg.role}'. Must be one of: {', '.join(sorted(_valid_roles))}",
             )
 
+    # Validate n parameter (only n=1 supported)
+    if request.n is not None and request.n > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="n > 1 is not supported. Rapid-MLX generates one completion per request.",
+        )
+
+    # Validate max_tokens (must be positive)
+    if request.max_tokens is not None and request.max_tokens < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="max_tokens must be at least 1",
+        )
+
+    # Validate temperature range (OpenAI spec: 0-2)
+    if request.temperature is not None and (
+        request.temperature < 0 or request.temperature > 2
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="temperature must be between 0 and 2",
+        )
+
     # Validate top_logprobs range (OpenAI spec: 0-20)
     if request.top_logprobs is not None and (
         request.top_logprobs < 0 or request.top_logprobs > 20

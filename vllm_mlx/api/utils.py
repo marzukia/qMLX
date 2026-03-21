@@ -15,7 +15,8 @@ from .models import Message
 # Keeps <think>...</think> blocks intact for reasoning models
 SPECIAL_TOKENS_PATTERN = re.compile(
     r"<\|im_end\|>|<\|im_start\|>|<\|endoftext\|>|"
-    r"<\|end\|>|<\|eot_id\|>|<\|start_header_id\|>|<\|end_header_id\|>|"
+    r"<\|end\|>|<\|eot_id\|>|<\|eom_id\|>|<\|python_tag\|>|"
+    r"<\|start_header_id\|>|<\|end_header_id\|>|"
     r"<\|channel\|>|<\|message\|>|<\|start\|>|<\|return\|>|<\|call\|>|<\|constrain\|>|"
     r"</s>|<s>|<pad>|\[PAD\]|\[SEP\]|\[CLS\]|"
     r"\[e~\[|\]~b\][a-z]*|\]~!b\["

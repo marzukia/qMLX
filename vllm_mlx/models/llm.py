@@ -199,6 +199,8 @@ class MLXLanguageModel:
         # preserved via skip_special_tokens=False decoding, and the
         # prompt cache is properly managed.
         output_text = ""
+        token_ids = []
+        finish_reason = "stop"
         for chunk in self.stream_generate(
             prompt=prompt,
             max_tokens=max_tokens,
@@ -207,18 +209,19 @@ class MLXLanguageModel:
             stop=stop,
         ):
             output_text += chunk.text
+            if hasattr(chunk, "token") and chunk.token:
+                token_ids.append(chunk.token)
             if chunk.finished:
+                finish_reason = chunk.finish_reason or "stop"
                 break
 
-        # Tokenize output to get token IDs
-        tokens = self.tokenizer.encode(output_text)
-
-        # Determine finish reason
-        finish_reason = "length" if len(tokens) >= max_tokens else "stop"
+        # Fall back to re-encoding if no token IDs were collected
+        if not token_ids:
+            token_ids = self.tokenizer.encode(output_text)
 
         return GenerationOutput(
             text=output_text,
-            tokens=tokens,
+            tokens=token_ids,
             finish_reason=finish_reason,
         )
 
@@ -661,12 +664,18 @@ class MLXLanguageModel:
                 new_text = decoder.add_token(token_id)
                 accumulated_text += new_text
 
-                # Check for stop sequences
+                # Check for stop sequences — truncate at the stop point
+                # (OpenAI spec: stop sequence is not included in output)
                 should_stop = False
+                stop_truncate_text = None
                 if stop:
                     for stop_seq in stop:
-                        if stop_seq in accumulated_text:
+                        idx = accumulated_text.find(stop_seq)
+                        if idx != -1:
                             should_stop = True
+                            # Truncate new_text so accumulated ends just before the stop seq
+                            stop_truncate_text = new_text[: len(new_text) - (len(accumulated_text) - idx)]
+                            accumulated_text = accumulated_text[:idx]
                             break
 
                 # Check if mlx-lm signalled completion (EOS token hit)
@@ -689,7 +698,7 @@ class MLXLanguageModel:
                     cache_saved = True
 
                 yield StreamingOutput(
-                    text=new_text,
+                    text=stop_truncate_text if stop_truncate_text is not None else new_text,
                     token=response.token if hasattr(response, "token") else 0,
                     finished=finished,
                     finish_reason=finish_reason,

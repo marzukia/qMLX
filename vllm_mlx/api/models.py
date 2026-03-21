@@ -207,6 +207,8 @@ class ChatCompletionRequest(BaseModel):
     timeout: float | None = None
     # Thinking/reasoning control (Qwen3 style).  None = server default.
     enable_thinking: bool | None = None
+    # Number of completions (only n=1 supported)
+    n: int | None = None
 
 
 class AssistantMessage(BaseModel):

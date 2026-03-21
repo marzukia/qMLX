@@ -357,7 +357,13 @@ def serve_command(args):
     print(f"  Ready: http://{host_display}:{args.port}/v1")
     print(f"  Docs:  http://{host_display}:{args.port}/docs")
     print()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        timeout_keep_alive=30,
+    )
 
 
 def bench_command(args):
