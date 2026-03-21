@@ -41,7 +41,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # Only needed for video benchmarks
 import numpy as np
 import requests
 from PIL import Image
@@ -1006,6 +1009,11 @@ def create_test_video(
     height: int = 480,
 ) -> str:
     """Create a synthetic test video with colored frames and text."""
+    if cv2 is None:
+        raise ImportError(
+            "opencv-python is required for video benchmarks. "
+            "Install with: pip install 'vllm-mlx[vision]'"
+        )
     temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     temp_file.close()
 
@@ -1077,6 +1085,11 @@ def download_video(url: str, timeout: int = 120) -> str:
 
 def get_video_info(video_path: str) -> dict:
     """Get information about a video file."""
+    if cv2 is None:
+        raise ImportError(
+            "opencv-python is required for video benchmarks. "
+            "Install with: pip install 'vllm-mlx[vision]'"
+        )
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return {"error": "Cannot open video"}
