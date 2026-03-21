@@ -51,7 +51,7 @@ First run downloads the model (~5 GB) — you'll see a progress bar. Wait for `R
 ```bash
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.5-9b","messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"qwen3.5-9b","messages":[{"role":"user","content":"Say hello"}]}'
 ```
 You should get a JSON response with the AI's reply. To stop the server: Ctrl+C in the first terminal.
 
@@ -94,7 +94,7 @@ client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
 
 response = client.chat.completions.create(
     model="default",
-    messages=[{"role": "user", "content": "Hello!"}],
+    messages=[{"role": "user", "content": "Say hello"}],
 )
 print(response.choices[0].message.content)
 ```

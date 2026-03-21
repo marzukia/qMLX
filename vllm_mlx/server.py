@@ -369,9 +369,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="vllm-mlx API",
+    title="Rapid-MLX API",
     description="OpenAI-compatible API for MLX LLM/MLLM inference on Apple Silicon",
-    version="0.2.1",
+    version="0.3.6",
     lifespan=lifespan,
 )
 
@@ -3043,7 +3043,7 @@ async def init_mcp(config_path: str):
 def main():
     """Run the server."""
     parser = argparse.ArgumentParser(
-        description="vllm-mlx OpenAI-compatible server for LLM and MLLM inference",
+        description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

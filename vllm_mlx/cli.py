@@ -708,6 +708,13 @@ def models_command(_args):
 
 
 def main():
+    from importlib.metadata import version as pkg_version
+
+    try:
+        _version = pkg_version("rapid-mlx")
+    except Exception:
+        _version = "dev"
+
     parser = argparse.ArgumentParser(
         description="Rapid-MLX: AI inference for Apple Silicon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -717,6 +724,9 @@ Examples:
   rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --port 8000
   rapid-mlx models
         """,
+    )
+    parser.add_argument(
+        "--version", "-V", action="version", version=f"rapid-mlx {_version}"
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 

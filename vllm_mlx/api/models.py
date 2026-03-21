@@ -307,7 +307,7 @@ class ModelInfo(BaseModel):
     id: str
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))
-    owned_by: str = "vllm-mlx"
+    owned_by: str = "rapid-mlx"
 
 
 class ModelsResponse(BaseModel):
