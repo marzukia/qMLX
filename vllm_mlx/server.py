@@ -1701,6 +1701,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
             detail="messages must not be empty",
         )
 
+    # Validate message roles
+    _valid_roles = {"system", "user", "assistant", "tool", "developer"}
+    for msg in request.messages:
+        if msg.role not in _valid_roles:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid role '{msg.role}'. Must be one of: {', '.join(sorted(_valid_roles))}",
+            )
+
     # Validate top_logprobs range (OpenAI spec: 0-20)
     if request.top_logprobs is not None and (
         request.top_logprobs < 0 or request.top_logprobs > 20
