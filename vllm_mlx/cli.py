@@ -1063,12 +1063,13 @@ Examples:
             "minimax",
             "harmony",
             "gpt-oss",
+            "gemma4",
         ],
         help=(
             "Select the tool call parser for the model. Options: "
             "auto (auto-detect), mistral, qwen, qwen3_coder, llama, hermes, "
             "deepseek, kimi, granite, nemotron, xlam, functionary, glm47, minimax, "
-            "harmony/gpt-oss. "
+            "harmony/gpt-oss, gemma4. "
             "Required for --enable-auto-tool-choice."
         ),
     )

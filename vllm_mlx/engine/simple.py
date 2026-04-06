@@ -460,6 +460,7 @@ class SimpleEngine(BaseEngine):
                     finished=finished,
                     finish_reason=finish_reason,
                     logprobs=getattr(chunk, "logprobs", None),
+                    channel=getattr(chunk, "channel", None),
                 )
 
                 # Yield to event loop periodically so the server can
@@ -555,16 +556,20 @@ class SimpleEngine(BaseEngine):
             if self._is_mllm:
                 # For MLLM with media, use the chat method which handles images/videos
                 # Run in thread pool to allow asyncio timeout to work
-                output = await asyncio.to_thread(
-                    self._model.chat,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    stop=stop,
-                    tools=template_tools,
-                    **kwargs,
-                )
+                try:
+                    output = await asyncio.to_thread(
+                        self._model.chat,
+                        messages=messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        top_p=top_p,
+                        stop=stop,
+                        tools=template_tools,
+                        **kwargs,
+                    )
+                except Exception as e:
+                    logger.error("MLLM chat() failed: %s", e, exc_info=True)
+                    raise
                 return GenerationOutput(
                     text=output.text,
                     prompt_tokens=output.prompt_tokens,
@@ -744,6 +749,18 @@ class SimpleEngine(BaseEngine):
                         chunk = await asyncio.to_thread(next, sync_gen)
                     except StopIteration:
                         break
+                    except Exception as e:
+                        # Some VLM models (e.g. Gemma 4) raise during
+                        # generator cleanup after generation completes.
+                        # If we already have output, treat as finished.
+                        if token_count > 0:
+                            logger.warning(
+                                "MLLM stream_chat error after %d tokens "
+                                "(likely post-generation cleanup): %s",
+                                token_count, e,
+                            )
+                            break
+                        raise
 
                     token_count += 1
                     new_text = chunk.text if hasattr(chunk, "text") else str(chunk)

@@ -21,6 +21,7 @@ SPECIAL_TOKENS_PATTERN = re.compile(
     r"<\|end\|>|<\|eot_id\|>|<\|eom_id\|>|<\|python_tag\|>|"
     r"<\|start_header_id\|>|<\|end_header_id\|>|"
     r"<\|channel\|>|<\|message\|>|<\|start\|>|<\|return\|>|<\|call\|>|<\|constrain\|>|"
+    r"<\|turn>|<turn\|>|"
     r"</s>|<s>|<pad>|\[PAD\]|\[SEP\]|\[CLS\]|"
     r"\[e~\[|\]~b\][a-z]*|\]~!b\["
 )
@@ -40,6 +41,44 @@ def strip_special_tokens(text: str) -> str:
     for ch in text:
         if ch in _SPECIAL_TOKEN_CHARS:
             return SPECIAL_TOKENS_PATTERN.sub("", text)
+    return text
+
+
+# =============================================================================
+# Final sanitizer — last-mile catch-all before content reaches the client.
+# Catches ANY remaining markup that earlier layers missed, including:
+# - All <|..> and <..|> asymmetric tokens (Gemma 4 style)
+# - All <|..|> symmetric tokens (Qwen, GPT-OSS style)
+# - [Calling tool:...] text-format tool calls
+# - Stray </think>, </tool_call>, etc.
+# =============================================================================
+
+_FINAL_SANITIZER = re.compile(
+    # Any <|...> or <...|> token (Gemma 4 asymmetric: <|channel>, <tool_call|>, etc.)
+    r"<\|[a-z_\"]+>|<[a-z_\"]+\|>"
+    # Any <|...|> token (symmetric: <|im_end|>, <|channel|>, etc.)
+    r"|<\|[a-z_]+\|>"
+    # [Calling tool:...] or [Calling tool="..."]
+    r"|\[Calling\s+tool[=:][^\]]*\]"
+    # Stray closing tags
+    r"|</think>|</tool_call>"
+)
+
+
+def sanitize_output(text: str) -> str:
+    """Final catch-all sanitizer for client-facing content.
+
+    This is the LAST defense against markup leakage. Runs after all
+    parsers and filters. Strips anything that looks like a special token
+    or internal markup pattern.
+
+    Designed to be aggressive — better to over-strip than to leak.
+    """
+    if not text:
+        return text
+    for ch in text:
+        if ch in _SPECIAL_TOKEN_CHARS:
+            return _FINAL_SANITIZER.sub("", text).strip()
     return text
 
 
@@ -123,8 +162,14 @@ def clean_output_text(text: str) -> str:
     return text
 
 
-# Pattern to match <think>...</think> blocks
-THINK_PATTERN = re.compile(r"<think>[\s\S]*?</think>\s*", re.DOTALL)
+# Pattern to match thinking blocks:
+# - <think>...</think> (Qwen, DeepSeek, etc.)
+# - <|channel>thought\n...<channel|> (Gemma 4)
+THINK_PATTERN = re.compile(
+    r"<think>[\s\S]*?</think>\s*"
+    r"|<\|channel>thought\n[\s\S]*?<channel\|>\s*",
+    re.DOTALL,
+)
 
 
 def strip_thinking_tags(text: str) -> str:
