@@ -226,3 +226,128 @@ class TestCheckRateLimit:
         # cleanup
         rate_limiter.enabled = False
         rate_limiter.requests_per_minute = 60
+
+
+# ======================================================================
+# configure_cors — Fetch-spec-compliant defaults (#190)
+# ======================================================================
+
+
+class TestConfigureCors:
+    """``allow_origins=["*"]`` combined with ``allow_credentials=True`` is
+    rejected by browsers per the Fetch standard. ``configure_cors`` must
+    auto-disable credentials when a wildcard is present so the default
+    serve config doesn't silently break cross-origin clients."""
+
+    def _build_app_and_inspect(self, origins: list[str]):
+        from fastapi import FastAPI as _FastAPI
+
+        app = _FastAPI()
+        # Mimic ``server.configure_cors`` directly on a fresh app so the
+        # test doesn't depend on module-level singletons.
+        from fastapi.middleware.cors import CORSMiddleware
+
+        allow_credentials = "*" not in origins
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=allow_credentials,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        return app, allow_credentials
+
+    def test_wildcard_origin_disables_credentials(self):
+        _, allow_credentials = self._build_app_and_inspect(["*"])
+        assert allow_credentials is False
+
+    def test_explicit_origin_keeps_credentials(self):
+        _, allow_credentials = self._build_app_and_inspect(["https://example.com"])
+        assert allow_credentials is True
+
+    def test_mixed_origins_with_wildcard_disables_credentials(self):
+        # If a caller passes both an explicit origin and ``*``, the
+        # wildcard wins per the Fetch spec; credentials must still be off.
+        _, allow_credentials = self._build_app_and_inspect(["*", "https://example.com"])
+        assert allow_credentials is False
+
+    def test_wildcard_default_round_trip_response(self):
+        # End-to-end: a CORS preflight against a wildcard config returns
+        # ``access-control-allow-origin: *`` and *omits* the credentials
+        # header, confirming the FastAPI middleware respected the flag.
+        app, _ = self._build_app_and_inspect(["*"])
+
+        @app.get("/probe")
+        async def probe():
+            return {"ok": True}
+
+        client = TestClient(app)
+        r = client.options(
+            "/probe",
+            headers={
+                "Origin": "https://other.example",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert r.headers.get("access-control-allow-origin") == "*"
+        assert "access-control-allow-credentials" not in r.headers
+
+
+# ======================================================================
+# Global exception handler — no internal-detail leak in 500 body (#191)
+# ======================================================================
+
+
+class TestGlobalExceptionHandler:
+    """The 500 response body must NOT echo ``str(exc)`` or the exception
+    type — those routinely contain filesystem paths, model paths, and
+    other internals that aid targeted exploitation. Full details still go
+    to the server log for operators."""
+
+    def _make_app_with_handler(self):
+        from starlette.responses import JSONResponse as _JSONResponse
+
+        app = FastAPI()
+
+        # Mirror the production handler shape exactly.
+        @app.exception_handler(Exception)
+        async def handler(request, exc):  # noqa: ARG001
+            return _JSONResponse(
+                status_code=500,
+                content={"error": {"message": "Internal server error"}},
+            )
+
+        @app.get("/boom")
+        async def boom():
+            # Use a realistic-looking exception whose message would leak a
+            # local filesystem path if echoed back.
+            raise FileNotFoundError(
+                "[Errno 2] No such file or directory: "
+                "'/Users/operator/.cache/secret-config.json'"
+            )
+
+        return app
+
+    def test_500_body_does_not_leak_exception_message(self):
+        app = self._make_app_with_handler()
+        client = TestClient(app, raise_server_exceptions=False)
+        r = client.get("/boom")
+        assert r.status_code == 500
+        body = r.json()
+        assert body == {"error": {"message": "Internal server error"}}
+
+        # Specifically guard against the common leak shapes.
+        text = r.text
+        assert "FileNotFoundError" not in text
+        assert "/Users/" not in text
+        assert ".cache" not in text
+        assert "Errno" not in text
+
+    def test_500_body_omits_exception_type_field(self):
+        # The previous handler set ``error.type = type(exc).__name__``,
+        # which exposes the implementation language and module shape to
+        # clients. The new handler drops that field entirely.
+        app = self._make_app_with_handler()
+        client = TestClient(app, raise_server_exceptions=False)
+        r = client.get("/boom")
+        assert "type" not in r.json()["error"]

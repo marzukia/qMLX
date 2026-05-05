@@ -326,15 +326,22 @@ app = FastAPI(
 )
 
 # CORS configuration — configurable via --cors-origins CLI flag
-_cors_origins: list[str] = ["*"]
 
 
 def configure_cors(origins: list[str]) -> None:
-    """Configure CORS middleware with the given allowed origins."""
+    """Configure CORS middleware with the given allowed origins.
+
+    When the wildcard ``*`` is present, ``allow_credentials`` is forced to
+    False to comply with the Fetch standard — browsers reject responses
+    that combine ``Access-Control-Allow-Origin: *`` with
+    ``Access-Control-Allow-Credentials: true``, so the previous default
+    silently broke any cross-origin client that sent cookies or
+    Authorization headers."""
+    allow_credentials = "*" not in origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -354,7 +361,13 @@ from .middleware.auth import (
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
     """Catch unhandled exceptions so they return JSON 500 instead of killing
-    the connection. This keeps the server alive for subsequent requests."""
+    the connection. This keeps the server alive for subsequent requests.
+
+    The exception message and type are intentionally NOT echoed back to
+    the client — exception messages routinely contain absolute filesystem
+    paths, model paths, environment values, and other internal state that
+    aids targeted exploitation. Full details (with traceback) go to the
+    server log for operators."""
     logger.error(
         "Unhandled exception on %s %s: %s",
         request.method,
@@ -366,7 +379,7 @@ async def _global_exception_handler(request: Request, exc: Exception):
 
     return JSONResponse(
         status_code=500,
-        content={"error": {"message": str(exc), "type": type(exc).__name__}},
+        content={"error": {"message": "Internal server error"}},
     )
 
 
