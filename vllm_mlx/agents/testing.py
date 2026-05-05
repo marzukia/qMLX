@@ -1016,17 +1016,61 @@ class AgentTestRunner:
             List of TestResult from the specific test module.
         """
         import importlib.util
+        import re
         from pathlib import Path
 
-        # Find the test file
-        test_dir = Path(__file__).parent.parent.parent / "tests" / "integrations"
-        test_path = test_dir / test_module_name
-        if not test_path.exists():
+        # The loaded path is fed to spec_from_file_location and executed.
+        # specific_tests today comes from package-shipped YAML profiles
+        # (vllm_mlx/agents/profiles/*.yaml), so this is defense-in-depth
+        # rather than a live exploit gate — but reject anything that
+        # could traverse out of the bundled / source directories before
+        # we resolve it.
+        # Disallow leading hyphens — would never come from a profile YAML
+        # but downstream tooling (e.g. shell wrappers around the file
+        # path) treats `-foo` as an option flag.
+        # re.ASCII pins \w to [A-Za-z0-9_] — without it, Unicode letters
+        # like `tést.py` would slip through.
+        if not re.fullmatch(
+            r"[A-Za-z0-9_][\w\-]*\.(py|sh)", test_module_name, re.ASCII
+        ):
             return [
                 TestResult(
                     f"specific:{test_module_name}",
                     TestStatus.SKIP,
-                    message=f"Test file not found: {test_path}",
+                    message=(
+                        f"Invalid integration test name '{test_module_name}': "
+                        "must be a bare filename ending in .py or .sh "
+                        "(no path separators or .. components)."
+                    ),
+                    category="specific",
+                )
+            ]
+
+        # Find the test file. Prefer the bundled location (ships with
+        # pip/brew wheels via package_data) and fall back to the source
+        # layout for editable / repo-clone installs.
+        bundled_dir = Path(__file__).parent.parent / "_integration_tests"
+        source_dir = Path(__file__).parent.parent.parent / "tests" / "integrations"
+        test_path = None
+        for candidate in (
+            bundled_dir / test_module_name,
+            source_dir / test_module_name,
+        ):
+            if candidate.exists():
+                test_path = candidate
+                break
+        if test_path is None:
+            return [
+                TestResult(
+                    f"specific:{test_module_name}",
+                    TestStatus.SKIP,
+                    message=(
+                        f"Integration test '{test_module_name}' not found in "
+                        f"bundled ({bundled_dir}) or source ({source_dir}) "
+                        "locations. If you installed via pip/brew, this is a "
+                        "packaging bug — please report it. For repo clones, "
+                        "ensure tests/integrations/ exists."
+                    ),
                     category="specific",
                 )
             ]
