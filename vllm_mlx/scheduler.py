@@ -1900,8 +1900,17 @@ class Scheduler:
         if request_id in self.running:
             del self.running[request_id]
 
+        # Credit in-flight tokens so dashboard metrics stay accurate
+        # (without this, aborted requests' tokens vanish from /v1/status).
+        if request is not None and request.num_output_tokens > 0:
+            self.total_completion_tokens += request.num_output_tokens
+            self.total_prompt_tokens += request.num_prompt_tokens
+
         if request is not None:
             request.set_finished(RequestStatus.FINISHED_ABORTED)
+            # Release cache references so Metal buffers can be freed
+            request.prompt_cache = None
+            request._extracted_cache = None
         self.finished_req_ids.add(request_id)
         self._cleanup_detokenizer(request_id)
 
@@ -2033,6 +2042,12 @@ class Scheduler:
                 request.status = RequestStatus.RUNNING
                 # Attach incremental decoder for multi-byte safe streaming
                 request._decoder = IncrementalDecoder(self._actual_tokenizer)
+                # Release the prompt cache reference now that BatchGenerator
+                # has its own copy.  Holding this reference prevents MLX from
+                # freeing the Metal buffers until the request object is GC'd,
+                # which under sustained traffic can accumulate hundreds of GB
+                # of wired memory (issue #442).
+                request.prompt_cache = None
                 self.running[request.request_id] = request
                 scheduled.append(request)
 
@@ -2295,6 +2310,14 @@ class Scheduler:
                         values_attr = layer.values
                         if not callable(keys_attr) and not callable(values_attr):
                             mx.eval(keys_attr, values_attr)
+
+            # Release all cache references on the request so Metal buffers
+            # can be freed.  The prefix cache (if any) holds its own copy;
+            # keeping a second reference here pins the buffers in wired memory
+            # until the request object is GC'd (issue #442).
+            if request is not None:
+                request.prompt_cache = None
+                request._extracted_cache = None
 
             # Remove from running
             if request_id in self.running:
