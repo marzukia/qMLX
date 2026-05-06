@@ -49,6 +49,10 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Generated benchmark reports
+reports/benchmarks/ollama-comparison/*.json
+reports/benchmarks/ollama-comparison/*.md
+
 # Translations
 *.mo
 *.pot
@@ -56,6 +60,7 @@ cover/
 # Environments
 .env
 .venv
+.worktrees/
 env/
 venv/
 ENV/
