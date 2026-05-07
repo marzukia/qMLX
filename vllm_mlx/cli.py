@@ -668,6 +668,141 @@ def models_command(_args):
     print()
 
 
+def pull_command(args):
+    """Download a model to the HuggingFace cache without serving."""
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    repo_id = args.model  # already alias-resolved by main()
+
+    print(f"\n  Pulling {repo_id} ...")
+    try:
+        path = snapshot_download(repo_id)
+    except Exception as e:
+        is_404 = isinstance(e, RepositoryNotFoundError) or (
+            "404" in str(e) or "not found" in str(e).lower()
+        )
+        if is_404:
+            from vllm_mlx.model_aliases import suggest_similar
+
+            shown = getattr(args, "_original_alias", repo_id)
+            print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
+            suggestions = suggest_similar(shown)
+            if suggestions:
+                print(f"  Did you mean: {', '.join(suggestions)}?")
+            print("  Run `rapid-mlx models` to see available aliases,")
+            print(
+                "  or use a full HuggingFace path like: mlx-community/Qwen3.5-9B-4bit"
+            )
+            sys.exit(1)
+        raise
+    print(f"  Cached at: {path}")
+
+
+def rm_command(args):
+    """Remove a model from the HuggingFace cache."""
+    from huggingface_hub import scan_cache_dir
+
+    repo_id = args.model
+    cache = scan_cache_dir()
+    # Filter by repo_type=="model" — same repo_id can refer to a dataset or
+    # space, and we don't want ``rapid-mlx rm foo`` deleting a dataset.
+    matching = [
+        r for r in cache.repos if r.repo_id == repo_id and r.repo_type == "model"
+    ]
+    if not matching:
+        print(f"\n  '{repo_id}' is not in the HuggingFace cache.")
+        print("  Nothing to remove.")
+        sys.exit(1)
+
+    repo = matching[0]
+    revisions = [rev.commit_hash for rev in repo.revisions]
+    strategy = cache.delete_revisions(*revisions)
+    print(f"\n  Removing {repo_id} ({strategy.expected_freed_size_str}) ...")
+    strategy.execute()
+    print("  Done.")
+
+
+def ps_command(_args):
+    """List running rapid-mlx servers (process scan)."""
+    import time
+
+    import psutil
+
+    rows: list[tuple[int, str, str, str]] = []
+    for proc in psutil.process_iter(["pid", "cmdline", "create_time"]):
+        try:
+            cmd = proc.info["cmdline"] or []
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if not any(
+            ("rapid-mlx" in c or "vllm_mlx" in c) and "serve" in cmd for c in cmd
+        ):
+            continue
+
+        # Extract model arg and --port flag. argparse accepts options
+        # before positionals, so the model is the first non-flag token
+        # after `serve` whose prior token isn't a value-taking flag.
+        # The small list of flags here is conservative; unknown flags
+        # are assumed to NOT take a value.
+        VALUE_FLAGS = {
+            "--host",
+            "--port",
+            "--api-key",
+            "--tool-call-parser",
+            "--reasoning-parser",
+            "--log-level",
+            "--mcp-config",
+            "--cors-origins",
+            "--cloud-model",
+            "--cloud-api-base",
+            "--cloud-api-key",
+            "--served-model-name",
+            "--max-tokens",
+            "--gpu-memory-utilization",
+        }
+        model = "(unknown)"
+        port = "8000"  # serve's default
+        try:
+            i = cmd.index("serve") + 1
+            while i < len(cmd):
+                tok = cmd[i]
+                if tok.startswith("--"):
+                    if "=" in tok:
+                        key, val = tok.split("=", 1)
+                        if key == "--port":
+                            port = val
+                        i += 1
+                    elif tok in VALUE_FLAGS:
+                        if tok == "--port" and i + 1 < len(cmd):
+                            port = cmd[i + 1]
+                        i += 2
+                    else:
+                        i += 1
+                else:
+                    model = tok
+                    break
+        except ValueError:
+            pass
+
+        uptime_s = max(0, int(time.time() - proc.info["create_time"]))
+        h, m = uptime_s // 3600, (uptime_s % 3600) // 60
+        uptime = f"{h}h{m:02d}m" if h else f"{m}m{uptime_s % 60:02d}s"
+        rows.append((proc.info["pid"], port, model, uptime))
+
+    if not rows:
+        print("\n  No rapid-mlx servers running.")
+        return
+
+    print()
+    print(f"  {'PID':<8}{'PORT':<8}{'MODEL':<40}{'UPTIME':<10}")
+    print(f"  {'-' * 66}")
+    # Sort numerically by port — string sort would put "10000" before "8000".
+    for pid, port, model, uptime in sorted(rows, key=lambda r: int(r[1])):
+        print(f"  {pid:<8}{port:<8}{model:<40}{uptime:<10}")
+    print()
+
+
 def info_command(args):
     """Print the per-model profile for a model name or alias.
 
@@ -1408,6 +1543,21 @@ Examples:
         "subcommand", nargs="?", help="Subcommand to show help for (omit for top-level)"
     )
 
+    # Pull / rm / ps — Ollama-style cache and process management.
+    pull_parser = subparsers.add_parser(
+        "pull", help="Download a model to the HuggingFace cache (no server)"
+    )
+    pull_parser.add_argument(
+        "model", help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name)"
+    )
+    rm_parser = subparsers.add_parser(
+        "rm", help="Remove a cached model from the HuggingFace cache"
+    )
+    rm_parser.add_argument(
+        "model", help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name)"
+    )
+    subparsers.add_parser("ps", help="List running rapid-mlx servers")
+
     # Info command — show the per-model profile (parsers + capability gates)
     info_parser = subparsers.add_parser(
         "info",
@@ -1544,6 +1694,12 @@ Examples:
             print(f"Unknown subcommand: {target}")
             print("Run `rapid-mlx help` for the list of subcommands.")
             sys.exit(1)
+    elif args.command == "pull":
+        pull_command(args)
+    elif args.command == "rm":
+        rm_command(args)
+    elif args.command == "ps":
+        ps_command(args)
     elif args.command == "info":
         info_command(args)
     elif args.command == "agents":
