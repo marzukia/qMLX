@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 
 
@@ -405,16 +406,29 @@ def serve_command(args):
             mtp=args.enable_mtp,
         )
     except Exception as e:
-        # Show clean error instead of raw traceback
-        error_msg = str(e)
-        if "404" in error_msg or "not found" in error_msg.lower():
-            print(f"\n  Error: Model '{args.model}' not found.")
+        # Show clean error instead of raw traceback. Catch the typed
+        # HF exception class for the 404 case; fall back to substring
+        # match for legacy callers (older huggingface_hub) and for
+        # non-HF errors that still spell out "not found".
+        from huggingface_hub.utils import RepositoryNotFoundError
+
+        is_404 = isinstance(e, RepositoryNotFoundError) or (
+            "404" in str(e) or "not found" in str(e).lower()
+        )
+        if is_404:
+            from vllm_mlx.model_aliases import suggest_similar
+
+            shown = getattr(args, "_original_alias", args.model)
+            print(f"\n  Error: Model '{shown}' not found on HuggingFace.")
+            suggestions = suggest_similar(shown)
+            if suggestions:
+                print(f"  Did you mean: {', '.join(suggestions)}?")
             print("  Run `rapid-mlx models` to see available aliases,")
             print(
                 "  or use a full HuggingFace path like: mlx-community/Qwen3.5-9B-4bit"
             )
         else:
-            print(f"\n  Error loading model: {error_msg}")
+            print(f"\n  Error loading model: {e}")
         sys.exit(1)
 
     # Start server
@@ -1410,13 +1424,26 @@ Examples:
         and args.model
         and getattr(args, "command", None) != "doctor"
     ):
-        from vllm_mlx.model_aliases import resolve_model
+        from vllm_mlx.model_aliases import resolve_model, suggest_similar
 
         resolved = resolve_model(args.model)
         if resolved != args.model:
             print(f"  Alias: {args.model} → {resolved}")
             args._original_alias = args.model
             args.model = resolved
+        elif "/" not in args.model and not os.path.exists(args.model):
+            # Not an alias, not a HuggingFace org/name path, not a local
+            # directory — fail fast with suggestions instead of letting the
+            # request hit HuggingFace and 404 with a 30-line stack trace.
+            print(
+                f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
+            )
+            suggestions = suggest_similar(args.model)
+            if suggestions:
+                print(f"  Did you mean: {', '.join(suggestions)}?")
+            print("  Run `rapid-mlx models` to see all aliases,")
+            print("  or pass a full path like: mlx-community/Qwen3.5-9B-4bit")
+            sys.exit(1)
 
     if args.command == "serve":
         serve_command(args)

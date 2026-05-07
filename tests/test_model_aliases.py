@@ -3,7 +3,7 @@
 
 import os
 
-from vllm_mlx.model_aliases import list_aliases, resolve_model
+from vllm_mlx.model_aliases import list_aliases, resolve_model, suggest_similar
 
 
 def test_known_alias_resolves():
@@ -43,3 +43,51 @@ def test_hermes_alias_not_llama():
     aliases = list_aliases()
     assert "llama3-8b" not in aliases
     assert "hermes3-8b" in aliases
+
+
+def test_suggest_similar_stays_within_family():
+    """Real reproduction: typing ``deepseek-v4-27b`` (non-existent variant)
+    must suggest the deepseek-v4 family — NOT mix in deepseek-r1 which is
+    a different model. Generic edit-distance ranking failed this; the
+    family-aware filter exists to fix it."""
+    suggestions = suggest_similar("deepseek-v4-27b")
+    assert suggestions, "expected at least one suggestion"
+    # Every suggestion must share the deepseek-v4 family — no deepseek-r1
+    # bait-and-switch.
+    for s in suggestions:
+        assert s.startswith("deepseek-v4"), s
+
+
+def test_suggest_similar_correctly_typo_for_close_size():
+    """Typing ``qwen3.5-30b`` (typo for ``qwen3.5-35b``) should rank the
+    correct alias first."""
+    suggestions = suggest_similar("qwen3.5-30b")
+    assert suggestions, "expected at least one suggestion"
+    assert suggestions[0] == "qwen3.5-35b", suggestions
+
+
+def test_suggest_similar_empty_for_nonsense():
+    assert suggest_similar("xyzabc12345") == []
+
+
+def test_suggest_similar_lets_legitimate_hf_ids_through():
+    """Bare HF IDs must NOT match — otherwise the CLI fast-fail in
+    ``main()`` would block legitimate single-segment HuggingFace
+    repositories like ``gpt2`` and ``bert-base-uncased``."""
+    assert suggest_similar("gpt2") == []
+    assert suggest_similar("bert-base-uncased") == []
+
+
+def test_suggest_similar_one_letter_no_match():
+    """Single-character inputs must not match anything (would otherwise
+    spuriously suggest with cutoff=0.5)."""
+    assert suggest_similar("q") == []
+    assert suggest_similar("g") == []
+
+
+def test_suggest_similar_matches_partial_family_token():
+    """A bare family name like ``hermes`` should suggest aliases that
+    share that prefix (``hermes3-8b``), not return [] just because there's
+    no exact ``hermes-foo`` separator pattern."""
+    suggestions = suggest_similar("hermes")
+    assert "hermes3-8b" in suggestions, suggestions
