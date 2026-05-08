@@ -123,3 +123,114 @@ class TestThresholds:
         # (~330 tok/s for Llama-3.2-1B-4bit). If a future model goes past
         # this for real we re-tune; until then it's a reliable sanity gate.
         assert pytest.approx(500.0) == bench.TPS_CEILING
+
+
+class TestPayloadIsGreedy:
+    """Pin the contract that bench requests force greedy sampling.
+
+    Without ``temperature: 0.0`` in the payload the server's
+    ``_resolve_temperature`` returns the 0.7 fallback,
+    ``_install_suffix_decoding._is_greedy_for_uid`` returns False on
+    every step, the verify path falls through to vanilla, and the
+    bench measures vanilla-vs-vanilla. Every measurement collapses
+    to ~1.0x and the resulting tier dataset is meaningless.
+
+    The whole batch-1 / batch-2 tier sweep on disk before this fix
+    landed was wrong for exactly this reason.
+    """
+
+    def test_payload_forces_temperature_zero(self, monkeypatch):
+        """Capture the actual payload that ``run_workload`` would send and
+        assert ``temperature == 0.0``. Catches a refactor that reshuffles
+        the body in any way — substring tests would pass on a comment.
+        """
+        captured = {}
+
+        class _FakeStream:
+            def __init__(self, *args, **kwargs):
+                captured["json"] = kwargs.get("json")
+
+            def __enter__(self):
+                self._lines = iter([])
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def iter_lines(self):
+                return self._lines
+
+        monkeypatch.setattr(bench.httpx, "stream", _FakeStream)
+        handle = bench.ServerHandle(
+            proc=None,  # type: ignore[arg-type]
+            base_url="http://127.0.0.1:0/v1",
+            model="dummy",
+        )
+        bench.run_workload(handle, {"messages": [{"role": "user", "content": "x"}]}, 8)
+
+        payload = captured["json"]
+        assert payload["temperature"] == 0.0, (
+            "bench payload must set temperature=0.0 to force greedy sampling. "
+            "Without this, server defaults to 0.7 and SuffixDecoding's "
+            "_is_greedy_for_uid returns False, so the verify path falls "
+            "through on every step. Tier dataset becomes vanilla-vs-vanilla."
+        )
+
+    def test_workload_bodies_dont_set_temperature(self):
+        """Belt-and-suspenders: even though run_workload now forces
+        greedy regardless of body, canonical workloads still shouldn't
+        try to set a temperature — anything they specify would be a
+        confusing dead value."""
+        for name, body in bench.WORKLOADS.items():
+            assert "temperature" not in body, (
+                f"workload '{name}' sets a temperature value that would be "
+                "silently overridden. Remove it from the workload body."
+            )
+
+    def test_hostile_workload_cannot_clobber_greedy(self, monkeypatch):
+        """The dynamic invariant: ``run_workload`` MUST force greedy
+        regardless of what the workload body contains. A workload that
+        tries to set ``temperature: 0.7`` should still result in the
+        request being sent with ``temperature: 0.0``.
+
+        This pins the dict-spread order in run_workload — if someone
+        flips ``**workload_body`` to come last, the test catches it
+        instead of the next bench sweep silently going non-greedy.
+        """
+        captured = {}
+
+        class _FakeStream:
+            def __init__(self, *args, **kwargs):
+                captured["json"] = kwargs.get("json")
+
+            def __enter__(self):
+                self._lines = iter([])
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def iter_lines(self):
+                return self._lines
+
+        monkeypatch.setattr(bench.httpx, "stream", _FakeStream)
+        handle = bench.ServerHandle(
+            proc=None,  # type: ignore[arg-type]
+            base_url="http://127.0.0.1:0/v1",
+            model="dummy",
+        )
+        bench.run_workload(
+            handle,
+            {
+                "messages": [{"role": "user", "content": "x"}],
+                "temperature": 0.7,  # hostile — must lose
+            },
+            8,
+        )
+
+        assert captured["json"]["temperature"] == 0.0, (
+            "run_workload must force greedy regardless of workload body. "
+            "If a workload's temperature wins, suffix-decoding will fall "
+            "through and the bench will be vanilla-vs-vanilla. Check the "
+            "dict-spread order in run_workload's payload construction."
+        )
