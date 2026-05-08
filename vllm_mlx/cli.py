@@ -118,6 +118,86 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         pass
 
 
+def _ensure_model_downloaded(model_name: str) -> None:
+    """Pre-fetch a model in the foreground so HF's tqdm progress is visible.
+
+    Used by ``rapid-mlx chat``: the chat REPL spawns ``serve`` as a
+    subprocess with stdout/stderr redirected to a log file. If the model
+    isn't cached, the user sees a silent multi-minute hang while several
+    GB downloads behind the log. Calling ``snapshot_download`` here first
+    surfaces the standard HF progress bars on the user's terminal, then
+    the spawned server starts as a cache hit.
+
+    No-op when the model is already cached, when ``model_name`` is a local
+    path, or when the HF lookup fails (let the loader's own error paths
+    handle it).
+    """
+    if os.path.exists(model_name):
+        return
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        cached = try_to_load_from_cache(model_name, "config.json")
+        if isinstance(cached, str) and os.path.exists(cached):
+            return
+    except Exception:
+        return
+
+    # Disk-space gate: a 20 GB partial download that fails on the last
+    # shard wastes the user's time. ``_check_disk_space`` queries HF for
+    # the repo size and aborts with a clear message + exit(1) if there
+    # isn't enough room on the resolved HF cache filesystem.
+    _check_disk_space(model_name)
+
+    try:
+        from huggingface_hub import model_info, snapshot_download
+
+        size_gb = 0.0
+        try:
+            info = model_info(model_name, files_metadata=True)
+            size_bytes = sum(
+                (s.size or 0)
+                for s in (getattr(info, "siblings", None) or [])
+                if hasattr(s, "size")
+            )
+            size_gb = size_bytes / (1024**3)
+        except Exception:
+            pass
+
+        is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+        BOLD = "\x1b[1m" if is_tty else ""
+        DIM = "\x1b[2m" if is_tty else ""
+        RESET = "\x1b[0m" if is_tty else ""
+        if size_gb > 0:
+            print(
+                f"\n  {BOLD}First-time download{RESET} — "
+                f"fetching {model_name} {DIM}(~{size_gb:.1f} GB){RESET} "
+                "from HuggingFace ..."
+            )
+        else:
+            print(
+                f"\n  {BOLD}First-time download{RESET} — "
+                f"fetching {model_name} from HuggingFace ..."
+            )
+
+        snapshot_download(model_name)
+        print()
+    except SystemExit:
+        # _check_disk_space aborts via sys.exit(1) — let it through.
+        raise
+    except Exception as e:
+        # Definitive 404s are surfaced so callers (e.g. ``/model bogus``)
+        # can refuse fast instead of spawning a doomed serve subprocess
+        # that fails after ``--ready-timeout``. Other transient errors
+        # (network, auth) fall through silently — the spawned server's
+        # own loader will retry and surface a real error if needed.
+        from huggingface_hub.utils import RepositoryNotFoundError
+
+        if isinstance(e, RepositoryNotFoundError) or "404" in str(e):
+            raise RuntimeError(f"Model {model_name!r} not found on HuggingFace") from e
+        print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -818,12 +898,23 @@ def ps_command(_args):
 
 
 def _spawn_chat_server(
-    model: str, log_path: str, served_name: str | None = None
+    model: str,
+    log_path: str,
+    served_name: str | None = None,
+    *,
+    register_in: list | None = None,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
-    Returns (Popen handle, base_url). The caller must register cleanup —
-    `chat_command` does so via atexit + signal handlers.
+    Returns (Popen handle, base_url).
+
+    ``register_in`` is an optional list (typically the chat REPL's
+    ``_active_procs``). When provided, the new ``Popen`` is appended to it
+    *immediately* after construction — narrowing the SIGTERM-orphan race
+    that exists between ``Popen()`` returning and the caller registering
+    the handle. Caller-side ``register_in.append(proc)`` would still leave
+    one Python statement of unprotected window; doing it inside this
+    function closes that window for the caller.
 
     If ``served_name`` is given, it is passed via ``--served-model-name`` so
     the spawned server exposes the alias as the API model name (e.g. user
@@ -853,42 +944,101 @@ def _spawn_chat_server(
     if served_name and served_name != model:
         cmd.extend(["--served-model-name", served_name])
     log = open(log_path, "w")  # noqa: SIM115 — kept open for proc lifetime
-    proc = subprocess.Popen(  # noqa: S603
-        cmd,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except (OSError, ValueError):
+        # Popen raised before constructing the child — the log handle
+        # would otherwise leak. Re-raise after closing.
+        log.close()
+        raise
+    # Register first so a SIGTERM landing between here and the caller's
+    # next statement still tears the child down.
+    if register_in is not None:
+        register_in.append(proc)
+    # Stash the log handle and path on the proc object so the chat REPL
+    # can close+unlink them when the proc is torn down (fixes the file
+    # descriptor + tempfile leak across `/model` swaps).
+    proc._rapid_mlx_log = log
+    proc._rapid_mlx_log_path = log_path
     return proc, base_url
 
 
 def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
-    """Block until /health/ready returns 200, the proc exits, or timeout."""
+    """Block until /health/ready returns 200, the proc exits, or timeout.
+
+    On a TTY, draws a spinner + elapsed-seconds counter to stderr so the
+    user can see the chat REPL is alive while the spawned server loads
+    weights (typically 20-90 s for 4-30 B models on Apple Silicon). The
+    line is erased before this function returns so the caller's next
+    print lands on a clean line.
+    """
     import time
 
     import requests
 
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(
-                f"server exited early (code {proc.returncode}); "
-                "see chat-server.log for details"
-            )
-        try:
-            r = requests.get(f"{base_url}/health/ready", timeout=2)
-            if r.status_code == 200:
-                return
-        except requests.RequestException:
-            pass
-        time.sleep(1)
+    is_tty = sys.stderr.isatty()
+    spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    cyan = "\x1b[36m" if is_tty else ""
+    dim = "\x1b[2m" if is_tty else ""
+    reset = "\x1b[0m" if is_tty else ""
+    start = time.monotonic()
+    deadline = start + timeout_s
+    tick = 0
+
+    def _draw():
+        if not is_tty:
+            return
+        elapsed = int(time.monotonic() - start)
+        ch = spinner[tick % len(spinner)]
+        sys.stderr.write(
+            f"\r  {cyan}{ch}{reset} loading model ... {dim}{elapsed}s{reset}"
+        )
+        sys.stderr.flush()
+
+    def _clear():
+        if not is_tty:
+            return
+        sys.stderr.write("\r" + " " * 40 + "\r")
+        sys.stderr.flush()
+
+    try:
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"server exited early (code {proc.returncode}); "
+                    "see chat-server.log for details"
+                )
+            # Animate the spinner at 10 fps; only poll /health once a
+            # second to keep the spinner smooth and the network polite.
+            if tick % 10 == 0:
+                try:
+                    r = requests.get(f"{base_url}/health/ready", timeout=2)
+                    if r.status_code == 200:
+                        return
+                except requests.RequestException:
+                    pass
+            _draw()
+            time.sleep(0.1)
+            tick += 1
+    finally:
+        _clear()
     raise TimeoutError(
         f"server did not become ready within {timeout_s}s "
         "(large models can take longer — pass --ready-timeout)"
     )
 
 
-def _stream_chat_response(base_url: str, payload: dict, timeout_s: int) -> str:
+def _stream_chat_response(
+    base_url: str,
+    payload: dict,
+    timeout_s: int,
+    metrics: dict | None = None,
+) -> str:
     """POST /v1/chat/completions with stream=True and print tokens as they
     arrive. Returns the full assistant content (concatenated content deltas).
 
@@ -896,16 +1046,176 @@ def _stream_chat_response(base_url: str, payload: dict, timeout_s: int) -> str:
     in dim ANSI so the user sees thinking, but excluded from the returned
     string — chat history stores only the final answer, matching the
     OpenAI-compat split between ``content`` and ``reasoning_content``.
+
+    Plain streaming: tokens land directly in the user's terminal as they
+    arrive. We deliberately do NOT use ``rich.Live`` + ``Markdown`` here:
+    Live re-renders the panel on every refresh and, when the console's
+    cursor-overwrite path is unreliable (recordings, some terminal
+    multiplexers), each refresh appends rather than overwrites — turning
+    a 200-token response into a wall of repeated text. Live markdown
+    rendering deserves a separate, more careful effort with explicit
+    fallback detection; for now correctness wins over formatting.
     """
     import json
 
     import requests
 
     DIM = "\x1b[2m"
+    BOLD = "\x1b[1m"
     RESET = "\x1b[0m"
-    is_tty = sys.stdout.isatty()
+    MAGENTA = "\x1b[35m"
+    CYAN = "\x1b[36m"
+    is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
     in_reasoning = False
     full = ""
+
+    # ----- Streaming markdown colorer ------------------------------------
+    # Body text streams in the terminal's default color (Claude-Code-style
+    # — accents only on chrome). Inline coloring handles the markers users
+    # see most often: ``\`code\``` (cyan), ``\`\`\`fence\`\`\``` (dim cyan
+    # block), ``**bold**`` (ANSI bold), and ATX headers (``#`` … ``####``)
+    # at line start. Lists / italic stay raw so the parser stays small.
+    HEADING_STYLE = {
+        1: BOLD + CYAN,  # `# h1`     — most prominent
+        2: BOLD + MAGENTA,  # `## h2`    — secondary
+        3: BOLD,  # `### h3`   — bold only
+        4: CYAN,  # `#### h4`  — cyan
+        5: MAGENTA,  # `##### h5` — magenta
+        6: DIM,  # `###### h6`— dim
+    }
+    _state = {
+        "in_fence": False,  # inside a ``` block
+        "in_inline_code": False,  # inside a `code` span
+        "in_bold": False,  # inside **bold**
+        "in_heading": False,  # inside an ATX heading line
+        "at_line_start": True,  # cursor is at start of a logical line
+        "pending": "",  # buffered chars awaiting lookahead
+    }
+
+    def _emit_with_inline_md(piece: str) -> None:
+        if not is_tty:
+            sys.stdout.write(piece)
+            sys.stdout.flush()
+            return
+        text = _state["pending"] + piece
+        _state["pending"] = ""
+        out: list[str] = []
+        i, n = 0, len(text)
+        while i < n:
+            c = text[i]
+            # Newline closes any line-scoped span (heading) and resets the
+            # line-start anchor so the next `#`/`*`/etc. is interpreted in
+            # the right context.
+            if c == "\n":
+                if _state["in_heading"]:
+                    out.append(RESET)
+                    _state["in_heading"] = False
+                out.append("\n")
+                _state["at_line_start"] = True
+                i += 1
+                continue
+            # ATX heading: `#`..`######` followed by space at line start.
+            # We skip this inside fences (a `#` at line start there is
+            # almost always a comment, not a heading).
+            if _state["at_line_start"] and c == "#" and not _state["in_fence"]:
+                # Count consecutive `#` (1..6).
+                j = i
+                while j < n and j - i < 6 and text[j] == "#":
+                    j += 1
+                # Need to see one more char after the hashes to decide
+                # heading vs literal "###foo" — buffer if we don't have it.
+                if j == n:
+                    _state["pending"] = text[i:]
+                    break
+                hashes = j - i
+                if 1 <= hashes <= 6 and text[j] == " ":
+                    style = HEADING_STYLE.get(hashes, BOLD)
+                    out.append(style)
+                    out.append(text[i : j + 1])  # emit "## "
+                    _state["in_heading"] = True
+                    _state["at_line_start"] = False
+                    i = j + 1
+                    continue
+                # Not a heading — fall through to literal emission below.
+            if c == "`":
+                # Need 2 chars of lookahead to disambiguate ``` vs `.
+                if i + 2 >= n:
+                    _state["pending"] = text[i:]
+                    break
+                if text[i : i + 3] == "```":
+                    if _state["in_fence"]:
+                        out.append("```" + RESET)
+                        _state["in_fence"] = False
+                    else:
+                        out.append(DIM + CYAN + "```")
+                        _state["in_fence"] = True
+                    _state["at_line_start"] = False
+                    i += 3
+                    continue
+                # Single backtick.
+                if _state["in_fence"]:
+                    out.append("`")
+                elif _state["in_inline_code"]:
+                    out.append("`" + RESET)
+                    _state["in_inline_code"] = False
+                else:
+                    out.append(CYAN + "`")
+                    _state["in_inline_code"] = True
+                _state["at_line_start"] = False
+                i += 1
+                continue
+            if c == "*" and not _state["in_fence"] and not _state["in_inline_code"]:
+                if i + 1 >= n:
+                    _state["pending"] = text[i:]
+                    break
+                if text[i : i + 2] == "**":
+                    if _state["in_bold"]:
+                        out.append("**" + RESET)
+                        _state["in_bold"] = False
+                    else:
+                        out.append(BOLD + "**")
+                        _state["in_bold"] = True
+                    _state["at_line_start"] = False
+                    i += 2
+                    continue
+            out.append(c)
+            # Whitespace (other than newline, handled above) keeps the
+            # line-start anchor true so leading-indent headings still
+            # parse — e.g., a list item's child paragraph is rare here.
+            if c not in " \t":
+                _state["at_line_start"] = False
+            i += 1
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    def _close_open_md_spans() -> None:
+        if is_tty and (
+            _state["in_fence"]
+            or _state["in_inline_code"]
+            or _state["in_bold"]
+            or _state["in_heading"]
+        ):
+            sys.stdout.write(RESET)
+            sys.stdout.flush()
+        if _state["pending"]:
+            sys.stdout.write(_state["pending"])
+            sys.stdout.flush()
+            _state["pending"] = ""
+
+    # ----- Repetition guard ----------------------------------------------
+    # Models occasionally degenerate into the same token repeated until
+    # max_tokens — filling the screen with "Barley Barley Barley...".
+    # The earlier guard ("≤2 unique tokens in the last 30") fired on
+    # legitimate content like ``[0, 0, 0, 0, 0]``, markdown table
+    # separators ``| --- | --- |``, and any list of identical short
+    # numbers. The current criterion is stricter: the SAME token must
+    # repeat ≥``REPEAT_LIMIT`` times *consecutively*. Tracked in a
+    # rolling counter so cost is O(1) per chunk regardless of response
+    # length (the previous ``full.split()`` was O(n²)).
+    REPEAT_LIMIT = 25
+    repeat_last: str | None = None
+    repeat_run = 0
+    repetition_aborted = False
 
     with requests.post(
         f"{base_url}/v1/chat/completions",
@@ -932,24 +1242,94 @@ def _stream_chat_response(base_url: str, payload: dict, timeout_s: int) -> str:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
+            # When the caller passes ``stream_options.include_usage``,
+            # the server emits a final chunk with empty choices and a
+            # populated ``usage`` block. Capture it for the speed line.
+            usage = chunk.get("usage")
+            if usage and metrics is not None:
+                metrics["completion_tokens"] = usage.get("completion_tokens")
+                metrics["prompt_tokens"] = usage.get("prompt_tokens")
+            # The usage-only final chunk has ``choices=[]``; guard
+            # against an IndexError there.
+            choices = chunk.get("choices") or []
+            delta = choices[0].get("delta", {}) if choices else {}
             reasoning = delta.get("reasoning_content")
             piece = delta.get("content")
             if reasoning:
                 if not in_reasoning:
-                    sys.stdout.write(f"{DIM}[thinking] " if is_tty else "[thinking] ")
+                    if is_tty:
+                        sys.stdout.write(f"{MAGENTA}[thinking]{RESET} {DIM}")
+                    else:
+                        sys.stdout.write("[thinking] ")
                     in_reasoning = True
                 sys.stdout.write(reasoning)
                 sys.stdout.flush()
             if piece:
                 if in_reasoning:
-                    sys.stdout.write(f"{RESET}\n" if is_tty else "\n")
+                    sys.stdout.write(f"{RESET}\n  " if is_tty else "\n")
                     in_reasoning = False
-                sys.stdout.write(piece)
-                sys.stdout.flush()
-                full += piece
+                # Detect repetition BEFORE emitting. If a single coalesced
+                # delta contains the cutoff inside it (server batched many
+                # repeated tokens into one chunk), find the position and
+                # only emit the prefix up to that token — otherwise the
+                # user sees the full degenerate dump before the abort
+                # message lands.
+                #
+                # Rolling counter: each new whitespace-separated token in
+                # this delta either extends the current consecutive run
+                # or resets it. Aborts only on a single token repeated
+                # ``REPEAT_LIMIT`` times in a row, not on diverse-but-
+                # repetitive content like ``[0, 0, 0, ...]`` or markdown
+                # tables.
+                cutoff_idx: int | None = None
+                tokens = piece.split()
+                for i, tok in enumerate(tokens):
+                    if tok == repeat_last:
+                        repeat_run += 1
+                    else:
+                        repeat_last = tok
+                        repeat_run = 1
+                    if repeat_run >= REPEAT_LIMIT:
+                        repetition_aborted = True
+                        cutoff_idx = i
+                        break
+                if cutoff_idx is not None:
+                    # Find the byte position in ``piece`` corresponding to
+                    # the start of the cutoff token, so we can emit only
+                    # the prefix. ``str.split()`` collapses runs of
+                    # whitespace, so we walk the original text token-by-
+                    # token to recover the offset.
+                    pos = 0
+                    seen = 0
+                    while seen < cutoff_idx and pos < len(piece):
+                        # Skip leading whitespace.
+                        while pos < len(piece) and piece[pos].isspace():
+                            pos += 1
+                        # Skip the token itself.
+                        while pos < len(piece) and not piece[pos].isspace():
+                            pos += 1
+                        seen += 1
+                    prefix = piece[:pos]
+                    if prefix:
+                        _emit_with_inline_md(prefix)
+                        full += prefix
+                else:
+                    _emit_with_inline_md(piece)
+                    full += piece
+                if repetition_aborted:
+                    break
+    _close_open_md_spans()
     if in_reasoning and is_tty:
         sys.stdout.write(RESET)
+        sys.stdout.flush()
+    if repetition_aborted:
+        msg = (
+            f"\n\n  {DIM}(response cut: model began repeating itself — "
+            f"try /reset or a larger model){RESET}"
+            if is_tty
+            else "\n\n(response cut: repetition detected)"
+        )
+        sys.stdout.write(msg)
         sys.stdout.flush()
     return full
 
@@ -970,6 +1350,95 @@ def chat_command(args):
     base_url: str
     proc = None
     log_path: str | None = None
+    # Tracks every spawned server (initial + every /model candidate) so
+    # the SIGTERM/atexit cleanup tears down in-flight candidates too —
+    # not just the bound ``proc``. A SIGTERM landing while a /model
+    # swap is mid-spawn would otherwise orphan the candidate server.
+    _active_procs: list[subprocess.Popen] = []
+
+    # TTY-gated ANSI palette for the chat UI. NO_COLOR is honoured.
+    _is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    BOLD = "\x1b[1m" if _is_tty else ""
+    DIM = "\x1b[2m" if _is_tty else ""
+    GREEN = "\x1b[32m" if _is_tty else ""
+    CYAN = "\x1b[36m" if _is_tty else ""
+    YELLOW = "\x1b[33m" if _is_tty else ""
+    RED = "\x1b[31m" if _is_tty else ""
+    RESET = "\x1b[0m" if _is_tty else ""
+
+    def _teardown_proc(p) -> None:
+        """Terminate a spawned chat server and free its log file.
+
+        Used by `_cleanup` (process exit) and `_switch_model` (mid-
+        session swap). Idempotent — safe to call when the proc has
+        already exited or never existed. Also reaps the killed child
+        with wait(timeout=1) so repeated /model swaps don't leave
+        zombies until the parent exits.
+        """
+        if p is None:
+            return
+        try:
+            if p.poll() is None:
+                try:
+                    p.terminate()
+                    p.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    try:
+                        p.kill()
+                        # Reap the SIGKILL'd child — without this,
+                        # repeated /model swaps stack zombie entries.
+                        try:
+                            p.wait(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    except (ProcessLookupError, OSError):
+                        pass
+                except (ProcessLookupError, OSError):
+                    pass
+        finally:
+            # Drop from the tracked set so a subsequent _cleanup walk
+            # doesn't double-tear it down.
+            try:
+                _active_procs.remove(p)
+            except ValueError:
+                pass
+            # Close the log handle and unlink the tempfile so /model
+            # swaps don't leak FDs and tempfiles. Both attributes set
+            # by _spawn_chat_server.
+            fh = getattr(p, "_rapid_mlx_log", None)
+            if fh is not None:
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+            lp = getattr(p, "_rapid_mlx_log_path", None)
+            if lp:
+                try:
+                    os.unlink(lp)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+
+    def _cleanup():
+        # Walk every tracked proc — covers the active server and any
+        # in-flight /model candidate. Iterate over a snapshot since
+        # _teardown_proc mutates _active_procs.
+        for p in list(_active_procs):
+            _teardown_proc(p)
+
+    # Install SIGTERM handler + atexit BEFORE any spawn. Otherwise a
+    # SIGTERM landing in the window between `Popen()` and `signal.signal`
+    # uses Python's default handler (calls `_exit`, skips atexit) and
+    # orphans the spawned server. SIGINT is *deliberately* left on the
+    # default handler so Ctrl-C unblocks ``input()`` via the natural
+    # KeyboardInterrupt path, the REPL loop's ``except
+    # KeyboardInterrupt: break`` fires, and atexit runs ``_cleanup``.
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(143)))
+    except (ValueError, OSError):
+        pass
+    atexit.register(_cleanup)
 
     if args.base_url:
         base_url = args.base_url.rstrip("/")
@@ -978,39 +1447,42 @@ def chat_command(args):
     elif args.port is not None:
         base_url = f"http://127.0.0.1:{args.port}"
     else:
+        # Pre-download in the foreground so the HF tqdm progress bar lands
+        # in the user's terminal. Otherwise the serve subprocess swallows
+        # the bar into the log file and `rapid-mlx chat` looks frozen for
+        # several minutes on first run with a fresh model.
+        _ensure_model_downloaded(args.model)
+
         log_path = tempfile.NamedTemporaryFile(
             prefix="rapid-mlx-chat-", suffix=".log", delete=False
         ).name
-        print(f"\n  Starting server (log: {log_path}) ...")
+        print(f"\n  Starting server {DIM}(log: {log_path}){RESET} ...")
         # If main() resolved an alias, expose the alias as the API model name
         # so the chat request body matches what the user typed.
         original = getattr(args, "_original_alias", None)
-        proc, base_url = _spawn_chat_server(args.model, log_path, served_name=original)
-
-        def _cleanup():
-            if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-
-        atexit.register(_cleanup)
-        # Ensure SIGINT/SIGTERM also kill the server before we exit.
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                signal.signal(sig, lambda *_: (_cleanup(), sys.exit(130)))
-            except (ValueError, OSError):
-                pass
+        proc, base_url = _spawn_chat_server(
+            args.model,
+            log_path,
+            served_name=original,
+            register_in=_active_procs,
+        )
 
         try:
             _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
         except (RuntimeError, TimeoutError) as e:
-            print(f"\n  Failed to start server: {e}")
+            print(f"\n  {RED}Failed to start server:{RESET} {e}")
             sys.exit(1)
-        print("  Ready.\n")
+        print(f"  {GREEN}✓ Ready.{RESET}\n")
 
-    print("  Chat — Ctrl-D / Ctrl-C / 'exit' to quit, '/reset' to clear history.\n")
+    print(
+        f"  {BOLD}Chat{RESET} — "
+        f"{DIM}type {RESET}{BOLD}/help{RESET}{DIM} for commands, "
+        f"Ctrl-D to exit.{RESET}"
+    )
+    print(
+        f"  {DIM}For a Claude Code-like TUI: `rapid-mlx agents codex --setup`, "
+        f"then run `codex` in any project.{RESET}\n"
+    )
 
     served_name = getattr(args, "_original_alias", args.model)
     messages: list[dict] = []
@@ -1031,24 +1503,266 @@ def chat_command(args):
     if not args.think:
         extra["enable_thinking"] = False
 
+    import time
+
     import requests
+
+    # Importing ``readline`` upgrades the built-in ``input()`` so that
+    # the arrow keys recall earlier prompts (and Ctrl-A/E/U/R work).
+    # The module is stdlib on macOS/Linux; on Windows it doesn't exist
+    # and we fall back to plain input(). When readline IS available we
+    # need to wrap the colored prompt's ANSI escapes in \001/\002 so
+    # readline's column counter doesn't include the invisible bytes —
+    # otherwise long history entries wrap incorrectly and Ctrl-A jumps
+    # to the wrong column (especially on libedit-backed Apple system
+    # python). The wrappers are no-op on a terminal, so it's safe to
+    # always emit them when readline is loaded.
+    have_readline = False
+    try:
+        import readline  # noqa: F401 — side-effect import
+
+        have_readline = True
+    except ImportError:
+        pass
+
+    def _wrap_invisible(esc: str) -> str:
+        if have_readline and esc:
+            return "\001" + esc + "\002"
+        return esc
+
+    if _is_tty:
+        prompt = _wrap_invisible(BOLD + CYAN) + ">" + _wrap_invisible(RESET) + " "
+        cont_prompt = _wrap_invisible(DIM) + "…" + _wrap_invisible(RESET) + " "
+    else:
+        prompt = "> "
+        cont_prompt = "… "
+
+    def _print_help():
+        print(
+            f"\n  {BOLD}Slash commands{RESET}\n"
+            f"    {BOLD}/help{RESET}              show this help\n"
+            f"    {BOLD}/reset{RESET}, {BOLD}/clear{RESET}     clear conversation history\n"
+            f"    {BOLD}/model <alias>{RESET}     switch model "
+            f"{DIM}(restarts the server, resets history){RESET}\n"
+            f"    {BOLD}/save <path>{RESET}       save conversation to a markdown file\n"
+            f"    {BOLD}/exit{RESET}, {BOLD}/quit{RESET}       exit chat\n"
+            f"\n  {BOLD}Multi-line input{RESET}\n"
+            f'    type {BOLD}"""{RESET} on its own line to start, again to end '
+            f"{DIM}(paste code blocks){RESET}\n"
+            f"\n  {BOLD}Keys{RESET}\n"
+            f"    {BOLD}Ctrl-C{RESET}             cancel the current response, "
+            f"or exit at empty prompt\n"
+            f"    {BOLD}Ctrl-D{RESET}             exit\n"
+        )
+
+    def _save_conversation(path_arg: str):
+        path = os.path.expanduser(path_arg)
+        # Auto-create parent directories; otherwise users see a confusing
+        # "No such file or directory" for /save logs/2026-05/convo.md.
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError as exc:
+                print(f"  {RED}Save failed:{RESET} cannot create {parent}: {exc}\n")
+                return
+        try:
+            # Mode "x" (O_CREAT | O_EXCL) is atomic — refuses if the path
+            # already exists, with no TOCTOU window between exists() and
+            # open() that an exists()-then-open("w") check has. Also
+            # naturally rejects existing symlinks pointing elsewhere.
+            with open(path, "x", encoding="utf-8") as f:
+                f.write(f"# rapid-mlx chat — {served_name}\n\n")
+                for m in messages:
+                    if m["role"] == "system":
+                        continue
+                    f.write(f"## {m['role'].capitalize()}\n\n{m['content']}\n\n")
+            print(f"  {GREEN}✓{RESET} Saved {len(messages)} messages to {path}\n")
+        except FileExistsError:
+            print(
+                f"  {YELLOW}{path} already exists.{RESET} "
+                f"{DIM}(/save won't overwrite — pick a different path){RESET}\n"
+            )
+        except IsADirectoryError:
+            print(
+                f"  {RED}Save failed:{RESET} {path} is a directory — "
+                f"{DIM}give a file path, not a directory{RESET}\n"
+            )
+        except OSError as exc:
+            print(f"  {RED}Save failed:{RESET} {exc}\n")
+
+    def _read_multiline() -> str:
+        lines: list[str] = []
+        while True:
+            try:
+                more = input(cont_prompt)
+            except (EOFError, KeyboardInterrupt):
+                # Tell the user how many lines they're losing — silent
+                # discard on Ctrl-C/Ctrl-D mid-paste is hostile.
+                if lines:
+                    print(
+                        f"\n  {YELLOW}(multi-line cancelled — "
+                        f"{len(lines)} line{'' if len(lines) == 1 else 's'} "
+                        f"discarded){RESET}\n"
+                    )
+                else:
+                    print(f"\n  {YELLOW}(multi-line cancelled){RESET}\n")
+                return ""
+            if more.rstrip() == '"""':
+                # Preserve leading/trailing whitespace verbatim — the
+                # heredoc is meant for code paste, where stripping
+                # indentation actively corrupts the input.
+                return "\n".join(lines)
+            lines.append(more)
+
+    def _switch_model(new_alias: str) -> None:
+        """Hot-swap the spawned chat server to a new model alias.
+
+        Order matters: validate + pre-download the new model BEFORE
+        terminating the old one. If anything fails (bogus alias, disk
+        gate, network), the old server stays running and the REPL is
+        usable. Only when the new model is on-disk and the new server is
+        spawn-ready do we tear down the old proc and rebind.
+        """
+        nonlocal proc, base_url, log_path, served_name, messages
+        if proc is None:
+            print(
+                f"  {YELLOW}/model is only available when chat spawns its "
+                f"own server (not with --base-url / --port).{RESET}\n"
+            )
+            return
+        from vllm_mlx.model_aliases import resolve_model
+
+        resolved = resolve_model(new_alias) or new_alias
+        print(f"  {DIM}Preparing {new_alias} → {resolved} ...{RESET}")
+
+        # 1. Pre-download the new model (this also runs the disk-space
+        #    gate). The current server keeps running while we do this so
+        #    a download failure leaves the user where they were.
+        try:
+            _ensure_model_downloaded(resolved)
+        except SystemExit:
+            # Disk gate aborted via sys.exit(1); old server is untouched.
+            print(
+                f"  {RED}Model switch aborted{RESET} "
+                f"{DIM}(disk gate); previous server still running.{RESET}\n"
+            )
+            return
+        except RuntimeError as exc:
+            # Definitive 404 from HF; old server stays.
+            print(
+                f"  {RED}Model switch aborted:{RESET} {exc}  "
+                f"{DIM}(previous server still running){RESET}\n"
+            )
+            return
+
+        # 2. Allocate a new log file and spawn the new server. We don't
+        #    tear down the old one yet; we want a working candidate
+        #    before we commit.
+        new_log_path = tempfile.NamedTemporaryFile(
+            prefix="rapid-mlx-chat-", suffix=".log", delete=False
+        ).name
+        print(f"  Starting server {DIM}(log: {new_log_path}){RESET} ...")
+        # ``register_in=_active_procs`` makes the candidate visible to
+        # ``_cleanup`` *inside* ``_spawn_chat_server`` — before the
+        # readiness wait, before any further Python statement runs in
+        # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
+        # load tears the child down via the cleanup walk.
+        new_proc, new_base_url = _spawn_chat_server(
+            resolved,
+            new_log_path,
+            served_name=new_alias,
+            register_in=_active_procs,
+        )
+        try:
+            _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
+        except (RuntimeError, TimeoutError) as exc:
+            print(
+                f"  {RED}Failed to start new server:{RESET} {exc}  "
+                f"{DIM}(previous server still running){RESET}\n"
+            )
+            # Roll back: tear down the half-spawned new proc + free its
+            # log file. The old proc/base_url/log_path stay bound.
+            _teardown_proc(new_proc)
+            return
+
+        # 3. New server is healthy — commit. Rebind ``proc`` BEFORE
+        #    tearing down the old one so a SIGTERM during teardown
+        #    walks the new (still-running) proc, not just a freshly
+        #    killed corpse.
+        old_proc = proc
+        proc = new_proc
+        base_url = new_base_url
+        log_path = new_log_path
+        served_name = new_alias
+        messages = [{"role": "system", "content": args.system}] if args.system else []
+        _teardown_proc(old_proc)
+        print(
+            f"  {GREEN}✓ Switched to {new_alias}.{RESET} "
+            f"{DIM}(history cleared){RESET}\n"
+        )
 
     while True:
         try:
-            line = input("> ").strip()
+            line = input(prompt).rstrip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
         if not line:
             continue
-        if line in ("exit", "quit", "/exit", "/quit"):
-            break
-        if line in ("/reset", "/clear"):
-            messages = (
-                [{"role": "system", "content": args.system}] if args.system else []
-            )
-            print("  (history cleared)\n")
-            continue
+        # Heredoc-pasted content must NEVER be dispatched as a slash
+        # command — a markdown doc whose first line starts with `/path`
+        # or whose content includes `/save` would otherwise be silently
+        # eaten by the slash dispatcher. Track the source so we know.
+        is_heredoc = False
+        if line == '"""':
+            line = _read_multiline()
+            if not line:
+                continue
+            is_heredoc = True
+        if not is_heredoc:
+            # Parse the leading word as the command and dispatch on
+            # *exact* match. ``startswith("/save")`` would otherwise treat
+            # ``/savefoo`` as ``/save`` (with arg ``foo``), silently
+            # writing a file from a typo. Same for ``/modelfoo``.
+            # ``str.split(maxsplit=1)`` (no separator arg) splits on any
+            # whitespace, so ``/save\tpath.md`` works the same as
+            # ``/save path.md``.
+            parts = line.split(maxsplit=1)
+            cmd = parts[0] if parts else ""
+            rest = parts[1].strip() if len(parts) > 1 else ""
+            if cmd in ("exit", "quit", "/exit", "/quit"):
+                break
+            if cmd in ("/help", "/?"):
+                _print_help()
+                continue
+            if cmd in ("/reset", "/clear"):
+                messages = (
+                    [{"role": "system", "content": args.system}] if args.system else []
+                )
+                print(f"  {DIM}(history cleared){RESET}\n")
+                continue
+            if cmd == "/save":
+                if not rest:
+                    print(f"  {YELLOW}Usage: /save <path>{RESET}\n")
+                else:
+                    _save_conversation(rest)
+                continue
+            if cmd == "/model":
+                if not rest:
+                    print(
+                        f"  {YELLOW}Usage: /model <alias>{RESET}  "
+                        f"{DIM}(see `rapid-mlx models`){RESET}\n"
+                    )
+                else:
+                    _switch_model(rest)
+                continue
+            if cmd.startswith("/"):
+                print(
+                    f"  {YELLOW}Unknown command: {cmd}{RESET}  "
+                    f"{DIM}(type /help){RESET}\n"
+                )
+                continue
 
         messages.append({"role": "user", "content": line})
         payload = {
@@ -1057,28 +1771,56 @@ def chat_command(args):
             "max_tokens": args.max_tokens,
             "temperature": args.temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},
             **extra,
         }
+        # Claude-Code-style turn marker: a colored bullet introduces the
+        # assistant's response so the user can visually scan turn
+        # boundaries when scrolling back through long conversations.
+        sys.stdout.write(f"\n  {CYAN}●{RESET} ")
+        sys.stdout.flush()
+        metrics: dict = {}
+        start_t = time.monotonic()
         try:
             assistant = _stream_chat_response(
-                base_url, payload, timeout_s=args.response_timeout
+                base_url,
+                payload,
+                timeout_s=args.response_timeout,
+                metrics=metrics,
             )
         except KeyboardInterrupt:
-            print("\n  (response interrupted)\n")
+            print(f"\n  {YELLOW}(response interrupted){RESET}\n")
             messages.pop()
             continue
         except RuntimeError as e:
-            print(f"\n  {e}\n")
+            print(f"\n  {RED}{e}{RESET}\n")
             messages.pop()
             continue
         except requests.RequestException as e:
             # Connection refused, timeout, dropped midstream — keep the REPL
             # alive and roll back the failed user turn so the next request
             # doesn't carry a dangling user role with no assistant reply.
-            print(f"\n  Request failed: {e}\n")
+            print(f"\n  {RED}Request failed:{RESET} {e}\n")
             messages.pop()
             continue
-        print("\n")
+        elapsed = time.monotonic() - start_t
+        # Speed line: prefer server-reported usage, fall back to a rough
+        # 4-chars-per-token estimate when the server doesn't ship usage
+        # in the stream.
+        tokens = metrics.get("completion_tokens")
+        if not tokens:
+            tokens = max(1, len(assistant) // 4)
+            tokens_label = f"~{tokens}"
+        else:
+            tokens_label = str(tokens)
+        if assistant and elapsed > 0:
+            tps = tokens / elapsed
+            print(
+                f"\n  {DIM}{tokens_label} tok · {elapsed:.1f}s · "
+                f"{tps:.0f} tok/s{RESET}\n"
+            )
+        else:
+            print()
         if assistant:
             messages.append({"role": "assistant", "content": assistant})
         else:
