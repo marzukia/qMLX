@@ -41,7 +41,17 @@ Most tests run without a model. Tests in `tests/test_event_loop.py` require a ru
 2. Make your changes with tests if applicable
 3. Run `ruff check` and `ruff format` before committing
 4. **Self-validate your PR** (see below) — saves a round trip with maintainers
-5. Open a PR against `main` with a clear description
+5. Open a PR against `main` with a clear description, filling in **all required sections of the PR template** (necessity, AI assistance disclosure, test plan)
+
+### Necessity & AI assistance — what we ask, why
+
+The PR template asks two questions up front: *why is this needed?* and *was AI used?* These aren't gatekeeping for the sake of it.
+
+- **Necessity** — Rapid-MLX auto-publishes to PyPI + Homebrew on every version-bump merge. Drive-by refactors and "increases coverage" PRs cost real review time and add real blast-radius risk for zero user value. PRs whose only justification is "looks cleaner" / "future-proofs" / "good practice" may be closed. **What unlocks merge:** a concrete user-visible reason ("fixes #123", "restores N% TPS", "patches CVE"), OR concrete repository maintenance value (typo / broken link / docs clarification, alias / metadata bookkeeping, deleting genuinely-dead code, CI/tooling fixes that reduce maintainer toil). The carveout is intentional — typo PRs are welcome, "polish for polish's sake" isn't.
+
+- **AI assistance disclosure** — AI-authored code is welcome (we ship a lot of it ourselves). What we ask is **honesty about the role and the verification**: which files were AI-touched, what the AI did (wrote / reviewed / suggested), and how you confirmed the output is correct. We **don't ask for prompt transcripts**. "Fully human" and "Claude wrote tests, I wrote the impl and ran make check" are both fine; silence is treated more cautiously than disclosure. The standard: **you should be able to explain the intent, risk, and behavior of every non-generated change in your PR on demand**. For generated / boilerplate sections (scaffold, lockfile, framework hooks), identify them and describe how you verified them.
+
+The full maintainer-side gauntlet — what happens to your PR after you open it — is documented in [docs/development/pr_merge_sop.md](docs/development/pr_merge_sop.md).
 
 ## Self-Validating Your PR
 
