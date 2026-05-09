@@ -190,6 +190,9 @@ ignore = [
 # upstream syncs remain a clean diff. Drop this once mlx-lm 0.32+
 # ships native deepseek_v4 support and we delete the vendored copy.
 "vllm_mlx/models/deepseek_v4.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
+# Tensor-shape parameter names (B, H, N, D) follow ML literature
+# convention; N803 lowercase rule is incompatible.
+"scripts/bench_attention.py" = ["N803"]
 
 [tool.mypy]
 python_version = "3.10"
