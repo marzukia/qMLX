@@ -92,6 +92,16 @@ async def status():
         return {"status": "not_loaded", "model": None, "requests": []}
 
     stats = cfg.engine.get_stats()
+    bg = stats.get("batch_generator")
+    if not isinstance(bg, dict):
+        bg = {}
+
+    # Coerce missing-or-None to a float zero. `or 0` would collapse a
+    # legitimate 0.0 value to int 0; dashboards with strict number-type
+    # schemas care about the difference.
+    def _tps(key: str) -> float:
+        v = bg.get(key)
+        return 0.0 if v is None else v
 
     return {
         "status": "generating" if stats.get("running") else "idle",
@@ -103,6 +113,8 @@ async def status():
         "total_requests_processed": stats.get("num_requests_processed", 0),
         "total_prompt_tokens": stats.get("total_prompt_tokens", 0),
         "total_completion_tokens": stats.get("total_completion_tokens", 0),
+        "generation_tps": _tps("generation_tps"),
+        "prompt_tps": _tps("prompt_tps"),
         "metal": {
             "active_memory_gb": stats.get("metal_active_memory_gb"),
             "peak_memory_gb": stats.get("metal_peak_memory_gb"),

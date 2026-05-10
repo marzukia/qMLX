@@ -260,6 +260,89 @@ class TestHealthRoutes:
             assert data["model"] == "test-model"
             assert data["steps_executed"] == 500
             assert data["metal"]["active_memory_gb"] == 8.5
+            # generation_tps/prompt_tps default to 0 when batch_generator
+            # stats are absent (text-only batched engine path).
+            assert data["generation_tps"] == 0
+            assert data["prompt_tps"] == 0
+        finally:
+            self._restore_config(orig)
+
+    def test_status_exposes_batch_generator_throughput(self, mock_engine):
+        """Status surfaces generation_tps/prompt_tps from batch_generator stats.
+
+        Regression for the upstream bug where these counters existed in the
+        batch generator but never reached /v1/status because the engine
+        layer didn't forward the 'batch_generator' key.
+        """
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "batch_generator": {
+                "prompt_tps": 142.7,
+                "generation_tps": 38.4,
+            },
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            app = self._make_app()
+            client = TestClient(app)
+            data = client.get("/v1/status").json()
+            assert data["generation_tps"] == 38.4
+            assert data["prompt_tps"] == 142.7
+        finally:
+            self._restore_config(orig)
+
+    def test_status_handles_non_dict_batch_generator(self, mock_engine):
+        """Defensive: malformed batch_generator (not a dict) must not 500.
+
+        Codex flagged that `stats.get(...) or {}` only guards the falsy case;
+        a string/list/int would crash on `.get(...)`. Confirm we coerce safely.
+        """
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "batch_generator": "unexpected-string",
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            data = TestClient(self._make_app()).get("/v1/status").json()
+            assert data["generation_tps"] == 0
+            assert data["prompt_tps"] == 0
+        finally:
+            self._restore_config(orig)
+
+    def test_status_coerces_none_throughput_to_zero(self, mock_engine):
+        """Defensive: explicit-None throughput values must serialize as 0,
+        not null. Monitoring dashboards expect a number."""
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "batch_generator": {"prompt_tps": None, "generation_tps": None},
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            data = TestClient(self._make_app()).get("/v1/status").json()
+            assert data["generation_tps"] == 0
+            assert data["prompt_tps"] == 0
+        finally:
+            self._restore_config(orig)
+
+    def test_status_preserves_zero_float_throughput(self, mock_engine):
+        """A genuine 0.0 idle reading must stay a float. `or 0` would
+        collapse it to int 0; downstream schemas that require number-as-
+        float would reject the response."""
+        mock_engine.get_stats.return_value = {
+            **mock_engine.get_stats.return_value,
+            "batch_generator": {"prompt_tps": 0.0, "generation_tps": 0.0},
+        }
+        orig = self._patch_config(engine=mock_engine, model_name="test-model")
+        try:
+            data = TestClient(self._make_app()).get("/v1/status").json()
+            # JSON round-trip preserves int vs float: 0.0 → 0.0, 0 → 0.
+            # The stricter assertion is that the raw text contains "0.0".
+            r = TestClient(self._make_app()).get("/v1/status")
+            assert '"generation_tps":0.0' in r.text.replace(" ", "")
+            assert '"prompt_tps":0.0' in r.text.replace(" ", "")
+            # Sanity: numeric comparison still holds.
+            assert data["generation_tps"] == 0
+            assert data["prompt_tps"] == 0
         finally:
             self._restore_config(orig)
 
