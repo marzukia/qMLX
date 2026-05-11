@@ -353,13 +353,25 @@ class EngineCore:
             )
         except Exception:
             _memory_pressure_threshold = 200 * 1024 * 1024 * 1024
-        _memory_check_interval = 64
+        # Check every 16 steps (was 64). Sustained-load Metal errors
+        # correlate with creeping memory pressure; catching it 4× sooner
+        # gives mx.clear_cache() a chance to defuse before the next
+        # large allocation pushes us into a Metal-side OOM, which currently
+        # propagates as an uncatchable abort (see GitHub #353 / mlx-lm#1015).
+        _memory_check_interval = 16
+        # Consecutive step() failures — once we hit the cap we sleep longer
+        # between retries so a permanently-broken Metal state (e.g. real OOM
+        # we can't recover from) stops flooding the log at 10 Hz. Resets
+        # on the first successful step. See #353.
+        _consecutive_step_failures = 0
+        _STEP_FAILURE_BURST = 10
 
         while self._running:
             try:
                 if self.scheduler.has_requests():
                     output = await loop.run_in_executor(_executor, self.scheduler.step)
                     self._steps_executed += 1
+                    _consecutive_step_failures = 0
 
                     # Emergency memory pressure check
                     if self._steps_executed % _memory_check_interval == 0:
@@ -469,8 +481,84 @@ class EngineCore:
             except Exception as e:
                 import traceback
 
-                logger.error(f"Engine loop error: {e}\n{traceback.format_exc()}")
-                await asyncio.sleep(0.1)
+                # If step() raises (e.g. Metal RuntimeError that did propagate
+                # synchronously to Python, an unexpected scheduler bug, etc.),
+                # the in-flight requests would otherwise hang forever waiting
+                # on finished_events that never get set. Surface the error to
+                # every waiting client as a structured RequestOutput and
+                # release their events so HTTP handlers can return 503 instead
+                # of timing out.
+                #
+                # NOTE: this does NOT recover from the async Metal abort path
+                # described in #353. When mlx::core::gpu::check_error throws
+                # from inside Metal's addCompletedHandler block, the C++
+                # exception propagates straight to std::terminate -> abort()
+                # without ever passing through a Python frame, and the whole
+                # process dies. Tracking that path against mlx-lm#1015 /
+                # ml-explore/mlx#... — once mlx defers the throw to the next
+                # eval, this handler will start catching it.
+                msg = str(e)
+                is_metal = any(
+                    needle in msg
+                    for needle in ("Metal", "MTL", "command buffer", "gpu::check_error")
+                )
+                if is_metal:
+                    logger.error(
+                        "Metal runtime error caught in engine loop — failing "
+                        f"in-flight requests and clearing buffers: {e}"
+                    )
+                    try:
+                        mx.clear_cache()
+                    except Exception:
+                        pass
+                else:
+                    logger.error(f"Engine loop error: {e}\n{traceback.format_exc()}")
+
+                # Fail all in-flight requests with a structured error output so
+                # awaiting HTTP handlers unblock (#353).
+                err_text = (
+                    f"Inference aborted: {type(e).__name__}: {e}"
+                    if is_metal
+                    else f"Engine loop error: {type(e).__name__}: {e}"
+                )
+                for rid in list(self._finished_events.keys()):
+                    collector = self._output_collectors.get(rid)
+                    if collector is not None:
+                        try:
+                            collector.put(
+                                RequestOutput(
+                                    request_id=rid,
+                                    new_token_ids=[],
+                                    new_text="",
+                                    output_token_ids=[],
+                                    output_text="",
+                                    finished=True,
+                                    finish_reason="error",
+                                    prompt_tokens=0,
+                                    completion_tokens=0,
+                                    error=err_text,
+                                )
+                            )
+                        except Exception:
+                            pass
+                    ev = self._finished_events.get(rid)
+                    if ev is not None:
+                        ev.set()
+
+                # Slow the retry loop when failures persist — a stuck Metal
+                # state would otherwise burn CPU + flood logs at ~10 Hz. After
+                # a burst of failures, back off to 1 s between attempts.
+                _consecutive_step_failures += 1
+                backoff = (
+                    1.0 if _consecutive_step_failures >= _STEP_FAILURE_BURST else 0.1
+                )
+                if _consecutive_step_failures == _STEP_FAILURE_BURST:
+                    logger.warning(
+                        f"Engine step has failed {_STEP_FAILURE_BURST} times in a row — "
+                        "backing off retry cadence to 1 s. Investigate the underlying "
+                        "Metal/scheduler error."
+                    )
+                await asyncio.sleep(backoff)
 
     async def add_request(
         self,
@@ -628,6 +716,18 @@ class EngineCore:
                             f"{_time.monotonic() - _t0:.1f}s"
                         )
 
+                    # Engine loop sets ``error`` when it aborts a request mid-
+                    # flight (e.g. Metal RuntimeError that propagated to Python).
+                    # Raise so streaming HTTP handlers can map to 503 instead of
+                    # silently yielding an empty terminal chunk (#353).
+                    if output.error:
+                        from .request import InferenceAbortedError
+
+                        logger.warning(
+                            f"[stream_outputs] {request_id[:12]} engine aborted: {output.error}"
+                        )
+                        raise InferenceAbortedError(output.error)
+
                     yield output
 
                     if output.finished:
@@ -717,6 +817,14 @@ class EngineCore:
 
             if final_output is None:
                 raise RuntimeError(f"No output for request {request_id}")
+
+            # Engine loop sets error= when it aborts the request (e.g. Metal
+            # runtime error). Surface as InferenceAbortedError so the HTTP
+            # layer maps to 503 (#353).
+            if final_output.error:
+                from .request import InferenceAbortedError
+
+                raise InferenceAbortedError(final_output.error)
 
             return final_output
 
