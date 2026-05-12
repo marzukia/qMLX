@@ -97,6 +97,12 @@ class EngineConfig:
     stream_interval: int = 1  # Tokens to batch before streaming (1=every token)
     gpu_memory_utilization: float = 0.90  # Fraction of device memory for allocation
     tool_logits_processor_factory: Any | None = None  # Factory for tool logits bias
+    # NOTE: DFlash speculative decoding (issue #264) bypasses the
+    # BatchedEngine entirely via a dedicated server module
+    # (``vllm_mlx.speculative.dflash.server``). No engine-side fields
+    # are needed today. If a future phase-2 brings DFlash inside
+    # BatchedEngine for B>1 support, add the config fields back here
+    # and wire them through ``EngineCore.__init__``.
 
 
 class EngineCore:
