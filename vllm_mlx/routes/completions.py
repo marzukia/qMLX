@@ -23,10 +23,10 @@ from ..service.helpers import (
     _resolve_max_tokens,
     _resolve_model_name,
     _resolve_temperature,
-    _resolve_top_k,
     _resolve_top_p,
     _validate_model_name,
     _wait_with_disconnect,
+    build_extended_sampling_kwargs,
     get_engine,
     get_usage,
 )
@@ -73,19 +73,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     total_completion_tokens = 0
     total_prompt_tokens = 0
 
-    extended_kwargs: dict = {}
-    for _name in (
-        "min_p",
-        "repetition_penalty",
-        "presence_penalty",
-        "frequency_penalty",
-    ):
-        _value = getattr(request, _name, None)
-        if _value is not None:
-            extended_kwargs[_name] = _value
-    _top_k = _resolve_top_k(request.top_k)
-    if _top_k is not None:
-        extended_kwargs["top_k"] = _top_k
+    extended_kwargs = build_extended_sampling_kwargs(request)
 
     for i, prompt in enumerate(prompts):
         output = await _wait_with_disconnect(
@@ -142,19 +130,7 @@ async def stream_completion(
     request: CompletionRequest,
 ) -> AsyncIterator[str]:
     """Stream completion response."""
-    extended_kwargs: dict = {}
-    for _name in (
-        "min_p",
-        "repetition_penalty",
-        "presence_penalty",
-        "frequency_penalty",
-    ):
-        _value = getattr(request, _name, None)
-        if _value is not None:
-            extended_kwargs[_name] = _value
-    _top_k = _resolve_top_k(request.top_k)
-    if _top_k is not None:
-        extended_kwargs["top_k"] = _top_k
+    extended_kwargs = build_extended_sampling_kwargs(request)
 
     async for output in engine.stream_generate(
         prompt=prompt,

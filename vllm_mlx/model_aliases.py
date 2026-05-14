@@ -85,6 +85,15 @@ class AliasProfile:
     # ``z-lab/Qwen3.5-27B-DFlash``); required if ``supports_dflash=True``.
     supports_dflash: bool = False
     dflash_draft_model: str | None = None
+    # Recommended sampling defaults — curated per-family overrides that
+    # sit above HF ``generation_config.json`` in the resolve chain (see
+    # ``service/helpers.py``). Tuple-of-pairs (not dict) because the
+    # dataclass is frozen and dict defaults are mutable. Keys are
+    # restricted to the sampling subset: ``temperature``, ``top_p``,
+    # ``top_k``, ``min_p``, ``repetition_penalty``, ``presence_penalty``,
+    # ``frequency_penalty``. ``None`` means "no curated value" → fall
+    # through to ``generation_config.json``.
+    recommended_sampling: tuple[tuple[str, float], ...] | None = None
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -161,6 +170,50 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: dflash_draft_model must be a string, "
             f"got {type(dflash_draft_model).__name__}"
         )
+    raw_sampling = value.get("recommended_sampling")
+    recommended_sampling: tuple[tuple[str, float], ...] | None
+    if raw_sampling is None:
+        recommended_sampling = None
+    elif isinstance(raw_sampling, dict):
+        _ALLOWED_SAMPLING_KEYS = {
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "presence_penalty",
+            "frequency_penalty",
+        }
+        items: list[tuple[str, float]] = []
+        for k, v in raw_sampling.items():
+            if k not in _ALLOWED_SAMPLING_KEYS:
+                raise ValueError(
+                    f"alias {alias!r}: recommended_sampling has "
+                    f"unsupported key {k!r}; allowed: "
+                    f"{sorted(_ALLOWED_SAMPLING_KEYS)}"
+                )
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise ValueError(
+                    f"alias {alias!r}: recommended_sampling[{k!r}] "
+                    f"must be a number, got {type(v).__name__}"
+                )
+            if k == "top_k":
+                # ``top_k`` is an integer count; silently truncating
+                # 20.5 → 20 would hide a typo in a hand-edited
+                # aliases.json. Mirror the same guard the loader at
+                # utils/generation_config.py applies to the JSON layer.
+                if isinstance(v, float) and not v.is_integer():
+                    raise ValueError(
+                        f"alias {alias!r}: recommended_sampling['top_k'] "
+                        f"must be a whole number, got {v!r}"
+                    )
+            items.append((k, float(v)))
+        recommended_sampling = tuple(sorted(items)) if items else None
+    else:
+        raise ValueError(
+            f"alias {alias!r}: recommended_sampling must be an object, "
+            f"got {type(raw_sampling).__name__}"
+        )
     return AliasProfile(
         hf_path=hf_path,
         tool_call_parser=value.get("tool_call_parser"),
@@ -173,6 +226,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         suffix_bench_speedup=speedup,
         supports_dflash=supports_dflash,
         dflash_draft_model=dflash_draft_model,
+        recommended_sampling=recommended_sampling,
     )
 
 
