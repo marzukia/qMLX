@@ -726,3 +726,147 @@ class TestBlockAwarePrefixCache:
         stats = cache.get_stats()
         # After clear, null block is still allocated (vLLM style)
         assert stats["allocated_blocks"] == 1  # only null block
+
+    def test_slices_3d_kv_along_seq_axis(self):
+        """3D KV state (Qwen3.5-style ``(n_kv_heads, seq, head_dim)``) must
+        be sliced along seq (axis 1), not axis 2 (which is ``head_dim``).
+        Regression for upstream waybarrios#286 — pre-fix, the 4D-hardcoded
+        slice ``keys[:, :, start:end, :]`` crashed on 3D state and dropped
+        the whole entry, masking the issue. ``reconstruct_cache`` still
+        refuses 3D state because mlx_lm's ``KVCache`` accessors hard-code
+        ``shape[2]`` for seq; hosting 3D state there would silently corrupt
+        downstream generation."""
+        import mlx.core as mx
+        from mlx_lm.models.cache import KVCache
+
+        from vllm_mlx.paged_cache import PagedCacheManager
+        from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+
+        paged_manager = PagedCacheManager(block_size=4, max_blocks=10)
+        cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
+
+        kv_keys = mx.arange(2 * 8 * 3).reshape(2, 8, 3)
+        kv_values = mx.arange(1000, 1000 + (2 * 8 * 3)).reshape(2, 8, 3)
+        layer_state = {
+            "state": (kv_keys, kv_values),
+            "meta_state": "",
+            "class_ref": KVCache,
+            "class_name": "KVCache",
+        }
+
+        sliced = cache._extract_block_tensor_slice([layer_state], 0, 4)
+        assert sliced is not None and len(sliced) == 1
+        sliced_keys, sliced_values = sliced[0]
+        assert sliced_keys.tolist() == kv_keys[:, :4, :].tolist()
+        assert sliced_values.tolist() == kv_values[:, :4, :].tolist()
+        assert cache._cache_state_seq_axis((kv_keys, kv_values)) == 1
+        four_d = mx.zeros((1, 2, 8, 3))
+        assert cache._cache_state_seq_axis((four_d, four_d)) == 2
+        assert cache._cache_state_seq_axis((four_d,)) is None
+        assert cache._cache_state_seq_axis((four_d, mx.zeros((2, 8)))) is None
+        # Partial-None state must reject up-front rather than relying on
+        # downstream ``.shape`` access to crash (caught by outer try/except,
+        # but fragile). Regression for codex round-2 finding on PR #392.
+        assert cache._cache_state_seq_axis((four_d, None)) is None
+        assert cache._cache_state_seq_axis((None, four_d)) is None
+        assert cache._cache_state_seq_axis((None, None)) is None
+        # Class-name gate: a Mamba/DeltaNet ``ArraysCache`` may happen to
+        # hold two same-shape 3D tensors, but its tensors are NOT seq-
+        # indexed. The gate must reject any class outside the allowlist.
+        # Regression for codex round-3 finding on PR #392.
+        assert (
+            cache._cache_state_seq_axis((kv_keys, kv_values), class_name="ArraysCache")
+            is None
+        )
+        assert (
+            cache._cache_state_seq_axis((four_d, four_d), class_name="RotatingKVCache")
+            is None
+        )
+        assert cache._cache_state_seq_axis((four_d, four_d), class_name="KVCache") == 2
+        # When class_name is omitted, fall back to the shape-only heuristic.
+        assert cache._cache_state_seq_axis((four_d, four_d)) == 2
+        # Extract path itself rejects layers whose class_name is not KVCache,
+        # even when their tensors look slicable.
+        non_kv_layer = {
+            "state": (kv_keys, kv_values),
+            "meta_state": "",
+            "class_ref": None,
+            "class_name": "ArraysCache",
+        }
+        assert cache._extract_block_tensor_slice([non_kv_layer], 0, 4) is None
+
+    def test_reconstruct_refuses_non_kvcache_class_name(self):
+        """``reconstruct_cache`` must refuse to host anything other than a
+        vanilla ``KVCache`` even if ``block.cache_data`` somehow contains
+        4D tensors. Defense in depth against a future writer that bypasses
+        ``_extract_block_tensor_slice``. Regression for codex pr_validate
+        finding on PR #392."""
+        import mlx.core as mx
+
+        from vllm_mlx.paged_cache import BlockTable, PagedCacheManager
+        from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+
+        paged_manager = PagedCacheManager(block_size=4, max_blocks=10)
+        cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
+
+        # Manually plant a block as if some non-KV writer had populated it.
+        block = paged_manager.allocate_block()
+        four_d = mx.zeros((1, 2, 4, 8))
+        block.cache_data = [(four_d, four_d)]
+        block.cache_class_name = "RotatingKVCache"
+
+        table = BlockTable(request_id="req", block_ids=[block.block_id], num_tokens=4)
+        assert cache.reconstruct_cache(table) is None
+
+        # And the happy path still works once class_name is correct.
+        block.cache_class_name = "KVCache"
+        out = cache.reconstruct_cache(table)
+        assert out is not None and len(out) == 1
+
+    def test_extract_rejects_layer_without_class_name(self):
+        """If a layer dict lacks an explicit ``class_name``, ``_extract``
+        must refuse to slice. Otherwise the block would be stored with
+        ``cache_class_name=None`` and silently rejected at reconstruct,
+        wasting a paged-cache slot. Regression for codex pr_validate
+        round-2 finding on PR #392."""
+        import mlx.core as mx
+
+        from vllm_mlx.paged_cache import PagedCacheManager
+        from vllm_mlx.prefix_cache import BlockAwarePrefixCache
+
+        paged_manager = PagedCacheManager(block_size=4, max_blocks=10)
+        cache = BlockAwarePrefixCache(model=None, paged_cache_manager=paged_manager)
+        four_d = mx.zeros((1, 2, 8, 3))
+
+        # Missing class_name key entirely.
+        no_class_layer = {"state": (four_d, four_d), "meta_state": ""}
+        assert cache._extract_block_tensor_slice([no_class_layer], 0, 4) is None
+        # Explicit None.
+        explicit_none = dict(no_class_layer, class_name=None)
+        assert cache._extract_block_tensor_slice([explicit_none], 0, 4) is None
+        # Any non-allowlisted class.
+        for forbidden in ("ArraysCache", "RotatingKVCache", "QuantizedKVCache"):
+            layer = dict(no_class_layer, class_name=forbidden)
+            assert cache._extract_block_tensor_slice([layer], 0, 4) is None
+
+    def test_cow_copy_propagates_cache_class_name(self):
+        """``PagedCacheManager.copy_block`` must propagate
+        ``cache_class_name`` so the COW destination satisfies the
+        (cache_data, cache_class_name) invariant. Regression for codex
+        pr_validate round-2 finding on PR #392."""
+        import mlx.core as mx
+
+        from vllm_mlx.paged_cache import PagedCacheManager
+
+        manager = PagedCacheManager(block_size=4, max_blocks=10)
+        src = manager.allocate_block()
+        four_d = mx.zeros((1, 2, 4, 8))
+        src.cache_data = [(four_d, four_d)]
+        src.cache_class_name = "KVCache"
+        # Bump the source ref so copy_block treats it as shared (its COW
+        # contract decrements the source from a shared state).
+        manager.increment_ref(src.block_id)
+        dst = manager._cow_copy_block(src)
+        assert dst is not None
+        assert dst.cache_data == src.cache_data
+        assert dst.cache_class_name == "KVCache"
