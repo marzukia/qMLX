@@ -5,6 +5,7 @@ Tests for structured output (JSON Schema) functionality.
 Tests the JSON parsing, validation, and response_format handling.
 """
 
+import importlib.util
 import json
 
 import pytest
@@ -16,6 +17,8 @@ from vllm_mlx.api.tool_calling import (
     parse_json_output,
     validate_json_schema,
 )
+
+_MLX_AVAILABLE = importlib.util.find_spec("mlx") is not None
 
 
 class TestValidateJsonSchema:
@@ -375,6 +378,131 @@ class TestStructuredOutputIntegration:
         data = json.loads(content)
         assert "colors" in data
         assert isinstance(data["colors"], list)
+
+
+@pytest.mark.skipif(
+    not _MLX_AVAILABLE,
+    reason="routes.chat transitively imports mlx (skipped on no-MLX CI)",
+)
+class TestStripBackslashBeforeUnicode:
+    """Cherry-picked from upstream waybarrios#525.
+
+    ``lm-format-enforcer``'s grammar permits ``\\`` followed by any
+    codepoint as a valid JSON escape, so a model emitting JSON with
+    non-ASCII content can produce strings like ``"\\빠\\르\\게"``: valid
+    JSON, but the decoded value carries literal backslashes that look
+    like corruption to clients. The helper in ``routes/chat.py`` strips
+    those spurious backslashes recursively across dicts / lists / strs.
+    """
+
+    def test_strips_backslash_before_cjk(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        assert _strip_backslash_before_unicode("\\빠\\르\\게") == "빠르게"
+
+    def test_preserves_valid_ascii_escapes(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        # ``\\n`` decodes to a newline; the helper sees an actual newline
+        # (non-ASCII codepoint? no — newline is ASCII), so it must remain
+        # untouched.  Same for ``\\\\`` (literal backslash).
+        assert _strip_backslash_before_unicode("line1\nline2") == "line1\nline2"
+        assert _strip_backslash_before_unicode("path\\\\to") == "path\\\\to"
+
+    def test_recurses_into_dict_and_list(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        nested = {
+            "title": "\\안\\녕",
+            "items": ["a", "\\🚀", {"name": "\\한\\글"}],
+        }
+        cleaned = _strip_backslash_before_unicode(nested)
+        assert cleaned == {
+            "title": "안녕",
+            "items": ["a", "🚀", {"name": "한글"}],
+        }
+
+    def test_cleans_non_ascii_keys(self):
+        """Codex review round 1 finding: keys can also carry spurious
+        backslashes (``lm-format-enforcer`` makes no distinction between
+        JSON keys and values). The cleaner must strip both."""
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        # Key with backslashes before CJK; value also dirty.
+        assert _strip_backslash_before_unicode({"\\제\\목": "\\값"}) == {"제목": "값"}
+        # Nested case: the inner dict's key must also be cleaned.
+        assert _strip_backslash_before_unicode({"items": [{"\\이\\름": "raul"}]}) == {
+            "items": [{"이름": "raul"}]
+        }
+
+    def test_non_string_scalars_pass_through(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        assert _strip_backslash_before_unicode(42) == 42
+        assert _strip_backslash_before_unicode(True) is True
+        assert _strip_backslash_before_unicode(None) is None
+
+    def test_emoji_with_surrogate_pair(self):
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        # Emoji past U+FFFF — the regex matches by codepoint, not by
+        # UTF-16 surrogate, so the single backslash before the emoji
+        # should still be stripped.
+        assert _strip_backslash_before_unicode("hi \\🎉 there") == "hi 🎉 there"
+
+    def test_key_collision_logs_and_keeps_first(self, caplog):
+        """Codex review round 2 finding: two dirty keys can collapse to
+        the same clean key (``"\\한"`` and ``"한"`` both → ``"한"``).
+        Silently dropping one is data loss; we keep the first occurrence
+        and log a warning."""
+        import logging
+
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        with caplog.at_level(logging.WARNING, logger="vllm_mlx.routes.chat"):
+            cleaned = _strip_backslash_before_unicode({"\\한": 1, "한": 2})
+        assert cleaned == {"한": 1}
+        assert any("key collision" in rec.message for rec in caplog.records)
+
+    def test_end_to_end_response_format_cleanup(self):
+        """Integration: drive the exact chain ``routes/chat.py`` runs on
+        a response_format='json_object' request whose model output
+        contains spurious ``\\`` before non-ASCII chars. This is the
+        regression that exercises wiring — if a future refactor moves
+        the helper to a different module or skips it, this test fails.
+
+        Codex review round 2 asked for this end-to-end coverage so the
+        unit test alone isn't the only safeguard against the wiring
+        getting accidentally dropped."""
+        import json as _json
+
+        from vllm_mlx.api.tool_calling import parse_json_output
+        from vllm_mlx.routes.chat import _strip_backslash_before_unicode
+
+        # Simulated model output: looks like JSON, but every CJK char
+        # carries a leading backslash (lm-format-enforcer behavior).
+        # Use double-escaped backslashes because the model emits the
+        # literal characters ``\``, ``빠``, ``\``, ``르``, …
+        raw_model_text = (
+            '{"message": "안녕 \\\\빠\\\\르\\\\게", "name": "\\\\한\\\\글"}'
+        )
+        response_format = {"type": "json_object"}
+
+        _, parsed_json, is_valid, _ = parse_json_output(raw_model_text, response_format)
+        assert is_valid, "json_object parser should accept this input"
+        assert parsed_json is not None
+
+        # The chat route now applies the helper before re-serializing.
+        cleaned = _strip_backslash_before_unicode(parsed_json)
+        final = _json.dumps(cleaned, ensure_ascii=False)
+
+        # Final body is what the client sees in ``message.content``.
+        # No spurious backslashes before the CJK characters.
+        assert "\\빠" not in final
+        assert "\\한" not in final
+        # CJK content survives intact (not double-escaped to \uXXXX).
+        assert "빠르게" in final
+        assert "한글" in final
 
 
 if __name__ == "__main__":

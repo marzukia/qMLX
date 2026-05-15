@@ -4,6 +4,7 @@
 import gc
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -64,6 +65,60 @@ from ..service.helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# Matches a single backslash directly followed by a non-ASCII codepoint.
+# ``lm-format-enforcer``'s grammar permits ``\\`` followed by any codepoint
+# as a valid JSON escape, so a model emitting JSON with CJK / emoji content
+# can produce strings like ``"\\빠\\르\\게"`` — valid JSON, but the decoded
+# value carries literal backslashes. Strip them so clients see clean text.
+#
+# Scope / known tradeoff: this is applied only on the ``response_format``
+# json-output path (see line ~632 below), not to tool-call arguments or
+# regular text content. The cleanup is unconditional within that path,
+# matching upstream waybarrios#525. A JSON object that LEGITIMATELY
+# contains a backslash before a non-ASCII codepoint (e.g. a Windows path
+# ``"C:\\사용자\\file.txt"`` in a response_format=json_object reply) will
+# be mutated to ``"C:사용자file.txt"``. We accept this tradeoff because:
+#  (a) the lm-format-enforcer bug is the overwhelming source of these
+#      sequences in JSON-output responses; the file-path case is rare,
+#  (b) gating the cleanup on a heuristic ("looks like enforcer output")
+#      would be fragile and only catch the obvious patterns,
+#  (c) clients that need raw backslash + non-ASCII can fall back to
+#      ``response_format=text`` and parse the JSON themselves.
+# If a user reports the false-positive in practice, revisit by adding a
+# config flag (``--no-strip-spurious-backslashes``) rather than a heuristic.
+_BACKSLASH_BEFORE_UNICODE = re.compile(r"\\([^\x00-\x7F])")
+
+
+def _strip_backslash_before_unicode(obj: object) -> object:
+    if isinstance(obj, dict):
+        # Clean both keys and values: ``lm-format-enforcer`` can produce
+        # ``"\\한\\글": "value"`` (valid JSON, ugly key). Stripping only
+        # values would leak the bug into client-visible object keys.
+        cleaned: dict[object, object] = {}
+        for k, v in obj.items():
+            new_key = _strip_backslash_before_unicode(k)
+            new_val = _strip_backslash_before_unicode(v)
+            if new_key in cleaned:
+                # Two distinct dirty keys can collapse to the same clean
+                # key (e.g. ``"\\한"`` and ``"한"`` both → ``"한"``). Keep
+                # the first occurrence and surface the collision rather
+                # than silently dropping a field.
+                logger.warning(
+                    "JSON key collision after backslash strip: %r dropped "
+                    "in favor of earlier value (cleaned key=%r)",
+                    k,
+                    new_key,
+                )
+                continue
+            cleaned[new_key] = new_val
+        return cleaned
+    if isinstance(obj, list):
+        return [_strip_backslash_before_unicode(v) for v in obj]
+    if isinstance(obj, str):
+        return _BACKSLASH_BEFORE_UNICODE.sub(r"\1", obj)
+    return obj
 
 
 def _finalize_content_and_reasoning(
@@ -590,7 +645,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 json_input, response_format
             )
             if parsed_json is not None:
-                cleaned_text = json.dumps(parsed_json)
+                parsed_json = _strip_backslash_before_unicode(parsed_json)
+                # ``ensure_ascii=False`` keeps non-ASCII characters as
+                # raw UTF-8 rather than escaping them to ``\uXXXX``. This
+                # is the standard recommendation for JSON-over-HTTP with
+                # international content (matches OpenAI's own response
+                # encoding); FastAPI emits this body as UTF-8 anyway, so
+                # the on-wire bytes are smaller and clients don't have to
+                # un-escape user-visible CJK / emoji a second time.
+                cleaned_text = json.dumps(parsed_json, ensure_ascii=False)
             if not is_valid:
                 logger.warning(f"JSON validation failed: {error}")
         except Exception as e:
