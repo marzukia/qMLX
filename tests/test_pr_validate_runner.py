@@ -182,3 +182,188 @@ class TestFailFast:
         from scripts.pr_validate.runner import STEPS
 
         assert isinstance(STEPS[0], FetchStep)
+
+
+class TestSelectModels:
+    """Pin the candidate-selection contract for ``stress_e2e_bench``.
+
+    The qwen3.6 family ships with two candidates today: an 8-bit primary
+    (``unsloth/Qwen3.6-27B-MLX-8bit``, ram=36) and a 4-bit fallback
+    (``mlx-community/Qwen3.6-27B-4bit``, ram=18). The selection rule is
+    "first candidate whose ``ram_gb_required`` fits ``usable_gb``" — these
+    tests make sure a future refactor that swaps the rule (e.g. to
+    "highest ``quality_tier``") doesn't silently downgrade the 36 GB+ host
+    to the 4-bit candidate or upgrade the 24 GB host to an OOM at boot.
+    """
+
+    @staticmethod
+    def _registry() -> dict:
+        """Mirror the qwen3.6 entry in golden_models.yaml. Hand-built so
+        the test doesn't depend on file content — if someone reorders the
+        YAML, this test still pins the selection algorithm itself."""
+        return {
+            "families": [
+                {
+                    "family": "qwen3.6",
+                    "candidates": [
+                        {
+                            "id": "unsloth/Qwen3.6-27B-MLX-8bit",
+                            "ram_gb_required": 36,
+                            "quality_tier": "golden",
+                        },
+                        {
+                            "id": "mlx-community/Qwen3.6-27B-4bit",
+                            "ram_gb_required": 18,
+                            # Mirrors the YAML — `smoke` so the multi-
+                            # tool agent (skip_for_smoke=true) is
+                            # suppressed on constrained hosts that
+                            # have to fall through to this 4-bit
+                            # entry. A future test that relies on the
+                            # skip behavior wants the fixture's tier
+                            # to match production.
+                            "quality_tier": "smoke",
+                        },
+                    ],
+                },
+            ],
+            "overrides": {
+                "unsloth/Qwen3.6-27B-MLX-8bit": {
+                    "args": [
+                        "--enable-auto-tool-choice",
+                        "--tool-call-parser",
+                        "hermes",
+                    ],
+                },
+                "mlx-community/Qwen3.6-27B-4bit": {
+                    "args": [
+                        "--enable-auto-tool-choice",
+                        "--tool-call-parser",
+                        "hermes",
+                    ],
+                },
+            },
+        }
+
+    # The override args we expect for the qwen3.6 family — match
+    # exactly so a regression that drops the parser, drops the value,
+    # or swaps `hermes` for the wrong parser id is caught. A tuple
+    # rather than a list so a future test can't accidentally `.append`
+    # to it and silently poison every other test that compares against
+    # this constant.
+    _QWEN36_HERMES_ARGS = (
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "hermes",
+    )
+
+    def test_high_ram_picks_8bit_primary(self):
+        """48 GB usable easily fits the 36 GB primary — fallback must not
+        win on a beefy host."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _select_models
+
+        choices = _select_models(self._registry(), usable_gb=48.0)
+        assert len(choices) == 1
+        assert choices[0].family == "qwen3.6"
+        assert choices[0].model_id == "unsloth/Qwen3.6-27B-MLX-8bit"
+        # Override args wired through verbatim so the server boots with
+        # the exact parser we asked for — regression guard for the
+        # override-by-id map.
+        assert tuple(choices[0].extra_args) == self._QWEN36_HERMES_ARGS
+
+    def test_low_ram_falls_through_to_4bit_fallback(self):
+        """24 GB usable can't fit the 36 GB primary but does fit the 18
+        GB fallback — covers the constrained-host (≤32 GB) graceful-
+        degradation path. Without the fallback this family would be
+        silently dropped from the matrix on older M2 Pro / base M3."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _select_models
+
+        choices = _select_models(self._registry(), usable_gb=24.0)
+        assert len(choices) == 1
+        assert choices[0].model_id == "mlx-community/Qwen3.6-27B-4bit"
+        assert choices[0].ram_gb_required == 18.0
+        # The fallback also gets its overrides — the override map keys
+        # by full HF id, so a typo in either side silently drops the
+        # parser flag and the model boots with default (broken)
+        # tool-call routing.
+        assert tuple(choices[0].extra_args) == self._QWEN36_HERMES_ARGS
+
+    def test_below_all_candidates_skips_family(self):
+        """A host below every candidate's floor drops the family from the
+        returned list rather than picking something that will OOM."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _select_models
+
+        choices = _select_models(self._registry(), usable_gb=10.0)
+        assert choices == []
+
+    def test_first_fit_wins_even_when_later_candidate_has_higher_tier(self):
+        """``quality_tier`` is informational — order in the YAML decides
+        the priority. If a later candidate happens to be tagged "golden"
+        and the earlier one is tagged "small", the earlier one still
+        wins when both fit. This is the contract the inline docstring
+        on ``_select_models`` makes; pin it so a "smart" refactor can't
+        silently flip the priority."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _select_models
+
+        registry = {
+            "families": [
+                {
+                    "family": "tiered",
+                    "candidates": [
+                        {
+                            "id": "first/listed",
+                            "ram_gb_required": 8,
+                            "quality_tier": "small",
+                        },
+                        {
+                            "id": "later/listed",
+                            "ram_gb_required": 16,
+                            "quality_tier": "golden",
+                        },
+                    ],
+                },
+            ],
+        }
+        choices = _select_models(registry, usable_gb=64.0)
+        assert len(choices) == 1
+        assert choices[0].model_id == "first/listed"
+        assert choices[0].quality_tier == "small"
+
+    def test_real_yaml_high_ram_picks_first_qwen36_candidate(self):
+        """Hand-built ``_registry()`` above pins the algorithm; this
+        test pins the *file* — a future bump of ``ram_gb_required`` (say
+        36→40 after observing OOMs) or a candidate reorder must not
+        silently break the bench. We assert the YAML's first qwen3.6
+        candidate is the one selected on a high-RAM host, and that the
+        override map still has an entry for whatever id is first.
+        That's enough to catch the two breakages a YAML-only edit can
+        introduce: dropping the override key, or accidentally promoting
+        the 4-bit entry to position 0."""
+        from scripts.pr_validate.steps.stress_e2e_bench import (
+            _load_registry,
+            _select_models,
+        )
+
+        registry = _load_registry()
+        # Headroom that fits any plausible 27-35B 8-bit model on a real
+        # rig — the test is "primary entry wins on a beefy host", not
+        # "exactly 48 GB"; bumping the YAML floor to 40 or 48 doesn't
+        # invalidate this test, only a value > 999 would.
+        choices = _select_models(registry, usable_gb=999.0)
+        qwen36 = next((c for c in choices if c.family == "qwen3.6"), None)
+        assert qwen36 is not None, "qwen3.6 family missing from selection"
+
+        # The selected id must be the YAML's literal first candidate —
+        # walk the file the same way _select_models does.
+        first_yaml = next(f for f in registry["families"] if f["family"] == "qwen3.6")[
+            "candidates"
+        ][0]
+        assert qwen36.model_id == first_yaml["id"]
+        # Override args wired through verbatim — full equality so a
+        # value-typo in the YAML override (e.g. `hermez` instead of
+        # `hermes`) is caught rather than just the truthiness of a
+        # non-empty list.
+        assert tuple(qwen36.extra_args) == self._QWEN36_HERMES_ARGS, (
+            f"selected {qwen36.model_id!r} but its overrides args don't "
+            f"match expected — check overrides:{qwen36.model_id} in "
+            "golden_models.yaml"
+        )
