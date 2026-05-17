@@ -369,7 +369,16 @@ class MLLMBatchGenerator:
     def close(self) -> None:
         """Release resources and reset wired limit."""
         if self._old_wired_limit is not None:
-            mx.synchronize(MLLMBatchGenerator._stream)
+            # mlx-lm 0.31.3+ streams are thread-local. On shutdown the
+            # owning worker thread may already be torn down, in which case
+            # mx.synchronize raises "There is no Stream(gpu, N) in current
+            # thread". The sync is best-effort here — pending ops complete
+            # during process exit anyway, and the wired-limit reset still
+            # needs to run to free reserved memory.
+            try:
+                mx.synchronize(MLLMBatchGenerator._stream)
+            except RuntimeError as e:
+                logger.debug(f"mx.synchronize skipped during close: {e}")
             mx.set_wired_limit(self._old_wired_limit)
             self._old_wired_limit = None
 
