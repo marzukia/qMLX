@@ -99,3 +99,72 @@ def test_run_vision_encoding_preserves_extra_kwargs_alongside_pixel_values():
     assert "pixel_values" in model.last_call_kwargs
     assert model.last_call_kwargs["pixel_values"] is None
     assert "token_type_ids" in model.last_call_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Shutdown — mx.synchronize must not propagate cross-thread errors
+# ---------------------------------------------------------------------------
+
+
+def test_close_swallows_synchronize_thread_error(monkeypatch):
+    """`close()` must not propagate RuntimeError from mx.synchronize.
+
+    mlx-lm 0.31.3+ streams are thread-local. When the engine is torn down
+    from a thread that isn't the one that owns MLLMBatchGenerator._stream,
+    mx.synchronize raises `There is no Stream(gpu, N) in current thread`.
+    Pre-fix this propagated out of the lifespan shutdown and produced a
+    scary traceback (Persona E v0.6.51 onboarding finding). The sync is
+    best-effort on shutdown; the wired-limit reset is what matters.
+    """
+    import mlx.core as mx
+
+    # Construct a generator and force the wired-limit branch to execute.
+    gen = _make_generator(_RecordingModel())
+    gen._old_wired_limit = 1234  # any sentinel triggers the close path
+
+    sync_calls: list[object] = []
+    set_limit_calls: list[int] = []
+
+    def _raising_sync(stream):
+        sync_calls.append(stream)
+        raise RuntimeError("There is no Stream(gpu, 2) in current thread")
+
+    def _record_set_limit(value):
+        set_limit_calls.append(value)
+        return value
+
+    monkeypatch.setattr(mx, "synchronize", _raising_sync)
+    monkeypatch.setattr(mx, "set_wired_limit", _record_set_limit)
+
+    # Must not raise.
+    gen.close()
+
+    # Best-effort sync attempted exactly once.
+    assert len(sync_calls) == 1
+    # Wired limit was still reset to the original value — the important
+    # cleanup is not skipped just because the cross-thread sync failed.
+    assert set_limit_calls == [1234]
+    # State is cleared so __del__ is a no-op afterward.
+    assert gen._old_wired_limit is None
+
+
+def test_close_propagates_non_runtime_errors_from_set_wired_limit(monkeypatch):
+    """Errors from set_wired_limit are unrelated to the thread bug — keep
+    propagating them so a real OS-level failure isn't silently swallowed.
+    """
+    import mlx.core as mx
+
+    gen = _make_generator(_RecordingModel())
+    gen._old_wired_limit = 999
+
+    monkeypatch.setattr(mx, "synchronize", lambda _s: None)
+
+    def _boom(value):
+        raise OSError("metal API call failed")
+
+    monkeypatch.setattr(mx, "set_wired_limit", _boom)
+
+    import pytest
+
+    with pytest.raises(OSError, match="metal API call failed"):
+        gen.close()
