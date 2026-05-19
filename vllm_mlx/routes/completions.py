@@ -19,7 +19,9 @@ from ..api.models import (
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    _check_admission_or_503,
     _disconnect_guard,
+    _release_admission_unless_committed,
     _resolve_max_tokens,
     _resolve_model_name,
     _resolve_temperature,
@@ -53,83 +55,98 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         )
     engine = get_engine(request.model)
 
-    # Handle single prompt or list of prompts
-    prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]
-
-    # --- Detailed request logging ---
-    prompt_preview = prompts[0][:200] if prompts else "(empty)"
-    prompt_len = sum(len(p) for p in prompts)
-    logger.info(
-        f"[REQUEST] POST /v1/completions stream={request.stream} "
-        f"max_tokens={request.max_tokens} temp={request.temperature} "
-        f"prompt_chars={prompt_len} prompt_preview={prompt_preview!r}"
-    )
-
-    if request.stream:
-        return StreamingResponse(
-            _disconnect_guard(
-                stream_completion(engine, prompts[0], request),
-                raw_request,
-            ),
-            media_type="text/event-stream",
+    # Pre-flight admission gate (C4). Reservation is released by the
+    # ``finally`` block below; on the streaming path we flip
+    # ``_admission_committed`` to True so ``_disconnect_guard`` owns
+    # the release once the SSE generator closes. Closes the codex R3
+    # leak where any HTTPException between this call and the
+    # streaming/non-streaming helper pinned the slot until restart.
+    _check_admission_or_503(engine)
+    _admission_committed = False
+    try:
+        # Handle single prompt or list of prompts
+        prompts = (
+            request.prompt if isinstance(request.prompt, list) else [request.prompt]
         )
 
-    # Non-streaming response with timing and timeout
-    start_time = time.perf_counter()
-    timeout = request.timeout or get_config().default_timeout
-    choices = []
-    total_completion_tokens = 0
-    total_prompt_tokens = 0
-
-    extended_kwargs = build_extended_sampling_kwargs(request)
-
-    for i, prompt in enumerate(prompts):
-        output = await _wait_with_disconnect(
-            engine.generate(
-                prompt=prompt,
-                max_tokens=_resolve_max_tokens(request.max_tokens),
-                temperature=_resolve_temperature(request.temperature),
-                top_p=_resolve_top_p(request.top_p),
-                stop=request.stop,
-                **extended_kwargs,
-            ),
-            raw_request,
-            timeout=timeout,
+        # --- Detailed request logging ---
+        prompt_preview = prompts[0][:200] if prompts else "(empty)"
+        prompt_len = sum(len(p) for p in prompts)
+        logger.info(
+            f"[REQUEST] POST /v1/completions stream={request.stream} "
+            f"max_tokens={request.max_tokens} temp={request.temperature} "
+            f"prompt_chars={prompt_len} prompt_preview={prompt_preview!r}"
         )
-        if output is None:
-            return Response(status_code=499)  # Client closed request
 
-        choices.append(
-            CompletionChoice(
-                index=i,
-                text=output.text,
-                finish_reason=output.finish_reason,
+        if request.stream:
+            _admission_committed = True
+            return StreamingResponse(
+                _disconnect_guard(
+                    stream_completion(engine, prompts[0], request),
+                    raw_request,
+                    engine=engine,
+                ),
+                media_type="text/event-stream",
             )
-        )
-        total_completion_tokens += output.completion_tokens
-        total_prompt_tokens += (
-            output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
+
+        # Non-streaming response with timing and timeout
+        start_time = time.perf_counter()
+        timeout = request.timeout or get_config().default_timeout
+        choices = []
+        total_completion_tokens = 0
+        total_prompt_tokens = 0
+
+        extended_kwargs = build_extended_sampling_kwargs(request)
+
+        for i, prompt in enumerate(prompts):
+            output = await _wait_with_disconnect(
+                engine.generate(
+                    prompt=prompt,
+                    max_tokens=_resolve_max_tokens(request.max_tokens),
+                    temperature=_resolve_temperature(request.temperature),
+                    top_p=_resolve_top_p(request.top_p),
+                    stop=request.stop,
+                    **extended_kwargs,
+                ),
+                raw_request,
+                timeout=timeout,
+            )
+            if output is None:
+                return Response(status_code=499)  # Client closed request
+
+            choices.append(
+                CompletionChoice(
+                    index=i,
+                    text=output.text,
+                    finish_reason=output.finish_reason,
+                )
+            )
+            total_completion_tokens += output.completion_tokens
+            total_prompt_tokens += (
+                output.prompt_tokens if hasattr(output, "prompt_tokens") else 0
+            )
+
+        elapsed = time.perf_counter() - start_time
+        tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0
+        logger.info(
+            f"Completion: {total_prompt_tokens} prompt + {total_completion_tokens} completion tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
         )
 
-    elapsed = time.perf_counter() - start_time
-    tokens_per_sec = total_completion_tokens / elapsed if elapsed > 0 else 0
-    logger.info(
-        f"Completion: {total_prompt_tokens} prompt + {total_completion_tokens} completion tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
-    )
-
-    comp_response = CompletionResponse(
-        model=_resolve_model_name(request.model),
-        choices=choices,
-        usage=Usage(
-            prompt_tokens=total_prompt_tokens,
-            completion_tokens=total_completion_tokens,
-            total_tokens=total_prompt_tokens + total_completion_tokens,
-        ),
-    )
-    return Response(
-        content=comp_response.model_dump_json(exclude_none=True),
-        media_type="application/json",
-    )
+        comp_response = CompletionResponse(
+            model=_resolve_model_name(request.model),
+            choices=choices,
+            usage=Usage(
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                total_tokens=total_prompt_tokens + total_completion_tokens,
+            ),
+        )
+        return Response(
+            content=comp_response.model_dump_json(exclude_none=True),
+            media_type="application/json",
+        )
+    finally:
+        _release_admission_unless_committed(engine, _admission_committed)
 
 
 async def stream_completion(

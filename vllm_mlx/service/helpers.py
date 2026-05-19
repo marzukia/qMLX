@@ -38,6 +38,94 @@ _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
 
 
+def _check_admission_or_503(engine) -> None:
+    """Atomic admission gate for route handlers — reserves a slot.
+
+    Calls ``engine.check_admission()`` which, under
+    ``_admission_lock``, checks the cap and increments the engine's
+    reservation counter. If the cap is reached, raises HTTP 503 with
+    Retry-After before any response body is sent. This is necessary
+    for streaming routes — once ``StreamingResponse`` starts yielding,
+    headers are flushed and the only way to signal backpressure would
+    be an SSE error chunk on a 200 response.
+
+    The reservation is released by ``_disconnect_guard`` (streaming)
+    or ``_wait_with_disconnect`` (non-streaming) via their ``finally``
+    clauses when the caller passes ``engine=engine`` to them. Routes
+    that bypass both (e.g. the chat ``want_logprobs`` branch) must
+    call ``engine.release_admission_reservation()`` themselves.
+
+    Engines without a ``check_admission`` attribute (test stubs)
+    silently no-op.
+    """
+    from ..scheduler import BackpressureError
+
+    check = getattr(engine, "check_admission", None)
+    if check is None:
+        # Engine doesn't implement admission control (e.g. test stub) —
+        # fall through to the runtime catch in ``_wait_with_disconnect``.
+        return
+    try:
+        check()
+    except BackpressureError as exc:
+        _raise_backpressure_503(exc)
+
+
+def _release_admission_unless_committed(engine, committed: bool) -> None:
+    """Release a slot reserved by ``_check_admission_or_503`` unless
+    release responsibility has been handed off to a streaming helper.
+
+    Pair with a route-handler ``try/finally``: set a local
+    ``_admission_committed_to_helper = False`` right after the
+    reservation, flip to ``True`` immediately before returning a
+    ``StreamingResponse(_disconnect_guard(..., engine=engine))``
+    (the helper releases when the SSE generator closes), and call
+    this from the ``finally``. Closes the codex R3 leak — validation
+    errors (``messages=[]``, invalid ``max_tokens``, unsupported
+    image-on-text, ``response_format`` schema errors,
+    chat-template errors, …) that previously pinned a slot until
+    restart now drop the slot via this finally.
+
+    ``release_admission_reservation`` is idempotent below zero so a
+    stray double release (defensive callers, helper fires just as
+    the route handler also releases) cannot corrupt the accounting.
+    """
+    if committed:
+        return
+    release = getattr(engine, "release_admission_reservation", None)
+    if release is None:
+        return
+    try:
+        release()
+    except Exception:
+        logger.warning(
+            "release_admission_reservation raised on route finally",
+            exc_info=True,
+        )
+
+
+def _raise_backpressure_503(exc: Exception) -> None:
+    """Convert ``BackpressureError`` from the scheduler into HTTP 503
+    with a Retry-After header (RFC 9110 §10.2.4).
+
+    Backpressure is a normal load-shedding outcome, not a bug — clients
+    that respect Retry-After can simply re-queue. Without this catch,
+    the error reaches FastAPI's generic 500 handler and the client
+    sees an opaque ``Internal server error`` body, defeating the
+    point of admission control.
+    """
+    raise HTTPException(
+        status_code=503,
+        # 1s is a sensible default — the cap usually clears within
+        # a few tokens of decode on the saturated batch.
+        headers={"Retry-After": "1"},
+        detail=(
+            "Server is busy (max concurrent requests reached). "
+            f"Retry after the Retry-After delay. ({exc})"
+        ),
+    )
+
+
 def _finalize_content_and_reasoning(
     raw_text: str,
     cleaned_text: str,
@@ -664,8 +752,18 @@ async def _disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
     poll_interval: float = 0.5,
+    engine=None,
 ) -> AsyncIterator[str]:
-    """Wrap streaming generator to abort on client disconnect."""
+    """Wrap streaming generator to abort on client disconnect.
+
+    When ``engine`` is provided, releases its admission reservation in
+    the ``finally`` clause so the slot acquired by
+    ``_check_admission_or_503`` is returned to the pool once the
+    streaming response finishes (or the client disconnects, or the
+    generator raises). The release is the safety net for the
+    streaming path; non-streaming routes mirror it via
+    ``_wait_with_disconnect``.
+    """
     import time as _time
 
     _t0 = _time.monotonic()
@@ -758,6 +856,16 @@ async def _disconnect_guard(
             await generator.aclose()
         except Exception:
             pass
+        if engine is not None:
+            release = getattr(engine, "release_admission_reservation", None)
+            if release is not None:
+                try:
+                    release()
+                except Exception:
+                    logger.warning(
+                        "[disconnect_guard] release_admission_reservation raised",
+                        exc_info=True,
+                    )
         logger.info(
             f"[disconnect_guard] CLEANUP done, {chunk_count} chunks total, elapsed={_elapsed()}"
         )
@@ -769,8 +877,24 @@ async def _wait_with_disconnect(
     timeout: float,
     poll_interval: float = 0.5,
 ):
-    """Run a coroutine with both timeout and client disconnect detection."""
+    """Run a coroutine with both timeout and client disconnect detection.
+
+    Also catches ``BackpressureError`` from admission control and
+    re-raises as HTTP 503 with Retry-After (RFC 9110 §10.2.4). Doing
+    the conversion here means every route that goes through this
+    helper (chat, completions, anthropic) gets correct 503 semantics
+    without each one wiring its own try/except.
+
+    Admission release is the caller's responsibility — wrap the route
+    handler in ``with _admission_slot(engine):`` so the slot is
+    released on ``with`` exit (covering normal completion, validation
+    errors, timeouts, and disconnects). Releasing inside this helper
+    would drop the slot *before* the route handler's post-processing
+    finishes, briefly under-counting in-flight requests.
+    """
     import time as _time
+
+    from ..scheduler import BackpressureError
 
     _t0 = _time.monotonic()
 
@@ -822,7 +946,10 @@ async def _wait_with_disconnect(
                 pass
             return None
 
-        return task.result()
+        try:
+            return task.result()
+        except BackpressureError as exc:
+            _raise_backpressure_503(exc)
 
     finally:
         if not disconnect_task.done():

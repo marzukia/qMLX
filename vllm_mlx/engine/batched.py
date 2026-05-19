@@ -14,6 +14,7 @@ LLM engine), so text-only requests must also be routed through it.
 import functools
 import json
 import logging
+import threading
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
@@ -319,6 +320,19 @@ class BatchedEngine(BaseEngine):
         self._loaded = False
         self._engine_started = False  # Track if engine loop is running
 
+        # Atomic admission counter. Tracks in-flight requests admitted
+        # via ``check_admission``; released by
+        # ``release_admission_reservation`` once the route handler is
+        # done (response sent / streaming generator closed). The cap
+        # check + bump runs under ``_admission_lock`` so two concurrent
+        # route handlers cannot both pass admission at ``cap-1`` — the
+        # race codex R2 flagged on the streaming path.
+        # ``threading.Lock`` (not ``asyncio.Lock``) because the scheduler
+        # step thread also calls these methods in defence-in-depth
+        # checks; an asyncio lock would only serialise the event loop.
+        self._admission_lock = threading.Lock()
+        self._admission_reservations = 0
+
     @property
     def model_name(self) -> str:
         """Get the model name."""
@@ -328,6 +342,99 @@ class BatchedEngine(BaseEngine):
     def is_mllm(self) -> bool:
         """Check if this is a multimodal model."""
         return self._is_mllm
+
+    def check_admission(self) -> None:
+        """Atomic admission gate that *reserves* a slot on success.
+
+        Under ``_admission_lock``, compares
+        ``_admission_reservations`` to ``max_concurrent_requests``;
+        if the cap is reached, raises ``BackpressureError``; otherwise
+        bumps the counter so a second concurrent caller sees the cap
+        immediately. Closes the streaming race codex R2 flagged where
+        two requests at ``cap-1`` could both pass a plain check-then-
+        act gate and then have the loser raise ``BackpressureError``
+        *inside* the response generator (which would degrade to a 200
+        SSE error chunk instead of a clean HTTP 503).
+
+        The reservation counter is authoritative for the cap — the
+        scheduler's own ``len(requests) >= cap`` check in
+        ``Scheduler.add_request`` is retained as defence in depth (a
+        direct ``add_request`` caller that bypasses the engine would
+        still hit it) but the route-handler path lives entirely on
+        this counter, so a request never double-counts.
+
+        The caller MUST call ``release_admission_reservation`` exactly
+        once per successful ``check_admission`` — when the request is
+        finished (response sent, generator closed, validation error,
+        whatever). ``_disconnect_guard`` and ``_wait_with_disconnect``
+        do this from a ``finally`` clause so route handlers don't have
+        to thread it manually.
+        """
+        from ..scheduler import BackpressureError
+
+        if self._is_mllm and self._mllm_scheduler is not None:
+            cap = getattr(self._mllm_scheduler.config, "max_concurrent_requests", None)
+        else:
+            # ``self._engine`` is an ``AsyncEngineCore`` wrapper; the
+            # actual ``Scheduler`` lives on its inner ``EngineCore`` —
+            # ``self._engine.engine.scheduler``. The old
+            # ``getattr(self._engine, "scheduler", None)`` lookup
+            # silently returned ``None`` because ``AsyncEngineCore``
+            # does not expose ``scheduler`` directly, so the LLM
+            # admission gate was a no-op (codex R4 BLOCKER: streaming
+            # text requests at cap were degrading to 200 SSE error
+            # chunks instead of the intended 503 + Retry-After).
+            inner_engine = (
+                getattr(self._engine, "engine", None) if self._engine else None
+            )
+            scheduler = getattr(inner_engine, "scheduler", None)
+            if scheduler is None:
+                # Cold-start / pre-load window — the scheduler may not
+                # exist yet but a burst of streaming requests can
+                # still pour in. Fall back to the configured cap from
+                # ``self._scheduler_config`` so the reservation
+                # counter enforces backpressure even before
+                # ``_start_llm``/``_start_mllm`` finishes (codex R6
+                # P2: without this, cold-start requests slipped past
+                # admission and the late ``BackpressureError`` from
+                # ``add_request`` degraded to a 200 SSE error chunk).
+                # When the engine was constructed without an explicit
+                # ``scheduler_config`` (e.g. ``load_model`` defaults,
+                # tests, or programmatic ``BatchedEngine(...)``
+                # callers), ``self._scheduler_config`` is ``None`` —
+                # use the dataclass default so the gate still
+                # enforces 256 instead of silently degrading to a
+                # no-op (codex R10 P2).
+                from ..scheduler import SchedulerConfig
+
+                sc = self._scheduler_config
+                if sc is None:
+                    sc = SchedulerConfig()
+                cap = getattr(sc, "max_concurrent_requests", None)
+            else:
+                cap = getattr(scheduler.config, "max_concurrent_requests", None)
+
+        if cap is None or cap <= 0:
+            return
+
+        with self._admission_lock:
+            if self._admission_reservations >= cap:
+                raise BackpressureError(
+                    f"max_concurrent_requests={cap} reached "
+                    f"(currently {self._admission_reservations} in-flight)"
+                )
+            self._admission_reservations += 1
+
+    def release_admission_reservation(self) -> None:
+        """Release a slot reserved by ``check_admission``.
+
+        Idempotent below zero — a stray extra release (e.g. both
+        success path and a finally clause firing on an unusual
+        cancellation) cannot corrupt the cap accounting.
+        """
+        with self._admission_lock:
+            if self._admission_reservations > 0:
+                self._admission_reservations -= 1
 
     @property
     def tokenizer(self) -> Any:
@@ -461,6 +568,20 @@ class BatchedEngine(BaseEngine):
             self._scheduler_config, "completion_batch_size", 32
         )
         prefill_step_size = getattr(self._scheduler_config, "prefill_step_size", 2048)
+        # Carry the user-configured admission cap across to the MLLM
+        # scheduler. Without this, a server started with
+        # ``SchedulerConfig(max_concurrent_requests=N)`` would always
+        # admission-gate MLLM routes against the dataclass default —
+        # leaving memory-constrained vision deployments without the
+        # configured backpressure protection (codex R5). Fallback 256
+        # matches ``MLLMSchedulerConfig``'s own dataclass default so
+        # the no-explicit-config programmatic construction path (no
+        # ``scheduler_config`` passed to ``BatchedEngine``) still
+        # admission-gates rather than passing ``None`` through and
+        # silently disabling the cap (codex R8).
+        max_concurrent_requests = getattr(
+            self._scheduler_config, "max_concurrent_requests", 256
+        )
 
         mllm_config = MLLMSchedulerConfig(
             max_num_seqs=max_num_seqs,
@@ -469,6 +590,7 @@ class BatchedEngine(BaseEngine):
             prefill_step_size=prefill_step_size,
             enable_vision_cache=True,
             vision_cache_size=100,
+            max_concurrent_requests=max_concurrent_requests,
         )
 
         # Create and start MLLM scheduler — pass the model-owning executor so

@@ -140,6 +140,31 @@ class SchedulerConfig:
     # accepting most useful drafts on tool/JSON workloads.
     suffix_min_draft_len: int = 2
 
+    # Admission control: hard cap on concurrent in-flight requests
+    # (queued + running). A buggy client (or simple fork bomb) used to
+    # be able to OOM the Metal allocator and crash the server for all
+    # other clients; ``add_request`` now raises ``BackpressureError``
+    # at the cap and routes return 503 with Retry-After. Default 256
+    # provides ample queue depth on top of ``max_num_seqs`` — waiting
+    # requests only carry their tokenised prompt, not KV cache state,
+    # so the memory cost of a queue is small even when ``max_num_seqs``
+    # is constrained. Operators who want admission to mirror
+    # ``max_num_seqs`` exactly can pass ``--max-concurrent-requests``
+    # (codex R7 flagged the gap; the explicit override resolves it
+    # without breaking existing tests that intentionally send more
+    # requests than ``max_num_seqs`` to exercise the queue).
+    max_concurrent_requests: int = 256
+
+
+class BackpressureError(Exception):
+    """Raised when admission control rejects a new request.
+
+    Caught by route handlers and converted to HTTP 503 with a
+    Retry-After header so well-behaved clients back off and retry.
+    Distinguished from ``ValueError`` so the scheduler's narrow
+    batch-error catch path doesn't swallow it.
+    """
+
 
 @dataclass
 class SchedulerOutput:
@@ -2281,9 +2306,25 @@ class Scheduler:
 
         Args:
             request: The request to add
+
+        Raises:
+            BackpressureError: If the in-flight request count is at or
+                above ``config.max_concurrent_requests``. Routes catch
+                this and return 503 with Retry-After.
         """
         if request.request_id in self.requests:
             raise ValueError(f"Request {request.request_id} already exists")
+
+        # Admission control: cap concurrent in-flight requests so a
+        # buggy/abusive client can't OOM Metal and crash the server
+        # for everyone else. Check BEFORE tokenization so the cost of
+        # being over the cap is just a dict lookup.
+        cap = self.config.max_concurrent_requests
+        if cap is not None and cap > 0 and len(self.requests) >= cap:
+            raise BackpressureError(
+                f"max_concurrent_requests={cap} reached "
+                f"(currently {len(self.requests)} in-flight)"
+            )
 
         # Tokenize if needed
         if request.prompt_token_ids is None:

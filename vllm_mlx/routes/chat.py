@@ -44,12 +44,14 @@ from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
     _TOOL_USE_SYSTEM_SUFFIX,
     _build_usage,
+    _check_admission_or_503,
     _disconnect_guard,
     _extract_streaming_token_logprobs,
     _finalize_content_and_reasoning,
     _inject_json_instruction,
     _maybe_pin_system_prompt,
     _parse_tool_calls_with_parser,
+    _release_admission_unless_committed,
     _resolve_enable_thinking,
     _resolve_max_tokens,
     _resolve_model_name,
@@ -171,6 +173,40 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
     _validate_model_name(request.model)
     engine = get_engine(request.model)
 
+    # Admission reservation is acquired LATER — after cloud-routing
+    # decision (codex R9: cloud-routable requests must not be 503'd
+    # solely because the local engine is at cap; they bypass local
+    # generation entirely) and after the cheap validation that may
+    # raise HTTPException (codex R3: validation errors used to pin
+    # the slot until restart, exhausting the cap via a trivial
+    # malformed-JSON DoS). ``_commit_state[0] = True`` is flipped
+    # right before returning a StreamingResponse so
+    # ``_disconnect_guard`` owns release after the SSE generator
+    # closes; the route-level ``finally`` releases for non-streaming
+    # and cloud paths.
+    _commit_state = [False]
+    _admission_acquired = [False]
+    try:
+        return await _create_chat_completion_impl(
+            request, raw_request, engine, _commit_state, _admission_acquired
+        )
+    finally:
+        if _admission_acquired[0]:
+            _release_admission_unless_committed(engine, _commit_state[0])
+
+
+async def _create_chat_completion_impl(
+    request: ChatCompletionRequest,
+    raw_request: Request,
+    engine,
+    _commit_state: list[bool],
+    _admission_acquired: list[bool],
+):
+    """Inner impl for ``create_chat_completion``. Admission is
+    reserved inside this function — after cloud-routing decision
+    and after cheap validation — to avoid (a) 503'ing
+    cloud-routable requests when the local engine is full and
+    (b) leaking the slot on validation HTTPException paths."""
     # Validate messages is non-empty
     if not request.messages:
         raise HTTPException(
@@ -472,6 +508,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         t.model_dump() if hasattr(t, "model_dump") else t
                         for t in request.tools
                     ]
+                # Cloud-routed request: the local scheduler/Metal path
+                # is bypassed entirely, so admission is not acquired
+                # for cloud paths. The wrapper's ``finally`` checks
+                # ``_admission_acquired[0]`` (still False here) and
+                # skips the release. Without this ordering (admission
+                # check moved BELOW the cloud routing block), a burst
+                # of local requests filling the cap would 503
+                # cloud-routable requests that never touch the local
+                # engine (codex R9).
                 if request.stream:
                     return StreamingResponse(
                         _disconnect_guard(
@@ -506,6 +551,15 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                 f"[CLOUD ROUTE] Error during routing check: {e}, falling back to local"
             )
 
+    # Local-path admission gate: reserve a slot before kicking the
+    # engine. Placed AFTER cloud routing so cloud-routable requests
+    # don't 503 just because the local cap is full (codex R9), and
+    # AFTER the cheap validation above so a malformed request can't
+    # pin a slot until restart (codex R3). The wrapper's ``finally``
+    # uses ``_admission_acquired`` to decide whether to release.
+    _check_admission_or_503(engine)
+    _admission_acquired[0] = True
+
     if request.stream:
         # Validate chat template eagerly so template errors return 400
         if hasattr(engine, "build_prompt") and not engine.is_mllm:
@@ -528,10 +582,12 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                         detail=f"Chat template error: {err_msg}",
                     )
                 raise
+        _commit_state[0] = True
         return StreamingResponse(
             _disconnect_guard(
                 stream_chat_completion(engine, messages, request, **chat_kwargs),
                 raw_request,
+                engine=engine,
             ),
             media_type="text/event-stream",
         )
@@ -588,6 +644,10 @@ async def create_chat_completion(request: ChatCompletionRequest, raw_request: Re
                     f"Guided generation failed, falling back to standard: {guided_err}"
                 )
                 logger.debug(f"Problematic schema: {json_schema}")
+                # Fallback runs under the outer admission reservation
+                # still held by the wrapper's ``finally`` — no
+                # re-acquire needed (the helper does not release on
+                # its own now that release lives at the route level).
                 output = await _wait_with_disconnect(
                     engine.chat(messages=messages, **chat_kwargs),
                     raw_request,

@@ -64,6 +64,14 @@ class MLLMSchedulerConfig:
     default_video_fps: float = 2.0
     # Maximum video frames
     max_video_frames: int = 128
+    # Admission control: hard cap on concurrent in-flight MLLM
+    # requests (queued + running). Matches the LLM scheduler
+    # convention so ``max_concurrent_requests`` is uniform across
+    # both engines. Default 256 provides queue depth on top of
+    # ``max_num_seqs`` (waiting requests cost only the tokenised
+    # prompt, not KV state). Operators who want admission tied to
+    # ``max_num_seqs`` pass ``--max-concurrent-requests`` explicitly.
+    max_concurrent_requests: int = 256
 
 
 @dataclass
@@ -317,6 +325,17 @@ class MLLMScheduler:
         """
         if request_id is None:
             request_id = str(uuid.uuid4())
+
+        # Admission control: same gate as the LLM scheduler so MLLM
+        # paths can't bypass the cap by going through this code path.
+        cap = getattr(self.config, "max_concurrent_requests", None)
+        if cap is not None and cap > 0 and len(self.requests) >= cap:
+            from .scheduler import BackpressureError
+
+            raise BackpressureError(
+                f"max_concurrent_requests={cap} reached "
+                f"(currently {len(self.requests)} in-flight)"
+            )
 
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
