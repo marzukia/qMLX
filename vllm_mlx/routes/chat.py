@@ -560,6 +560,37 @@ async def _create_chat_completion_impl(
     _check_admission_or_503(engine)
     _admission_acquired[0] = True
 
+    # Detect guided generation BEFORE the stream/non-stream split so the
+    # streaming branch can also route json_schema requests through the
+    # constrained path. Pre-fix, only the non-stream branch consulted
+    # ``supports_guided_generation`` and stream=true silently bypassed
+    # ``GuidedGenerator`` — the model would emit unconstrained tokens
+    # (e.g. a ```json ... ``` markdown fence) even with a json_schema
+    # response_format set. Surfaced by Gap #2 of the v0.6.60 onboarding
+    # sweep; mirrors the constraint-then-emit pattern from upstream
+    # waybarrios#548.
+    use_guided = False
+    json_schema = None
+    if response_format and not request.tools:
+        json_schema = extract_json_schema_for_guided(response_format)
+        if json_schema and hasattr(engine, "supports_guided_generation"):
+            use_guided = engine.supports_guided_generation
+            # Belt-and-suspenders: a future custom engine could advertise
+            # ``supports_guided_generation=True`` yet not implement
+            # ``generate_with_schema``. Without this guard the streaming
+            # path would 500 with AttributeError on the first guided
+            # request; the non-stream branch would do the same. Match
+            # the contract surface that ``stream_chat_completion_guided``
+            # and the non-stream guided dispatch actually call.
+            if use_guided and not hasattr(engine, "generate_with_schema"):
+                logger.warning(
+                    "Engine advertises supports_guided_generation=True but "
+                    "is missing generate_with_schema; disabling guided path"
+                )
+                use_guided = False
+            if use_guided:
+                logger.info("Using guided generation for JSON schema enforcement")
+
     if request.stream:
         # Validate chat template eagerly so template errors return 400
         if hasattr(engine, "build_prompt") and not engine.is_mllm:
@@ -583,6 +614,21 @@ async def _create_chat_completion_impl(
                     )
                 raise
         _commit_state[0] = True
+        if use_guided and json_schema:
+            # Constrained streaming: run guided generation buffered, then
+            # synthesize an SSE stream from the buffered output. Falls
+            # back to the unconstrained streaming helper on guided
+            # failure (logged), matching the non-streaming fallback.
+            return StreamingResponse(
+                _disconnect_guard(
+                    stream_chat_completion_guided(
+                        engine, messages, request, json_schema, **chat_kwargs
+                    ),
+                    raw_request,
+                    engine=engine,
+                ),
+                media_type="text/event-stream",
+            )
         return StreamingResponse(
             _disconnect_guard(
                 stream_chat_completion(engine, messages, request, **chat_kwargs),
@@ -605,16 +651,6 @@ async def _create_chat_completion_impl(
     want_logprobs = request.logprobs and request.top_logprobs
     top_k_logprobs = request.top_logprobs or 0
     token_logprobs_list: list[TokenLogProb] = []
-
-    # Check if we should use guided generation for JSON schema
-    use_guided = False
-    json_schema = None
-    if response_format and not request.tools:
-        json_schema = extract_json_schema_for_guided(response_format)
-        if json_schema and hasattr(engine, "supports_guided_generation"):
-            use_guided = engine.supports_guided_generation
-            if use_guided:
-                logger.info("Using guided generation for JSON schema enforcement")
 
     try:
         if want_logprobs and not use_guided:
@@ -776,12 +812,24 @@ async def stream_chat_completion(
     engine,
     messages: list,
     request: ChatCompletionRequest,
+    *,
+    response_id: str | None = None,
+    created: int | None = None,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion response.
 
     Uses StreamingPostProcessor for reasoning/tool/sanitization pipeline.
     SSE formatting stays inline for performance (fast path bypasses Pydantic).
+
+    Args:
+        response_id: Optional pre-computed response id (``chatcmpl-…``).
+            When provided, all SSE chunks share this id instead of one
+            generated fresh here. Used by ``stream_chat_completion_guided``
+            on its unconstrained fallback path so the client-visible
+            stream stays self-consistent across the guided→unconstrained
+            handoff (DeepSeek pr_validate round 5 finding).
+        created: Optional pre-computed Unix timestamp. Same rationale.
     """
     from ..service.postprocessor import StreamingPostProcessor
 
@@ -791,7 +839,8 @@ async def stream_chat_completion(
         gc.disable()
 
     try:
-        response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        if response_id is None:
+            response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         start_time = time.perf_counter()
 
         # Check if we should include usage in the final chunk
@@ -811,7 +860,7 @@ async def stream_chat_completion(
             return ChoiceLogProbs(content=entries) if entries else None
 
         # Pre-compute SSE template parts that don't change per-token.
-        _sse_created = int(time.time())
+        _sse_created = created if created is not None else int(time.time())
         _model_escaped = json.dumps(_resolve_model_name(request.model))
         _sse_prefix = (
             f'data: {{"id":"{response_id}","object":"chat.completion.chunk",'
@@ -960,6 +1009,204 @@ async def stream_chat_completion(
         if include_usage:
             usage_chunk = ChatCompletionChunk(
                 id=response_id,
+                model=_resolve_model_name(request.model),
+                choices=[],
+                usage=Usage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                ),
+            )
+            yield f"data: {usage_chunk.model_dump_json(exclude_none=True)}\n\n"
+
+        yield "data: [DONE]\n\n"
+    finally:
+        if cfg.gc_control and gc_was_enabled:
+            gc.enable()
+            gc.collect()
+
+
+async def stream_chat_completion_guided(
+    engine,
+    messages: list,
+    request: ChatCompletionRequest,
+    json_schema: dict,
+    **kwargs,
+) -> AsyncIterator[str]:
+    """Stream chat completion with json_schema constrained decoding.
+
+    Runs ``engine.generate_with_schema`` (which produces a single buffered
+    ``GenerationOutput`` — outlines integration has no native streaming
+    interface), then synthesizes an SSE stream from the buffered text.
+    Pre-fix, ``stream=true`` requests with ``response_format: json_schema``
+    silently bypassed ``GuidedGenerator`` because the stream branch of
+    ``_create_chat_completion_impl`` went straight to ``engine.stream_chat``
+    with no constraint hookup — the model would emit unconstrained tokens
+    (e.g. a ```json ... ``` markdown fence around the JSON), defeating the
+    user's intent (Gap #2, v0.6.60 onboarding sweep).
+
+    On guided failure (exception from ``generate_with_schema``), delegates
+    to the unconstrained ``stream_chat_completion`` helper to preserve
+    request liveness — matches the non-streaming fallback semantics in
+    ``_create_chat_completion_impl``. Clients in strict-mode use cases
+    should validate the response against their schema regardless.
+    """
+    cfg = get_config()
+    gc_was_enabled = gc.isenabled()
+    if cfg.gc_control and gc_was_enabled:
+        gc.disable()
+
+    try:
+        response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+        start_time = time.perf_counter()
+
+        include_usage = bool(
+            request.stream_options and request.stream_options.include_usage
+        )
+
+        # Pre-compute SSE template parts (mirrors stream_chat_completion's
+        # fast path so chunk encoding is identical for clients).
+        _sse_created = int(time.time())
+        _model_escaped = json.dumps(_resolve_model_name(request.model))
+        _sse_prefix = (
+            f'data: {{"id":"{response_id}","object":"chat.completion.chunk",'
+            f'"created":{_sse_created},"model":{_model_escaped},'
+            f'"choices":[{{"index":0,"delta":{{'
+        )
+        _sse_suffix = "}}]}\n\n"
+
+        # Run guided generation buffered. If it raises, fall through to
+        # the unconstrained streaming helper — this preserves request
+        # liveness (constraints best-effort, response always emitted)
+        # and matches the non-streaming fallback semantics. We DO NOT
+        # emit our own role chunk before the guided call, because on
+        # fallback the unconstrained helper emits its own complete
+        # SSE stream (role → content → DONE); a pre-emitted role would
+        # produce a duplicate role chunk in the fallback path.
+        #
+        # ``raise_on_failure=True`` is critical: without it,
+        # ``generate_with_schema`` silently falls back to
+        # ``self.chat(...)`` on guided-engine failure and returns a
+        # buffered unconstrained ``GenerationOutput``. From this
+        # helper's POV that looks like a successful guided result and
+        # we would emit one giant content chunk at the end —
+        # defeating SSE for clients/proxies that rely on early chunks
+        # (codex Round 2 finding).
+        try:
+            output = await engine.generate_with_schema(
+                messages=messages,
+                json_schema=json_schema,
+                raise_on_failure=True,
+                **kwargs,
+            )
+        except Exception as guided_err:
+            logger.warning(
+                "Guided streaming generation failed, falling back to "
+                f"unconstrained streaming: {guided_err}"
+            )
+            # Log only the schema's top-level shape, not the full body —
+            # user-supplied schemas may embed PII (default values),
+            # internal endpoint names, or be megabytes large. Keys +
+            # required-list are enough to disambiguate the failure
+            # without flooding ops logs or exposing payload contents.
+            _schema_keys = (
+                list(json_schema.keys()) if isinstance(json_schema, dict) else None
+            )
+            _required = (
+                json_schema.get("required") if isinstance(json_schema, dict) else None
+            )
+            logger.debug(
+                f"Problematic schema shape: keys={_schema_keys} required={_required}"
+            )
+            # Forward the pre-computed response_id + _sse_created so the
+            # fallback stream's chunks share id/created with this outer
+            # helper's would-be chunks. Without this, a client that
+            # tracks the completion id across the guided→unconstrained
+            # handoff sees two different ids/timestamps for what is
+            # logically one request (DeepSeek pr_validate round 5).
+            async for chunk in stream_chat_completion(
+                engine,
+                messages,
+                request,
+                response_id=response_id,
+                created=_sse_created,
+                **kwargs,
+            ):
+                yield chunk
+            return
+
+        # Success path: synthesize SSE stream from the buffered output.
+        # First chunk with role.
+        yield f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
+
+        content = output.text or ""
+        if content:
+            yield f'{_sse_prefix}"content":{json.dumps(content)}{_sse_suffix}'
+
+        prompt_tokens = getattr(output, "prompt_tokens", 0) or 0
+        completion_tokens = getattr(output, "completion_tokens", 0) or 0
+        # Pass the engine's finish_reason through directly. Matches the
+        # convention in ``stream_chat_completion`` (line ~925:
+        # ``finish_reason=event.finish_reason``), which never coerces a
+        # falsy value. ``GenerationOutput.finish_reason`` defaults to
+        # "stop" anyway, so the prior ``or "stop"`` was redundant and
+        # would have silently rewritten any legitimately-None value the
+        # engine emits (DeepSeek pr_validate round 3 finding).
+        finish_reason = getattr(output, "finish_reason", None)
+
+        # Final chunk with finish_reason. Usage placement:
+        #  - When ``stream_options.include_usage`` is True, usage MUST
+        #    appear ONLY in the dedicated usage chunk below (per the
+        #    OpenAI spec; emitting it in both places would have clients
+        #    that aggregate usage double-count). DeepSeek review caught
+        #    the duplication on first pass.
+        #  - When False, attach usage to the finish chunk so a client
+        #    that doesn't set ``include_usage`` still receives token
+        #    counts in the final delta (matches the legacy behavior of
+        #    ``stream_chat_completion`` and the non-streaming response
+        #    shape).
+        finish_usage = (
+            None
+            if include_usage
+            else Usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+        )
+        # ``created`` must be passed explicitly: the SSE prefix-style
+        # chunks above already share ``_sse_created`` (computed once at
+        # the top of the helper). ``ChatCompletionChunk.created`` has
+        # ``default_factory=lambda: int(time.time())``, so a default
+        # instantiation here would stamp a fresh timestamp on the finish
+        # chunk and break the OpenAI streaming-spec invariant that all
+        # chunks in one completion share a single ``created`` value
+        # (DeepSeek pr_validate round 2 finding).
+        finish_chunk = ChatCompletionChunk(
+            id=response_id,
+            created=_sse_created,
+            model=_resolve_model_name(request.model),
+            choices=[
+                ChatCompletionChunkChoice(
+                    delta=ChatCompletionChunkDelta(),
+                    finish_reason=finish_reason,
+                )
+            ],
+            usage=finish_usage,
+        )
+        yield f"data: {finish_chunk.model_dump_json(exclude_none=True)}\n\n"
+
+        elapsed = time.perf_counter() - start_time
+        tokens_per_sec = completion_tokens / elapsed if elapsed > 0 else 0
+        logger.info(
+            f"Chat completion (guided stream): {completion_tokens} tokens "
+            f"in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
+        )
+
+        if include_usage:
+            usage_chunk = ChatCompletionChunk(
+                id=response_id,
+                created=_sse_created,
                 model=_resolve_model_name(request.model),
                 choices=[],
                 usage=Usage(
