@@ -1,5 +1,15 @@
 #!/usr/bin/env python3.12
-"""Comprehensive regression and edge case test suite for Rapid-MLX."""
+"""Comprehensive regression and edge case test suite for Rapid-MLX.
+
+Standalone script — the doctor harness invokes it via subprocess
+against a live server (``[py, str(script)]`` in
+``vllm_mlx/doctor/checks/api.py``). NOT meant for pytest collection;
+``tests/conftest.py`` has a ``collect_ignore`` entry for this file
+so the diff-aware ``targeted_tests`` step doesn't try to run it
+without a live server (and so this module avoids a runtime
+``import pytest`` — pytest is dev-only and the doctor subprocess
+must work in clean source installs).
+"""
 
 import json
 import os
@@ -353,6 +363,165 @@ def test_10():
     return found_usage
 
 
+def test_11():
+    """Complex json_schema must be fully enforced ($defs+$ref+anyOf+enum).
+
+    SOP-gate added after the waybarrios#546 follow-up: shipping a guided
+    generator that silently drops $defs/$ref/anyOf/enum constraints lets
+    a complex schema round-trip to wrong-shape JSON (a JSON array where
+    the schema requires an object). The unit tests in test_guided.py
+    pin the wiring; this end-to-end check runs against the live server
+    so any future regression in the actual outlines integration also
+    trips the doctor harness.
+    """
+    print("=" * 60)
+    print("TEST 11: Complex json_schema enforcement ($defs+$ref+anyOf+enum)")
+    schema = {
+        "type": "object",
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "qty": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+                },
+                "required": ["name", "qty"],
+                "additionalProperties": False,
+            }
+        },
+        "properties": {
+            "label": {"type": "string", "enum": ["red", "green", "blue"]},
+            "score": {"type": "integer", "minimum": 1, "maximum": 10},
+            # ``minItems: 1`` is what makes this a meaningful gate of
+            # the ``$defs``/``$ref`` path. Without it, a model that
+            # returns ``items: []`` would still pass every check below
+            # (the inner ``all(...)`` is vacuously true on empty), and
+            # the regression would silently degrade to "did the model
+            # emit a string label and an integer score" without ever
+            # exercising the per-item ``$ref`` constraint this test
+            # exists to cover (codex R8 P3).
+            "items": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/Item"},
+                "minItems": 1,
+            },
+        },
+        "required": ["label", "score", "items"],
+        "additionalProperties": False,
+    }
+    code, r = api_call(
+        "/v1/chat/completions",
+        {
+            "model": "default",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Pick a color and rate it 7/10 with two items.",
+                }
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "Pick",
+                    "schema": schema,
+                    "strict": True,
+                },
+            },
+            "max_tokens": 400,
+            "temperature": 0.1,
+            "stream": False,
+        },
+    )
+    if code != 200:
+        print(f"  HTTP {code}: {r}")
+        print("  RESULT: FAIL")
+        return False
+    raw = r["choices"][0]["message"]["content"]
+    print(f"  Content: {raw[:200]}")
+    try:
+        parsed = json.loads(raw)
+    except Exception as e:
+        print(f"  JSON parse failed: {e}")
+        print("  RESULT: FAIL")
+        return False
+
+    # Guard with a dict fallback so the wrong-shape case (parsed is a
+    # list — the exact bug class this gate exists to catch) prints a
+    # deterministic per-check FAIL instead of raising AttributeError on
+    # ``list.get`` and turning into an EXCEPTION result that hides the
+    # signal.
+    p = parsed if isinstance(parsed, dict) else {}
+    # Same defensive idea for ``items``: a regression that produces
+    # ``items: null`` (or any non-iterable scalar) should print a
+    # deterministic per-check FAIL, not raise ``TypeError`` during
+    # ``checks`` construction and turn into an EXCEPTION result that
+    # hides the signal (codex R7 P3).
+    items_value = p.get("items")
+    items_iter = items_value if isinstance(items_value, list) else []
+    checks = [
+        ("top-level is object", isinstance(parsed, dict)),
+        ("label is enum", p.get("label") in {"red", "green", "blue"}),
+        (
+            "score is int in [1,10]",
+            isinstance(p.get("score"), int) and 1 <= p["score"] <= 10,
+        ),
+        ("items is list", isinstance(items_value, list)),
+        # Explicit non-empty assertion. The schema declares
+        # ``minItems: 1`` but we cross-check it here so that the
+        # ``every item ...`` check below is never vacuously true on an
+        # empty array — that would let a regression slip through
+        # without actually exercising the ``$defs``/``$ref`` path this
+        # gate exists to cover (codex R8 P3).
+        ("items is non-empty (minItems: 1)", len(items_iter) >= 1),
+        (
+            "every item is object with required fields",
+            all(
+                isinstance(it, dict) and "name" in it and "qty" in it
+                for it in items_iter
+            ),
+        ),
+    ]
+    # The per-check breakdown above is for human-readable debug output —
+    # it pins the high-level shape constraints but doesn't enumerate
+    # every leaf in the schema (qty must be int|null, no extra keys,
+    # etc.). The authoritative gate is a real ``jsonschema.validate``
+    # against the same schema the request was constrained with: if the
+    # model emits anything that doesn't match, this raises and the test
+    # fails. Without this, a response like
+    # ``{"label":"red","score":7,"items":[{"name":"x","qty":"bad","extra":1}]}``
+    # would pass every per-check above while violating ``anyOf`` and
+    # ``additionalProperties: false`` — exactly the constraint class
+    # this gate exists to enforce (codex R9 P3).
+    # ``jsonschema`` is a *hard* project dependency (declared in
+    # pyproject.toml, not under any optional extra), so the import is
+    # expected to succeed on every supported install. We deliberately
+    # do not soft-skip on ImportError: a missing dep is an env bug
+    # that should surface loudly, not silently downgrade this gate
+    # into the hand-written per-check subset (which doesn't cover
+    # ``additionalProperties: false`` or every ``anyOf`` branch and
+    # would let real schema regressions slip — DeepSeek R2 finding).
+    import jsonschema  # noqa: E402 — import-at-use is intentional here
+
+    try:
+        jsonschema.validate(instance=parsed, schema=schema)
+        schema_check_ok = True
+        schema_error: str | None = None
+    except jsonschema.exceptions.ValidationError as e:
+        schema_check_ok = False
+        schema_error = str(e)
+    checks.append(
+        ("matches declared json_schema (jsonschema.validate)", schema_check_ok)
+    )
+
+    all_pass = all(ok for _, ok in checks)
+    for label, ok in checks:
+        print(f"  {'PASS' if ok else 'FAIL'}: {label}")
+    if schema_error is not None:
+        print(f"  jsonschema error: {schema_error}")
+    print(f"  RESULT: {'PASS' if all_pass else 'FAIL'}")
+    return all_pass
+
+
 if __name__ == "__main__":
     results = {}
     for i, test_fn in enumerate(
@@ -367,6 +536,7 @@ if __name__ == "__main__":
             test_8,
             test_9,
             test_10,
+            test_11,
         ],
         1,
     ):
@@ -380,7 +550,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    for i in range(1, 11):
+    for i in range(1, 12):
         status = "PASS" if results.get(i) else "FAIL"
         print(f"  Test {i:2d}: {status}")
     passed = sum(1 for v in results.values() if v)

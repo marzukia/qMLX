@@ -139,42 +139,75 @@ class GuidedGenerator:
         max_tokens: int = 256,
         temperature: float = 0.7,
     ) -> str | None:
+        """Generate JSON output constrained to a schema.
+
+        Hands the raw schema dict to outlines via
+        ``outlines.types.dsl.JsonSchema``, which natively understands
+        ``$defs``, ``$ref``, ``anyOf``, ``enum``, numeric bounds,
+        ``additionalProperties: false``, and nested objects. The
+        previous code path passed the schema through
+        ``json_schema_to_pydantic`` first — that converter silently
+        dropped every one of those constructs, so outlines was given a
+        Pydantic model that was a strict superset of the user's schema.
+        On a real-world schema with ``$defs`` + ``$ref`` (waybarrios#546
+        repro), this surfaced as outlines streaming a valid JSON array
+        when the schema required an object. Pass the dict through and
+        let outlines own schema interpretation.
+
+        (We import the ``JsonSchema`` class directly rather than going
+        through the top-level ``outlines.json_schema`` factory; see the
+        in-function comment for why.)
         """
-        Generate JSON output constrained to a schema.
-
-        Args:
-            prompt: Input prompt
-            json_schema: JSON schema to constrain output
-            max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature
-
-        Returns:
-            JSON string matching the schema, or None on failure
-        """
-        # Convert schema to Pydantic model
-        pydantic_model = json_schema_to_pydantic(json_schema)
-
-        if pydantic_model is None:
-            logger.warning(
-                "Could not convert schema to Pydantic, falling back to raw generation"
-            )
-            return None
-
         try:
             outlines_model = self._get_outlines_model()
 
-            # Generate with schema constraint
+            # Use the ``JsonSchema`` class from ``outlines.types.dsl``
+            # directly rather than the top-level ``outlines.json_schema``
+            # factory. The factory is a convenience export — it landed
+            # mid-way through the 1.x line and is absent on the floor of
+            # our declared ``outlines>=1.0.0`` dependency range, where
+            # this attribute lookup raises ``AttributeError`` (codex R5
+            # P1: that exception silently bubbles to the catch below,
+            # returns None, and ``generate_with_schema`` falls back to
+            # *unconstrained* generation for every json_schema request
+            # while the chat route logs "Using guided generation"). The
+            # underlying ``JsonSchema`` class has been stable since the
+            # feature first shipped, so importing it directly avoids
+            # the surface-version dependency.
+            #
+            # Import failures are surfaced loudly (WARNING-level
+            # logger.exception with full traceback) before returning
+            # ``None`` so operators can detect that guided generation
+            # was silently disabled — DeepSeek R2 found that the prior
+            # bare ``logger.error`` swallowed the traceback for the new
+            # ``outlines.types.dsl`` import path, which on an older
+            # outlines without that submodule would otherwise look
+            # indistinguishable from a runtime generation failure.
+            from outlines.types.dsl import JsonSchema
+
+            schema_constraint = JsonSchema(json_schema)
             result = outlines_model(
                 prompt,
-                output_type=pydantic_model,
+                output_type=schema_constraint,
                 max_tokens=max_tokens,
             )
-
-            # result is a JSON string, validate and return
             return result
 
-        except Exception as e:
-            logger.error(f"Guided generation failed: {e}")
+        except ImportError:
+            # Specifically distinguish "outlines installed but
+            # ``outlines.types.dsl`` missing/renamed" from a generic
+            # runtime failure — this is the failure mode the comment
+            # block above warns about. ``logger.exception`` includes
+            # the full traceback so the operator sees the import path
+            # that broke, not just a flat string.
+            logger.exception(
+                "Guided generation unavailable: import of outlines "
+                "constraint API failed. Falling back to unconstrained "
+                "generation."
+            )
+            return None
+        except Exception:
+            logger.exception("Guided generation failed")
             return None
 
     def generate_json_object(

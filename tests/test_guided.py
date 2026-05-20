@@ -1,9 +1,48 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for guided generation module."""
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+def _install_outlines_dsl_mock():
+    """Install mock ``outlines.types.dsl`` in ``sys.modules`` so the
+    ``from outlines.types.dsl import JsonSchema`` line inside
+    ``generate_json`` resolves even on machines where the optional
+    ``outlines`` dependency is not installed (e.g. the `dev` extra only).
+
+    Returns ``(mock_dsl, restore_callable)``. Callers must invoke
+    ``restore_callable`` in a ``finally`` block to put ``sys.modules``
+    back exactly as it was.
+    """
+    original_modules = {
+        name: sys.modules.get(name)
+        for name in ("outlines", "outlines.types", "outlines.types.dsl")
+    }
+    had = {name: name in sys.modules for name in original_modules}
+
+    # Reuse the existing `outlines` entry if present (so other tests
+    # patching `guided.outlines` continue to work); otherwise install
+    # a MagicMock placeholder. Same for `outlines.types`.
+    mock_outlines = sys.modules.get("outlines") or MagicMock()
+    mock_types = sys.modules.get("outlines.types") or MagicMock()
+    mock_dsl = MagicMock()
+    mock_dsl.JsonSchema = MagicMock(return_value=MagicMock())
+
+    sys.modules["outlines"] = mock_outlines
+    sys.modules["outlines.types"] = mock_types
+    sys.modules["outlines.types.dsl"] = mock_dsl
+
+    def restore():
+        for name, mod in original_modules.items():
+            if had[name]:
+                sys.modules[name] = mod
+            else:
+                sys.modules.pop(name, None)
+
+    return mock_dsl, restore
 
 
 class TestJsonSchemaToPydantic:
@@ -261,6 +300,10 @@ class TestGuidedGenerator:
         # Save original state
         original_has_outlines = guided.HAS_OUTLINES
         original_outlines = guided.outlines
+        # Also mock outlines.types.dsl so `from outlines.types.dsl import
+        # JsonSchema` inside generate_json resolves without the optional
+        # `guided` extra installed.
+        _mock_dsl, restore_dsl = _install_outlines_dsl_mock()
 
         try:
             guided.HAS_OUTLINES = True
@@ -298,6 +341,7 @@ class TestGuidedGenerator:
         finally:
             guided.HAS_OUTLINES = original_has_outlines
             guided.outlines = original_outlines
+            restore_dsl()
 
     def test_generate_json_returns_none_on_failure(self):
         """Test generate_json returns None on failure."""
@@ -306,6 +350,7 @@ class TestGuidedGenerator:
         # Save original state
         original_has_outlines = guided.HAS_OUTLINES
         original_outlines = guided.outlines
+        _mock_dsl, restore_dsl = _install_outlines_dsl_mock()
 
         try:
             guided.HAS_OUTLINES = True
@@ -332,6 +377,7 @@ class TestGuidedGenerator:
         finally:
             guided.HAS_OUTLINES = original_has_outlines
             guided.outlines = original_outlines
+            restore_dsl()
 
     def test_generate_json_object_with_mocked_outlines(self):
         """Test generate_json_object with mocked outlines."""
@@ -415,6 +461,7 @@ class TestGenerateWithSchema:
         # Save original state
         original_has_outlines = guided.HAS_OUTLINES
         original_outlines = guided.outlines
+        _mock_dsl, restore_dsl = _install_outlines_dsl_mock()
 
         try:
             guided.HAS_OUTLINES = True
@@ -444,6 +491,7 @@ class TestGenerateWithSchema:
         finally:
             guided.HAS_OUTLINES = original_has_outlines
             guided.outlines = original_outlines
+            restore_dsl()
 
 
 class TestEdgeCases:
@@ -506,3 +554,178 @@ class TestEdgeCases:
 
         instance = model.model_validate({"flags": [True, False, True]})
         assert instance.flags == [True, False, True]
+
+
+class TestGuidedJsonSchemaPassthrough:
+    """Contract: ``GuidedGenerator.generate_json`` must hand the *full*
+    JSON schema dict to outlines via ``outlines.types.dsl.JsonSchema``
+    so the constraint engine can interpret ``$defs``/``$ref``/``anyOf``/
+    ``enum``/numeric bounds/``additionalProperties: false`` itself.
+
+    Pre-fix, the schema was first projected through
+    ``json_schema_to_pydantic`` — a shallow converter that silently
+    dropped every one of those constructs. Repro-ed on
+    Qwen3-Coder-30B-A3B with the schema from waybarrios#546: an object
+    schema with ``$defs`` + ``$ref`` items would round-trip as a JSON
+    *array* of strings, because the derived Pydantic model was a
+    strict superset of the user's schema.
+
+    Why ``outlines.types.dsl.JsonSchema`` and not ``outlines.json_schema``:
+    the top-level ``outlines.json_schema`` factory landed mid-way through
+    the 1.x line and is absent on the 1.0.0 floor of our declared
+    ``outlines>=1.0.0`` dependency range. Hitting that attribute on the
+    floor raises ``AttributeError``, ``generate_json`` returns ``None``,
+    and ``generate_with_schema`` silently falls back to *unconstrained*
+    generation. The ``JsonSchema`` class has been stable since the
+    feature first shipped, so the implementation imports it directly.
+    """
+
+    def _setup_mocks(self):
+        """Install fake ``outlines`` + ``outlines.types.dsl`` modules in
+        ``sys.modules`` so the ``from outlines.types.dsl import JsonSchema``
+        statement inside ``generate_json`` resolves to a mock we can
+        introspect, even on machines without outlines installed."""
+        import sys
+
+        import vllm_mlx.api.guided as guided
+
+        original_has = guided.HAS_OUTLINES
+        original_outlines = guided.outlines
+        original_modules = {
+            name: sys.modules.get(name)
+            for name in ("outlines", "outlines.types", "outlines.types.dsl")
+        }
+
+        guided.HAS_OUTLINES = True
+        mock_outlines = MagicMock()
+        guided.outlines = mock_outlines
+        mock_outlines_model = MagicMock()
+        mock_outlines.from_mlxlm.return_value = mock_outlines_model
+
+        mock_types = MagicMock()
+        mock_dsl = MagicMock()
+        # ``JsonSchema`` is the class the code imports; make it a
+        # MagicMock so we can assert what it was called with.
+        mock_dsl.JsonSchema = MagicMock()
+
+        sys.modules["outlines"] = mock_outlines
+        sys.modules["outlines.types"] = mock_types
+        sys.modules["outlines.types.dsl"] = mock_dsl
+
+        def restore():
+            guided.HAS_OUTLINES = original_has
+            guided.outlines = original_outlines
+            for name, mod in original_modules.items():
+                if mod is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = mod
+
+        return guided, mock_outlines, mock_outlines_model, mock_dsl, restore
+
+    def test_passes_raw_schema_dict_to_outlines_json_schema(self):
+        """generate_json must instantiate
+        ``outlines.types.dsl.JsonSchema(schema_dict)`` with the raw
+        schema and pass the resulting constraint to the model as
+        ``output_type``.
+
+        Pre-fix this assertion fails — the schema was reduced to a
+        Pydantic model via ``json_schema_to_pydantic`` and the
+        ``JsonSchema`` wrapper was never instantiated, so any construct
+        the converter didn't know about (``$defs``, ``$ref``, ``anyOf``,
+        ``enum``, etc.) was dropped before outlines ever saw it.
+        """
+        (
+            guided,
+            mock_outlines,
+            mock_outlines_model,
+            mock_dsl,
+            restore,
+        ) = self._setup_mocks()
+        try:
+            mock_outlines_model.return_value = '{"k": "v"}'
+            mock_dsl.JsonSchema.return_value = "JSON_SCHEMA_SENTINEL"
+
+            generator = guided.GuidedGenerator(MagicMock(), MagicMock())
+            schema = {
+                "type": "object",
+                "$defs": {
+                    "Inner": {
+                        "type": "object",
+                        "properties": {"x": {"type": "integer"}},
+                        "required": ["x"],
+                    }
+                },
+                "properties": {
+                    "inner": {"$ref": "#/$defs/Inner"},
+                    "kind": {"type": "string", "enum": ["a", "b"]},
+                    "tag": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                },
+                "required": ["inner", "kind", "tag"],
+                "additionalProperties": False,
+            }
+
+            generator.generate_json(prompt="hi", json_schema=schema, max_tokens=64)
+
+            # The raw schema dict — not a Pydantic-derived superset —
+            # must reach ``JsonSchema``.
+            mock_dsl.JsonSchema.assert_called_once_with(schema)
+
+            # And the JsonSchema sentinel must be the output_type the
+            # model was driven with (proves the schema constraint, not
+            # a derived/lossy proxy, is what guides decoding).
+            call_kwargs = mock_outlines_model.call_args.kwargs
+            assert call_kwargs.get("output_type") == "JSON_SCHEMA_SENTINEL"
+        finally:
+            restore()
+
+    def test_complex_schema_does_not_route_through_pydantic_converter(self):
+        """Negative control: the shallow ``json_schema_to_pydantic``
+        helper must NOT be in the guided-generation hot path. It's
+        kept as a public surface for backward compat, but using it
+        for the actual constraint reintroduces the bug.
+
+        We monkeypatch it to a sentinel that raises if called from
+        ``generate_json``; if a future refactor accidentally re-wires
+        the converter back in, this test fails loud.
+        """
+        (
+            guided,
+            mock_outlines,
+            mock_outlines_model,
+            mock_dsl,
+            restore,
+        ) = self._setup_mocks()
+        try:
+            mock_outlines_model.return_value = '{"k": "v"}'
+            mock_dsl.JsonSchema.return_value = MagicMock()
+
+            calls = []
+
+            def _trap(_schema):
+                calls.append(_schema)
+                raise AssertionError(
+                    "json_schema_to_pydantic must not be called from "
+                    "GuidedGenerator.generate_json — it silently drops "
+                    "$defs/$ref/anyOf/enum and re-introduces "
+                    "waybarrios#546-class bugs."
+                )
+
+            original_converter = guided.json_schema_to_pydantic
+            guided.json_schema_to_pydantic = _trap
+            try:
+                generator = guided.GuidedGenerator(MagicMock(), MagicMock())
+                generator.generate_json(
+                    prompt="hi",
+                    json_schema={"type": "object", "properties": {}},
+                    max_tokens=32,
+                )
+            finally:
+                guided.json_schema_to_pydantic = original_converter
+
+            assert calls == [], (
+                "generate_json invoked the shallow Pydantic converter "
+                "instead of outlines.types.dsl.JsonSchema"
+            )
+        finally:
+            restore()
