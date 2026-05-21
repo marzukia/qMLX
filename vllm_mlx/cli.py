@@ -411,12 +411,29 @@ def serve_command(args):
     # Validate --tool-call-parser against the live registry (not the
     # stale argparse choices list). v0.6.63 onboarding sweep finding #1.
     if args.tool_call_parser:
+        # Narrow the catch: only swallow import-time / attribute access
+        # failures (broken install, missing module file). Anything else
+        # — a corrupt registry that's loaded but malformed, a TypeError
+        # from a buggy parser's __init_subclass__, etc. — is a real bug
+        # we want to surface, not paper over with "validation skipped".
+        # Codex follow-up to PR #433.
+        valid: list[str] | None = None
         try:
             from .tool_parsers import ToolParserManager
 
             valid = sorted(ToolParserManager.tool_parsers.keys())
-        except Exception:
-            valid = []
+        except (ImportError, AttributeError) as e:
+            print(
+                "warning: --tool-call-parser validation skipped — "
+                f"tool_parsers registry unavailable ({type(e).__name__}: {e}). "
+                "Proceeding without input check.",
+                file=sys.stderr,
+            )
+        # Treat an empty registry (degenerate install) the same as a
+        # failed import — skip validation rather than reject every input.
+        # Without this guard, a successful import with zero registered
+        # parsers would hard-fail every CLI invocation; DeepSeek
+        # follow-up to PR #434.
         if valid and args.tool_call_parser not in valid:
             print(
                 f"error: argument --tool-call-parser: invalid choice: "
