@@ -198,6 +198,99 @@ def print_staleness_warning_if_any() -> None:
         pass
 
 
+def prompt_upgrade_if_available() -> bool:
+    """Interactive Y/n prompt when a newer release is on GitHub.
+
+    Designed for the top of long-lived entry points (``rapid-mlx serve``):
+    if the network has a newer release than what's installed, ask once
+    before booting the model. On accept, dispatch the right upgrade
+    command (brew/pip/install.sh — same dispatcher as ``rapid-mlx
+    upgrade``) and return ``True`` so the caller can exit. Returns
+    ``False`` when no prompt was shown (disabled, non-TTY, already
+    current, dev build, network down) or the user declined.
+
+    Distinct from ``staleness_warning()`` in two ways: (1) prompts on ANY
+    newer release, not only ≥2-patch lag, because if we're going to
+    interrupt a long-running boot we may as well save the user the
+    re-launch; (2) crosses minor-version boundaries, because an
+    interactive opt-in is safer than the silent banner's automatic
+    cross-minor restraint.
+    """
+    try:
+        if _disabled():
+            return False
+        # Need stdin for the prompt too — _disabled checks stderr only.
+        if not sys.stdin.isatty():
+            return False
+
+        installed_str = _installed_version()
+        if not installed_str:
+            return False
+        # Skip pre-release / dev / local-version builds. ``_parse_version``
+        # tolerates ``0.6.62.dev1`` → ``(0, 6, 62)`` so the tuple can be
+        # compared at all, but for an interactive prompt the dev-base case
+        # can fire a false "newer release available" against the dev's
+        # own in-progress branch (installed ``0.6.61.dev1`` vs latest
+        # ``0.6.62`` → prompt). A clean PEP 440 final release is digits
+        # and dots only; anything else (``dev``/``a``/``b``/``rc``/
+        # ``post``/``+local``) is non-final and gets the dev-build skip
+        # path. DeepSeek finding #1 on PR #428.
+        if any(c.isalpha() or c == "+" for c in installed_str.lstrip("v")):
+            return False
+        installed = _parse_version(installed_str)
+        if installed is None:
+            return False  # unparseable
+
+        latest_str = get_latest_version()
+        if not latest_str:
+            return False
+        latest = _parse_version(latest_str)
+        if latest is None or latest <= installed:
+            return False
+
+        import subprocess
+
+        info = detect_install_method()
+        print(
+            f"\nA newer rapid-mlx is available: {latest_str} "
+            f"(current: {installed_str})."
+        )
+        print(f"  Upgrade command: {info.upgrade_command}")
+        try:
+            answer = input("  Run it now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer and answer not in ("y", "yes"):
+            return False
+
+        print()
+        try:
+            result = subprocess.run(info.upgrade_argv, check=False)
+        except FileNotFoundError as e:
+            print(f"  Upgrade command not found: {e}\n")
+            return False
+        except KeyboardInterrupt:
+            print("\n  Interrupted.\n")
+            return False
+        if result.returncode == 0:
+            print("\nUpgrade complete. Please re-run your command.\n")
+            return True
+        # Failed upgrade: return False so the caller continues booting with
+        # the current version rather than exiting silently. The user has
+        # been shown the exit code and can retry manually if they care.
+        # DeepSeek finding #2 on PR #428: returning True here would have
+        # `serve_command` do ``sys.exit(0)`` and leave the user with no
+        # running server and only an error message.
+        print(
+            f"\nUpgrade exited with code {result.returncode}; "
+            f"continuing with rapid-mlx {installed_str}.\n"
+        )
+        return False
+    except Exception:  # noqa: BLE001 — never break the CLI
+        return False
+
+
 # --- install-method detection (used by ``rapid-mlx upgrade``) -----------
 
 
