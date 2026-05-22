@@ -131,3 +131,61 @@ class TestToolTagLeakRegression:
         assert not tool_calls
         assert content and "answer is 42" in content
         _assert_no_leak(content)
+
+    def test_parser_finds_nothing_preserves_existing_cleaned_text(self):
+        # Regression for the v0.6.64 gpt-oss-20b empty-TextBlock bug:
+        # ``engine.generate()`` runs ``clean_output_text`` on harmony
+        # output, which strips channel markup and returns just the
+        # final-channel content ("4"). The non-streaming route then
+        # called ``_finalize_content_and_reasoning`` with this
+        # pre-cleaned string, and the HarmonyReasoningParser — looking
+        # for ``<|channel|>analysis``/``<|channel|>final`` markers —
+        # found none and returned ``(None, None)``. The helper then
+        # silently overwrote the perfectly valid ``cleaned_text="4"``
+        # with ``None``, so anthropic_sdk / langchain / pydantic_ai
+        # received empty TextBlocks for fully-formed answers.
+        #
+        # Fix: when the parser returns ``(None, None)``, keep the
+        # original cleaned_text. Validate here with the harmony
+        # reasoning parser because that is the parser that exhibits
+        # the pattern, but the guard applies to any parser that
+        # legitimately reports "I found no markers I understand."
+        from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+
+        cleaned, reasoning = _finalize_content_and_reasoning(
+            raw_text="4",
+            cleaned_text="4",
+            tool_calls=None,
+            reasoning_parser=HarmonyReasoningParser(),
+        )
+        assert cleaned == "4"
+        assert reasoning is None
+
+    def test_parser_returns_reasoning_only_preserves_cleaned_text(self):
+        # DeepSeek review on PR #436 flagged that the initial
+        # ``(None, None)``-only guard still clobbered ``cleaned_text``
+        # whenever the parser returned ``(reasoning, None)`` — same
+        # regression class by a different route. Concrete case: a
+        # ``<think>thinking</think>`` payload with no actual content
+        # after the closing tag. The Qwen3 reasoning parser pulls
+        # ``"thinking"`` out as reasoning and returns ``content=None``;
+        # the helper must NOT overwrite the caller's ``cleaned_text``
+        # with that ``None``. (Downstream ``strip_thinking_tags`` will
+        # collapse this to an empty content for the wire response,
+        # which is the right outcome — but the helper's job is to
+        # respect the contract "only update cleaned_text when the
+        # parser explicitly produced new content.")
+        from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+        raw = "<think>just thinking, no answer</think>"
+        cleaned, reasoning = _finalize_content_and_reasoning(
+            raw_text=raw,
+            cleaned_text=raw,
+            tool_calls=None,
+            reasoning_parser=Qwen3ReasoningParser(tokenizer=None),
+        )
+        assert cleaned == raw, (
+            f"expected original cleaned_text preserved (sentinel for "
+            f"downstream strip_thinking_tags), got {cleaned!r}"
+        )
+        assert reasoning is not None and "thinking" in reasoning

@@ -260,6 +260,63 @@ class TestHarmonyReasoningParser:
         assert reasoning == "Let me think step by step."
         assert content == "The answer is 42."
 
+    def test_extract_final_terminated_by_end_token(self, parser):
+        """Final channel terminated by ``<|end|>`` (not ``<|return|>``).
+
+        Regression for the v0.6.64 gpt-oss-20b empty-TextBlock flake:
+        gpt-oss-20b emits ``<|end|>`` after the final channel for a
+        sizeable fraction of non-streaming responses, and the prior
+        ``<|return|>``-only regex silently dropped that content. The
+        streaming path already accepts both terminators; the
+        non-streaming path must agree or pr_validate's anthropic_sdk /
+        langchain / pydantic_ai non-stream tests all see empty text.
+        """
+        output = (
+            "<|channel|>analysis<|message|>The user asks 2+2.<|end|>"
+            "<|channel|>final<|message|>4<|end|>"
+        )
+        reasoning, content = parser.extract_reasoning(output)
+
+        assert reasoning == "The user asks 2+2."
+        assert content == "4"
+
+    def test_literal_end_token_in_content_does_not_truncate_return_terminated(
+        self, parser
+    ):
+        """A literal ``<|end|>`` inside answer text must not truncate a
+        ``<|return|>``-terminated final block (DeepSeek review finding).
+
+        Reproduces the scenario where the non-greedy alternation
+        ``(?:<\\|return\\|>|<\\|end\\|>)`` would stop at the first
+        terminator it sees — pre-fix this returned just ``"prefix "``,
+        losing the suffix. Now the parser tries ``<|return|>`` first
+        and falls back to ``<|end|>`` only if absent.
+        """
+        # Embeds a literal ``<|end|>`` inside the final-channel content
+        # (e.g. a transcript-of-a-harmony-exchange answer). The real
+        # terminator is ``<|return|>`` at the end.
+        output = "<|channel|>final<|message|>prefix <|end|> suffix<|return|>"
+        _, content = parser.extract_reasoning(output)
+
+        assert content == "prefix <|end|> suffix"
+
+    def test_literal_end_token_in_content_end_only_terminator(self, parser):
+        """``<|end|>``-only output with embedded literal ``<|end|>``.
+
+        DeepSeek round-2 follow-up: the ``<|return|>``-first preference
+        only covers the case where the real terminator is
+        ``<|return|>``. When the model emits ``<|end|>`` as the
+        message terminator (gpt-oss-20b's common case) AND the
+        answer contains a literal ``<|end|>``, the non-greedy
+        fallback would still truncate. Greedy ``(.*)`` in
+        ``_FINAL_PATTERN_END`` now consumes up to the LAST
+        ``<|end|>``, which is the real terminator.
+        """
+        output = "<|channel|>final<|message|>prefix <|end|> suffix<|end|>"
+        _, content = parser.extract_reasoning(output)
+
+        assert content == "prefix <|end|> suffix"
+
     def test_multiple_analysis_blocks(self, parser):
         """Concatenate multiple analysis blocks."""
         output = (

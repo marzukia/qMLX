@@ -25,9 +25,34 @@ _ANALYSIS_PATTERN = re.compile(
     re.DOTALL,
 )
 
-# Final channel content: <|channel|>final<|message|>...<|return|>
-_FINAL_PATTERN = re.compile(
+# Final channel content. Harmony spec uses ``<|return|>`` to terminate the
+# final channel, but gpt-oss-20b emits ``<|end|>`` in practice for a sizeable
+# fraction of non-streaming responses (observed in v0.6.64 pr_validate runs:
+# anthropic_sdk 0/5, langchain 2/6, pydantic_ai 1/6 on
+# ``mlx-community/gpt-oss-20b-MXFP4-Q8`` — every non-streaming test landed
+# here). Accept either terminator so the regex matches the same set of
+# completions that ``HarmonyToolParser._FINAL_BLOCK_PATTERN`` already
+# accepts and that the streaming parser already handles via the
+# ``<|end|>``/``<|return|>`` end-of-message check. Without this, the
+# non-streaming path returns ``content=None`` and the chat response
+# emits an empty TextBlock for what was actually a fully-formed answer.
+# Prefer ``<|return|>`` over ``<|end|>``: if both appear, the model has
+# definitively terminated the message with ``<|return|>``. Trying that
+# pattern first avoids truncating answer text that happens to contain
+# a literal ``<|end|>`` (e.g. a transcript of a harmony exchange).
+_FINAL_PATTERN_RETURN = re.compile(
     r"<\|channel\|>final\s*<\|message\|>(.*?)<\|return\|>",
+    re.DOTALL,
+)
+# Greedy ``(.*)`` so a literal ``<|end|>`` inside answer text is
+# consumed and we stop at the LAST ``<|end|>`` — the real
+# end-of-message marker. Combined with the
+# ``_FINAL_PATTERN_RETURN``-first preference above, this covers both
+# terminator paths (``<|return|>``-terminated outputs use the
+# preferred regex; ``<|end|>``-only outputs use this greedy
+# fallback).
+_FINAL_PATTERN_END = re.compile(
+    r"<\|channel\|>final\s*<\|message\|>(.*)<\|end\|>",
     re.DOTALL,
 )
 
@@ -71,8 +96,12 @@ class HarmonyReasoningParser(ReasoningParser):
         analysis_blocks = _ANALYSIS_PATTERN.findall(model_output)
         reasoning = "\n".join(block.strip() for block in analysis_blocks) or None
 
-        # Extract final channel content
-        final_match = _FINAL_PATTERN.search(model_output)
+        # Extract final channel content. Prefer ``<|return|>`` over
+        # ``<|end|>`` so a literal ``<|end|>`` in answer text does not
+        # truncate a ``<|return|>``-terminated message.
+        final_match = _FINAL_PATTERN_RETURN.search(
+            model_output
+        ) or _FINAL_PATTERN_END.search(model_output)
         content = final_match.group(1).strip() if final_match else None
 
         return reasoning, content
