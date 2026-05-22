@@ -111,6 +111,14 @@ class RouterState(Enum):
     TOOL_CALL = auto()  # inside tool call
     AWAITING_CHANNEL_TYPE = auto()  # saw <|channel>, waiting for thought/content/final
     AWAITING_MESSAGE = auto()  # saw Harmony channel name, waiting for <|message|>
+    # Saw ``<|start|>`` (harmony header). The next tokens are the role
+    # name + optional recipient info (e.g. ``assistant``, ``user``,
+    # ``tool to=functions.get_weather``) — all metadata that must be
+    # swallowed before the payload starts. We stay here until
+    # ``<|channel|>`` (transition to AWAITING_CHANNEL_TYPE) or
+    # ``<|message|>`` (transition straight to CONTENT — used by
+    # system/user/tool turns that have no channel marker).
+    AFTER_START = auto()
 
 
 class OutputRouter:
@@ -167,7 +175,33 @@ class OutputRouter:
             self._pending_control_tokens = []
             return None
 
-        if token_id in (m.harmony_start, m.harmony_call, m.harmony_constrain):
+        # ``<|start|>`` opens a header block: ``<|start|>{role}[ recipient
+        # info]<|channel|>{channel}<|message|>...`` (assistant turns) or
+        # ``<|start|>{role}<|message|>...`` (system/user/tool turns).
+        # Swallow header tokens until the next channel/message marker —
+        # otherwise the role name (``assistant``) leaks into ``content``
+        # at the start of every second-and-later assistant turn, since
+        # without a state transition the role token falls through to the
+        # default CONTENT path.
+        if token_id == m.harmony_start:
+            self.state = RouterState.AFTER_START
+            self._pending_channel_style = None
+            self._pending_message_channel = None
+            self._pending_control_tokens = []
+            return None
+
+        if token_id in (m.harmony_call, m.harmony_constrain):
+            return None
+
+        # In AFTER_START we swallow every non-special token until the
+        # payload boundary is hit. ``<|channel|>`` is handled above (it
+        # already transitions to AWAITING_CHANNEL_TYPE). ``<|message|>``
+        # opens a payload directly (no channel) — go straight to CONTENT
+        # so the body is emitted as content text.
+        if self.state == RouterState.AFTER_START:
+            if token_id == m.harmony_message:
+                self.state = RouterState.CONTENT
+                return None
             return None
 
         # Suppress tool-related markers that may appear without proper nesting

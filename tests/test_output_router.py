@@ -127,6 +127,12 @@ HARMONY_VOCAB = {
     "ing": 3,
     "Answer": 4,
     "Plain": 5,
+    # Role-name token following ``<|start|>``. Real harmony tokenizes
+    # ``assistant`` as a single token; if it weren't suppressed it would
+    # decode as literal ``assistant`` text and leak into delta.content.
+    "assistant": 173781,
+    "user": 173782,
+    " to=functions.get_weather": 173783,
 }
 
 HARMONY_TOKENIZER = FakeTokenizer(HARMONY_VOCAB)
@@ -616,6 +622,106 @@ class TestHarmonyRouting:
         event = router.feed(5)
         assert event is not None
         assert event.channel == Channel.CONTENT
+
+    def test_start_followed_by_role_name_swallows_role(self):
+        """``<|start|>assistant<|channel|>`` — the assistant role token
+        must not leak as CONTENT.
+
+        Regression for the second-and-later assistant-turn streaming leak
+        surfaced by the v0.6.65 fresh-PyPI onboarding smoke on
+        ``mlx-community/gpt-oss-20b-MXFP4-Q8``: streamed ``delta.content``
+        began with literal ``assistant`` before the real answer. Without
+        ``AFTER_START`` state, the role-name token fell through to the
+        default CONTENT emission path.
+        """
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(200006) is None  # <|start|>
+        assert router.state == RouterState.AFTER_START
+        # The role-name token MUST be suppressed (returns None). Before
+        # the fix this returned a CONTENT event with text='assistant'.
+        assert router.feed(173781) is None  # ``assistant`` — role token
+        assert router.state == RouterState.AFTER_START
+        assert router.feed(200005) is None  # <|channel|>
+        assert router.state == RouterState.AWAITING_CHANNEL_TYPE
+        assert router.feed(17196) is None  # final
+        assert router.feed(200008) is None  # <|message|>
+
+        event = router.feed(4)  # Answer
+        assert event is not None
+        assert event.channel == Channel.CONTENT
+        assert event.text == "Answer"
+
+    def test_start_with_recipient_info_swallows_all(self):
+        """``<|start|>assistant to=functions.get_weather<|channel|>`` —
+        every header token (role + recipient metadata) is swallowed,
+        only the payload after ``<|message|>`` is emitted.
+        """
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(200006) is None  # <|start|>
+        assert router.feed(173781) is None  # assistant
+        assert router.feed(173783) is None  # " to=functions.get_weather"
+        assert router.feed(200005) is None  # <|channel|>
+        assert router.feed(17196) is None  # final (channel)
+        assert router.feed(200008) is None  # <|message|>
+
+        event = router.feed(4)
+        assert event is not None
+        assert event.channel == Channel.CONTENT
+
+    def test_start_message_path_skips_channel(self):
+        """``<|start|>{role}<|message|>{body}`` — system/user/tool turns
+        with no channel marker still suppress the role and emit only
+        the body. Harmony spec allows this shorter header form.
+        """
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        assert router.feed(200006) is None  # <|start|>
+        assert router.feed(173782) is None  # user (role)
+        assert router.feed(200008) is None  # <|message|>
+        assert router.state == RouterState.CONTENT
+
+        event = router.feed(5)  # Plain
+        assert event is not None
+        assert event.channel == Channel.CONTENT
+        assert event.text == "Plain"
+
+    def test_second_assistant_turn_no_role_leak_end_to_end(self):
+        """Full reproduction of the bug. The model emits an analysis
+        channel terminated with ``<|end|>``, then opens a SECOND header
+        ``<|start|>assistant<|channel|>final<|message|>…``. Before the
+        fix, the second turn's ``assistant`` token leaked into CONTENT
+        because ``<|end|>`` transitioned state to CONTENT but the
+        next-up ``<|start|>`` didn't establish AFTER_START.
+        """
+        router = OutputRouter.from_tokenizer(HARMONY_TOKENIZER)
+        assert router is not None
+
+        result = router.feed_sequence(
+            [
+                200005,  # <|channel|>
+                35644,  # analysis
+                200008,  # <|message|>
+                2,  # Reason
+                3,  # ing
+                200007,  # <|end|>  → state=CONTENT
+                200006,  # <|start|>  → state=AFTER_START (the fix)
+                173781,  # assistant ← THIS USED TO LEAK AS CONTENT
+                200005,  # <|channel|>
+                17196,  # final
+                200008,  # <|message|>
+                4,  # Answer
+                200002,  # <|return|>
+            ]
+        )
+        assert result["reasoning"] == "Reasoning"
+        assert result["content"] == "Answer", (
+            f"role token leaked into content: {result['content']!r}"
+        )
 
     def test_feed_sequence_separates_analysis_and_final(self):
         """Batch routing separates Harmony analysis and final channels."""
