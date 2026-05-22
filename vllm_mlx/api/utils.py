@@ -98,6 +98,21 @@ _FINAL_CHANNEL_RE = re.compile(
     r"<\|channel\|>final[^<]*(?:<\|constrain\|>[^<]*)?<\|message\|>"
 )
 
+# Commentary-channel tool-call markers (both legacy and current forms).
+# If ANY of these are present, the output carries tool-call structure
+# that the harmony tool parser needs to see intact — bail out of
+# stripping. Matches:
+#   <|channel|>commentary to=functions.NAME ... <|message|>...<|call|>
+#   to=functions.NAME<|channel|>commentary ... <|message|>...<|call|>
+# Tool names follow the OpenAI/Anthropic naming spec (letters, digits,
+# underscores, hyphens) — ``[\w-]+`` covers all of those. ``\w+`` alone
+# would silently drop ``get-weather`` and any hyphenated builtin.
+_COMMENTARY_TOOL_CALL_RE = re.compile(
+    r"<\|channel\|>commentary\s+to=functions\.[\w-]+"
+    r"|"
+    r"to=functions\.[\w-]+<\|channel\|>commentary"
+)
+
 
 def _clean_gpt_oss_output(text: str) -> str:
     """
@@ -116,6 +131,26 @@ def _clean_gpt_oss_output(text: str) -> str:
     Returns:
         Extracted final content, or text with channel tokens stripped.
     """
+    # Tool-call structure must survive to the harmony tool parser:
+    # if the model emitted ``<|channel|>commentary to=functions.X...<|call|>``
+    # (which gpt-oss-20b does for every tool invocation), the parser needs
+    # those structural tokens intact to extract the call. Stripping them
+    # here drops the args into plain text and the parser returns 0 calls.
+    # Same regression class as PR #436 but for the tool parser. Final
+    # channel is unaffected because the route runs ``clean_output_text``
+    # again after parsers run (chat.py / anthropic.py).
+    #
+    # Reasoning-channel context is also preserved here: HarmonyReasoningParser
+    # needs the analysis-channel markers intact to extract reasoning_content.
+    # A previous "defense in depth" version stripped non-commentary tokens
+    # before re-emitting commentary, which dropped the analysis channel and
+    # broke pydantic_ai multi-tool turn loops (model lost its prior-call
+    # context because reasoning_content came back empty, then called the
+    # same tool repeatedly). Keep the bail-out simple: hand the entire
+    # text to downstream parsers untouched.
+    if _COMMENTARY_TOOL_CALL_RE.search(text):
+        return text
+
     match = _FINAL_CHANNEL_RE.search(text)
     if match:
         content = text[match.end() :]
