@@ -129,6 +129,123 @@ async def test_stream_chat_routes_supported_tokenizer_channels():
 
 
 @pytest.mark.asyncio
+async def test_router_propagates_per_token_logprobs_to_routed_outputs():
+    """OutputRouter must forward source.logprobs to each routed chunk.
+
+    Regression for the v0.6.66 onboarding sweep finding: ``logprobs=true +
+    top_logprobs=5`` requests against harmony/gpt-oss returned HTTP 200
+    with no ``logprobs`` field in the response. Root cause: the engine's
+    ``_make_routed_output`` hardcoded ``logprobs=None`` on every routed
+    chunk, so ``_extract_streaming_token_logprobs`` saw
+    ``chunk.logprobs is None`` and returned ``[]`` for every chunk;
+    ``token_logprobs_list`` stayed empty and the route built a response
+    with ``choice_logprobs=None``. PR #450 fixed a related AttributeError
+    on the non-router path but couldn't surface this gap because its
+    tests use single-token GenerationOutput stubs that never go through
+    the router.
+    """
+    engine = _make_engine(FakeTokenizer(HARMONY_VOCAB))
+
+    sentinel_lps = ["LP-Reason", "LP-ing", "LP-Answer"]
+
+    async def fake_stream_generate(**kwargs):
+        # Single-token flushes (stream_interval=1) — exactly the shape
+        # OutputRouter hits in production for content/reasoning tokens.
+        yield GenerationOutput(
+            text="",
+            new_text="<|channel|>analysis<|message|>",
+            tokens=[200005, 35644, 200008],
+            finished=False,
+            logprobs=None,  # control marker tokens carry no per-step lp
+        )
+        yield GenerationOutput(
+            text="",
+            new_text="Reason",
+            tokens=[2],
+            finished=False,
+            logprobs=sentinel_lps[0],
+        )
+        yield GenerationOutput(
+            text="",
+            new_text="ing",
+            tokens=[3],
+            finished=False,
+            logprobs=sentinel_lps[1],
+        )
+        yield GenerationOutput(
+            text="",
+            new_text="<|start|><|channel|>final<|message|>",
+            tokens=[200006, 200005, 17196, 200008],
+            finished=False,
+            logprobs=None,
+        )
+        yield GenerationOutput(
+            text="",
+            new_text="Answer",
+            tokens=[4],
+            finished=True,
+            finish_reason="stop",
+            logprobs=sentinel_lps[2],
+        )
+
+    engine.stream_generate = fake_stream_generate
+
+    outputs = await _collect(
+        engine.stream_chat(messages=[{"role": "user", "content": "hi"}])
+    )
+
+    text_lps = [(o.new_text, o.logprobs) for o in outputs if o.new_text]
+    assert text_lps == [
+        ("Reason", sentinel_lps[0]),
+        ("ing", sentinel_lps[1]),
+        ("Answer", sentinel_lps[2]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_router_propagates_logprobs_list_form_per_index():
+    """When source.logprobs is a list, each routed token must pair with logprobs[i].
+
+    The ``stream_interval > 1`` path (PR #210) accumulates per-step
+    distributions into ``list[mx.array]`` paired with a multi-token
+    ``tokens`` list. The router must split them back out so each routed
+    chunk carries the correct per-step distribution — passing the whole
+    list to every routed chunk would let ``_extract_streaming_token_logprobs``
+    re-iterate the full list per chunk and emit duplicate entries.
+    """
+    engine = _make_engine(FakeTokenizer(HARMONY_VOCAB))
+
+    async def fake_stream_generate(**kwargs):
+        yield GenerationOutput(
+            text="",
+            new_text="<|channel|>final<|message|>",
+            tokens=[200005, 17196, 200008],
+            finished=False,
+            logprobs=["LP-channel", "LP-final", "LP-message"],
+        )
+        yield GenerationOutput(
+            text="",
+            new_text="ReasoningAnswer",
+            tokens=[2, 4],
+            finished=True,
+            finish_reason="stop",
+            logprobs=["LP-Reason", "LP-Answer"],
+        )
+
+    engine.stream_generate = fake_stream_generate
+
+    outputs = await _collect(
+        engine.stream_chat(messages=[{"role": "user", "content": "hi"}])
+    )
+
+    text_lps = [(o.new_text, o.logprobs) for o in outputs if o.new_text]
+    assert text_lps == [
+        ("Reason", "LP-Reason"),
+        ("Answer", "LP-Answer"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_keeps_think_tag_tokenizers_on_legacy_path():
     """Think-tag routers are detected but not engine-enabled until validated."""
     engine = _make_engine(FakeTokenizer(QWEN3_VOCAB))

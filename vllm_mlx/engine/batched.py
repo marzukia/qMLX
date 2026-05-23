@@ -1300,6 +1300,7 @@ class BatchedEngine(BaseEngine):
         new_text: str | None = None,
         finished: bool = False,
         finish_reason: str | None = None,
+        logprobs=None,
     ) -> GenerationOutput:
         return GenerationOutput(
             text=source.text,
@@ -1309,7 +1310,7 @@ class BatchedEngine(BaseEngine):
             completion_tokens=source.completion_tokens,
             finished=finished,
             finish_reason=finish_reason,
-            logprobs=None,
+            logprobs=logprobs,
             channel=_channel_name(event.channel),
         )
 
@@ -1375,9 +1376,29 @@ class BatchedEngine(BaseEngine):
                 yield output
                 continue
 
+            # Normalize source logprobs to a per-step list so each routed
+            # output can carry its own per-token distribution. Without this,
+            # OutputRouter models (gemma4, harmony/gpt-oss) silently drop
+            # ALL logprobs to the route — every ``logprobs=true`` request
+            # returns a response missing the ``logprobs`` field entirely
+            # because ``_extract_streaming_token_logprobs`` sees
+            # ``chunk.logprobs is None`` for every routed chunk. Confirmed
+            # on gpt-oss-20b PyPI v0.6.66 during the 2026-05-23 onboarding
+            # sweep. PR #450 fixed the pre-existing AttributeError on the
+            # non-routed path but couldn't surface this gap because its
+            # tests use single-token GenerationOutput stubs that never go
+            # through the router.
+            src_logprobs = output.logprobs
+            if isinstance(src_logprobs, list):
+                lps_per_step = src_logprobs
+            elif src_logprobs is not None:
+                lps_per_step = [src_logprobs]
+            else:
+                lps_per_step = None
+
             routed_outputs: list[GenerationOutput] = []
             try:
-                for token_id in token_ids:
+                for tok_idx, token_id in enumerate(token_ids):
                     event = router.feed(token_id)
                     if event is None:
                         continue
@@ -1393,15 +1414,26 @@ class BatchedEngine(BaseEngine):
                     # and harmony — caught on gemma-4-26b post-v0.6.61.
                     if event.channel == Channel.TOOL_CALL:
                         event_text = event.text
+                        # Tool-call channel aggregates many tokens; the
+                        # OpenAI spec doesn't define per-token logprobs for
+                        # tool_calls deltas, so leave them off — matches
+                        # pre-fix behavior for this channel only.
+                        token_logprob = None
                     else:
                         event_text = (
                             output.new_text if len(token_ids) == 1 else event.text
+                        )
+                        token_logprob = (
+                            lps_per_step[tok_idx]
+                            if lps_per_step is not None and tok_idx < len(lps_per_step)
+                            else None
                         )
                     routed_outputs.append(
                         self._make_routed_output(
                             output,
                             event,
                             new_text=event_text,
+                            logprobs=token_logprob,
                         )
                     )
             except Exception as e:
