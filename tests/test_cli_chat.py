@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import threading
 from contextlib import contextmanager
@@ -893,6 +894,42 @@ def test_ensure_model_downloaded_calls_disk_check(monkeypatch):
     assert called == ["mlx-community/Fake-Model-1B"]
 
 
+def test_ensure_model_downloaded_uses_strict_cache_probe(monkeypatch):
+    """Codex round-3 BLOCKING #2 (sibling fix): the chat REPL's pre-download
+    probe used to short-circuit on cached ``config.json`` alone — same
+    bypass we closed in ``is_repo_cached``. After the fix it must defer
+    to ``is_repo_cached`` (weight-file-required) so a partial cache no
+    longer skips the foreground download and re-throws the user back into
+    the silent-spawn-then-download trap."""
+    # Force not-a-local-path.
+    monkeypatch.setattr("os.path.exists", lambda _p: False)
+
+    cache_calls: list = []
+
+    def _fake_is_cached(name: str) -> bool:
+        cache_calls.append(name)
+        return True
+
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", _fake_is_cached)
+
+    # If the strict probe returns True the function must return without
+    # touching the disk gate or snapshot_download (cache hit path).
+    monkeypatch.setattr(
+        cli,
+        "_check_disk_space",
+        lambda *_a, **_kw: pytest.fail("disk gate must NOT fire on cache hit"),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda *_a, **_kw: pytest.fail("download must NOT fire on cache hit"),
+    )
+
+    cli._ensure_model_downloaded("mlx-community/Cached-Model-1B")
+    assert cache_calls == ["mlx-community/Cached-Model-1B"], (
+        "cache probe must be invoked exactly once with the repo id"
+    )
+
+
 def test_chat_command_heredoc_preserves_indentation_and_blank_lines(monkeypatch):
     """Heredoc must preserve leading whitespace (Python indentation) and
     trailing blank lines verbatim — calling ``.strip()`` corrupts exactly
@@ -1174,3 +1211,1045 @@ def test_stream_chat_response_repetition_truncates_at_cutoff_in_one_chunk(
     assert "repeating" in rendered or "repetition" in rendered, (
         "expected the repetition-abort hint to be visible"
     )
+
+
+# ----------------------------------------------------------------------
+# B1 — --think raises max_tokens default + length-cut warning
+# ----------------------------------------------------------------------
+
+
+def test_chat_think_bumps_max_tokens_default_to_4096():
+    """``--think`` with no explicit ``--max-tokens`` raises the default
+    from 2048 to 4096 so reasoning + final answer fit a small-model
+    budget. Round-1 finding: ``chat qwen3.5-4b --think`` consumed the
+    full 2048 budget with reasoning alone and emitted an empty answer
+    with ``finish_reason='length'``."""
+    captured: list = []
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b", "--think"]),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert len(captured) == 1
+    # argparse layer: default sentinel is None; chat_command resolves.
+    # We test the resolved value by invoking chat_command's logic up to
+    # the resolution point via _ns_for_chat-style namespace.
+    assert captured[0].max_tokens is None, (
+        "argparse must leave --max-tokens unresolved so chat_command can "
+        "distinguish user-supplied 2048 from the unset sentinel"
+    )
+    assert captured[0].think is True
+
+
+def test_chat_think_default_resolution_runtime(monkeypatch, capsys):
+    """End-to-end: with ``--think`` and an unset ``--max-tokens``,
+    chat_command resolves to 4096 AND prints a one-line note."""
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(["q", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(port, think=True, max_tokens=None)
+        cli.chat_command(ns)
+    # Resolved value lands in the payload.
+    assert payloads[0]["max_tokens"] == 4096
+    out = capsys.readouterr().out
+    assert "raised --max-tokens to 4096" in out, (
+        f"expected the --think bump notice in output; got: {out!r}"
+    )
+
+
+def test_chat_explicit_max_tokens_with_think_is_not_overridden(monkeypatch, capsys):
+    """User-supplied ``--max-tokens=512`` with ``--think`` is honored —
+    no silent bump, no banner. (Distinguishes "user passed 2048" from
+    "default sentinel".)"""
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(["q", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(port, think=True, max_tokens=512)
+        cli.chat_command(ns)
+    assert payloads[0]["max_tokens"] == 512
+    assert "raised --max-tokens" not in capsys.readouterr().out
+
+
+def test_chat_warns_on_length_cut_empty_content(monkeypatch, capsys):
+    """When the server emits ``finish_reason='length'`` AND no visible
+    content streamed (reasoning consumed the budget), the REPL must
+    warn so the user knows to bump --max-tokens."""
+    # Reasoning-only stream, length cut on the last chunk.
+    canned = [
+        {"choices": [{"delta": {"reasoning_content": "thinking ..."}}]},
+        {"choices": [{"delta": {}, "finish_reason": "length"}]},
+        {"choices": [], "usage": {"completion_tokens": 42}},
+    ]
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["q", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    assert "reasoning consumed" in out, f"expected length+empty warning; got: {out!r}"
+
+
+def test_chat_no_length_warning_when_content_present(monkeypatch, capsys):
+    """Length cut WITH visible content (model finished mid-sentence) is
+    a legitimate state and must NOT trigger the empty-answer warning."""
+    canned = [
+        _delta("here is half an answer"),
+        {"choices": [{"delta": {}, "finish_reason": "length"}]},
+        {"choices": [], "usage": {"completion_tokens": 8}},
+    ]
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["q", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    assert "reasoning consumed" not in out, (
+        "length cut WITH content must not trigger the empty-answer warning"
+    )
+
+
+def test_stream_chat_response_captures_finish_reason_into_metrics():
+    """``_stream_chat_response`` must record ``finish_reason`` in the
+    metrics dict so the REPL can decide whether to warn on length-cut."""
+    canned = [
+        _delta("hi"),
+        {"choices": [{"delta": {}, "finish_reason": "length"}]},
+    ]
+    metrics: dict = {}
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", io.StringIO()),
+    ):
+        cli._stream_chat_response(
+            f"http://127.0.0.1:{port}",
+            {"model": "x", "messages": [], "stream": True},
+            timeout_s=10,
+            metrics=metrics,
+        )
+    assert metrics.get("finish_reason") == "length"
+
+
+# ----------------------------------------------------------------------
+# B5 — port validator + pre-flight probe
+# ----------------------------------------------------------------------
+
+
+def test_chat_port_out_of_range_rejected_by_argparse(capsys):
+    """``--port 99999`` must exit via argparse with a clear message,
+    not drop into the REPL."""
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "--port", "99999"]),
+        pytest.raises(SystemExit) as exc,
+    ):
+        cli.main()
+    # argparse exits 2 on a type error.
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "port must be between 1 and 65535" in err
+
+
+def test_chat_port_zero_rejected_by_argparse(capsys):
+    """Port 0 (would mean "let kernel pick") is not a valid connect target."""
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "--port", "0"]),
+        pytest.raises(SystemExit) as exc,
+    ):
+        cli.main()
+    assert exc.value.code == 2
+    assert "port must be between 1 and 65535" in capsys.readouterr().err
+
+
+def test_chat_port_nonnumeric_rejected_by_argparse(capsys):
+    """Non-numeric ``--port`` value is rejected with a friendly error."""
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "--port", "abc"]),
+        pytest.raises(SystemExit) as exc,
+    ):
+        cli.main()
+    assert exc.value.code == 2
+    assert "port must be an integer" in capsys.readouterr().err
+
+
+def test_chat_port_unbound_exits_with_friendly_error(capsys, monkeypatch):
+    """Valid-range port with nothing listening must surface a one-line
+    'no server reachable' error and exit, not drop into the REPL."""
+    import socket as _socket
+
+    s = _socket.socket()
+    s.bind(("127.0.0.1", 0))
+    dead_port = s.getsockname()[1]
+    s.close()
+
+    # Make sure we never reach input().
+    monkeypatch.setattr("builtins.input", lambda _p="": "exit")
+
+    ns = type("Args", (), {})()
+    ns.base_url = None
+    ns.port = dead_port
+    ns.system = None
+    ns.think = False
+    ns.max_tokens = 50
+    ns.temperature = 0.0
+    ns.ready_timeout = 1
+    ns.response_timeout = 1
+    ns.model = "qwen3.5-4b"
+    with pytest.raises(SystemExit) as exc:
+        cli.chat_command(ns)
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "no rapid-mlx server reachable" in out
+    assert f"127.0.0.1:{dead_port}" in out
+
+
+# ----------------------------------------------------------------------
+# D1 — `run` alias for chat
+# ----------------------------------------------------------------------
+
+
+def test_run_is_alias_for_chat(monkeypatch):
+    """``rapid-mlx run <model>`` must route to ``chat_command`` with the
+    same args as ``rapid-mlx chat <model>``."""
+    captured: list = []
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "run", "qwen3.5-4b"]),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert len(captured) == 1
+    ns = captured[0]
+    # All chat-only flags should be present with their defaults.
+    assert hasattr(ns, "think")
+    assert hasattr(ns, "max_tokens")
+    assert hasattr(ns, "port")
+    assert hasattr(ns, "base_url")
+    assert hasattr(ns, "system")
+
+
+def test_run_alias_accepts_chat_flags():
+    """Flags accepted by ``chat`` must be accepted by the ``run`` alias too."""
+    captured: list = []
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["rapid-mlx", "run", "qwen3.5-4b", "--think", "--max-tokens", "1024"],
+        ),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert len(captured) == 1
+    assert captured[0].think is True
+    assert captured[0].max_tokens == 1024
+
+
+# ----------------------------------------------------------------------
+# D3 — /bye and /? slash aliases
+# ----------------------------------------------------------------------
+
+
+def test_chat_command_bye_exits_like_exit(monkeypatch, capsys):
+    """``/bye`` must terminate the REPL like ``/exit``.
+
+    DeepSeek round-3 NIT #2: the original assertion only checked
+    ``len(payloads) == 1`` and relied on a comment to explain that the
+    third input was deliberately never consumed. A future REPL change
+    that consumes an extra prompt could pass that count assertion
+    while ``/bye`` is broken. Track consumption explicitly via a
+    sentinel that raises if reached.
+    """
+    sentinel = "this would crash if /bye didnt exit"
+    consumed: list = []
+
+    def _input(_prompt="") -> str:
+        for value in ("hello", "/bye", sentinel):
+            if value in consumed:
+                continue
+            consumed.append(value)
+            return value
+        raise AssertionError("inputs exhausted — REPL kept asking past /bye")
+
+    canned = [_delta("hi")]
+    with _fake_server(canned) as (port, payloads):
+        monkeypatch.setattr("builtins.input", _input)
+        cli.chat_command(_ns_for_chat(port))
+
+    # /bye terminates the REPL → the sentinel is never asked for.
+    assert sentinel not in consumed, (
+        f"/bye must stop the input loop before the sentinel; consumed={consumed}"
+    )
+    assert consumed == ["hello", "/bye"]
+    # And the first turn (and only the first) hit the server.
+    assert len(payloads) == 1
+
+
+def test_chat_command_question_mark_lists_help(monkeypatch, capsys):
+    """``/?`` must print the help text (alias for ``/help``)."""
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (port, payloads):
+        inputs = iter(["/?", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    # Same content as /help — pin a couple of canonical strings.
+    assert "/help" in out
+    assert "/exit" in out
+    assert "/bye" in out
+    assert payloads == [], "/? must not POST"
+
+
+def test_chat_help_text_lists_bye_and_question_mark(monkeypatch, capsys):
+    """The ``/help`` body must advertise both alias sets so a user
+    skimming for "how do I quit" sees ``/bye`` and the equivalent
+    ``/?`` lookup."""
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["/help", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    assert "/bye" in out
+    assert "/?" in out
+
+
+# ----------------------------------------------------------------------
+# D4 — cross-alias --no-thinking (chat) and --no-think (serve)
+# ----------------------------------------------------------------------
+
+
+def test_chat_accepts_no_thinking_as_alias_for_no_think():
+    """``chat --no-thinking`` (serve-style spelling) must land on the
+    same ``think=False`` destination as ``chat --no-think``."""
+    captured: list = []
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "--no-thinking"]),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert len(captured) == 1
+    assert captured[0].think is False
+
+
+def test_serve_accepts_no_think_as_alias_for_no_thinking():
+    """``serve --no-think`` (chat-style spelling) must land on the same
+    ``no_thinking=True`` destination as ``serve --no-thinking``."""
+    captured: list = []
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b", "--no-think"]),
+        patch.object(cli, "serve_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert len(captured) == 1
+    assert captured[0].no_thinking is True
+
+
+def test_chat_no_thinking_hidden_from_help(capsys):
+    """The cross-alias is back-compat-only; it must NOT appear in
+    ``chat --help`` (otherwise we double-document the same flag).
+
+    In-process help capture (DeepSeek round-3 NIT #3) — earlier version
+    forked ``python -m vllm_mlx.cli`` which is the only test in the
+    file that forks a subprocess, adds ~1s overhead, depends on
+    PYTHONPATH/install state, and breaks in restricted CI runners.
+    """
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "--help"]),
+        pytest.raises(SystemExit) as excinfo,
+    ):
+        cli.main()
+    # argparse exits 0 on --help.
+    assert excinfo.value.code == 0
+    captured = capsys.readouterr()
+    help_text = captured.out + captured.err
+    assert "--no-thinking" not in help_text, (
+        "hidden cross-alias must not appear in chat --help"
+    )
+    # Sanity check that we actually captured the chat help (not stdlib's).
+    assert "--think" in help_text or "--no-think" in help_text
+
+
+# ----------------------------------------------------------------------
+# D8 — first-launch-only banner for "agents codex" tip
+# ----------------------------------------------------------------------
+
+
+def test_seen_tips_marker_round_trip(tmp_path, monkeypatch):
+    """``_has_seen_tip`` returns False before, True after ``_mark_tip_seen``."""
+    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path))
+    assert cli._has_seen_tip("chat_intro_codex") is False
+    cli._mark_tip_seen("chat_intro_codex")
+    assert cli._has_seen_tip("chat_intro_codex") is True
+    # Marker file landed in the override dir.
+    assert (tmp_path / "seen-tips.json").exists()
+
+
+def test_seen_tips_marker_survives_corrupt_file(tmp_path, monkeypatch):
+    """A corrupt marker (parse error) must be treated as 'not seen' so
+    the tip re-fires once, rather than being silently hidden forever."""
+    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path))
+    (tmp_path / "seen-tips.json").write_text("not json {{")
+    assert cli._has_seen_tip("chat_intro_codex") is False
+
+
+def test_chat_banner_shown_on_first_launch_only(monkeypatch, capsys, tmp_path):
+    """First chat launch shows the agents-codex tip; subsequent launches
+    do NOT. The marker file under ``RAPID_MLX_CONFIG_HOME`` records the
+    first-seen state."""
+    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path))
+
+    # Force the TTY/NO_COLOR gate to think we're interactive (otherwise
+    # the marker logic short-circuits to "skip everything").
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    canned = [_delta("ok")]
+    # First launch.
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", _Tty()) as buf1,
+    ):
+        inputs = iter(["exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+        first = buf1.getvalue()
+    assert "agents codex" in first, (
+        f"first launch should show the agents-codex tip; got {first!r}"
+    )
+
+    # Second launch — marker file now exists, banner should be suppressed.
+    canned2 = [_delta("ok")]
+    with (
+        _fake_server(canned2) as (port2, _payloads),
+        patch.object(sys, "stdout", _Tty()) as buf2,
+    ):
+        inputs2 = iter(["exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs2))
+        cli.chat_command(_ns_for_chat(port2))
+        second = buf2.getvalue()
+    assert "agents codex" not in second, (
+        f"second launch must NOT re-show the banner; got {second!r}"
+    )
+
+
+def test_chat_banner_skipped_when_no_color_set(monkeypatch, capsys, tmp_path):
+    """``NO_COLOR`` or non-TTY stdout: skip the marker logic AND the
+    banner entirely so pipe/CI runs don't pollute the user's config."""
+    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (port, _payloads):
+        inputs = iter(["exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        cli.chat_command(_ns_for_chat(port))
+    out = capsys.readouterr().out
+    assert "agents codex" not in out, "NO_COLOR run should suppress the banner entirely"
+    # And no marker file was written.
+    assert not (tmp_path / "seen-tips.json").exists(), (
+        "NO_COLOR run must not pollute the user's config dir"
+    )
+
+
+def test_chat_banner_write_failure_does_not_abort(monkeypatch, tmp_path, capsys):
+    """If the marker dir is unwritable (read-only FS / permission
+    denied), the tip should still print and chat must continue — best
+    effort only."""
+    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path / "no_perm"))
+
+    class _Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    # Mock os.makedirs to raise so the write path fails.
+    real_makedirs = os.makedirs
+
+    def _failing(*a, **kw):
+        if str(tmp_path / "no_perm") in str(a[0]):
+            raise PermissionError("read only fs")
+        return real_makedirs(*a, **kw)
+
+    monkeypatch.setattr("os.makedirs", _failing)
+
+    canned = [_delta("ok")]
+    with (
+        _fake_server(canned) as (port, _payloads),
+        patch.object(sys, "stdout", _Tty()) as buf,
+    ):
+        inputs = iter(["exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        # Must NOT raise.
+        cli.chat_command(_ns_for_chat(port))
+    # Banner still printed.
+    assert "agents codex" in buf.getvalue()
+
+
+# ----------------------------------------------------------------------
+# B3 — log file unlink policy
+# ----------------------------------------------------------------------
+
+
+def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
+    """``_teardown_proc`` (closed-over inside ``chat_command``) must
+    unlink a zero-byte log (no useful info) but PRESERVE a non-empty
+    log (post-mortem breadcrumbs).
+
+    Drive teardown via ``/model`` swap: the chat REPL spawns the
+    initial server, then ``/model <other>`` replaces it — which calls
+    ``_teardown_proc(old_proc)`` synchronously. That fires the unlink
+    policy without needing process-level atexit to fire.
+    """
+    empty_log = tmp_path / "empty.log"
+    full_log = tmp_path / "full.log"
+    empty_log.write_text("")
+    full_log.write_text("some real error trace\n")
+
+    class _FakeProc:
+        def __init__(self, log_path):
+            self._rapid_mlx_log = open(log_path, "a")
+            self._rapid_mlx_log_path = str(log_path)
+
+        def poll(self):
+            return 0  # already "exited"
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.resolve_model",
+        lambda alias: f"mlx-community/{alias}-resolved",
+    )
+
+    # --- Case 1: empty log → unlinked on swap ---
+    call_n = {"n": 0}
+
+    def _spawn_empty(model, log_path, served_name=None, *, register_in=None):
+        # First spawn: backed by empty_log (the one that should be
+        # unlinked when swapped out). Second spawn: a noop replacement.
+        call_n["n"] += 1
+        if call_n["n"] == 1:
+            p = _FakeProc(empty_log)
+        else:
+            tmp = tmp_path / f"new-{call_n['n']}.log"
+            tmp.write_text("")
+            p = _FakeProc(tmp)
+        if register_in is not None:
+            register_in.append(p)
+        return p, f"http://127.0.0.1:{port_e}"
+
+    monkeypatch.setattr(cli, "_spawn_chat_server", _spawn_empty)
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (fake_port, _payloads):
+        port_e = fake_port
+        inputs = iter(["/model other-alias", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        cli.chat_command(ns)
+
+    assert not empty_log.exists(), (
+        "empty log should be unlinked when swapped out (no debugging value)"
+    )
+
+    # --- Case 2: full log → preserved on swap ---
+    call_n2 = {"n": 0}
+
+    def _spawn_full(model, log_path, served_name=None, *, register_in=None):
+        call_n2["n"] += 1
+        if call_n2["n"] == 1:
+            p = _FakeProc(full_log)
+        else:
+            tmp = tmp_path / f"new2-{call_n2['n']}.log"
+            tmp.write_text("")
+            p = _FakeProc(tmp)
+        if register_in is not None:
+            register_in.append(p)
+        return p, f"http://127.0.0.1:{port_f}"
+
+    monkeypatch.setattr(cli, "_spawn_chat_server", _spawn_full)
+
+    canned2 = [_delta("ok")]
+    with _fake_server(canned2) as (fake_port2, _payloads):
+        port_f = fake_port2
+        inputs2 = iter(["/model other-alias", "exit"])
+        monkeypatch.setattr("builtins.input", lambda _p="": next(inputs2))
+        ns = _ns_for_chat(fake_port2)
+        ns.base_url = None
+        ns.port = None
+        cli.chat_command(ns)
+
+    assert full_log.exists(), "full log was unexpectedly removed"
+    assert full_log.read_text() == "some real error trace\n"
+
+
+# ---------------------------------------------------------------------------
+# Codex round-1 regression coverage.
+# ---------------------------------------------------------------------------
+
+
+def test_main_skips_download_gate_when_chat_spawn_env_set(monkeypatch):
+    """When the chat REPL spawns its own ``serve`` subprocess, the child
+    sees ``RAPID_MLX_CHAT_SPAWN=1`` and must NOT re-run the B2 gate. A
+    re-run would either (a) re-prompt on a TTY or (b) call the HF API
+    needlessly in the child."""
+    monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
+    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    calls: list[str] = []
+
+    def _fake_gate(*_a, **_kw):  # pragma: no cover - assertion proves it isn't called
+        calls.append("gate")
+        return False
+
+    monkeypatch.setattr("vllm_mlx._download_gate.is_repo_cached", _fake_gate)
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.estimate_repo_size_bytes", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.confirm_or_abort",
+        lambda *_a, **_kw: calls.append("confirm") or True,
+    )
+
+    # Stub out serve_command so main() exits cleanly without booting an engine.
+    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+    )
+    cli.main()
+    assert calls == [], (
+        f"Spawn-child env should bypass the download gate entirely; got calls={calls}"
+    )
+
+
+def test_main_skips_size_estimate_in_non_tty_context(monkeypatch):
+    """The B2 gate must short-circuit on TTY/env checks BEFORE calling
+    ``estimate_repo_size_bytes`` — otherwise every CI run with
+    ``RAPID_MLX_AUTO_PULL=1`` pays a 5-second HF metadata round-trip."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.estimate_repo_size_bytes",
+        lambda *_a, **_kw: calls.append("estimate") or None,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.is_repo_cached",
+        lambda *_a, **_kw: calls.append("cached") or False,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.confirm_or_abort",
+        lambda *_a, **_kw: calls.append("confirm") or True,
+    )
+    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+    )
+    cli.main()
+
+    assert calls == [], (
+        f"Non-TTY context should never hit the HF metadata API or cache probe; "
+        f"got calls={calls}"
+    )
+
+
+def test_main_skips_size_estimate_when_auto_pull_env_set(monkeypatch):
+    """``RAPID_MLX_AUTO_PULL=1`` must short-circuit on the env check
+    BEFORE ``estimate_repo_size_bytes`` — the env is the documented
+    CI/unattended escape hatch and should not pay any network cost."""
+    monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
+    monkeypatch.setenv("RAPID_MLX_AUTO_PULL", "1")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.estimate_repo_size_bytes",
+        lambda *_a, **_kw: calls.append("estimate") or None,
+    )
+    monkeypatch.setattr(
+        "vllm_mlx._download_gate.is_repo_cached",
+        lambda *_a, **_kw: calls.append("cached") or False,
+    )
+    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+    )
+    cli.main()
+
+    assert calls == [], (
+        f"AUTO_PULL=1 should skip the cache probe and size estimate; got calls={calls}"
+    )
+
+
+def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
+    """``_spawn_chat_server`` must pass ``RAPID_MLX_CHAT_SPAWN=1`` to the
+    child so the child main() bypasses the download gate."""
+    captured: dict = {}
+
+    class _FakePopen:
+        def __init__(
+            self, cmd, *, stdout=None, stderr=None, start_new_session=False, env=None
+        ):
+            captured["env"] = env
+            captured["cmd"] = cmd
+
+        def poll(self):
+            return None
+
+    # Mock socket too so the test doesn't depend on the runner being
+    # allowed to bind to 127.0.0.1 (codex sandbox / restricted CI both
+    # block this). The port number is captured via captured["cmd"] so
+    # the assertion below is what we actually care about.
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54321)
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+    log_path = tmp_path / "fake.log"
+    proc, base_url = cli._spawn_chat_server("qwen3.5-4b", str(log_path))
+
+    assert captured["env"] is not None
+    assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
+
+
+def test_sigterm_handler_masks_second_sigterm(monkeypatch):
+    """A second SIGTERM landing mid-cleanup must be silently dropped via
+    ``signal.SIG_IGN``, not re-invoke ``_cleanup`` (which would block on
+    a second ``proc.wait()`` for an already-terminating child)."""
+    import signal as _signal
+
+    handler_holder: dict = {}
+    signal_changes: list = []
+
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        if signum == _signal.SIGTERM:
+            signal_changes.append(handler)
+            handler_holder["last"] = handler
+        return real_signal(signum, handler)
+
+    cleanup_calls = {"n": 0}
+
+    class _FakeProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+        terminate_calls = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            type(self).terminate_calls += 1
+            cleanup_calls["n"] += 1
+            # Simulate the supervisor escalating: second SIGTERM arrives
+            # while the first one's _cleanup walk is mid-flight. Invoke
+            # the installed handler directly (the real signal would do
+            # exactly this).
+            current = handler_holder["last"]
+            if current is _signal.SIG_IGN:
+                return  # masked — correct behaviour
+            # If still the original handler, calling it would recurse;
+            # capture that so the assertion fires.
+            raise AssertionError(
+                "Second SIGTERM was NOT masked; the handler is still live "
+                "and would recurse into _cleanup."
+            )
+
+        def wait(self, timeout=None):
+            pass
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(*_a, **_kw):
+        proc = _FakeProc()
+        register_in = _kw.get("register_in")
+        if register_in is not None:
+            register_in.append(proc)
+        return proc, f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr("signal.signal", _spy_signal)
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (fake_port, _payloads):
+        port = fake_port
+
+        def _trigger_after_input(_p=""):
+            # On the first prompt, fire the installed SIGTERM handler in
+            # the foreground. Use a SystemExit-suppressing wrapper so the
+            # test thread is the one to observe the masking.
+            handler = handler_holder["last"]
+            try:
+                handler(_signal.SIGTERM, None)
+            except SystemExit:
+                pass
+            return "exit"
+
+        monkeypatch.setattr("builtins.input", _trigger_after_input)
+
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        try:
+            cli.chat_command(ns)
+        except SystemExit:
+            pass
+
+    # The second SIGTERM (delivered inside terminate()) hit SIG_IGN; if
+    # it had re-invoked the handler we'd have recursed and the
+    # AssertionError above would have surfaced.
+    assert _FakeProc.terminate_calls >= 1
+    assert _signal.SIG_IGN in signal_changes, (
+        f"Cleanup must install SIG_IGN to mask re-entry; "
+        f"signal_changes={signal_changes}"
+    )
+
+
+def test_main_pops_chat_spawn_env_so_grandchildren_do_not_inherit(monkeypatch):
+    """Codex round-2 BLOCKING #2: ``RAPID_MLX_CHAT_SPAWN=1`` must be
+    treated as a single-use marker. If the spawned ``serve`` itself
+    forks any subprocess (HF auth helper, doctor self-probe, future
+    hub plugin), that grandchild would otherwise inherit the bypass
+    and skip its own download gate."""
+    monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
+    monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["rapid-mlx", "serve", "mlx-community/some-fake-7b"],
+    )
+    cli.main()
+    assert "RAPID_MLX_CHAT_SPAWN" not in os.environ, (
+        "main() must pop the marker so it does not leak to grandchildren; "
+        "this is what makes the 'single-use' contract real."
+    )
+
+
+def test_sigterm_handler_exits_even_if_cleanup_raises(monkeypatch):
+    """Codex round-2 NIT #3: the SIGTERM handler must call sys.exit(143)
+    via try/finally so a _teardown_proc raise (rare — only on
+    proc.kill() escalation) doesn't strand the process running. A hung
+    handler defeats the entire 'reap before exit' contract."""
+    import signal as _signal
+
+    handler_holder: dict = {}
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        if signum == _signal.SIGTERM:
+            handler_holder["last"] = handler
+        return real_signal(signum, handler)
+
+    class _RaisingProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            raise RuntimeError("simulated _teardown_proc failure")
+
+        def wait(self, timeout=None):
+            pass
+
+        def kill(self):
+            pass
+
+    def _fake_spawn(*_a, **_kw):
+        proc = _RaisingProc()
+        register_in = _kw.get("register_in")
+        if register_in is not None:
+            register_in.append(proc)
+        return proc, f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr("signal.signal", _spy_signal)
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (fake_port, _payloads):
+        port = fake_port
+        first = {"sent": False}
+
+        def _input(_p=""):
+            if not first["sent"]:
+                first["sent"] = True
+                handler = handler_holder["last"]
+                # The cleanup raise propagates inside the handler — but
+                # the try/finally must still hand off to sys.exit(143).
+                with pytest.raises(SystemExit) as excinfo:
+                    handler(_signal.SIGTERM, None)
+                assert excinfo.value.code == 143
+            return "exit"
+
+        monkeypatch.setattr("builtins.input", _input)
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        try:
+            cli.chat_command(ns)
+        except SystemExit:
+            pass
+
+
+def test_cleanup_masks_sigint_so_ctrl_c_cannot_orphan_remaining_procs(monkeypatch):
+    """Codex round-3 BLOCKING #1: ``_cleanup`` must mask SIGINT (not only
+    SIGTERM) for the duration of its teardown loop. Without the mask, a
+    Ctrl-C landing during the walk raises KeyboardInterrupt, unwinds the
+    loop, the surrounding try/finally exits, and atexit's later call
+    sees the early ``done=True`` flag → procs after the interrupted one
+    are orphaned."""
+    import signal as _signal
+
+    handler_holder: dict = {}
+    sigint_changes: list = []
+
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        if signum == _signal.SIGINT:
+            sigint_changes.append(handler)
+        if signum == _signal.SIGTERM and not isinstance(handler, type(_signal.SIG_IGN)):
+            # Capture only the user-installed handler; ignore the
+            # SIG_IGN re-mask the cleanup path issues internally.
+            handler_holder["last"] = handler
+        return real_signal(signum, handler)
+
+    teardown_calls = {"n": 0}
+
+    class _DummyProc:
+        _rapid_mlx_log = None
+        _rapid_mlx_log_path = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            teardown_calls["n"] += 1
+
+        def wait(self, timeout=None):
+            pass
+
+        def kill(self):
+            pass
+
+    procs: list = [_DummyProc(), _DummyProc(), _DummyProc()]
+
+    def _fake_spawn(*_a, **_kw):
+        register_in = _kw.get("register_in")
+        # Register all three so cleanup has to walk a non-trivial list.
+        if register_in is not None:
+            for p in procs:
+                register_in.append(p)
+        return procs[0], f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr("signal.signal", _spy_signal)
+    monkeypatch.setattr(cli, "_spawn_chat_server", _fake_spawn)
+    monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cli, "_wait_for_chat_server", lambda *_a, **_kw: None)
+
+    canned = [_delta("ok")]
+    with _fake_server(canned) as (fake_port, _payloads):
+        port = fake_port
+        first = {"sent": False}
+
+        def _input(_p=""):
+            if not first["sent"]:
+                first["sent"] = True
+                # Fire the user-installed SIGTERM handler, which calls
+                # _cleanup. Inside _cleanup, SIGINT must be masked.
+                handler = handler_holder["last"]
+                try:
+                    handler(_signal.SIGTERM, None)
+                except SystemExit:
+                    pass
+            return "exit"
+
+        monkeypatch.setattr("builtins.input", _input)
+        ns = _ns_for_chat(fake_port)
+        ns.base_url = None
+        ns.port = None
+        try:
+            cli.chat_command(ns)
+        except SystemExit:
+            pass
+
+    # All three procs must have been torn down (the SIGINT mask would
+    # have prevented any Ctrl-C-driven unwind from leaving leftovers).
+    assert teardown_calls["n"] == 3, (
+        f"Cleanup must walk every proc; got {teardown_calls['n']}/3"
+    )
+    # SIG_IGN must appear in sigint_changes — proof that _cleanup masked
+    # SIGINT (rather than only SIGTERM as it did in round-2).
+    assert _signal.SIG_IGN in sigint_changes, (
+        f"_cleanup must install SIG_IGN on SIGINT; sigint_changes={sigint_changes}"
+    )
+
+
+def test_chat_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
+    """``--no-think`` and ``--no-thinking`` share the prefix ``--no-thi``.
+    With ``allow_abbrev=False`` argparse must reject the ambiguous form
+    instead of silently resolving it to whichever flag was added first."""
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b", "--no-thi"]),
+        pytest.raises(SystemExit),
+    ):
+        cli.main()
+    err = capsys.readouterr().err
+    assert "--no-thi" in err or "unrecognized" in err.lower()
+
+
+def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
+    """Same as the chat case — ``serve`` also got the hidden cross-alias
+    and the same ambiguity must be reported, not silently resolved."""
+    with (
+        patch.object(sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b", "--no-thi"]),
+        pytest.raises(SystemExit),
+    ):
+        cli.main()
+    err = capsys.readouterr().err
+    assert "--no-thi" in err or "unrecognized" in err.lower()
