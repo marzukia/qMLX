@@ -480,3 +480,43 @@ class TestEngineCloudRoutingContract:
             "Remove the guard; require all production engines to implement "
             "build_prompt (it's now on the BaseEngine contract)."
         )
+
+    def test_batched_engine_exposes_estimate_new_tokens(self):
+        """BatchedEngine MUST expose ``estimate_new_tokens`` — cloud routing
+        in ``routes/chat.py`` calls it right after ``build_prompt`` to decide
+        whether ``new_tokens > cloud_threshold``.
+
+        Pre-#500-followup the route called ``engine.model.estimate_new_tokens``
+        — that path raised ``AttributeError: 'BatchedEngine' object has no
+        attribute 'model'`` and the try/except around the cloud branch
+        silently logged "falling back to local". Same silent-skip pattern
+        as the original #500 hasattr trap, one layer deeper.
+        """
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        assert hasattr(BatchedEngine, "estimate_new_tokens"), (
+            "BatchedEngine.estimate_new_tokens is required for cloud routing "
+            "(routes/chat.py uses it to compute new-token count vs threshold). "
+            "If you removed it, cloud routing falls back to local on every "
+            "request — see #500 follow-up."
+        )
+        assert callable(BatchedEngine.estimate_new_tokens)
+
+    def test_chat_route_calls_engine_estimate_not_engine_model_estimate(self):
+        """``routes/chat.py`` must call ``engine.estimate_new_tokens(...)``
+        directly, NOT ``engine.model.estimate_new_tokens(...)``.
+
+        BatchedEngine does not expose ``.model`` — that was a SimpleEngine
+        attribute deleted in #155. The wrapper try/except in the route
+        catches the AttributeError and logs a warning instead of routing,
+        which is functionally identical to the cloud branch never firing.
+        """
+        import pathlib
+
+        src = pathlib.Path("vllm_mlx/routes/chat.py").read_text()
+        assert "engine.model.estimate_new_tokens" not in src, (
+            "Found `engine.model.estimate_new_tokens` in routes/chat.py. "
+            "BatchedEngine has no .model attribute (SimpleEngine convention, "
+            "deleted in #155). Use `engine.estimate_new_tokens(prompt)` — the "
+            "method is now part of the engine contract."
+        )

@@ -920,7 +920,7 @@ class TestAdmissionControl:
         # cloud-routing branch — return non-zero so the threshold
         # check fires.
         engine.build_prompt.return_value = "prompt"
-        engine.model.estimate_new_tokens.return_value = (1000, 1000)
+        engine.estimate_new_tokens.return_value = (1000, 1000)
         # ``preserve_native_tool_format`` is read during message prep.
         engine.preserve_native_tool_format = False
 
@@ -1104,7 +1104,7 @@ class TestAdmissionControl:
         engine.is_mllm = False
         engine.supports_guided_generation = False
         engine.build_prompt.return_value = "prompt"
-        engine.model.estimate_new_tokens.return_value = (1000, 1000)
+        engine.estimate_new_tokens.return_value = (1000, 1000)
         engine.preserve_native_tool_format = False
 
         engine._admission_lock = threading.Lock()

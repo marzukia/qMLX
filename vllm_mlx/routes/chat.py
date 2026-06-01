@@ -536,7 +536,7 @@ async def _create_chat_completion_impl(
     if cfg.cloud_router and not engine.is_mllm:
         try:
             prompt = engine.build_prompt(messages, tools=request.tools)
-            total_tokens, new_tokens = engine.model.estimate_new_tokens(prompt)
+            total_tokens, new_tokens = engine.estimate_new_tokens(prompt)
             if cfg.cloud_router.should_route_to_cloud(new_tokens):
                 logger.info(
                     f"[CLOUD ROUTE] {new_tokens} new tokens (total {total_tokens}) "
