@@ -25,23 +25,23 @@ python3.12 -m scripts.pr_validate <PR#> -v
 | 0 | `fetch` | always (fail-fast) | ~3s |
 | 0.5 | `test_plan_check` | always | <1s |
 | 0.7 | `cl_description_quality` | always (skip via `PR_VALIDATE_SKIP_DESC=1`) | <1s |
-| 6 | `deepseek_review` | always (skip if no API) | 30–90s |
+| 6 | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
 | 1 | `supply_chain` | always | ~5s |
 | 2 | `lint` | when diff has .py | ~3s |
 | 3 | `targeted_tests` | when diff has .py | 30s–3min |
 | 4 | `full_unit` | blast ≥ medium | ~25s |
 | 5 | `stress_e2e_bench` | blast == high | 5–10min |
 
-(DeepSeek review goes near the front by design: get cheap critical
+(The codex review goes near the front by design: get cheap critical
 thinking *before* spending 10 minutes on tests. The two cheapest
 description-quality gates run first so a bad title or empty body
-fails in under a second without burning the DeepSeek budget.)
+fails in under a second without burning the codex budget.)
 
 ## Verdict
 
 Strict — any single `fail` or `error` blocks merge. `skip` is neutral.
 
-The DeepSeek step uses [BLOCKING]/[NIT] tiering (see "Code Review
+The codex review uses [BLOCKING]/[NIT] tiering (see "Code Review
 Philosophy" below): only `[BLOCKING]` findings fail the gate; `[NIT]`
 findings surface in the scorecard so the author can decide.
 
@@ -55,8 +55,8 @@ The pipeline follows [Google's code-review standard](https://github.com/google/e
 
 Concretely we encode three principles:
 
-1. **Tiered findings.** The DeepSeek prompt requires every finding
-   to be prefixed `[BLOCKING]` (concrete bug, security issue, broken
+1. **Tiered findings.** The codex prompt requires every finding to be
+   prefixed `[BLOCKING]` (concrete bug, security issue, broken
    contract, false-positive test) or `[NIT]` (style, future-proofing,
    alternative naming). Only `[BLOCKING]` fails the gate. Default to
    `[NIT]` if unsure. Caps: at most 5 BLOCKING + 5 NIT per review,
@@ -64,11 +64,13 @@ Concretely we encode three principles:
    default to `[BLOCKING]` so a forgotten prefix can't silently
    downgrade a real bug.
 
-2. **Convergence over perfectionism.** Without tiering, DeepSeek
+2. **Convergence over perfectionism.** Without tiering, the reviewer
    spirals: every round surfaces new style preferences and the PR
    never merges. PR #467 hit this — 5 rounds, each producing fresh
    "could be more defensive" findings. The tiered prompt converges
-   in 2–3 rounds because nits are visible but don't block.
+   in 2–3 rounds because nits are visible but don't block. See the
+   `codex_deepseek_convergence_asymmetry` knowledge note for why we
+   replaced the previous DeepSeek backend with codex.
 
 3. **Description quality is enforced, not advised.** The
    `cl_description_quality` step rejects PRs with empty bodies, bad
@@ -132,17 +134,52 @@ Three checks:
 Override: `PR_VALIDATE_SKIP_DESC=1` for two-line dep-bumps where
 rationale is genuinely overkill.
 
-### `deepseek_review` (step 6, runs early)
+### `codex_review` (step 6, runs early)
 
-Sends the diff to DeepSeek V4 Pro with the prompt at
-`prompts/deepseek_review.md`. The prompt requires `[BLOCKING]`/`[NIT]`
+Sends the diff to `codex exec` (OpenAI gpt-5.5) with the prompt
+embedded as the `PROMPT_TEMPLATE` string constant in
+`steps/codex_review.py`. The prompt requires `[BLOCKING]`/`[NIT]`
 tiering on every finding (see "Code Review Philosophy" above). Only
 `[BLOCKING]` findings fail the gate; `[NIT]`s surface in the
-scorecard. Skips if `PR_VALIDATE_NO_DEEPSEEK=1` or no API key. Skips
-on network failure (don't block PRs on a flaky API).
+scorecard. Skips if `PR_VALIDATE_NO_CODEX=1` or the `codex` binary is
+missing. For non-zero codex exits, stderr is matched against a
+transient-backend marker list (network, auth, rate-limit, 5xx) — a
+match skips (flaky LLM mustn't block PRs), anything else fails (a
+malicious diff shouldn't be able to bypass review by inducing a
+crash). See "Failure-mode classification" below for the full table.
 
-API key resolution: `$DEEPSEEK_API_KEY` → fallback to dev key in code
-(see `memory/knowledge/deepseek_api_key.md`).
+Authentication: codex uses its own ChatGPT login at
+`~/.codex/auth.json`. No env var is read here; the repo is public and
+we explicitly do not want a fallback key in source.
+
+Model is pinned to `gpt-5.5` via the `--model` flag so a change to
+the caller's `~/.codex/config.toml` default cannot silently swap the
+reviewer underneath the gate.
+
+`PR_VALIDATE_NO_DEEPSEEK=1` is still honored (with a one-line stderr
+deprecation notice) so CI/local workflows that pre-date the codex
+swap don't unexpectedly re-enable the paid LLM review.
+
+**Failure-mode classification.** A non-zero `codex exec` exit is
+discriminated: stderr matching transient-backend patterns (network,
+auth, rate-limit, 5xx) → `skip`; anything else → `fail`. This stops
+a malicious PR from bypassing the review gate by inducing a content-
+side codex crash.
+
+**Sandbox-read residual risk.** Codex's `--sandbox read-only` is the
+strictest mode the CLI exposes; absolute-path reads (e.g.
+`~/.codex/auth.json`) cannot be defended against here without external
+sandboxing. Mitigations in place: untrusted-input prompt fence,
+no-tool-use rule with "last word" placement, `cwd=` empty tempdir,
+no `--dangerously-bypass-approvals-and-sandbox`. Treating absolute-
+path reads as an upstream limit is intentional; the codex review step
+is "best effort" against that vector. See the module docstring in
+`steps/codex_review.py` for the full threat model.
+
+Replaces the previous DeepSeek V4 Pro step. See the
+`codex_deepseek_convergence_asymmetry` knowledge note for why we
+switched — DeepSeek is asymptotic across rounds; codex converges in a
+small bounded number.
 
 ### `supply_chain` (step 1)
 
@@ -193,7 +230,7 @@ Every run writes to `/tmp/pr_validate/pr-<N>/`:
 * `lint-{check,format}.log` — ruff output
 * `targeted-{pr,main}.log` — pytest output (PR + neg-control on main)
 * `full-unit.log` — pytest full output
-* `deepseek-{request,review,usage}.{txt,md,json}` — API call + result
+* `codex-{request,review,usage}.{txt,md,json}` — codex exec input + reply + token usage
 * `supply-chain-scan.log` + `pip-audit.log` — supply-chain artifacts
 * `server-<model>.log` — boot + lifespan log
 * `stress-<model>.log` — stress test output
@@ -202,8 +239,8 @@ Every run writes to `/tmp/pr_validate/pr-<N>/`:
 
 ## Roadmap
 
-* GitHub Action wiring (cheap layers only — DeepSeek per-push is
-  expensive).
+* GitHub Action wiring (cheap layers only — codex per-push has a
+  rate-limited login token).
 * License-drift check via `pip show <pkg>` against an allowlist.
 * Diff-aware import-graph for `targeted_tests` (replace stem heuristic).
 * Expand `golden_models.yaml` to the full family list once we have RAM
