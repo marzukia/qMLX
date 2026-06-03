@@ -601,8 +601,11 @@ def serve_command(args):
     # Pass alias info to server (for /v1/models)
     server._model_alias = getattr(args, "_original_alias", None)
 
-    # Configure server security settings
-    server._api_key = args.api_key
+    # Configure server security settings. ``RAPID_MLX_API_KEY`` env var
+    # is the secret-friendly form ``rapid-mlx share`` uses to avoid
+    # exposing the key in argv; inline ``--api-key`` overrides it for
+    # backwards-compat with existing scripts.
+    server._api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
     server._default_timeout = args.timeout
     # Configure CORS
     cors_origins = args.cors_origins if args.cors_origins else ["*"]
@@ -3585,11 +3588,19 @@ Examples:
         help="Path to MCP configuration file (JSON/YAML) for tool integration",
     )
     # Security options
+    # ``--api-key`` accepts an inline value OR falls back to the
+    # ``RAPID_MLX_API_KEY`` env var. ``rapid-mlx share`` uses the env-var
+    # form so the bearer key never lands in argv (visible to ``ps`` for
+    # any local user). Inline value still works for backwards-compat
+    # with existing scripts; if both are set, the inline value wins.
     serve_parser.add_argument(
         "--api-key",
         type=str,
         default=None,
-        help="API key for authentication (if not set, no auth required)",
+        help=(
+            "API key for authentication (if not set, falls back to the "
+            "RAPID_MLX_API_KEY env var; if neither, no auth required)"
+        ),
     )
     serve_parser.add_argument(
         "--cors-origins",
@@ -4235,6 +4246,11 @@ Examples:
         help="Delete the consent + client-id files (next run re-prompts)",
     )
 
+    # Share subcommand — expose a local serve behind a public rapidmlx.com URL.
+    from vllm_mlx.share.cli import register as _register_share
+
+    _register_share(subparsers)
+
     args = parser.parse_args()
 
     # First-run consent prompt — fires at most once per machine, only on
@@ -4383,6 +4399,10 @@ Examples:
         doctor_command(args)
     elif args.command == "telemetry":
         telemetry_command(args)
+    elif args.command == "share":
+        from vllm_mlx.share.cli import share_command
+
+        share_command(args)
     else:
         parser.print_help()
         sys.exit(1)
