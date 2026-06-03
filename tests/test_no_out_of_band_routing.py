@@ -126,6 +126,23 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # so the child's B2 download gate no-ops (parent already gated).
         # Pure UX flag — never read by the engine or scheduler.
         "RAPID_MLX_CHAT_SPAWN",
+        # ``rapid-mlx share`` control-plane endpoint override. Default points at
+        # https://api.rapidmlx.com; dev sets this to a local docker-compose.
+        # Read once at session-request time, never consulted by the engine.
+        "RAPID_MLX_RELAY_URL",
+        # ``rapid-mlx share`` local-port override for the spawned serve
+        # subprocess. UX knob; not consulted by the engine or scheduler.
+        "RAPID_MLX_SHARE_PORT",
+        # ``rapid-mlx share`` one-click chat-link override. Picks which
+        # frontend URL the banner advertises (defaults to
+        # https://chat.rapidmlx.com). Pure UX knob; consulted only by
+        # ``vllm_mlx/share/cli.py`` when rendering the banner.
+        "RAPID_MLX_CHAT_FRONTEND",
+        # Server-side: fallback for ``--api-key`` when the inline flag is
+        # not provided. Used by ``rapid-mlx share`` to avoid exposing the
+        # bearer key in argv (visible to ``ps`` for any local user).
+        # Pure auth-config knob; routing decisions never read it.
+        "RAPID_MLX_API_KEY",
     }
 )
 
