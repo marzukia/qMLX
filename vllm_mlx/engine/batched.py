@@ -1014,7 +1014,7 @@ class BatchedEngine(BaseEngine):
         # (issue #442). The router doesn't care about ``<|end|>``
         # terminators so it also recovers reasoning from truncated
         # output (``finish_reason=length`` mid-thinking).
-        reasoning_text, text = self._route_tokens_for_channels(
+        reasoning_text, text, structured_tool_calls = self._route_tokens_for_channels(
             output.output_token_ids, fallback_text=text
         )
 
@@ -1025,6 +1025,7 @@ class BatchedEngine(BaseEngine):
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
             finish_reason=output.finish_reason,
+            tool_calls=structured_tool_calls,
         )
 
     async def stream_generate(
@@ -1292,59 +1293,102 @@ class BatchedEngine(BaseEngine):
 
     def _route_tokens_for_channels(
         self, token_ids: list[int] | None, *, fallback_text: str
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[dict] | None]:
         """Run ``OutputRouter.feed_sequence`` on a completed token list.
 
-        Returns ``(reasoning_text, content_text)`` for the non-streaming
-        path. The router is the token-level state machine that the
-        streaming path already trusts (``_stream_with_output_router``);
-        using it here closes a long-standing gap where non-streaming
-        relied on text-based ``clean_output_text`` regex parsing and
-        leaked analysis-channel content into ``content`` when the
-        model finished mid-thinking (``finish_reason=length`` — issue
-        #442) or otherwise emitted no ``final`` channel.
+        Returns ``(reasoning_text, content_text, structured_tool_calls)``
+        for the non-streaming path. The router is the token-level state
+        machine that the streaming path already trusts
+        (``_stream_with_output_router``); using it here closes a long-
+        standing gap where non-streaming relied on text-based
+        ``clean_output_text`` regex parsing and leaked analysis-channel
+        content into ``content`` when the model finished mid-thinking
+        (``finish_reason=length`` — issue #442) or otherwise emitted no
+        ``final`` channel.
 
-        ``fallback_text`` is the result of ``clean_output_text`` —
-        we keep it as ``content`` for cases the router doesn't override
-        (e.g. tool-call paths where harmony commentary text needs to
-        survive intact for the route's tool parser; the router only
-        knows about ``analysis`` and ``final`` for harmony, so we don't
-        clobber its decisions). The override fires only when the router
-        is authoritative AND text-based cleaning is known wrong —
-        specifically when the router sees REASONING tokens but no
-        CONTENT tokens, which means there was no ``final`` channel and
-        ``message.content`` should be empty.
+        ``fallback_text`` is the result of ``clean_output_text`` — we
+        keep it as ``content`` for cases the router doesn't override.
+        The override fires when the router is authoritative AND
+        text-based cleaning is known wrong — specifically when the
+        router sees REASONING tokens but no CONTENT tokens (no
+        ``final`` channel emitted), or when the router surfaced
+        structured tool calls (their bodies must NOT bleed into
+        content text via the un-cleaned commentary header).
+
+        ``structured_tool_calls`` carries ``[{"name", "arguments"}]``
+        entries from routers that natively parse the model's tool-call
+        protocol (currently ``HarmonyStreamingRouter`` via
+        openai-harmony's ``StreamableParser``). When non-None, the
+        route layer bypasses text-based extraction entirely (see
+        ``GenerationOutput.tool_calls`` plumbing). This eliminates the
+        sentinel-delimited wire-text round-trip that previously lost
+        tool calls whose JSON arguments contained literal harmony
+        marker substrings — PR #515 codex round-12 / round-14 BLOCKING.
         """
         if not token_ids:
-            return "", fallback_text
+            return "", fallback_text, None
         router = self._create_output_router()
         if router is None:
-            return "", fallback_text
+            return "", fallback_text, None
         try:
             router.reset()
             routed = router.feed_sequence(token_ids)
         except Exception as e:
             logger.debug("OutputRouter sequence routing failed: %s", e)
-            return "", fallback_text
+            return "", fallback_text, None
 
         reasoning = routed.get("reasoning") or ""
+        raw_tool_calls = routed.get("tool_calls") or []
+        # Normalise to the structured ``{"name", "arguments"}`` shape
+        # the route layer expects. The HarmonyStreamingRouter already
+        # produces dicts; the legacy ``OutputRouter`` emits wire-text
+        # strings (gemma4 / qwen / deepseek) which we leave to the
+        # legacy text-based parser path — those models don't surface
+        # structured payloads yet, so structured_tool_calls is None
+        # for them and the existing fallback_text + regex extraction
+        # flow continues unchanged.
+        structured_tool_calls: list[dict] | None
+        if raw_tool_calls and all(isinstance(tc, dict) for tc in raw_tool_calls):
+            structured_tool_calls = list(raw_tool_calls)
+        else:
+            structured_tool_calls = None
+
+        # When the router surfaces structured tool calls, the text-
+        # based fallback path is dead weight — and worse, the
+        # un-cleaned harmony commentary header still embedded in
+        # ``fallback_text`` would bleed into the route's user-facing
+        # ``content`` field. Force content to the router's CONTENT
+        # channel result (final-channel text only) and drop the
+        # commentary residue. Reasoning is also taken from the router
+        # because the harmony reasoning parser cannot find an
+        # ``<|end|>`` terminator on the analysis channel after the
+        # tool call has consumed the commentary block.
+        if structured_tool_calls is not None:
+            return reasoning, routed.get("content") or "", structured_tool_calls
+
         # Override content ONLY when the router authoritatively says
         # there is no content channel AND there is reasoning. In every
-        # other case we keep ``fallback_text`` so tool-call commentary
-        # text reaches the route's tool parser unchanged, and so non-
-        # reasoning models (router emits CONTENT only) keep their
-        # text-cleaning result.
+        # other case we keep ``fallback_text`` so non-reasoning models
+        # (router emits CONTENT only) keep their text-cleaning result.
         if routed.get("content") is None and reasoning:
-            return reasoning, ""
-        return reasoning, fallback_text
+            return reasoning, "", None
+
+        return reasoning, fallback_text, None
 
     def _create_output_router(self) -> OutputRouter | None:
-        """Create a per-request token router for supported tokenizer formats."""
+        """Create a per-request token router for supported tokenizer formats.
+
+        Uses ``from_tokenizer_for_streaming`` so harmony models (gpt-oss)
+        get routed through ``HarmonyStreamingRouter`` backed by
+        openai-harmony's ``StreamableParser`` (issue #513). Falls back to
+        the legacy custom state machine for non-harmony models and for
+        harmony tokenizers whose IDs don't match the official encoding.
+        """
         try:
             tokenizer = self.tokenizer
             if tokenizer is None:
                 return None
-            router = OutputRouter.from_tokenizer(tokenizer)
+            router = OutputRouter.from_tokenizer_for_streaming(tokenizer)
             if router is None:
                 return None
             if router.map.format_tag not in _OUTPUT_ROUTER_ALLOWLIST:
@@ -1366,6 +1410,17 @@ class BatchedEngine(BaseEngine):
         finish_reason: str | None = None,
         logprobs=None,
     ) -> GenerationOutput:
+        # Propagate structured tool-call payload from the router event
+        # when present (HarmonyStreamingRouter on TOOL_CALL channel
+        # close). Carrying it on the per-token streaming output lets
+        # the postprocessor emit a structured ``tool_call`` StreamEvent
+        # directly instead of round-tripping through text-based
+        # extraction — the same bypass the non-streaming path uses via
+        # ``GenerationOutput.tool_calls``.
+        tool_calls = None
+        event_tc = getattr(event, "tool_call", None)
+        if event_tc is not None:
+            tool_calls = [event_tc]
         return GenerationOutput(
             text=source.text,
             new_text=event.text if new_text is None else new_text,
@@ -1376,6 +1431,7 @@ class BatchedEngine(BaseEngine):
             finish_reason=finish_reason,
             logprobs=logprobs,
             channel=_channel_name(event.channel),
+            tool_calls=tool_calls,
         )
 
     def _routed_finish_sentinel(self, source: GenerationOutput) -> GenerationOutput:

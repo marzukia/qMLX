@@ -9,6 +9,7 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 from ..api.tool_calling import parse_tool_calls
@@ -126,6 +127,14 @@ class StreamingPostProcessor:
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
         self.tool_markup_possible = False
+        # Monotonic counter for structured tool-call indices across the
+        # whole response. Each TOOL_CALL channel ``GenerationOutput`` may
+        # carry a single structured call; if multiple chunks fire
+        # separately (router emits one per ``<|call|>``) the index field
+        # must keep counting up so clients can disambiguate them
+        # (OpenAI spec: tool_calls deltas merge on ``index``). Codex
+        # round-15 BLOCKING #1.
+        self._structured_tool_call_count = 0
 
         # Nemotron thinking prefix
         self._is_thinking_model = False
@@ -187,6 +196,25 @@ class StreamingPostProcessor:
             "nemotron" in model_name.lower() and not self.reasoning_parser
         )
 
+    def _parallel_tool_calls_allowed(self) -> bool:
+        """Return False iff the request explicitly opted out of
+        parallel tool calls via ``parallel_tool_calls=false``.
+
+        OpenAI spec: ``True`` and unset both mean "no cap". Only the
+        explicit ``false`` triggers single-call enforcement (matches
+        the non-streaming trim in ``routes/chat.py`` post-parse). The
+        request may arrive as a pydantic model (production) or a dict
+        (test fixtures, lifted bench scaffolds); accept both.
+        """
+        req = self.request
+        if req is None:
+            return True
+        if isinstance(req, dict):
+            val = req.get("parallel_tool_calls")
+        else:
+            val = getattr(req, "parallel_tool_calls", None)
+        return val is not False
+
     def reset(self):
         """Reset all parser states for a new stream.
 
@@ -201,6 +229,7 @@ class StreamingPostProcessor:
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
+        self._structured_tool_call_count = 0
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
@@ -234,6 +263,74 @@ class StreamingPostProcessor:
         self, delta_text: str, output: GenerationOutput
     ) -> list[StreamEvent]:
         """Handle OutputRouter models (Gemma 4 etc.) with token-level routing."""
+        # Engine-surfaced structured tool calls (HarmonyStreamingRouter
+        # via openai-harmony's StreamableParser). Emit a structured
+        # StreamEvent directly — the router has already done the
+        # parse and re-running text-based extraction over the wire
+        # representation would re-introduce the round-trip lossy path
+        # this refactor exists to eliminate (PR #515 codex round-12 /
+        # round-14 BLOCKING — tool calls whose JSON args contain
+        # literal harmony sentinels were corrupted by sentinel-
+        # anchored regex parsing).
+        engine_tool_calls = getattr(output, "tool_calls", None) or []
+        if output.channel == "tool_call" and engine_tool_calls:
+            # ``parallel_tool_calls=false`` is a hard external contract:
+            # the non-streaming path caps the parsed list at one
+            # (routes/chat.py); the streaming path must do the same or
+            # clients with the flag set get extra calls they explicitly
+            # opted out of. Drop everything past the cap on this chunk
+            # AND mark ``tool_calls_detected`` so subsequent chunks
+            # short-circuit before emission. Codex round-15 BLOCKING #2.
+            parallel_allowed = self._parallel_tool_calls_allowed()
+            allowed_calls: list[dict] = []
+            for tc in engine_tool_calls:
+                if not parallel_allowed and self._structured_tool_call_count >= 1:
+                    break
+                allowed_calls.append(tc)
+                self._structured_tool_call_count += 1
+            if not allowed_calls:
+                # Cap exhausted — preserve finish semantics but skip
+                # emission. The buffered_finish gate fires through the
+                # existing tool_calls_detected branch below.
+                self.tool_calls_detected = True
+                if output.finished:
+                    return [
+                        StreamEvent(
+                            type="finish",
+                            finish_reason="tool_calls",
+                            tool_calls_detected=True,
+                        )
+                    ]
+                return []
+            # Monotonic indices across the whole response so clients
+            # can disambiguate calls that arrive in separate router
+            # chunks. ``OpenAI`` clients merge ``tool_calls`` deltas
+            # on ``index`` — colliding indices cause one call to
+            # overwrite another. Codex round-15 BLOCKING #1.
+            structured = []
+            for offset, tc in enumerate(allowed_calls):
+                idx = self._structured_tool_call_count - len(allowed_calls) + offset
+                structured.append(
+                    {
+                        "index": idx,
+                        "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        },
+                    }
+                )
+            self.tool_calls_detected = True
+            return [
+                StreamEvent(
+                    type="tool_call",
+                    tool_calls=structured,
+                    finish_reason="tool_calls" if output.finished else None,
+                    tool_calls_detected=True,
+                )
+            ]
+
         if output.channel == "reasoning":
             content, reasoning = None, delta_text
         elif output.channel == "tool_call":

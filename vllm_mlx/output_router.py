@@ -53,6 +53,15 @@ class RouterEvent:
     channel: Channel
     token_id: int
     text: str  # decoded text for this token
+    # Optional structured payload for ``Channel.TOOL_CALL`` events.
+    # Populated by routers that natively parse the model's tool-call
+    # protocol (``HarmonyStreamingRouter`` via openai-harmony's
+    # ``StreamableParser``) so the downstream pipeline can consume
+    # ``{"name", "arguments"}`` directly instead of round-tripping
+    # through sentinel-delimited wire text. ``None`` means the consumer
+    # should fall back to text-based extraction on ``text`` (legacy
+    # ``OutputRouter`` path for Gemma 4 / Qwen3 / DeepSeek R1).
+    tool_call: dict | None = None
 
 
 @dataclass
@@ -584,6 +593,14 @@ class OutputRouter:
             return cls(token_map, tokenizer)
 
         # GPT-OSS/Harmony detection: channel/message special tokens.
+        # ``from_tokenizer`` returns the legacy custom state machine
+        # for backwards compatibility (existing tests pin its
+        # transitions on a synthetic vocab). Production code that
+        # wants the openai-harmony SOTA path uses
+        # ``OutputRouter.from_tokenizer_for_streaming`` which prefers
+        # ``HarmonyStreamingRouter`` for matched-vocab harmony models.
+        # See vllm_mlx/output_router_harmony.py and issue #513 /
+        # cluster #444/#455/#468/#480.
         if "<|channel|>" in vocab and "<|message|>" in vocab:
             token_map = TokenMap(
                 format_tag="harmony",
@@ -627,3 +644,41 @@ class OutputRouter:
             return cls(token_map, tokenizer)
 
         return None  # unsupported model format
+
+    @classmethod
+    def from_tokenizer_for_streaming(cls, tokenizer: Any):
+        """Production streaming factory — prefers ``HarmonyStreamingRouter``
+        for harmony-format models whose vocab IDs match the openai-harmony
+        encoding (verified at PR-time for upstream gpt-oss). Falls back to
+        the legacy ``OutputRouter`` state machine for everything else
+        (Gemma 4, think-tag, harmony with mismatched IDs, etc.).
+
+        Separate from ``from_tokenizer`` so the legacy harmony test suite
+        (synthetic vocab in ``tests/test_output_router.py``) continues to
+        exercise the custom state machine without the openai-harmony shim
+        being forced on it. Engine code
+        (``BatchedEngine._create_output_router``) uses THIS factory.
+        """
+        from .output_router_harmony import (
+            HarmonyStreamingRouter,
+            is_openai_harmony_compatible,
+        )
+
+        legacy = cls.from_tokenizer(tokenizer)
+        if legacy is None:
+            return None
+        if legacy.map.format_tag == "harmony" and is_openai_harmony_compatible(
+            legacy.map, tokenizer
+        ):
+            # Codex round-2 NIT: emit at DEBUG level. The streaming
+            # factory is called per request in the engine path; an
+            # INFO-level log would spam production logs once per
+            # /v1/chat/completions call. Operators who want to confirm
+            # the upgrade is active should enable router DEBUG once
+            # at startup rather than read it from every request log.
+            logger.debug(
+                "[OutputRouter] Streaming factory upgraded harmony "
+                "router to openai-harmony StreamableParser"
+            )
+            return HarmonyStreamingRouter(legacy.map, tokenizer)
+        return legacy
