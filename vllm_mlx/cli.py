@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 # SPDX-License-Identifier: Apache-2.0
 """
 CLI for rapid-mlx (package name: ``vllm_mlx``).
@@ -17,6 +18,16 @@ Usage:
 import argparse
 import os
 import sys
+
+from vllm_mlx._completion import alias_completer, alias_csv_completer
+
+# NOTE: ``argcomplete`` is imported lazily inside ``main()`` instead of
+# at module top. Module-level imports of ``vllm_mlx.cli`` (e.g.
+# ``tests/test_harmony_parsers.py::TestServeLogLevelFlags``) run in the
+# minimal-deps CI lane that doesn't pre-install argcomplete; pulling it
+# at top would surface as ``ModuleNotFoundError`` during test collection.
+# argcomplete is still a required runtime dep in ``pyproject.toml`` so
+# real installs get tab completion out of the box.
 
 
 def _log_level_choice(value: str) -> str:
@@ -3258,7 +3269,9 @@ Examples:
         help="Start OpenAI-compatible server",
         allow_abbrev=False,
     )
-    serve_parser.add_argument("model", type=str, help="Model to serve")
+    serve_parser.add_argument(
+        "model", type=str, help="Model to serve"
+    ).completer = alias_completer
     serve_parser.add_argument(
         "--served-model-name",
         type=str,
@@ -3888,7 +3901,9 @@ Examples:
     )
     # Bench command
     bench_parser = subparsers.add_parser("bench", help="Run benchmark")
-    bench_parser.add_argument("model", type=str, help="Model to benchmark")
+    bench_parser.add_argument(
+        "model", type=str, help="Model to benchmark"
+    ).completer = alias_completer
     bench_parser.add_argument(
         "--force-disk-check",
         action="store_true",
@@ -4022,13 +4037,13 @@ Examples:
     )
     pull_parser.add_argument(
         "model", help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name)"
-    )
+    ).completer = alias_completer
     rm_parser = subparsers.add_parser(
         "rm", help="Remove a cached model from the HuggingFace cache"
     )
     rm_parser.add_argument(
         "model", help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name)"
-    )
+    ).completer = alias_completer
     subparsers.add_parser("ps", help="List running rapid-mlx servers")
 
     # Upgrade — detect install method and run the right upgrade command
@@ -4067,7 +4082,7 @@ Examples:
         default="qwen3.5-4b",
         help="Model alias (e.g. qwen3.5-4b) or HF repo (org/name). "
         "Defaults to qwen3.5-4b when omitted.",
-    )
+    ).completer = alias_completer
     chat_parser.add_argument(
         "--system",
         type=str,
@@ -4143,7 +4158,7 @@ Examples:
     info_parser.add_argument(
         "model",
         help="Model alias (e.g. qwen3.5-4b) or HF repo (e.g. mlx-community/SmolLM3-3B-4bit)",
-    )
+    ).completer = alias_completer
 
     # Agents command
     agents_parser = subparsers.add_parser(
@@ -4170,7 +4185,7 @@ Examples:
         type=str,
         default=None,
         help="Model to use (default: auto-detect from running server)",
-    )
+    ).completer = alias_completer
     agents_parser.add_argument(
         "--base-url",
         type=str,
@@ -4201,7 +4216,7 @@ Examples:
         type=str,
         default=None,
         help="Model alias for check tier (default: qwen3.5-35b)",
-    )
+    ).completer = alias_completer
     doctor_parser.add_argument(
         "--models",
         type=str,
@@ -4209,7 +4224,7 @@ Examples:
         help="Comma-separated model aliases for full / benchmark tiers "
         "(full default: qwen3.5-35b,qwen3.6-35b; "
         "benchmark default: auto-discovered from local cache)",
-    )
+    ).completer = alias_csv_completer
     doctor_parser.add_argument(
         "--update-baselines",
         action="store_true",
@@ -4250,6 +4265,49 @@ Examples:
     from vllm_mlx.share.cli import register as _register_share
 
     _register_share(subparsers)
+
+    # Shell tab completion via argcomplete. Must fire before parse_args:
+    # when the shell completion handler invokes us with the
+    # ``_ARGCOMPLETE`` env var set, this function short-circuits before
+    # any heavy import paths or model resolution runs, so the user gets
+    # snappy ``rapid-mlx chat gemma-4-<TAB>`` even on a cold shell.
+    #
+    # ``_action_conflicts`` and ``_seen_non_default_actions`` are
+    # populated by argcomplete inside ``IntrospectiveArgumentParser._
+    # parse_known_args`` — but option completion (``finders.py:_
+    # action_allowed``) reads them before parsing has run on a
+    # subparser, raising ``AttributeError`` on the first Tab. We
+    # pre-walk the parser tree and seed empty containers so completion
+    # works at the very first keystroke. Issue tracked upstream at
+    # kislyuk/argcomplete (no mutex groups → conflict set is just
+    # empty; this is the documented null-init).
+    def _preinit_argcomplete_state(p: argparse.ArgumentParser) -> None:
+        if not hasattr(p, "_action_conflicts"):
+            p._action_conflicts = {}  # type: ignore[attr-defined]
+        if not hasattr(p, "_seen_non_default_actions"):
+            p._seen_non_default_actions = set()  # type: ignore[attr-defined]
+        if not hasattr(p, "active_actions"):
+            p.active_actions = []  # type: ignore[attr-defined]
+        for action in p._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for sub in action.choices.values():
+                    if isinstance(sub, argparse.ArgumentParser):
+                        _preinit_argcomplete_state(sub)
+
+    _preinit_argcomplete_state(parser)
+    try:
+        import argcomplete
+    except ModuleNotFoundError as exc:
+        # Best-effort: tab completion silently no-ops if argcomplete is
+        # missing. Listed as a required dep in ``pyproject.toml`` so
+        # this path only fires in minimal test envs or stripped images.
+        # Narrow the swallow to the top-level argcomplete package — if a
+        # transitive import inside argcomplete is missing we want that
+        # to surface, not get mistaken for "argcomplete not installed".
+        if exc.name != "argcomplete":
+            raise
+    else:
+        argcomplete.autocomplete(parser)
 
     args = parser.parse_args()
 
