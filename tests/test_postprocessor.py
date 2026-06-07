@@ -946,6 +946,817 @@ class TestStructuredToolCallStreaming:
         assert events[0].tool_calls[0]["index"] == 0
 
 
+class TestTextParserParallelCap:
+    """Tests for issue #517 — text-parser streaming paths
+    (``_process_standard``, ``_process_reasoning``) must honor
+    ``parallel_tool_calls=false`` symmetrically to the channel-routed
+    path PR #515 already covered.
+    """
+
+    def _make_pp_with_parser(self, returns: list[dict], **req_kwargs):
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.return_value = {"tool_calls": returns}
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        request = req_kwargs or None
+        pp = StreamingPostProcessor(cfg, request=request)
+        pp.reset()
+        return pp
+
+    def test_standard_path_caps_two_calls_in_single_delta(self):
+        """When the parser emits two calls in one delta and the request
+        has ``parallel_tool_calls=false``, only the first is forwarded.
+        """
+        pp = self._make_pp_with_parser(
+            [
+                {
+                    "index": 0,
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                },
+                {
+                    "index": 1,
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {"name": "b", "arguments": "{}"},
+                },
+            ],
+            parallel_tool_calls=False,
+        )
+
+        events = pp.process_chunk(_make_output("<tool_call>x</tool_call>"))
+        assert len(events) == 1
+        assert len(events[0].tool_calls) == 1
+        assert events[0].tool_calls[0]["function"]["name"] == "a"
+
+    def test_standard_path_caps_calls_across_deltas(self):
+        """When the parser emits one call per delta and the request has
+        ``parallel_tool_calls=false``, the second delta's call is
+        suppressed entirely (parser may still see the tokens but
+        nothing reaches the client).
+        """
+        # First delta: parser returns call_a
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        second = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+
+        assert len(first) == 1
+        assert first[0].type == "tool_call"
+        assert first[0].tool_calls[0]["function"]["name"] == "a"
+        # Second delta suppressed — tool_calls_detected branch fires.
+        assert second == []
+        assert pp.tool_calls_detected is True
+
+    def test_standard_path_passes_through_when_parallel_allowed(self):
+        """``parallel_tool_calls=true`` (or unset) must NOT cap."""
+        pp = self._make_pp_with_parser(
+            [
+                {
+                    "index": 0,
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                },
+                {
+                    "index": 1,
+                    "id": "call_b",
+                    "type": "function",
+                    "function": {"name": "b", "arguments": "{}"},
+                },
+            ],
+            parallel_tool_calls=True,
+        )
+
+        events = pp.process_chunk(_make_output("<tool_call>both</tool_call>"))
+        assert len(events) == 1
+        assert len(events[0].tool_calls) == 2
+
+    def test_standard_path_cap_preserves_finish_semantics(self):
+        """Suppressed second delta that is ALSO finished must still emit
+        a finish event so the route's buffered_finish gate fires.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        events = pp.process_chunk(
+            _make_output(
+                "<tool_call>b</tool_call>",
+                finished=True,
+                finish_reason="stop",
+            )
+        )
+        assert len(events) == 1
+        assert events[0].type == "finish"
+        assert events[0].finish_reason == "tool_calls"
+
+    def test_continuation_deltas_pass_through_admit_by_index(self):
+        """PR #518 round-1 codex BLOCKING regression: qwen3_coder-style
+        parsers emit one incremental ``arguments`` fragment per delta,
+        each sharing the same ``index``. Under
+        ``parallel_tool_calls=false`` the cap must admit the call by
+        ``index`` ONCE and let every continuation through, otherwise
+        the JSON arguments are silently truncated mid-string.
+        """
+        tool_parser = MagicMock()
+        # Header delta: name + first argument fragment, index 0.
+        # Two follow-up deltas: same index 0, only argument fragments.
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q": "'},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {"arguments": "weather"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {"arguments": '"}'},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        second = pp.process_chunk(_make_output("frag1"))
+        third = pp.process_chunk(_make_output("frag2"))
+
+        # All three deltas must forward — admit-by-index lets the
+        # continuation fragments through after the first admit.
+        assert len(first) == 1 and first[0].type == "tool_call"
+        assert first[0].tool_calls[0]["function"]["arguments"] == '{"q": "'
+        assert len(second) == 1 and second[0].type == "tool_call"
+        assert second[0].tool_calls[0]["function"]["arguments"] == "weather"
+        assert len(third) == 1 and third[0].type == "tool_call"
+        assert third[0].tool_calls[0]["function"]["arguments"] == '"}'
+        # Only ONE distinct call admitted across the three deltas.
+        assert pp._admitted_tool_call_indices == {0}
+
+    def test_no_index_continuation_deltas_pass_through(self):
+        """PR #518 round-2 codex BLOCKING: parsers that omit ``index``
+        from continuation deltas were treated as a stream of NEW calls;
+        the first admitted the synthetic marker, every subsequent
+        no-index delta was re-classified "new", saw the cap as full
+        and dropped. Now an in-flight no-index call has explicit state.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q":"'},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"function": {"arguments": "weather"}},
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"function": {"arguments": '"}'}},
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        second = pp.process_chunk(_make_output("frag1"))
+        third = pp.process_chunk(_make_output("frag2"))
+
+        assert len(first) == 1 and first[0].type == "tool_call"
+        assert first[0].tool_calls[0]["function"]["arguments"] == '{"q":"'
+        assert len(second) == 1 and second[0].type == "tool_call"
+        assert second[0].tool_calls[0]["function"]["arguments"] == "weather"
+        assert len(third) == 1 and third[0].type == "tool_call"
+        assert third[0].tool_calls[0]["function"]["arguments"] == '"}'
+        assert pp._no_index_call_admitted is True
+
+    def test_no_index_arg_fragment_passes_through_as_continuation(self):
+        """No-index argument-only fragments are continuations of the
+        in-flight no-index call — forward so the JSON arguments are
+        complete.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": '{"q":"'},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"function": {"arguments": "rest"}},
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        second = pp.process_chunk(_make_output("frag"))
+        assert len(first) == 1
+        assert len(second) == 1
+        assert second[0].tool_calls[0]["function"]["arguments"] == "rest"
+
+    def test_no_index_second_full_call_dropped_under_cap(self):
+        """PR #518 round-3 codex BLOCKING: a second no-index delta
+        carrying a fresh ``id`` or function ``name`` is a NEW call,
+        not a continuation. Under ``parallel_tool_calls=false`` the
+        first slot is taken by call_a; the second full call leaks
+        past the cap if every no-index delta is treated as a
+        continuation. Verify the cap holds.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                # Fresh id + name — distinct call. Must be dropped.
+                "tool_calls": [
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        second = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+        assert len(first) == 1
+        assert first[0].tool_calls[0]["function"]["name"] == "a"
+        assert second == []
+
+    def test_dropped_no_index_call_args_do_not_leak_to_admitted(self):
+        """PR #518 round-4 codex BLOCKING #1: after a second no-index
+        call gets dropped past the cap, its later argument-only
+        fragments would still satisfy the continuation branch and
+        leak into the admitted call's payload, corrupting its JSON.
+
+        Sequence (one delta per chunk):
+          1. call_a anchor (id=a, name=a, args='{')      → admit
+          2. call_a frag (args='}'  )                    → continuation, forward
+          3. call_b anchor (id=b, name=b, args='{"x":1') → cap full → DROP
+          4. call_b frag (args='}'  )                    → must DROP (was sliding into call_a)
+
+        The fix routes (4) to the dropped path via
+        ``_no_index_last_dropped`` so call_a's arguments stay '{}'.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{"},
+                    }
+                ]
+            },
+            {"tool_calls": [{"function": {"arguments": "}"}}]},
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": '{"x":1'},
+                    }
+                ]
+            },
+            {"tool_calls": [{"function": {"arguments": "}"}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>a_anchor</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>a_frag</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>b_anchor</tool_call>"))
+        e4 = pp.process_chunk(_make_output("<tool_call>b_frag</tool_call>"))
+
+        # call_a's two deltas both pass.
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["arguments"] == "{"
+        assert len(e2) == 1
+        assert e2[0].tool_calls[0]["function"]["arguments"] == "}"
+        # call_b's anchor dropped (cap full).
+        assert e3 == []
+        # call_b's continuation MUST be dropped — not forwarded as a
+        # continuation of call_a.
+        assert e4 == [], (
+            f"dropped no-index call's args leaked: {e4}. "
+            "_no_index_last_dropped should have routed it to drop."
+        )
+
+    def test_indexed_continuation_resets_dropped_flag(self):
+        """PR #518 round-9 codex BLOCKING #2: after a second indexed
+        anchor is dropped (cap full), an admitted call's MIXED
+        continuation (indexed first, then no-index argument fragment)
+        was being suppressed because the dropped flag was still set.
+
+        Sequence:
+          1. call_a anchor (index=0, name=a, args='{"q":"')   → admit
+          2. call_b anchor (index=1, name=b, args='{}')        → DROP, set flag
+          3. call_a continuation (index=0, args='weather')     → forward + RESET flag
+          4. call_a continuation (no-index, args='"}')         → forward (flag reset)
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": '{"q":"'},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": "{}"},
+                    }
+                ]
+            },
+            {"tool_calls": [{"index": 0, "function": {"arguments": "weather"}}]},
+            {"tool_calls": [{"function": {"arguments": '"}'}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>2</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>3</tool_call>"))
+        e4 = pp.process_chunk(_make_output("<tool_call>4</tool_call>"))
+
+        assert len(e1) == 1 and e1[0].tool_calls[0]["function"]["name"] == "a"
+        assert e2 == []
+        assert len(e3) == 1, "indexed continuation of admitted call must forward"
+        assert e3[0].tool_calls[0]["function"]["arguments"] == "weather"
+        assert len(e4) == 1, (
+            "no-index arg following indexed continuation must forward "
+            "(dropped flag reset by the indexed continuation)"
+        )
+        assert e4[0].tool_calls[0]["function"]["arguments"] == '"}'
+
+    def test_flat_shape_second_call_dropped_under_cap(self):
+        """PR #518 round-8 codex BLOCKING #2: parsers can emit FLAT
+        no-index calls (``{"name": "X", "arguments": "..."}`` — no
+        ``function`` wrapper). Anchor detection used to look only at
+        ``function.name`` or ``id``, so a second flat call leaked
+        past the cap as a "continuation" of the first.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            # First flat call — admitted.
+            {"tool_calls": [{"name": "a", "arguments": "{}"}]},
+            # Second flat call — distinct ``name``, should be dropped.
+            {"tool_calls": [{"name": "b", "arguments": "{}"}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["name"] == "a"
+        assert e2 == [], f"flat-shape second call leaked past cap as continuation: {e2}"
+
+    def test_dropped_indexed_anchor_blocks_no_index_arg_leak(self):
+        """PR #518 round-6 codex BLOCKING: when an INDEXED anchor is
+        dropped past the cap, subsequent no-index argument-only
+        fragments must NOT leak into the admitted call's payload.
+
+        Sequence:
+          1. call_a anchor (index=0, name=a, args='{}')      → admit
+          2. call_b anchor (index=1, name=b, args='{"x":1') → cap full → DROP
+          3. call_b frag (no index, args='}')                → must DROP
+
+        Prior to round-6 fix, step 2's drop did not set
+        ``_no_index_last_dropped`` (only no-index drops did), so
+        step 3 was routed to the unified continuation branch and
+        appended call_b's args to call_a's payload.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": '{"x":1'},
+                    }
+                ]
+            },
+            {"tool_calls": [{"function": {"arguments": "}"}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>f</tool_call>"))
+
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["name"] == "a"
+        assert e2 == []
+        # The continuation fragment must NOT leak — last anchor was
+        # dropped and the flag should suppress it.
+        assert e3 == [], f"no-index fragment leaked after dropped indexed anchor: {e3}"
+
+    def test_indexed_anchor_then_no_index_arg_fragment_continues(self):
+        """PR #518 round-5 codex BLOCKING #2: when the FIRST delta
+        admits an indexed call (e.g. ``index=0`` with name + arg
+        prefix), subsequent argument-only no-index fragments would
+        previously fall through the indexed-continuation branch and
+        the no-index-continuation branch (since
+        ``_no_index_call_admitted=False``), then hit the new-call
+        cap check and be dropped — truncating the JSON.
+
+        Now the no-index argument-only fragment matches the unified
+        "any-admitted-call" continuation branch.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q":"'},
+                    }
+                ]
+            },
+            {"tool_calls": [{"function": {"arguments": "weather"}}]},
+            {"tool_calls": [{"function": {"arguments": '"}'}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>anchor</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>f1</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>f2</tool_call>"))
+
+        # All three pass — the indexed admit covers the no-index args.
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["arguments"] == '{"q":"'
+        assert len(e2) == 1
+        assert e2[0].tool_calls[0]["function"]["arguments"] == "weather"
+        assert len(e3) == 1
+        assert e3[0].tool_calls[0]["function"]["arguments"] == '"}'
+
+    def test_uncapped_path_does_not_set_no_index_admitted(self):
+        """PR #518 round-3 codex NIT: the uncapped path used to set
+        ``_no_index_call_admitted=True`` for every no-index delta.
+        That state is cap-only — leaking it into the uncapped path
+        would corrupt cap accounting if a request's flag changed
+        mid-stream (or the same processor were reused). Verify the
+        uncapped path leaves the flag alone.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.return_value = {
+            "tool_calls": [
+                {
+                    "id": "call_a",
+                    "type": "function",
+                    "function": {"name": "a", "arguments": "{}"},
+                }
+            ]
+        }
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": True})
+        pp.reset()
+
+        pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        assert pp._no_index_call_admitted is False
+
+    def test_continuation_after_new_call_past_cap_is_dropped(self):
+        """A new call (unseen ``index``) past the cap is dropped, AND
+        any subsequent continuations of that dropped index are dropped
+        too — otherwise a half-admitted call would leak arguments.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "type": "function",
+                        "function": {"name": "a", "arguments": "{}"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "type": "function",
+                        "function": {"name": "b", "arguments": '{"x": '},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "index": 1,
+                        "function": {"arguments": "1}"},
+                    }
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        first = pp.process_chunk(_make_output("<tool_call>a</tool_call>"))
+        second = pp.process_chunk(_make_output("<tool_call>b</tool_call>"))
+        third = pp.process_chunk(_make_output("frag"))
+
+        assert len(first) == 1 and first[0].tool_calls[0]["function"]["name"] == "a"
+        # Index 1 never admitted — second AND third are suppressed.
+        assert second == []
+        assert third == []
+        assert pp._admitted_tool_call_indices == {0}
+
+    def test_no_index_cumulative_anchor_passes_as_continuation(self):
+        """PR #518 round-10 codex BLOCKING #2: cumulative-update parsers
+        re-emit the SAME ``id``/``name`` on every delta (carrying the
+        full arguments string grown so far) rather than emitting one
+        anchor and bare-argument continuations. Without identity
+        tracking the second+ anchor was misclassified as a NEW call
+        and dropped under ``parallel_tool_calls=false``, truncating
+        the arguments JSON to whatever shipped on the first delta.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "f", "arguments": "{"}}
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "f", "arguments": '{"x":'}}
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "f", "arguments": '{"x":1}'}}
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>2</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>3</tool_call>"))
+
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["name"] == "f"
+        assert len(e2) == 1, (
+            "same-identity no-index re-emit must pass through as continuation"
+        )
+        assert e2[0].tool_calls[0]["function"]["arguments"] == '{"x":'
+        assert len(e3) == 1
+        assert e3[0].tool_calls[0]["function"]["arguments"] == '{"x":1}'
+
+    def test_no_index_different_identity_dropped_under_cap(self):
+        """Identity tracking must NOT silently accept a DIFFERENT
+        no-index anchor as continuation — a second logical call still
+        gets dropped under ``parallel_tool_calls=false``. Companion to
+        ``test_no_index_cumulative_anchor_passes_as_continuation`` —
+        proves the match is identity-strict, not anchor-shape-only.
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {
+                "tool_calls": [
+                    {"id": "call_a", "function": {"name": "f", "arguments": "{}"}}
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_b", "function": {"name": "g", "arguments": "{}"}}
+                ]
+            },
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>2</tool_call>"))
+
+        assert len(e1) == 1
+        assert e1[0].tool_calls[0]["function"]["name"] == "f"
+        assert e2 == [], f"different-identity no-index call leaked past cap: {e2}"
+
+    def test_no_index_name_only_cumulative_anchor_passes_as_continuation(self):
+        """Cumulative parsers that omit ``id`` and only re-emit
+        ``function.name`` still benefit from identity tracking — same
+        name = continuation, different name = new call (dropped).
+        """
+        tool_parser = MagicMock()
+        tool_parser.extract_tool_calls_streaming.side_effect = [
+            {"tool_calls": [{"function": {"name": "f", "arguments": "{"}}]},
+            {"tool_calls": [{"function": {"name": "f", "arguments": '{"x":1}'}}]},
+            {"tool_calls": [{"function": {"name": "g", "arguments": "{}"}}]},
+        ]
+        tool_parser.has_pending_tool_call.return_value = False
+        cfg = _make_cfg(
+            enable_auto_tool_choice=True,
+            tool_parser_instance=tool_parser,
+        )
+        pp = StreamingPostProcessor(cfg, request={"parallel_tool_calls": False})
+        pp.reset()
+
+        e1 = pp.process_chunk(_make_output("<tool_call>1</tool_call>"))
+        e2 = pp.process_chunk(_make_output("<tool_call>2</tool_call>"))
+        e3 = pp.process_chunk(_make_output("<tool_call>3</tool_call>"))
+
+        assert len(e1) == 1
+        assert len(e2) == 1, "same-name no-index anchor must continue"
+        assert e2[0].tool_calls[0]["function"]["arguments"] == '{"x":1}'
+        assert e3 == [], f"different-name new call leaked past cap: {e3}"
+
+
 # ======================================================================
 # Coverage gap tests — model-specific edge cases + error paths
 # ======================================================================

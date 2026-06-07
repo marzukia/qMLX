@@ -39,6 +39,7 @@ from fastapi.testclient import TestClient
 
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.routes.chat import _tool_call_name
 from vllm_mlx.routes.chat import router as chat_router
 
 
@@ -75,12 +76,19 @@ class _RecordingEngine:
         )
 
 
-def _make_client(engine: _RecordingEngine) -> TestClient:
+def _make_client(
+    engine: _RecordingEngine, tool_call_parser: str | None = "hermes"
+) -> TestClient:
     cfg = reset_config()
     cfg.engine = engine
     cfg.model_name = "test-model"
     cfg.model_registry = None
     cfg.no_thinking = True
+    # Suffix injection at chat.py is gated on ``cfg.tool_call_parser`` being
+    # set; default to ``"hermes"`` so the ``tool_choice`` enforcement tests
+    # exercise the injection branch. Pass ``None`` explicitly to assert the
+    # alternate path.
+    cfg.tool_call_parser = tool_call_parser
     app = FastAPI()
     app.include_router(chat_router)
     return TestClient(app)
@@ -143,8 +151,14 @@ def test_tool_choice_specific_function_filters_to_named_only():
     filter ``tools`` to a single entry — the named function. Without
     this the model sees both candidates and picks the one it prefers,
     silently ignoring the user's force choice.
+
+    Uses ``_ToolCallingEngine`` (returns matching tool_call) so the
+    post-parse #468 enforcement gate (added in the same change) does
+    not fire — the engine HAS to return the right call for this test
+    to isolate the tools-filter behavior; a separate test covers the
+    enforcement gate failure mode.
     """
-    engine = _RecordingEngine()
+    engine = _ToolCallingEngine(fn_name="get_time")
     client = _make_client(engine)
     resp = client.post(
         "/v1/chat/completions",
@@ -217,15 +231,12 @@ def test_tool_choice_function_missing_name_returns_400():
     assert resp.status_code == 400
 
 
-@pytest.mark.parametrize("choice", ["auto", "required", None])
-def test_tool_choice_auto_required_none_field_leave_tools_untouched(choice):
-    """``"auto"``, ``"required"``, and unset ``tool_choice`` must NOT
-    mutate ``request.tools``. ``"required"`` enforcement is tracked
-    separately (#442 needs FSM constraints); for now it falls through
-    to model behavior — same as ``"auto"``. This test pins that the
-    normalization layer is precisely scoped to ``"none"`` and the
-    specific-function form and doesn't accidentally rewrite the other
-    paths.
+@pytest.mark.parametrize("choice", ["auto", None])
+def test_tool_choice_auto_and_unset_leave_tools_untouched(choice):
+    """``"auto"`` and unset ``tool_choice`` must NOT mutate
+    ``request.tools``. ``"required"`` has its own enforcement path
+    (post-parse 422 / suffix injection — see #468 tests below) and is
+    excluded from this parametrize.
     """
     engine = _RecordingEngine()
     client = _make_client(engine)
@@ -320,3 +331,604 @@ def test_tool_choice_function_missing_name_with_no_tools_returns_400():
         },
     )
     assert resp.status_code == 400
+
+
+# ──────────────────────────────────────────────────────────────────
+# ``tool_choice="required"`` enforcement (#468)
+# ──────────────────────────────────────────────────────────────────
+
+
+class _ToolCallingEngine(_RecordingEngine):
+    """Mock engine that injects an engine-surfaced structured tool_call
+    so the route's parse path emits a real ``tool_calls`` field.
+
+    The route consumes ``GenerationOutput.tool_calls`` via the PR #515
+    structured passthrough (``_parse_tool_calls_with_parser`` honors
+    ``structured_tool_calls=...``), so we can simulate a model that
+    actually called a tool without standing up a full parser fixture.
+    """
+
+    def __init__(
+        self, fn_name: str = "get_weather", arguments: str = '{"city":"Tokyo"}'
+    ):
+        super().__init__()
+        self._fn_name = fn_name
+        self._arguments = arguments
+
+    async def chat(self, messages, **kwargs):
+        self.last_messages = messages
+        self.last_chat_kwargs = kwargs
+        return GenerationOutput(
+            text="",
+            raw_text="",
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="tool_calls",
+            tool_calls=[{"name": self._fn_name, "arguments": self._arguments}],
+        )
+
+
+def test_tool_choice_required_empty_response_returns_422():
+    """``tool_choice="required"`` with a model that returned text-only
+    output (zero tool_calls) must surface as 422, not a silent
+    content-bearing 200 (#468). The OpenAI spec guarantees a tool_call
+    is present in the response when ``required`` is set.
+    """
+    engine = _RecordingEngine()  # default: text="ok", tool_calls=None
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Tell me a joke."}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "required" in resp.text.lower()
+
+
+def test_tool_choice_required_with_tool_call_returns_200():
+    """When the model DID emit a tool_call, ``tool_choice="required"``
+    must succeed cleanly and forward the call to the client. Pins the
+    happy path so the 422 gate doesn't accidentally fire on success.
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    tcs = body["choices"][0]["message"].get("tool_calls") or []
+    assert len(tcs) == 1
+    assert tcs[0]["function"]["name"] == "get_weather"
+
+
+def test_tool_choice_required_injects_strict_system_suffix():
+    """The ``required`` mode must inject the strict suffix
+    (``_TOOL_USE_REQUIRED_SUFFIX``) into the system prompt — this is
+    the strongest enforcement lever in the absence of FSM-constrained
+    decoding (#132). Verify the suffix lands by inspecting what the
+    engine receives in ``last_messages``.
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    sys_msgs = [
+        m
+        for m in engine.last_messages
+        if (m.get("role") if isinstance(m, dict) else m.role) == "system"
+    ]
+    assert sys_msgs, "expected an auto-injected system message"
+    content = (
+        sys_msgs[0]["content"] if isinstance(sys_msgs[0], dict) else sys_msgs[0].content
+    )
+    assert "MUST call one of the provided tools" in content
+
+
+def test_tool_choice_named_function_wrong_call_returns_422():
+    """``tool_choice={"type":"function","function":{"name":X}}`` with a
+    model that called a DIFFERENT tool must 422. The non-stream path
+    filters ``request.tools`` to the named function pre-flight (so the
+    model only sees that one), but a malicious / drifted parser could
+    still surface a different call from the engine — the route must
+    refuse to forward a contract-violating response.
+    """
+    # Engine returns get_time even though tool_choice pins get_weather.
+    engine = _ToolCallingEngine(fn_name="get_time", arguments='{"city":"Tokyo"}')
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Pick a function"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "get_weather" in resp.text
+
+
+def test_tool_choice_required_with_stream_passes_through_cloud_routing():
+    """PR #518 round-8 codex BLOCKING #1: the streaming-required 422
+    guard must NOT fire when the cloud router is configured to handle
+    the request — cloud backends (e.g. GPT-4o) DO support
+    ``required`` with streaming via decoder-side constraints. The
+    guard now lives below the cloud routing block.
+
+    Verifies the guard's PRE-cloud placement was wrong by simulating
+    a cloud-routed request and asserting we don't 422 before cloud
+    routing decides.
+    """
+
+    # Minimal cloud router stub that always claims it would route.
+    # Sets ``stream_completion_called`` on first invocation so the
+    # test can prove the cloud path actually executed (not just that
+    # the local 422 didn't fire — round-9 codex NIT).
+    cloud_called = {"stream": False}
+
+    _CLOUD_SENTINEL_CONTENT = "CLOUD_SENTINEL_X"
+
+    class _FakeCloudRouter:
+        threshold = 0
+        cloud_model = "gpt-4o"
+
+        def should_route_to_cloud(self, _new_tokens):
+            return True
+
+        async def stream_completion(self, *args, **kwargs):
+            cloud_called["stream"] = True
+            yield (
+                'data: {"choices":[{"delta":{"content":"'
+                + _CLOUD_SENTINEL_CONTENT
+                + '"}}]}\n\n'
+            ).encode()
+            yield b"data: [DONE]\n\n"
+
+        async def completion(self, *args, **kwargs):
+            return {"choices": [{"message": {"content": "x"}}]}
+
+    engine = _RecordingEngine()
+    engine.estimate_new_tokens = lambda prompt: (10, 5)  # noqa: E731
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.cloud_router = _FakeCloudRouter()
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    # Must reach the cloud path: 200 OK + cloud's sentinel content in
+    # the body + the cloud router's stream_completion was invoked.
+    assert resp.status_code == 200, resp.text
+    assert _CLOUD_SENTINEL_CONTENT in resp.text, (
+        f"cloud sentinel missing — local path was hit instead: {resp.text[:300]}"
+    )
+    assert cloud_called["stream"], (
+        "cloud router's stream_completion was never called — local 422 fired "
+        "or the request silently fell back to local inference"
+    )
+
+
+def test_tool_choice_required_with_stream_no_parser_returns_422():
+    """PR #518 round-9 codex BLOCKING: the streaming-required 422 now
+    fires ONLY when no streaming tool-call parser is configured.
+    Without a parser the server has no path to emit tool_calls in SSE,
+    so the OpenAI ``tool_call guaranteed`` contract can never be met.
+    """
+    engine = _RecordingEngine()
+    # tool_call_parser=None explicitly — no streaming tool-call path.
+    client = _make_client(engine, tool_call_parser=None)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "tool-call parser" in resp.text
+    # Verify the engine was never invoked — we rejected before the
+    # streaming handler opened.
+    assert engine.last_chat_kwargs is None
+
+
+def test_tool_choice_required_with_stream_channel_routed_bypasses_422(monkeypatch):
+    """PR #518 round-10 codex BLOCKING #1: when no text parser is set
+    but the engine has channel-routed tool-call capability (harmony /
+    Gemma 4), the streaming-required 422 must NOT fire — the
+    OutputRouter's tool channel is the production path that emits
+    structured tool_calls for those models. Monkeypatch the capability
+    probe to True so we exercise the bypass deterministically without
+    needing a real harmony tokenizer in the test fixture.
+    """
+    from vllm_mlx.routes import chat as chat_module
+
+    engine = _RecordingEngine()
+    monkeypatch.setattr(
+        chat_module,
+        "_engine_supports_channel_routed_tool_calls",
+        lambda _e: True,
+    )
+    # No text parser — pre-round-10 this combination always 422'd.
+    client = _make_client(engine, tool_call_parser=None)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_engine_supports_channel_routed_helper_returns_false_on_no_tokenizer():
+    """The capability probe must return ``False`` (not raise) when the
+    engine has no tokenizer attribute or it is ``None`` — the gate
+    must fall back to the parser-only path safely.
+    """
+    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+
+    class _NoTokenizerEngine:
+        tokenizer = None
+
+    assert _engine_supports_channel_routed_tool_calls(_NoTokenizerEngine()) is False
+
+
+def test_engine_supports_channel_routed_helper_returns_true_for_harmony_router(
+    monkeypatch,
+):
+    """When ``OutputRouter.from_tokenizer_for_streaming`` returns a
+    router whose ``format_tag`` is in the engine allowlist (harmony /
+    gemma4), the helper returns True so the streaming-required gate
+    lets the request through.
+    """
+    from types import SimpleNamespace
+
+    from vllm_mlx.output_router import OutputRouter
+    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+
+    fake_router = SimpleNamespace(map=SimpleNamespace(format_tag="harmony"))
+    monkeypatch.setattr(
+        OutputRouter,
+        "from_tokenizer_for_streaming",
+        classmethod(lambda cls, tokenizer, **kw: fake_router),
+    )
+
+    class _HarmonyEngine:
+        tokenizer = object()
+
+    assert _engine_supports_channel_routed_tool_calls(_HarmonyEngine()) is True
+
+
+def test_engine_supports_channel_routed_helper_returns_false_for_unsupported_format(
+    monkeypatch,
+):
+    """Format tags outside the engine allowlist (e.g. ``think_tag``)
+    must NOT trip the bypass — those routers don't emit structured
+    tool calls, so the streaming-required 422 still needs to fire.
+    """
+    from types import SimpleNamespace
+
+    from vllm_mlx.output_router import OutputRouter
+    from vllm_mlx.routes.chat import _engine_supports_channel_routed_tool_calls
+
+    fake_router = SimpleNamespace(map=SimpleNamespace(format_tag="think_tag"))
+    monkeypatch.setattr(
+        OutputRouter,
+        "from_tokenizer_for_streaming",
+        classmethod(lambda cls, tokenizer, **kw: fake_router),
+    )
+
+    class _ThinkTagEngine:
+        tokenizer = object()
+
+    assert _engine_supports_channel_routed_tool_calls(_ThinkTagEngine()) is False
+
+
+def test_tool_choice_required_with_stream_and_parser_passes():
+    """PR #518 round-9 codex BLOCKING: when a streaming tool-call
+    parser IS configured (e.g. hermes), the streaming path CAN emit
+    tool_calls and the 422 must NOT fire. Local inference still
+    can't decoder-enforce, but prompt injection + parser is the
+    best lever we have and was the documented behavior pre-PR.
+    """
+    engine = _RecordingEngine()
+    # ``_make_client`` defaults tool_call_parser="hermes".
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    # The stream may emit text-only output (model didn't comply with
+    # prompt injection) — but the server must NOT block the request
+    # upfront; the parser path is the agreed enforcement mechanism.
+    assert resp.status_code == 200, resp.text
+
+
+def test_tool_choice_required_without_stream_still_works():
+    """Symmetric pin: ``required`` + ``stream=false`` must still
+    succeed (covered by the existing happy-path test, restated here
+    so the 422 above doesn't accidentally regress the non-stream
+    path during future refactors).
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "required",
+            "stream": False,
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_tool_choice_named_with_stream_passes_through():
+    """The named-function form is still allowed under streaming —
+    the filtered tools list makes the wrong-tool case much rarer
+    (the model only sees one tool), even though we can't 422
+    mid-stream if it still produces text. Documented limitation
+    in the 422 message for ``required``.
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "stream": True,
+            "max_tokens": 32,
+        },
+    )
+    # Streaming response: 200 OK + SSE body. Test passes if we got
+    # past the upfront-reject gate.
+    assert resp.status_code == 200, resp.text
+
+
+class _MultiCallEngine(_RecordingEngine):
+    """Mock engine that emits TWO tool_calls: the target plus an
+    extra. Used to verify the round-4 BLOCKING #2 ``all(...)`` gate.
+    """
+
+    def __init__(self, *, target_name: str, extra_name: str):
+        super().__init__()
+        self._target = target_name
+        self._extra = extra_name
+
+    async def chat(self, messages, **kwargs):
+        self.last_messages = messages
+        self.last_chat_kwargs = kwargs
+        return GenerationOutput(
+            text="",
+            raw_text="",
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="tool_calls",
+            tool_calls=[
+                {"name": self._target, "arguments": "{}"},
+                {"name": self._extra, "arguments": "{}"},
+            ],
+        )
+
+
+def test_tool_choice_named_function_extra_call_returns_422():
+    """PR #518 round-4 codex BLOCKING #2: ``tool_choice`` with
+    ``function.name = X`` allows ONLY X. A response carrying X PLUS
+    an extra call (e.g. ``[X, Y]``) is a contract violation — the
+    prior ``any(...)`` gate accepted it silently.
+    """
+    engine = _MultiCallEngine(target_name="get_weather", extra_name="get_time")
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "get_time" in resp.text
+
+
+def test_tool_choice_named_function_injects_named_suffix():
+    """The named-function form must inject a suffix that names the
+    target tool explicitly — without this, the model may still pick
+    a different tool from the (now-filtered) singleton list.
+    """
+    engine = _ToolCallingEngine()  # returns get_weather
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    sys_msgs = [
+        m
+        for m in engine.last_messages
+        if (m.get("role") if isinstance(m, dict) else m.role) == "system"
+    ]
+    assert sys_msgs
+    content = (
+        sys_msgs[0]["content"] if isinstance(sys_msgs[0], dict) else sys_msgs[0].content
+    )
+    assert "'get_weather'" in content
+    assert "MUST call the tool named" in content
+
+
+def test_tool_choice_auto_keeps_loose_suffix():
+    """``tool_choice="auto"`` (and unset) must keep the original
+    ``_TOOL_USE_SYSTEM_SUFFIX`` (loose) — NOT the strict required
+    variant. This pins the gate so the strict suffix doesn't bleed
+    into auto-mode requests where the model is allowed to opt out.
+    """
+    engine = _ToolCallingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": "auto",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    sys_msgs = [
+        m
+        for m in engine.last_messages
+        if (m.get("role") if isinstance(m, dict) else m.role) == "system"
+    ]
+    assert sys_msgs
+    content = (
+        sys_msgs[0]["content"] if isinstance(sys_msgs[0], dict) else sys_msgs[0].content
+    )
+    # The loose suffix says "When the user's request can be answered ..."
+    assert "When the user's request can be answered" in content
+    # The strict suffix would say "MUST call one of the provided tools" — verify absent.
+    assert "MUST call one of the provided tools" not in content
+
+
+# ======================================================================
+# _tool_call_name shape-agnostic extraction (PR #518 round-2 BLOCKING)
+# ======================================================================
+
+
+class _AttrFunction:
+    def __init__(self, name):
+        self.name = name
+
+
+class _AttrToolCall:
+    def __init__(self, name):
+        self.function = _AttrFunction(name)
+
+
+def test_tool_call_name_handles_attr_shape():
+    """Pydantic ``ToolCall`` instances expose ``function.name`` as
+    attribute access — text-parser path output.
+    """
+    assert _tool_call_name(_AttrToolCall("get_weather")) == "get_weather"
+
+
+def test_tool_call_name_handles_dict_shape():
+    """Raw dict from engine structured passthrough — both outer and
+    inner are dicts. Pure-attr access used to return None here and
+    silently 422 matching named-function calls.
+    """
+    tc = {
+        "id": "call_a",
+        "type": "function",
+        "function": {"name": "get_weather", "arguments": "{}"},
+    }
+    assert _tool_call_name(tc) == "get_weather"
+
+
+def test_tool_call_name_handles_mixed_shape():
+    """Outer attr-object whose ``function`` is a dict (or vice versa)
+    — the helper must walk both layers independently.
+    """
+
+    class _OuterAttr:
+        function = {"name": "get_time"}
+
+    assert _tool_call_name(_OuterAttr()) == "get_time"
+
+    outer_dict = {"function": _AttrFunction("get_date")}
+    assert _tool_call_name(outer_dict) == "get_date"
+
+
+def test_tool_call_name_handles_flat_dict_shape():
+    """PR #518 round-3 codex BLOCKING: raw engine
+    ``GenerationOutput.tool_calls`` is ``[{"name": ..., "arguments":
+    ...}]`` — no ``function`` wrapper. ``_ToolCallingEngine`` in this
+    file emits exactly that shape, so the helper must extract the
+    name directly from the top-level dict.
+    """
+    tc = {"name": "get_weather", "arguments": '{"city":"Tokyo"}'}
+    assert _tool_call_name(tc) == "get_weather"
+
+
+def test_tool_call_name_handles_flat_attr_shape():
+    """Symmetric attr-shape: outer object exposes ``.name`` directly
+    (no ``.function``). Future passthrough surfaces may use this.
+    """
+    obj = _AttrFunction("get_weather")
+    assert _tool_call_name(obj) == "get_weather"
+
+
+def test_tool_call_name_returns_none_when_no_name_anywhere():
+    """Defensive guard: a tool_call lacking ``function`` AND
+    ``name`` returns None instead of raising mid-422-check.
+    """
+    assert _tool_call_name({}) is None
+    assert _tool_call_name(object()) is None

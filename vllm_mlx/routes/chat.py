@@ -42,6 +42,7 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
     _build_usage,
     _check_admission_or_503,
@@ -57,6 +58,7 @@ from ..service.helpers import (
     _resolve_model_name,
     _resolve_temperature,
     _resolve_top_p,
+    _tool_use_required_named_suffix,
     _validate_model_name,
     _validate_tool_call_params,
     _wait_with_disconnect,
@@ -82,6 +84,74 @@ router = APIRouter()
 # whether cloud routing was configured at startup. ``httpx`` and the
 # stdlib timeout/connection set are always available, so we fall back
 # to those when litellm isn't importable.
+def _tool_call_name(tc) -> str | None:
+    """Extract the function name from a tool_call entry regardless of
+    shape. Three real shapes seen in production:
+
+    1. Pydantic ``ToolCall`` — ``tc.function.name``. Text-parser path.
+    2. Wrapped dict — ``{"function": {"name": ...}}``. Anthropic
+       passthrough and engine structured passthrough through
+       ``_parse_tool_calls_with_parser``.
+    3. Flat dict — ``{"name": ..., "arguments": ...}``. Raw engine
+       ``GenerationOutput.tool_calls`` shape (Harmony StreamableParser
+       output before wrapping). Surfaces in tests/fixtures and any
+       downstream that forwards engine output directly.
+
+    PR #518 round-2 codex BLOCKING added shapes 1+2; round-3 BLOCKING
+    added shape 3 (the round-2 widening missed it, even though the
+    same PR's test fixture emits exactly that shape).
+    """
+    if isinstance(tc, dict):
+        fn = tc.get("function")
+        if isinstance(fn, dict):
+            return fn.get("name")
+        if fn is not None:
+            return getattr(fn, "name", None)
+        # Flat shape — no ``function`` wrapper.
+        return tc.get("name")
+    fn = getattr(tc, "function", None)
+    if isinstance(fn, dict):
+        return fn.get("name")
+    if fn is not None:
+        return getattr(fn, "name", None)
+    # Flat attr-shape — no ``function`` attribute.
+    return getattr(tc, "name", None)
+
+
+def _engine_supports_channel_routed_tool_calls(engine) -> bool:
+    """Probe whether the engine's tokenizer yields a channel-routed
+    streaming path that can emit structured tool calls without a text
+    parser. Harmony (gpt-oss) and Gemma 4 publish tool calls via the
+    OutputRouter's tool-call channel, so a stream=true tool_choice=
+    required request CAN satisfy the contract for those models even
+    when ``cfg.tool_call_parser`` is unset.
+
+    PR #518 round-10 codex BLOCKING #1: the prior gate rejected every
+    parser-less streaming-required request and blocked legitimate
+    harmony/gemma4 traffic. The capability probe relies on the same
+    detection the engine itself uses
+    (``OutputRouter.from_tokenizer_for_streaming`` + the engine's
+    format allowlist), so a positive answer here means the actual
+    engine path WILL produce structured tool_call deltas.
+    """
+    try:
+        from ..engine.batched import _OUTPUT_ROUTER_ALLOWLIST
+        from ..output_router import OutputRouter
+
+        tokenizer = getattr(engine, "tokenizer", None)
+        if tokenizer is None:
+            return False
+        router = OutputRouter.from_tokenizer_for_streaming(tokenizer)
+        if router is None:
+            return False
+        return router.map.format_tag in _OUTPUT_ROUTER_ALLOWLIST
+    except Exception:
+        # Capability probe is best-effort — any failure means we
+        # cannot prove channel-routed support, so the gate falls
+        # back to the parser-only path (which 422s without one).
+        return False
+
+
 def _cloud_call_recoverable_exceptions() -> tuple[type[BaseException], ...]:
     """Build the allowlist of exception types we treat as recoverable from
     the cloud call. Lazy so cloud routing being disabled doesn't pay the
@@ -504,10 +574,26 @@ async def _create_chat_completion_impl(
             else:
                 m.role = "system"
 
-    # Auto-inject system prompt suffix for tool use and/or reasoning control
+    # Auto-inject system prompt suffix for tool use and/or reasoning control.
+    # ``tool_choice="required"`` (and the specific-function form) gets a
+    # stricter suffix than the default tool-use one — the OpenAI spec
+    # guarantees a tool_call when ``required`` is set, but local inference
+    # has no decoder-level enforcement (FSM constraint tracked in #132).
+    # Prompt injection + post-parse 422 are the strongest levers we have
+    # (#468). Strictness shape: explicit ``required`` > named function >
+    # the default ``auto``/unset suffix.
     _inject_suffix = None
     if request.tools and cfg.tool_call_parser:
-        _inject_suffix = _TOOL_USE_SYSTEM_SUFFIX
+        if tc == "required":
+            _inject_suffix = _TOOL_USE_REQUIRED_SUFFIX
+        elif isinstance(tc, dict) and tc.get("type") == "function":
+            _named = (tc.get("function") or {}).get("name")
+            if _named:
+                _inject_suffix = _tool_use_required_named_suffix(_named)
+            else:
+                _inject_suffix = _TOOL_USE_SYSTEM_SUFFIX
+        else:
+            _inject_suffix = _TOOL_USE_SYSTEM_SUFFIX
     elif cfg.reasoning_parser_name == "minimax":
         _inject_suffix = (
             "\n\nDo NOT think out loud or show your reasoning process. "
@@ -677,6 +763,44 @@ async def _create_chat_completion_impl(
                 f"[LOCAL] {new_tokens} new tokens (total {total_tokens}) "
                 f"<= threshold {cfg.cloud_router.threshold}, using local inference"
             )
+
+    # ``tool_choice="required"`` + ``stream=true`` is enforceable IF the
+    # engine has SOME path to produce a streaming tool_call:
+    #   (a) a text-parser path — ``cfg.tool_call_parser`` set; or
+    #   (b) a channel-routed path — harmony (gpt-oss) / Gemma 4 emit
+    #       structured tool_calls via the OutputRouter's tool channel
+    #       without needing a text parser.
+    # The request can satisfy the contract iff EITHER path is available.
+    # When neither is available we have NO mechanism at all, so reject
+    # upfront with a clear error.
+    #
+    # Round-7 codex BLOCKING surfaced the silent text-only finish_reason
+    # case; round-8 moved the guard below cloud routing; round-9 narrowed
+    # to the truly-unenforceable case (no parser); round-10 codex BLOCKING
+    # #1 widened "enforceable" to include channel-routed capability so
+    # harmony/gemma4 streaming requests aren't blocked by the gate.
+    if (
+        request.stream
+        and tc == "required"
+        and request.tools
+        and not cfg.tool_call_parser
+        and not _engine_supports_channel_routed_tool_calls(engine)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                'tool_choice="required" with stream=true requires either a '
+                "streaming tool-call parser (--tool-call-parser) or a "
+                "channel-routed model (harmony / Gemma 4) so the server has "
+                "a path to emit structured tool_calls. Neither is available "
+                "for this request — the OpenAI 'tool_call guaranteed' "
+                "contract cannot be met. Either set --tool-call-parser=hermes "
+                "(or your model's parser), retry with stream=false "
+                "(non-stream path 422s text-only output), or pin a specific "
+                'function via tool_choice={"type":"function",'
+                '"function":{"name":...}}.'
+            ),
+        )
 
     # Local-path admission gate: reserve a slot before kicking the
     # engine. Placed AFTER cloud routing so cloud-routable requests
@@ -933,6 +1057,55 @@ async def _create_chat_completion_impl(
     # single tool call (see PR #132 for the longer-term FSM-constrained path).
     if tool_calls and len(tool_calls) > 1 and request.parallel_tool_calls is False:
         tool_calls = tool_calls[:1]
+
+    # ``tool_choice="required"`` post-parse enforcement (#468). The system
+    # suffix injected above (``_TOOL_USE_REQUIRED_SUFFIX``) makes the model
+    # overwhelmingly likely to comply, but local inference has no
+    # decoder-level guarantee. When the parser comes back empty we 422
+    # rather than ship a contract-violating response (OpenAI spec: a
+    # tool_call is GUARANTEED present in the response when ``required``
+    # is set). For the named-function form we also verify the right tool
+    # fired. Streaming path is best-effort prompt-injection only; once
+    # SSE chunks are out we can't 422 mid-flight.
+    if request.tool_choice is not None and request.tools:
+        if request.tool_choice == "required" and not tool_calls:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    'tool_choice="required" but the model returned a text response '
+                    "with no tool_calls. Local inference has no decoder-level "
+                    "constraint; the system-prompt enforcement was insufficient "
+                    "for this prompt. Retry with a more concrete user message or "
+                    'use tool_choice={"type":"function","function":{"name":...}} '
+                    "to pin a specific tool."
+                ),
+            )
+        if (
+            isinstance(request.tool_choice, dict)
+            and request.tool_choice.get("type") == "function"
+        ):
+            _target = (request.tool_choice.get("function") or {}).get("name")
+
+            # OpenAI spec: a named ``tool_choice`` allows ONLY the named
+            # function. A response that includes the target plus any
+            # other call violates the contract — refuse to forward.
+            # Round-4 codex BLOCKING #2: prior ``any(...)`` accepted
+            # ``[target, wrong]`` and shipped the extra call to the
+            # client. Now require: at least one match AND every emitted
+            # call matches.
+            if _target:
+                _names = [_tool_call_name(tc) for tc in tool_calls or []]
+                _mismatched = [n for n in _names if n != _target]
+                if not _names or _mismatched:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"tool_choice pinned function {_target!r} but the model "
+                            f"emitted calls to {_mismatched or 'no tool'}. Local "
+                            "inference cannot decoder-enforce a specific function; "
+                            "retry with a more direct user message."
+                        ),
+                    )
 
     # Validate tool call parameter values against schemas
     if tool_calls and request.tools:

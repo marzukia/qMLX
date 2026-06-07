@@ -135,6 +135,51 @@ class StreamingPostProcessor:
         # (OpenAI spec: tool_calls deltas merge on ``index``). Codex
         # round-15 BLOCKING #1.
         self._structured_tool_call_count = 0
+        # Set of tool_call indices we've already admitted under the
+        # ``parallel_tool_calls`` cap. Text-parser streaming paths
+        # (hermes, qwen3_coder, etc.) emit MANY deltas per logical call:
+        # name first, then argument fragments, all with the same
+        # ``index``. The cap consumes a slot only on the FIRST sighting
+        # of a new index; subsequent deltas for an already-admitted
+        # index are continuations and must pass through so the client
+        # can reassemble the JSON. PR #518 codex round-1 BLOCKING.
+        self._admitted_tool_call_indices: set[int] = set()
+        # Parallel to the indexed-set above, but for parsers that emit
+        # continuation deltas without an ``index`` field. Treated as a
+        # single in-flight call: first no-index delta admits, every
+        # subsequent no-index delta is forwarded as a continuation.
+        # PR #518 round-2 codex BLOCKING: without this, no-index
+        # continuations were re-classified as new calls and dropped
+        # once the cap was full, silently truncating arguments.
+        self._no_index_call_admitted: bool = False
+        # Identity of the admitted no-index call. Some parsers re-emit
+        # the same ``id`` / function ``name`` on every cumulative
+        # argument-update delta (rather than emitting an anchor once
+        # and bare-argument continuations after). Round-10 codex
+        # BLOCKING: without remembering the admitted identity, the
+        # repeated anchor was misclassified as a NEW call and dropped
+        # under ``parallel_tool_calls=false``, truncating the JSON.
+        # Set together with ``_no_index_call_admitted`` on admit;
+        # cleared on ``reset()``.
+        self._no_index_admitted_id: str | None = None
+        self._no_index_admitted_name: str | None = None
+        # Tracks whether the MOST RECENT anchor delta (one carrying a
+        # fresh ``id`` / function ``name`` / new ``index``) was DROPPED
+        # because the cap was full. Subsequent argument-only no-index
+        # fragments belong to whichever anchor came last — so if the
+        # last anchor was dropped, the fragments must be dropped too,
+        # not silently appended to the admitted call's arguments.
+        # Reset on every admit (indexed or no-index). Set on every
+        # cap-full drop (indexed or no-index). PR #518 round-3 first
+        # surfaced the leak; round-6 codex widened the set to also
+        # cover indexed dropped anchors (name kept ``no_index`` for
+        # backwards refs, but semantically tracks "last anchor was
+        # dropped"). Assumes sequential parser emission — interleaved
+        # no-index continuations of distinct admitted indexed calls
+        # are indistinguishable from delta shape alone; well-behaved
+        # parsers either disambiguate via ``index``/``id`` or emit
+        # sequentially.
+        self._no_index_last_dropped: bool = False
 
         # Nemotron thinking prefix
         self._is_thinking_model = False
@@ -215,6 +260,217 @@ class StreamingPostProcessor:
             val = getattr(req, "parallel_tool_calls", None)
         return val is not False
 
+    def _apply_parallel_cap(self, tool_calls: list[dict]) -> list[dict]:
+        """Filter a streaming tool_calls delta list under the
+        ``parallel_tool_calls=false`` cap, distinguishing NEW tool
+        calls (unseen ``index``) from CONTINUATION deltas (seen
+        ``index`` — name + incremental argument fragments for an
+        already-admitted call).
+
+        Text-parser streaming paths (hermes, qwen3_coder, etc.) emit
+        many deltas per logical call: a header carrying ``{index, id,
+        function: {name}}``, then a sequence of deltas carrying only
+        ``{index, function: {arguments: "<fragment>"}}``. PR #518 round-1
+        codex BLOCKING: the prior implementation consumed a cap slot
+        per delta, so the first argument fragment for index 0 took the
+        only slot and every subsequent fragment of THE SAME CALL was
+        dropped — silently truncating the JSON arguments mid-string.
+
+        New rule:
+          - Uncapped (parallel=true / unset): pass everything; ONLY
+            track ``index`` admits (for the channel-routed branch's
+            monotonic-counter math). Do NOT touch
+            ``_no_index_call_admitted`` here — that field is cap-only
+            state, and mutating it in the uncapped path could
+            pollute cap accounting if request flags change mid-stream
+            (PR #518 round-3 codex NIT).
+          - Capped (parallel=false): for each delta, if its ``index``
+            is already admitted, pass through (continuation). If
+            ``index`` is absent AND the delta carries ONLY argument
+            fragments (no new ``id`` / ``name``), treat it as a
+            continuation of the in-flight no-index call. A no-index
+            delta carrying a fresh ``id`` or function ``name`` is a
+            NEW call — admit only if the cap allows. PR #518 round-3
+            codex BLOCKING: previously, every subsequent no-index
+            delta was treated as a continuation, leaking a second
+            full call past the cap.
+          - Cap-full new calls are dropped, AND their later
+            continuations are dropped too (no admit ever fired, so
+            the index/no-index slot was never taken).
+
+        Returns the filtered list (possibly empty if every delta in
+        the batch is a new call past the cap).
+        """
+        if self._parallel_tool_calls_allowed():
+            # Still track admitted indices so the channel-routed branch
+            # can use the same set when assigning its own monotonic
+            # ``index`` values from the count.
+            for tc in tool_calls:
+                idx = tc.get("index") if isinstance(tc, dict) else None
+                if isinstance(idx, int):
+                    self._admitted_tool_call_indices.add(idx)
+            self._structured_tool_call_count = max(
+                self._structured_tool_call_count,
+                len(self._admitted_tool_call_indices),
+            )
+            return list(tool_calls)
+
+        allowed: list[dict] = []
+        for tc in tool_calls:
+            idx = tc.get("index") if isinstance(tc, dict) else None
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            has_wrapped_name = (
+                isinstance(fn, dict)
+                and isinstance(fn.get("name"), str)
+                and fn.get("name")
+            )
+            # Round-8 codex BLOCKING #2: parsers can emit FLAT-shape
+            # tool calls (``{"name": "X", "arguments": ...}`` — no
+            # ``function`` wrapper, mirrored from raw engine output
+            # via ``_tool_call_name`` shape #3 in chat.py). Without
+            # the top-level ``name`` check, a flat-shape second call
+            # was misclassified as a continuation and leaked past
+            # the ``parallel_tool_calls=false`` cap.
+            has_flat_name = (
+                isinstance(tc, dict)
+                and isinstance(tc.get("name"), str)
+                and tc.get("name")
+            )
+            has_id = (
+                isinstance(tc, dict) and isinstance(tc.get("id"), str) and tc.get("id")
+            )
+            is_anchor = bool(has_wrapped_name or has_flat_name or has_id)
+
+            if isinstance(idx, int) and idx in self._admitted_tool_call_indices:
+                # Continuation of an already-admitted indexed call —
+                # always forward so the client's arguments JSON is
+                # complete. Round-9 codex BLOCKING #2: seeing a fresh
+                # continuation of an admitted indexed call signals
+                # that the in-flight call is still alive, so reset
+                # the dropped-anchor flag — otherwise a NO-INDEX
+                # argument fragment immediately following this
+                # indexed continuation would be wrongly dropped as
+                # "belongs to a dropped call" when it really belongs
+                # to THIS admitted call.
+                self._no_index_last_dropped = False
+                allowed.append(tc)
+                continue
+
+            # No-index anchor matching the admitted no-index call's
+            # identity: cumulative argument-update parsers re-emit
+            # ``{"id": "<same>", "function": {"name": "<same>",
+            # "arguments": "<grew>"}}`` on every delta rather than
+            # emitting a single anchor and bare-argument continuations.
+            # Without this branch, every such re-emission would be
+            # mis-classified as a new call and dropped under
+            # ``parallel_tool_calls=false`` (round-10 codex BLOCKING #2).
+            # Match if BOTH the delta and the admitted call carry id
+            # AND ids match, OR if id is absent on the delta and the
+            # function names match — never silently accept a different
+            # call identity as continuation.
+            if idx is None and is_anchor and self._no_index_call_admitted:
+                delta_id = tc.get("id") if has_id else None
+                delta_name = (
+                    fn.get("name")
+                    if has_wrapped_name
+                    else (tc.get("name") if has_flat_name else None)
+                )
+                id_matches = (
+                    delta_id is not None
+                    and self._no_index_admitted_id is not None
+                    and delta_id == self._no_index_admitted_id
+                )
+                name_matches_no_id_conflict = (
+                    delta_id is None
+                    and delta_name is not None
+                    and self._no_index_admitted_name is not None
+                    and delta_name == self._no_index_admitted_name
+                )
+                if id_matches or name_matches_no_id_conflict:
+                    self._no_index_last_dropped = False
+                    allowed.append(tc)
+                    continue
+
+            # Argument-only no-index fragment: routes to whichever
+            # anchor was most recently seen. Any admitted call (indexed
+            # OR no-index slot) keeps the fragment unless the most
+            # recent anchor was dropped.
+            #
+            # Round-5 codex BLOCKING #2: previously this branch only
+            # fired when ``_no_index_call_admitted`` was True. An
+            # indexed FIRST delta (e.g. ``{"index": 0, "id": "a",
+            # "function": {"name": "a", "arguments": "{"}}``) followed
+            # by argument-only no-index deltas (``{"function":
+            # {"arguments": "}"}}``) routed the fragments to the
+            # new-call cap-check and dropped them as cap-full —
+            # truncating the JSON. Now any admitted call (indexed
+            # or no-index) absorbs no-index argument fragments.
+            if idx is None and not is_anchor:
+                has_admitted_call = bool(self._admitted_tool_call_indices) or (
+                    self._no_index_call_admitted
+                )
+                if has_admitted_call:
+                    if self._no_index_last_dropped:
+                        # Most recent anchor was dropped; suppress so
+                        # the dropped call's args don't leak into the
+                        # admitted call's payload.
+                        continue
+                    allowed.append(tc)
+                    continue
+                # Falls through to new-call branch (first delta of the
+                # stream has no index AND no anchor — treat as new).
+
+            # New call: unseen index, fresh no-index call with id/name,
+            # or first no-index delta with no admitted call yet.
+            already_admitted = len(self._admitted_tool_call_indices) + (
+                1 if self._no_index_call_admitted else 0
+            )
+            if already_admitted >= 1:
+                # Cap full — drop this new call AND any further
+                # continuations of its index, since we never admit it.
+                # Mark so subsequent no-index argument-only fragments
+                # are routed to "dropped" rather than silently
+                # appended to the admitted call. Round-6 codex
+                # BLOCKING: previously this flag was only set when
+                # the dropped anchor was no-index, so an INDEXED
+                # dropped anchor would leave the flag clear and the
+                # next no-index argument fragment would leak into
+                # the admitted call's payload.
+                self._no_index_last_dropped = True
+                continue
+            if isinstance(idx, int):
+                self._admitted_tool_call_indices.add(idx)
+                # Indexed admit: subsequent no-index argument fragments
+                # belong to the in-flight admitted call. Reset the
+                # dropped-anchor flag (the cap-full branch above is
+                # the only writer).
+                self._no_index_last_dropped = False
+            else:
+                # Mark the no-index slot as taken; subsequent no-index
+                # deltas hit the continuation branch above. Reset the
+                # dropped-anchor flag — this delta is the most recent
+                # anchor and it was admitted, so its fragments belong
+                # here. Capture the admitted identity (id + name) so a
+                # later anchor delta carrying the SAME id/name (parsers
+                # that re-emit the anchor with cumulative arguments) is
+                # matched as a continuation rather than misclassified
+                # as a new call. PR #518 round-10 codex BLOCKING #2.
+                self._no_index_call_admitted = True
+                self._no_index_last_dropped = False
+                if has_id:
+                    self._no_index_admitted_id = tc.get("id")
+                if has_wrapped_name:
+                    self._no_index_admitted_name = fn.get("name")
+                elif has_flat_name:
+                    self._no_index_admitted_name = tc.get("name")
+            self._structured_tool_call_count = max(
+                self._structured_tool_call_count,
+                len(self._admitted_tool_call_indices)
+                + (1 if self._no_index_call_admitted else 0),
+            )
+            allowed.append(tc)
+        return allowed
+
     def reset(self):
         """Reset all parser states for a new stream.
 
@@ -230,6 +486,11 @@ class StreamingPostProcessor:
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
         self._structured_tool_call_count = 0
+        self._admitted_tool_call_indices = set()
+        self._no_index_call_admitted = False
+        self._no_index_admitted_id = None
+        self._no_index_admitted_name = None
+        self._no_index_last_dropped = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
@@ -281,13 +542,34 @@ class StreamingPostProcessor:
             # opted out of. Drop everything past the cap on this chunk
             # AND mark ``tool_calls_detected`` so subsequent chunks
             # short-circuit before emission. Codex round-15 BLOCKING #2.
+            #
+            # Engine surfaces ONE complete structured call per
+            # ``<|call|>`` boundary (openai-harmony StreamableParser),
+            # so each entry here is a distinct logical call — no
+            # continuation-delta concern (that's the text-parser path,
+            # see ``_apply_parallel_cap``). PR #518 round-1: keep this
+            # branch's per-entry counting but share the admitted-set
+            # with the text-parser path so the response-wide counter
+            # stays consistent.
             parallel_allowed = self._parallel_tool_calls_allowed()
             allowed_calls: list[dict] = []
             for tc in engine_tool_calls:
-                if not parallel_allowed and self._structured_tool_call_count >= 1:
+                # Defense in depth: include the no-index slot in the
+                # cap total even though a single stream rarely hits
+                # both the channel-routed AND text-parser paths
+                # (channel-routed is gated on ``output.channel`` being
+                # set, which only happens for OutputRouter models).
+                # Round-5 codex BLOCKING #1: if any future flow lets
+                # cross-pollination happen, the cap would leak.
+                already_admitted = len(self._admitted_tool_call_indices) + (
+                    1 if self._no_index_call_admitted else 0
+                )
+                if not parallel_allowed and already_admitted >= 1:
                     break
+                new_idx = self._structured_tool_call_count
+                self._admitted_tool_call_indices.add(new_idx)
+                self._structured_tool_call_count = new_idx + 1
                 allowed_calls.append(tc)
-                self._structured_tool_call_count += 1
             if not allowed_calls:
                 # Cap exhausted — preserve finish semantics but skip
                 # emission. The buffered_finish gate fires through the
@@ -359,10 +641,28 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # Issue #517 — apply ``parallel_tool_calls=false`` cap
+                # uniformly across all streaming paths. Round-1 codex
+                # BLOCKING: admit by ``index`` so continuation deltas
+                # (incremental argument fragments for the same call)
+                # don't each consume a slot.
+                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
+                if not allowed_tcs:
+                    self.tool_calls_detected = True
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason="tool_calls",
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return []
+                self.tool_calls_detected = True
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
@@ -478,10 +778,28 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # Issue #517 — apply ``parallel_tool_calls=false`` cap
+                # uniformly across all streaming paths. Round-1 codex
+                # BLOCKING: admit by ``index`` so continuation deltas
+                # (incremental argument fragments for the same call)
+                # don't each consume a slot.
+                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
+                if not allowed_tcs:
+                    self.tool_calls_detected = True
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason="tool_calls",
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return []
+                self.tool_calls_detected = True
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
@@ -577,10 +895,28 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # Apply ``parallel_tool_calls=false`` cap (issue #517).
+                # Round-1 codex BLOCKING: admit by ``index`` so
+                # incremental argument fragments don't each consume a
+                # cap slot (qwen3_coder pattern — header delta + N
+                # argument-fragment deltas all share the same index).
+                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
+                if not allowed_tcs:
+                    self.tool_calls_detected = True
+                    if output.finished:
+                        return [
+                            StreamEvent(
+                                type="finish",
+                                finish_reason="tool_calls",
+                                tool_calls_detected=True,
+                            )
+                        ]
+                    return []
+                self.tool_calls_detected = True
                 return [
                     StreamEvent(
                         type="tool_call",
-                        tool_calls=result["tool_calls"],
+                        tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
