@@ -45,6 +45,8 @@ import os
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import JSONResponse
 
 # Re-export for backwards compatibility with tests
 from .api.anthropic_adapter import (  # noqa: F401
@@ -420,6 +422,39 @@ from .middleware.auth import (
 )
 
 
+# Registered on the Starlette base class, NOT fastapi.HTTPException,
+# because the router itself raises starlette.exceptions.HTTPException
+# for unknown-route 404s and wrong-method 405s. fastapi.HTTPException
+# is a subclass, so this handler catches both.
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(
+    request: Request,  # noqa: ARG001
+    exc: StarletteHTTPException,
+):
+    error_type_map = {
+        400: "invalid_request_error",
+        401: "authentication_error",
+        403: "permission_error",
+        404: "not_found_error",
+        405: "invalid_request_error",
+        409: "conflict_error",
+        429: "rate_limit_error",
+    }
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "message": str(exc.detail),
+                "type": error_type_map.get(exc.status_code, "api_error"),
+                "code": None,
+                "param": None,
+            }
+        },
+        headers=getattr(exc, "headers", None),
+    )
+
+
 @app.exception_handler(Exception)
 async def _global_exception_handler(request: Request, exc: Exception):
     """Catch unhandled exceptions so they return JSON 500 instead of killing
@@ -437,7 +472,6 @@ async def _global_exception_handler(request: Request, exc: Exception):
         exc,
         exc_info=True,
     )
-    from starlette.responses import JSONResponse
 
     return JSONResponse(
         status_code=500,
