@@ -239,10 +239,28 @@ class RequestOutput:
     # runtime error caught in the engine loop). HTTP layer converts this to
     # 503. Plain finish reasons (stop / length / etc.) leave this as None.
     error: str | None = None
+    # Number of prompt tokens served from the prefix cache for this
+    # request. Mirrors ``Request.cached_tokens`` (set by the scheduler
+    # during prefix-cache lookup) so the engine and API layers don't
+    # need to reach back into the live ``Request`` to report cache
+    # effectiveness. Appended at the end of the dataclass so positional
+    # constructor args for the pre-existing fields keep their indices.
+    cached_tokens: int = 0
 
     @property
     def usage(self) -> dict[str, int]:
-        """Return usage statistics compatible with OpenAI API."""
+        """Return usage statistics compatible with OpenAI API.
+
+        ``cached_tokens`` is intentionally NOT exposed here. The OpenAI
+        spec nests it under ``prompt_tokens_details.cached_tokens`` on
+        the response ``usage`` object — surfacing it as a top-level
+        sibling of ``prompt_tokens`` here would create a non-spec key
+        that any caller serialising this dict directly would leak.
+        Production code constructs ``Usage`` via ``service.helpers.
+        _build_usage`` (which reads ``cached_tokens`` from the
+        ``RequestOutput`` dataclass field above), keeping the
+        wire-shape spec-compliant.
+        """
         return {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
