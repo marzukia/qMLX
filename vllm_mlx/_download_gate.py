@@ -6,7 +6,7 @@ Persona-3 ("Ollama switcher") feedback (2026-05): running
     rapid-mlx chat qwen3-coder
 
 against an alias that wasn't yet cached silently kicked off a 41.8 GB
-download with no ``[y/N]`` prompt. The download itself ran fine, but
+download with no ``[Y/n]`` prompt. The download itself ran fine, but
 because the spawned ``serve`` subprocess captured stdout to a logfile,
 the user saw a blank screen and assumed the CLI was hung.
 
@@ -444,8 +444,11 @@ def confirm_or_abort(
     heads-up but proceed — blocking on a transient API failure would be
     worse than the silent-download problem we're trying to fix.
 
-    When the user types anything other than ``y``/``yes``, we print a
-    one-line abort hint and call ``sys.exit(1)``.
+    Prompt default is Y (``[Y/n]``): the user already typed a subcommand
+    naming a specific alias, so pressing Enter is treated as confirmation.
+    Only an explicit ``n``/``no`` (case-insensitive) — or Ctrl-C, which is
+    mapped to ``n`` internally — triggers the abort hint and
+    ``sys.exit(1)``. EOF on stdin is treated as Enter (proceed).
     """
     # Env override always wins.
     env_val = os.environ.get(auto_yes_env, "").strip().lower()
@@ -482,16 +485,21 @@ def confirm_or_abort(
     if logfile_hint:
         print(f"    Download progress will appear in {logfile_hint}; tail it to watch.")
     print()
+    # Default Y — the user explicitly invoked a subcommand on a specific
+    # alias ("rapid-mlx serve qwen…", "rapid-mlx share gemma…"); intent
+    # to use that model is clear. Pressing Enter shouldn't punish them
+    # with an abort. Ctrl-C still cancels.
     try:
-        answer = input("  Continue? [y/N]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
+        answer = input("  Continue? [Y/n]: ").strip().lower()
+    except EOFError:
+        answer = ""  # equivalent to Enter
+    except KeyboardInterrupt:
+        answer = "n"  # explicit user cancel
 
-    if answer in {"y", "yes"}:
-        return True
-
-    print(
-        f"  Aborted. Use 'rapid-mlx pull {repo_id}' to download separately, "
-        f"or set {auto_yes_env}=1 to skip this prompt."
-    )
-    sys.exit(1)
+    if answer in {"n", "no"}:
+        print(
+            f"  Aborted. Use 'rapid-mlx pull {repo_id}' to download separately, "
+            f"or set {auto_yes_env}=1 to skip this prompt."
+        )
+        sys.exit(1)
+    return True
