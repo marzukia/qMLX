@@ -693,22 +693,58 @@ def load_model(
             "(MLLM auto-detection overridden, #393)"
         )
 
-    logger.info(f"Loading model with BatchedEngine: {model_name}")
-    _engine = BatchedEngine(
-        model_name=model_name,
-        scheduler_config=scheduler_config,
-        stream_interval=stream_interval,
-        force_mllm=force_mllm,
-        force_text=force_text,
-        gpu_memory_utilization=gpu_memory_utilization,
-        force_hybrid=force_hybrid,
-        no_hybrid=no_hybrid,
-        force_spec_decode=force_spec_decode,
-        no_spec_decode=no_spec_decode,
-        force_openai_harmony_streaming=force_openai_harmony_streaming,
-        no_openai_harmony_streaming=no_openai_harmony_streaming,
-    )
-    logger.info(f"Model loaded: {model_name}")
+    # Modality dispatch: ``text-diffusion`` aliases route to the
+    # discrete-text-diffusion engine (mlx-vlm DiffusionGemma path).
+    # Default ``text`` keeps the AR BatchedEngine flow that every
+    # existing alias has used since #156. The check goes through the
+    # already-resolved alias profile so the same call (alias-name or
+    # full HF path) lands on the right lane without re-resolving.
+    _profile_modality = _profile.modality if _profile is not None else "text"
+    if _profile_modality == "text-diffusion":
+        from .runtime.diffusion_lane import DiffusionEngine
+
+        # ``python -m vllm_mlx.server --model <alias>`` bypasses
+        # cli.py's alias resolution and calls load_model() with the
+        # raw alias. BatchedEngine has its own internal resolution,
+        # but DiffusionEngine hands the string straight to
+        # ``mlx_vlm.utils.load`` which only accepts HF paths — so we
+        # must use the profile's resolved hf_path here (codex round
+        # 10 [P2]).
+        _diffusion_hf_path = _profile.hf_path if _profile is not None else model_name
+        logger.info(
+            f"Loading model with DiffusionEngine "
+            f"(modality=text-diffusion): {_diffusion_hf_path}"
+        )
+        _engine = DiffusionEngine(
+            model_name=_diffusion_hf_path,
+            max_tokens=max_tokens,
+            scheduler_config=scheduler_config,
+        )
+        # Eager load — server lifespan's startup_event runs ``await
+        # _engine.start()`` like it does for BatchedEngine, but the
+        # diffusion engine has additional sanity checks at load time
+        # (block-family verification) that we want to surface during
+        # the synchronous load_model() call so a misconfigured alias
+        # fails BEFORE the lifespan hook hands control to uvicorn.
+        _engine._load_blocking()  # noqa: SLF001 — internal helper
+        logger.info(f"Model loaded: {model_name}")
+    else:
+        logger.info(f"Loading model with BatchedEngine: {model_name}")
+        _engine = BatchedEngine(
+            model_name=model_name,
+            scheduler_config=scheduler_config,
+            stream_interval=stream_interval,
+            force_mllm=force_mllm,
+            force_text=force_text,
+            gpu_memory_utilization=gpu_memory_utilization,
+            force_hybrid=force_hybrid,
+            no_hybrid=no_hybrid,
+            force_spec_decode=force_spec_decode,
+            no_spec_decode=no_spec_decode,
+            force_openai_harmony_streaming=force_openai_harmony_streaming,
+            no_openai_harmony_streaming=no_openai_harmony_streaming,
+        )
+        logger.info(f"Model loaded: {model_name}")
 
     # Sync globals into ServerConfig BEFORE _detect_native_tool_support reads
     # them via get_config(). Detection short-circuits when cfg.tool_call_parser

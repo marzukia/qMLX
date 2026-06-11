@@ -135,6 +135,14 @@ def _engine_supports_channel_routed_tool_calls(engine) -> bool:
     format allowlist), so a positive answer here means the actual
     engine path WILL produce structured tool_call deltas.
     """
+    # Engine-level capability bit — if an engine explicitly declares
+    # it has no tool-call surface (DiffusionEngine), the tokenizer
+    # probe is moot. Without this, DiffusionGemma's tokenizer would
+    # trip the Gemma 4 allowlist even though DiffusionEngine never
+    # runs OutputRouter — letting tool_choice="required" finish with
+    # plain text and no 422 (codex round 9 [P2] on PR #551).
+    if not getattr(engine, "supports_tool_calls", True):
+        return False
     try:
         from ..engine.batched import _OUTPUT_ROUTER_ALLOWLIST
         from ..output_router import OutputRouter
@@ -780,6 +788,66 @@ async def _create_chat_completion_impl(
     # to the truly-unenforceable case (no parser); round-10 codex BLOCKING
     # #1 widened "enforceable" to include channel-routed capability so
     # harmony/gemma4 streaming requests aren't blocked by the gate.
+    # Engine-level veto — even with ``--tool-call-parser`` set, an
+    # engine that has explicitly opted out of tool-call surfaces
+    # (``supports_tool_calls=False``) cannot emit structured tool
+    # calls because its generator never produces them in the first
+    # place. The text parser would only match against the engine's
+    # actual ``channel="content"`` output, which has no tool call
+    # markers, so streaming would finish with plain text and the
+    # contract would silently break. Reject upfront with the same
+    # 422 the parser-less path uses (codex round 10 [P2] on PR #551).
+    # Use the same falsey predicate (``not getattr(...)``) as
+    # ``_engine_supports_channel_routed_tool_calls`` so the two
+    # checks treat None / 0 / False uniformly as "engine has opted
+    # out" — pr_validate codex r12 NIT. Default True (existing
+    # engines) preserves prior behaviour for everything that hasn't
+    # opted out.
+    _engine_opts_out_of_tools = not getattr(engine, "supports_tool_calls", True)
+    # Engine-level veto applies REGARDLESS of stream / non-stream
+    # AND for every forced tool-choice shape (codex pr_validate r8
+    # NIT #2). The OpenAI ``tool_choice`` API has two forced
+    # variants beyond ``"required"``:
+    #   - the named-function form ``{"type":"function",
+    #     "function":{"name":"foo"}}`` — caller demands a specific
+    #     tool gets called
+    #   - and the deprecated ``"function"`` literal string (some
+    #     legacy SDKs still send it)
+    # All three are contracts an opted-out engine cannot satisfy
+    # because the generator never produces structured tool_calls.
+    # Pre-pr_validate r6, this check was nested inside the
+    # ``request.stream`` branch below, so a non-streaming forced
+    # request still ran a full diffusion generation before failing
+    # in the post-parse gate at line ~1101. That is wasted GPU +
+    # ambiguous client UX. Reject upfront for opted-out engines no
+    # matter the stream flag (codex pr_validate r6 BLOCKING #1 +
+    # r8 NIT #2 on PR #551).
+    _forced_tool_choice = (
+        tc == "required"
+        # Legacy literal — some pre-2024 OpenAI SDKs sent the bare
+        # string ``"function"`` to mean "force any function call"
+        # before the dict form was added. Codex pr_validate r9 NIT
+        # #1 flagged the original predicate omitted this shape so
+        # opted-out engines would still run a full generation
+        # before failing.
+        or tc == "function"
+        or (isinstance(tc, dict) and tc.get("type") == "function")
+    )
+    if _forced_tool_choice and request.tools and _engine_opts_out_of_tools:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "tool_choice forces a tool call, but the active engine "
+                "has explicitly opted out of tool-call surfaces "
+                "(supports_tool_calls=False). The generator never emits "
+                "structured tool_calls, so any forced choice — "
+                '``"required"`` or a named ``{"type":"function","function":'
+                '{"name":...}}`` — is unenforceable. Drop tool_choice (or '
+                'set it to ``"auto"``/``"none"``), retry against an engine '
+                "that supports tool calls, or remove the ``tools`` array "
+                "from the request."
+            ),
+        )
     if (
         request.stream
         and tc == "required"

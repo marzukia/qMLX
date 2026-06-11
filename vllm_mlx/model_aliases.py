@@ -15,6 +15,27 @@ import difflib
 import json
 import os
 from dataclasses import dataclass
+from typing import Literal
+
+# Canonical modality enum. Default is ``"text"`` so every legacy alias
+# (and every external JSON snippet that pre-dates this field) keeps the
+# auto-regressive LLM lane untouched. New modalities branch the runtime
+# at startup — see ``runtime/diffusion_lane.py`` for the discrete
+# text-diffusion path used by DiffusionGemma. ``"vision"`` and
+# ``"image-gen"`` are reserved for forthcoming Bonsai/VLM integrations
+# (see project memory: bonsai_image_4b_integration). Adding a new value
+# requires editing this Literal AND the dispatch table in cli.py /
+# routes/models.py so the surface-level UX (info, ls, chat) doesn't
+# silently expose LLM-only columns on a non-LLM alias.
+Modality = Literal["text", "text-diffusion", "vision", "image-gen"]
+# Implemented lanes — what ``load_model`` can actually dispatch to today.
+# ``vision`` and ``image-gen`` are RESERVED in the type alias so that
+# routing code can pattern-match on them once their dispatch paths land,
+# but loading an alias that declares one MUST fail loud right now —
+# otherwise an aliases.json typo would pass schema validation and crash
+# at request time with an unrouted lane (pr_validate codex r13 NIT).
+_VALID_MODALITIES: frozenset[str] = frozenset({"text", "text-diffusion"})
+_RESERVED_MODALITIES: frozenset[str] = frozenset({"vision", "image-gen"})
 
 # Canonical enum for ``suffix_decoding_tier``. Kept here so the contract
 # test (tests/test_aliases_contract.py) and any future loader / CLI
@@ -94,6 +115,23 @@ class AliasProfile:
     # ``frequency_penalty``. ``None`` means "no curated value" → fall
     # through to ``generation_config.json``.
     recommended_sampling: tuple[tuple[str, float], ...] | None = None
+    # Inference modality. Default ``"text"`` covers every legacy LLM
+    # alias and keeps the auto-regressive scheduler/runtime path
+    # unchanged. Non-text modalities branch into dedicated lanes:
+    # ``"text-diffusion"`` → ``runtime/diffusion_lane.py`` (block
+    # denoising, no spec-decode, no DFlash); ``"vision"`` /
+    # ``"image-gen"`` reserved for upcoming integrations.
+    #
+    # NOTE on positional ABI: this field is intentionally appended at
+    # the END of the dataclass instead of after ``hf_path`` so that
+    # existing callers using positional construction
+    # (``AliasProfile(hf_path, tool_call_parser, ...)``) continue to
+    # bind their positional args to the same fields they always did.
+    # pr_validate codex round 11 [BLOCKING #1]: inserting ``modality``
+    # at position 1 silently routed the parser positional into the
+    # modality slot and broke construction without raising. Keep new
+    # fields at the tail.
+    modality: Modality = "text"
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -125,6 +163,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     _ALLOWED_PROFILE_KEYS = frozenset(
         {
             "hf_path",
+            "modality",
             "tool_call_parser",
             "reasoning_parser",
             "is_hybrid",
@@ -244,8 +283,49 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: recommended_sampling must be an object, "
             f"got {type(raw_sampling).__name__}"
         )
+    raw_modality = value.get("modality", "text")
+    if not isinstance(raw_modality, str):
+        raise ValueError(
+            f"alias {alias!r}: modality must be one of "
+            f"{sorted(_VALID_MODALITIES)}, got {raw_modality!r}"
+        )
+    if raw_modality in _RESERVED_MODALITIES:
+        # Type alias keeps these for forward compat, but loading
+        # fails loud until their dispatch lands (pr_validate codex
+        # r13 NIT).
+        raise ValueError(
+            f"alias {alias!r}: modality={raw_modality!r} is reserved but "
+            "not yet implemented — there is no dispatch path for it. "
+            f"Use one of {sorted(_VALID_MODALITIES)} or wait for the "
+            "matching engine to land."
+        )
+    if raw_modality not in _VALID_MODALITIES:
+        raise ValueError(
+            f"alias {alias!r}: modality must be one of "
+            f"{sorted(_VALID_MODALITIES)}, got {raw_modality!r}"
+        )
+    modality: Modality = raw_modality  # type: ignore[assignment]
+    # Capability gates that only make sense for the auto-regressive LLM
+    # lane. Catching the mismatch here keeps the diffusion / vision /
+    # image-gen lanes from silently inheriting a routing decision that
+    # would never apply to them — and makes a bad aliases.json entry
+    # fail loud at load instead of misroute at request time.
+    if modality != "text":
+        if _strict_bool("supports_spec_decode", True):
+            raise ValueError(
+                f"alias {alias!r}: supports_spec_decode must be false when "
+                f"modality={modality!r} (only the text lane runs the AR "
+                "speculative-decoding stack)"
+            )
+        if supports_dflash:
+            raise ValueError(
+                f"alias {alias!r}: supports_dflash must be false when "
+                f"modality={modality!r} (DFlash is AR-only)"
+            )
+
     return AliasProfile(
         hf_path=hf_path,
+        modality=modality,
         tool_call_parser=value.get("tool_call_parser"),
         reasoning_parser=value.get("reasoning_parser"),
         is_hybrid=_strict_bool("is_hybrid", False),
