@@ -49,7 +49,7 @@ class TestModalityDefault:
 
     def test_text_diffusion_accepted(self) -> None:
         profile = _coerce(
-            "diffusion-gemma-26b",
+            "diffusion-gemma-26b-4bit",
             {
                 "hf_path": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
                 "modality": "text-diffusion",
@@ -202,17 +202,48 @@ class TestHfPathReverseLookupRoutesDiffusionLane:
     silently regress the modality dispatch.
     """
 
-    def test_diffusion_hf_path_resolves_to_text_diffusion_modality(self) -> None:
+    def test_diffusion_4bit_hf_path_resolves_to_text_diffusion_modality(self) -> None:
         from vllm_mlx.model_aliases import resolve_profile
 
-        # The exact HF path codex called out in pr_validate r5 BLOCKING #1.
-        profile = resolve_profile("mlx-community/diffusiongemma-26B-A4B-it-4bit")
+        diffusion_alias_profile = resolve_profile("diffusion-gemma-26b-4bit")
+        assert diffusion_alias_profile is not None
+        assert diffusion_alias_profile.hf_path == (
+            "mlx-community/diffusiongemma-26B-A4B-it-4bit"
+        )
+        profile = resolve_profile(diffusion_alias_profile.hf_path)
         assert profile is not None, (
             "resolve_profile must reverse-look an HF path that matches "
             "a registered alias — codex r5 BLOCKING #1 false-positive "
             "would have routed this to BatchedEngine"
         )
         assert profile.modality == "text-diffusion"
+        assert profile.tool_call_parser == "gemma4"
+
+    def test_diffusion_8bit_hf_path_resolves_to_text_diffusion_modality(self) -> None:
+        from vllm_mlx.model_aliases import resolve_profile
+
+        diffusion_alias_profile = resolve_profile("diffusion-gemma-26b-8bit")
+        assert diffusion_alias_profile is not None
+        assert diffusion_alias_profile.hf_path == (
+            "mlx-community/diffusiongemma-26B-A4B-it-8bit"
+        )
+        profile = resolve_profile(diffusion_alias_profile.hf_path)
+        assert profile is not None
+        assert profile.modality == "text-diffusion"
+        assert profile.tool_call_parser == "gemma4"
+
+    def test_diffusion_bare_alias_is_unregistered(self) -> None:
+        """The unqualified ``diffusion-gemma-26b`` alias was removed in
+        PR #558 — every diffusion alias must carry an explicit
+        ``-Nbit`` quantization suffix to match the rest of
+        ``aliases.json`` (see qwen3.5/qwen3.6/deepseek-v4-flash). Pin
+        the removal so a future maintainer who adds it back has to
+        either bring a written-down reason or delete this test
+        deliberately.
+        """
+        from vllm_mlx.model_aliases import resolve_profile
+
+        assert resolve_profile("diffusion-gemma-26b") is None
 
     def test_unregistered_hf_path_falls_through_to_none(self) -> None:
         # Sanity: HF paths that AREN'T in aliases.json still return
