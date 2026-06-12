@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Unified OpenAI-compatible API server for vllm-mlx.
+Unified OpenAI-compatible API server for rapid-mlx.
 
 This module provides a FastAPI server that exposes an OpenAI-compatible
 API for LLM and MLLM (Multimodal Language Model) inference using MLX on Apple Silicon.
@@ -325,8 +325,18 @@ async def lifespan(app: FastAPI):
     if _engine is not None and hasattr(_engine, "load_cache_from_disk"):
         _load_prefix_cache_from_disk()
 
-    # Initialize MCP if config provided
-    mcp_config = os.environ.get("VLLM_MLX_MCP_CONFIG")
+    # Initialize MCP if config provided. VLLM_MLX_MCP_CONFIG is the
+    # deprecated pre-rename alias. Prefer the first var that points to an
+    # existing file so a stale new var doesn't shadow a working legacy one
+    # (mirrors load_mcp_config's existence-aware fallback); fall back to the
+    # first that is merely set so a genuinely-missing path still surfaces an
+    # error rather than being silently ignored.
+    mcp_env_vars = ("RAPID_MLX_MCP_CONFIG", "VLLM_MLX_MCP_CONFIG")
+    mcp_candidates = [v for v in (os.environ.get(k) for k in mcp_env_vars) if v]
+    mcp_config = next(
+        (p for p in mcp_candidates if os.path.isfile(os.path.expanduser(p))),
+        mcp_candidates[0] if mcp_candidates else None,
+    )
     if mcp_config:
         await init_mcp(mcp_config)
 
@@ -1251,7 +1261,7 @@ Examples:
 
     # Set MCP config for lifespan
     if args.mcp_config:
-        os.environ["VLLM_MLX_MCP_CONFIG"] = args.mcp_config
+        os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
     # Auto-detect parser config from model name when not explicitly set.
     # SOP §10: honor --no-tool-call-parser / --no-reasoning-parser opt-
