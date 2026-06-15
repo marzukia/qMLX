@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import uuid
@@ -133,6 +134,7 @@ def _finalize_content_and_reasoning(
     tool_calls: list,
     reasoning_parser,
     engine_reasoning_text: str = "",
+    enable_thinking: bool | None = None,
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -181,11 +183,48 @@ def _finalize_content_and_reasoning(
         return cleaned_text, engine_reasoning_text
     if reasoning_parser is None:
         return cleaned_text, reasoning_text
+    # #575 — thread the request-level ``enable_thinking`` so the
+    # underlying ``BaseThinkingReasoningParser.extract_reasoning``
+    # can apply its symmetric-with-streaming Case-4 fallback when
+    # the chat template pre-injected ``<think>`` and the model was
+    # truncated mid-thought (``finish_reason="length"`` with no
+    # ``</think>`` ever emitted). Older / third-party reasoning
+    # parsers that don't accept the kwarg fall back to a 1-arg call
+    # so we don't break their contract — detected via
+    # ``inspect.signature`` (no side-effecting probe call, codex
+    # R1 NIT: an ``extract("")`` probe could hide a real ``TypeError``
+    # raised inside the parser body OR trigger third-party parser
+    # side effects on the empty-string input).
+    if _parser_accepts_enable_thinking(reasoning_parser):
+        extract = lambda text: reasoning_parser.extract_reasoning(
+            text, enable_thinking=enable_thinking
+        )
+    else:
+        extract = lambda text: reasoning_parser.extract_reasoning(text)
     if tool_calls:
-        reasoning_text, _ = reasoning_parser.extract_reasoning(raw_text)
+        reasoning_text, _ = extract(raw_text)
     else:
         text_to_parse = cleaned_text or raw_text
-        new_reasoning, new_cleaned = reasoning_parser.extract_reasoning(text_to_parse)
+        new_reasoning, new_cleaned = extract(text_to_parse)
+        # Capture the FIRST-parse Case-4 signal BEFORE the harmony
+        # retry overwrites ``new_reasoning``. The leak plug below
+        # MUST gate on what the parser routed when it saw the
+        # already-cleaned text, not on what the retry-on-raw-text
+        # later produced — otherwise harmony's analysis-channel
+        # recovery looks like a Case-4 fallback to the guard and
+        # spuriously clears legitimate final-channel content
+        # (codex R2 BLOCKING). The signal is: first parse routed
+        # the whole input to reasoning AND the input had no
+        # ``<think>`` tags (so it really was the no-tag Case-4
+        # fallback firing, not Case 3's ``…</think>answer`` split
+        # nor a harmony channel-strip outcome).
+        first_parse_was_case4 = (
+            new_reasoning is not None
+            and new_cleaned is None
+            and bool(text_to_parse)
+            and "<think>" not in text_to_parse
+            and "</think>" not in text_to_parse
+        )
         # Harmony retry: the engine's ``clean_output_text`` strips
         # ``<|channel|>analysis<|message|>…`` markers before the route
         # ever sees the output, so a ``HarmonyReasoningParser`` running
@@ -199,7 +238,7 @@ def _finalize_content_and_reasoning(
         # PR #436's empty-TextBlock fix: that PR rescued ``content``
         # from being clobbered to None; this rescues ``reasoning``.)
         if new_reasoning is None and raw_text and raw_text != text_to_parse:
-            retry_reasoning, _ = reasoning_parser.extract_reasoning(raw_text)
+            retry_reasoning, _ = extract(raw_text)
             if retry_reasoning is not None:
                 new_reasoning = retry_reasoning
         reasoning_text = new_reasoning
@@ -219,7 +258,54 @@ def _finalize_content_and_reasoning(
         # route.)
         if new_cleaned is not None:
             cleaned_text = new_cleaned
+        # #575 leak-plug: when ``enable_thinking=True`` AND the
+        # parser's FIRST parse routed the whole no-tag output to
+        # reasoning (Case-4 fallback path), the original
+        # ``cleaned_text`` is the same raw thought trace —
+        # ``strip_thinking_tags`` only matches **closed**
+        # ``<think>…</think>`` blocks, so a no-tag truncated thought
+        # would pass straight through to ``final_content`` and the
+        # client would see the exact same prose in BOTH
+        # ``reasoning_content`` AND ``content`` (codex R1 BLOCKING
+        # finding). Clear ``cleaned_text`` so the route renders
+        # ``content=None`` for that case. Streaming-symmetry
+        # invariant — the streaming Case-3 path never emits content
+        # for truncated thoughts either. Note the gate on the
+        # FIRST-parse outcome rather than the post-retry value: a
+        # harmony reasoning-from-raw-text retry can produce the
+        # same ``(reasoning, None)`` shape but the cleaned_text in
+        # that case is the legitimate final-channel answer that
+        # MUST survive (codex R2 BLOCKING).
+        if enable_thinking is True and first_parse_was_case4:
+            cleaned_text = ""
     return cleaned_text, reasoning_text
+
+
+def _parser_accepts_enable_thinking(reasoning_parser) -> bool:
+    """Return True iff ``reasoning_parser.extract_reasoning`` declares
+    an ``enable_thinking`` parameter (or ``**kwargs`` catch-all).
+
+    Static signature check avoids the side-effecting ``extract("")``
+    probe an earlier draft used — that probe could hide an unrelated
+    ``TypeError`` raised inside a third-party parser body and could
+    trigger empty-input side effects on parsers with stateful
+    accumulators. The result is cacheable per parser class but the
+    function is called once per non-tool-call non-stream finalize so
+    the introspection cost is negligible vs. a real LLM call.
+    """
+    extract = getattr(reasoning_parser, "extract_reasoning", None)
+    if extract is None:
+        return False
+    try:
+        sig = inspect.signature(extract)
+    except (TypeError, ValueError):
+        # Builtins / C-extensions with no introspectable signature —
+        # fall back to the 1-arg call so we don't blow up here.
+        return False
+    params = sig.parameters
+    if "enable_thinking" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 def _cascade(cli_value, alias_key: str, gen_key: str | None = None):
@@ -446,6 +532,34 @@ def _resolve_enable_thinking(request) -> bool | None:
     if cfg.no_thinking:
         return False
     return _extract_thinking_from_request(request)
+
+
+def _effective_enable_thinking(
+    resolved: bool | None, model_name: str | None
+) -> bool | None:
+    """Apply the same ``None`` → True/False fallback that
+    ``vllm_mlx.utils.chat_template.apply_chat_template`` uses when
+    rendering the prompt: when the request did not pin the flag,
+    a non-"coder" model defaults to ``enable_thinking=True``.
+
+    Needed by the #575 Case-4 fallback. ``_resolve_enable_thinking``
+    leaves the value as ``None`` for the template-default path, but
+    the Qwen3 / DeepSeek-R1 chat templates then convert that to
+    ``True`` and pre-inject ``<think>`` into the prompt. The
+    non-streaming finalize site must mirror that resolution or the
+    parser's Case-4 fallback never fires for default-on requests
+    (codex R1 BLOCKING — the bug user reproduced on every
+    qwen3.5-4b / qwen3.6-35b request without an explicit flag).
+
+    Returns the resolved bool when concrete, otherwise the same
+    ``None`` to preserve pre-#575 behaviour for callers that don't
+    pass a model name.
+    """
+    if resolved is not None:
+        return resolved
+    if not model_name:
+        return None
+    return "coder" not in model_name.lower()
 
 
 def build_extended_sampling_kwargs(request) -> dict:

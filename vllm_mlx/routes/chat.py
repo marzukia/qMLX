@@ -48,6 +48,7 @@ from ..service.helpers import (
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
+    _effective_enable_thinking,
     _extract_streaming_token_logprobs,
     _finalize_content_and_reasoning,
     _inject_json_instruction,
@@ -1191,6 +1192,20 @@ async def _create_chat_completion_impl(
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
         engine_reasoning_text=getattr(output, "reasoning_text", "") or "",
+        # #575 — chat-template-injected ``<think>`` means the model
+        # never emits the start tag; pass the *effective* flag (with
+        # the same ``None`` → ``"coder" not in model_name`` fallback
+        # ``vllm_mlx/utils/chat_template.py:127`` uses for prompt
+        # rendering) so the parser's Case 4 fallback fires on
+        # default-on thinking — codex R1 BLOCKING. Use
+        # ``cfg.model_path`` (the underlying HF path / alias the
+        # engine actually loaded) rather than ``cfg.model_name``,
+        # which can be overridden by ``--served-model-name`` and
+        # would diverge from the prompt-render path's coder check
+        # (codex R2 BLOCKING).
+        enable_thinking=_effective_enable_thinking(
+            resolved_thinking, cfg.model_path or cfg.model_name
+        ),
     )
 
     # Process response_format if specified (after reasoning parser cleaned the text)
