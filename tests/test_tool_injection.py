@@ -227,9 +227,33 @@ class TestMistralArgsStripping:
         assert result.tool_calls[0]["name"] == "get_weather"
 
     def test_args_suffix_stripped_streaming(self):
+        """Streaming path must strip ``[ARGS]`` from the name boundary (#579).
+
+        Pre-fix, the private ``_parse_streaming_tool_delta`` did this in
+        one branch; post-fix, the public state machine
+        (``extract_tool_calls_streaming``) is the only entry point. We
+        feed a single delta that fuses the boundary tokens and assert
+        the emitted name is clean.
+        """
+        import json
+
         parser = MistralToolParser(tokenizer=None)
-        delta = parser._parse_streaming_tool_delta(
-            'get_weather[ARGS]{"location": "Paris"}'
+        full = '[TOOL_CALLS]get_weather[ARGS]{"location": "Paris"}'
+        delta = parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text=full,
+            delta_text=full,
+            request={"tools": []},
         )
         assert delta is not None
-        assert delta["name"] == "get_weather"
+        tcs = delta.get("tool_calls") or []
+        assert tcs, "expected a tool_calls delta"
+        fn = tcs[0]["function"]
+        assert fn.get("name") == "get_weather"
+        # Codex PR #581 NIT-2: don't just assert ``[ARGS]`` is absent —
+        # an emit with no arguments at all would silently pass that. Pin
+        # the actual parsed JSON to catch a regression that drops args.
+        args_str = fn.get("arguments")
+        assert args_str, "expected arguments delta in the fused boundary case"
+        assert "[ARGS]" not in args_str
+        assert json.loads(args_str) == {"location": "Paris"}
