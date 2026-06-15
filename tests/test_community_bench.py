@@ -1467,6 +1467,115 @@ def test_run_one_round_rejects_eos_early_stop(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# validate.py path-in-submissions check (GHA trust-gate regression)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_path_check_works_from_relocated_validator(
+    cleanup_real_submissions, tmp_path: Path
+) -> None:
+    """The GHA workflow copies validate.py to ``/tmp/base-validator/`` so the
+    "trusted base" pass can run a frozen-in-time validator against the PR's
+    added files. With ``SUBMISSIONS_DIR`` previously computed from the
+    validator's own ``REPO_ROOT``, the relocated copy thought *every*
+    submission file was "not inside community-benchmarks/submissions/" —
+    blocking every community PR. (See PR #585/#586 validation failures
+    after v0.7.9 release.)
+
+    Regression: copy validate.py to a temp location, invoke it against a
+    submission file in the REAL repo. The check must accept it because
+    the file's *own* ancestry is ``community-benchmarks/submissions/``.
+    """
+    pytest.importorskip("jsonschema")
+    payload = _good_payload()
+    path = _write_to_real_submissions(payload)
+    cleanup_real_submissions.append(path)
+
+    # Mirror the GHA setup: copy just the validator script to /tmp-style
+    # location. SCHEMA_PATH and ALIASES_PATH still resolve via the
+    # relocated REPO_ROOT, so we need to seed them too — that's what the
+    # workflow does with ``git show "$BASE:..."``.
+    relocated = tmp_path / "community-benchmarks" / "scripts"
+    relocated.mkdir(parents=True)
+    (tmp_path / "community-benchmarks").mkdir(exist_ok=True)
+    (tmp_path / "vllm_mlx").mkdir(parents=True, exist_ok=True)
+    (relocated / "validate.py").write_bytes((SCRIPTS_DIR / "validate.py").read_bytes())
+    (tmp_path / "community-benchmarks" / "schema.json").write_bytes(
+        SCHEMA_PATH.read_bytes()
+    )
+    (tmp_path / "vllm_mlx" / "aliases.json").write_bytes(ALIASES_PATH.read_bytes())
+
+    r = subprocess.run(
+        [sys.executable, str(relocated / "validate.py"), str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"relocated validator rejected a valid submission: {out}"
+    assert "is not inside community-benchmarks/submissions/" not in out
+
+
+def test_relocated_validator_catches_duplicate_id(
+    cleanup_real_submissions, tmp_path: Path
+) -> None:
+    """The duplicate-``submission_id`` gate must still fire even when the
+    validator is relocated (GHA trust-gate setup).
+
+    The first fix relied on the validator's location-derived
+    ``SUBMISSIONS_DIR`` to enumerate the corpus when scanning for
+    duplicates. Under relocation that directory is empty, so
+    ``_load_submission_id_index`` returned an empty index and a
+    malicious PR could ship a duplicate ``submission_id`` past the
+    trusted base pass. (Codex PR #587 BLOCKING.) The follow-up derives
+    the corpus from the target file's parent — which the structural
+    path check already validated as the real submissions/ folder — so
+    the duplicate check fires regardless of where the validator script
+    itself lives.
+    """
+    pytest.importorskip("jsonschema")
+
+    # Plant a duplicate-id payload on disk in the REAL submissions dir.
+    # ``submission_id`` is the dedup key; both files share it.
+    payload_a = _good_payload()
+    sid = payload_a["submission_id"]
+    payload_b = _good_payload()
+    payload_b["submission_id"] = sid  # same id, different filename hex below
+
+    name_a = "20260615-apple-m4-pro-qwen3.5-9b-4bit-abcdef012345.json"
+    name_b = "20260615-apple-m4-pro-qwen3.5-9b-4bit-fedcba543210.json"
+    path_a = _write_to_real_submissions(payload_a, name=name_a)
+    path_b = _write_to_real_submissions(payload_b, name=name_b)
+    cleanup_real_submissions.extend([path_a, path_b])
+
+    # Relocate just the validator + its data deps to a tmp tree —
+    # mirroring the GHA workflow.
+    relocated = tmp_path / "community-benchmarks" / "scripts"
+    relocated.mkdir(parents=True)
+    (tmp_path / "vllm_mlx").mkdir(parents=True, exist_ok=True)
+    (relocated / "validate.py").write_bytes((SCRIPTS_DIR / "validate.py").read_bytes())
+    (tmp_path / "community-benchmarks" / "schema.json").write_bytes(
+        SCHEMA_PATH.read_bytes()
+    )
+    (tmp_path / "vllm_mlx" / "aliases.json").write_bytes(ALIASES_PATH.read_bytes())
+
+    # Invoke the RELOCATED validator on file B. Pre-fix this would have
+    # silently passed because /tmp/.../submissions/ is empty (no
+    # duplicates visible to the index). Post-fix it must fail because
+    # the corpus is derived from path_b's own parent (the real dir
+    # containing both files).
+    r = subprocess.run(
+        [sys.executable, str(relocated / "validate.py"), str(path_b)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, f"relocated validator missed duplicate id: {out}"
+    assert "duplicate" in out.lower() or "submission_id" in out.lower()
+
+
+# ---------------------------------------------------------------------------
 # _run_submit_flow alias-key gate
 # ---------------------------------------------------------------------------
 
