@@ -1149,28 +1149,33 @@ def _run_submit_flow(args) -> int:
     # Whitelist gate. ``model.alias`` in the payload is the bucketing
     # key, so we require the user to type the canonical alias *key*
     # rather than a raw HF path — accepting both forms would let a
-    # contributor's typo silently shift their submission into a different
-    # bucket via the reverse-lookup. (Codex PR #582 BLOCKING: silent
-    # alias coercion bypasses the intended "must be a whitelist key"
-    # contract.) The GHA validator re-checks the alias against
-    # aliases.json, so this guard is layered.
-    if "/" in args.model:
+    # contributor's typo silently shift their submission into a
+    # different bucket via the reverse-lookup. (Codex PR #582 BLOCKING:
+    # silent alias coercion bypasses the intended "must be a whitelist
+    # key" contract.) The GHA validator re-checks the alias against
+    # aliases.json, so this guard is layered. ``args._original_alias``
+    # holds the user-typed value when the dispatcher resolved an alias
+    # to an HF path; if it's absent (HF path passed directly, or any
+    # other no-resolution case) we fall back to ``args.model``, which
+    # this guard then re-checks for the ``/`` HF-path signature.
+    user_typed = getattr(args, "_original_alias", None) or args.model
+    if "/" in user_typed:
         print(
             f"  Error: --submit requires the canonical alias key "
             f"(e.g. 'qwen3.5-9b-4bit'), not the resolved HF path "
-            f"'{args.model}'. Run `rapid-mlx models` for the whitelist."
+            f"'{user_typed}'. Run `rapid-mlx models` for the whitelist."
         )
         return 2
-    profile = resolve_profile(args.model)
+    profile = resolve_profile(user_typed)
     if profile is None:
         print(
-            f"  Error: '{args.model}' is not a registered alias. "
+            f"  Error: '{user_typed}' is not a registered alias. "
             f"Only models listed in vllm_mlx/aliases.json can be submitted "
             f"(this keeps the comparison apples-to-apples)."
         )
         print("  Run `rapid-mlx models` to see the full whitelist.")
         return 2
-    alias = args.model
+    alias = user_typed
     hf_path = profile.hf_path
 
     notes = args.notes or None
@@ -1206,11 +1211,32 @@ def _run_submit_flow(args) -> int:
         sampling_modes.append("sampled")
 
     async def _run() -> int:
+        import concurrent.futures
+
+        from .engine_core import _init_mlx_step_thread
+
+        # Load model on the future mlx-step worker thread (#170). mlx-lm
+        # 0.31.3+ binds module-level ``generation_stream`` and any
+        # auto-default stream to the thread that triggers them. If the
+        # model weights or ``mx.compile``-cached graphs are touched on
+        # the asyncio loop thread first, every later eval on the step
+        # worker raises "There is no Stream(gpu, N) in current thread."
+        # Spinning the worker BEFORE load and reusing it for
+        # AsyncEngineCore keeps every MLX op on a single owning thread.
+        # Mirrors the pattern in ``BatchedEngine._start_llm`` (which is
+        # why ``rapid-mlx serve`` works but the unfixed ``bench`` path
+        # doesn't).
         print(f"  Loading model {alias} ({hf_path})…")
+        model_load_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mlx-step",
+            initializer=_init_mlx_step_thread,
+        )
         try:
-            model, tokenizer = load(hf_path)
+            model, tokenizer = model_load_executor.submit(load, hf_path).result()
         except (RepositoryNotFoundError, OSError) as e:
             print(f"  Error loading model: {e}")
+            model_load_executor.shutdown(wait=False)
             return 2
 
         # Standardized config: B=1, no batching, prefix-cache off so the
@@ -1240,7 +1266,12 @@ def _run_submit_flow(args) -> int:
         )
 
         repo_root = Path(args.repo_root) if args.repo_root else Path.cwd()
-        async with AsyncEngineCore(model, tokenizer, engine_config) as engine:
+        # Pass the EXISTING executor to AsyncEngineCore so the engine
+        # loop, BatchGenerator construction, and every forward pass run
+        # on the same thread that owns the model weights.
+        async with AsyncEngineCore(
+            model, tokenizer, engine_config, executor=model_load_executor
+        ) as engine:
             for mode in sampling_modes:
                 print(
                     f"  Running standardized bench "
