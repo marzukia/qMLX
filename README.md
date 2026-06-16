@@ -67,6 +67,9 @@ brew install raullenchai/rapid-mlx/rapid-mlx
 # pip (requires Python 3.10+ — macOS ships 3.9, so install Python first if needed)
 pip install rapid-mlx
 
+# uv (isolated tool env — to refresh later: `uv tool upgrade rapid-mlx`)
+uv tool install rapid-mlx@latest
+
 # Or one-liner with auto-setup (installs Python if needed)
 curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
 ```
@@ -1023,7 +1026,11 @@ We welcome contributions of all sizes! See [CONTRIBUTING.md](CONTRIBUTING.md) fo
 - [Request model support](https://github.com/raullenchai/Rapid-MLX/issues/new?template=model_support.yml) — tell us which model you want
 
 **Testing contributions** (needs a Mac with Apple Silicon):
-- Benchmark a model and share results
+- **Share your hardware's benchmark numbers** — one command:
+  ```bash
+  rapid-mlx bench qwen3.5-9b-4bit --submit
+  ```
+  Runs the standardized B=1 bench (greedy, 128 + 512 token buckets, 5 rounds each), shows you the JSON payload, asks for consent, and opens the PR for you via `gh`. If you don't have `gh`, it prints the JSON path + a deep-link to GitHub's compare page so you can open the PR in your browser. Submitted rows land in [community-benchmarks/submissions/](community-benchmarks/submissions/) and show up on https://rapidmlx.com once merged.
 - Test with your favorite AI client (Cursor, Aider, LangChain, etc.)
 - [Report a bug](https://github.com/raullenchai/Rapid-MLX/issues/new?template=bug_report.yml)
 

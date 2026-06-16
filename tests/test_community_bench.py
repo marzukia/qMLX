@@ -1408,6 +1408,247 @@ def test_state_aware_fallback_skips_already_completed_steps(tmp_path, capsys) ->
     assert "Already completed" in text
 
 
+def test_manual_fallback_without_gh_points_at_web_ui(tmp_path, monkeypatch) -> None:
+    """Regression: when ``gh`` is not on PATH (the common newcomer case),
+    the fallback must not tell the user to run ``gh pr create`` — it
+    has to point them at the GitHub compare page and at the
+    paste-to-issue escape hatch so they can finish the submission
+    without installing extra tooling. (Subagent-friction report, #4.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "qwen3.5-9b-4bit", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
+        "software": {"rapid_mlx": "0.7.13", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    # tmp_path has no git remote — _origin_is_safe_github returns
+    # (False, None) so the owner-less compare URL is used.
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    # gh isn't installed — must NOT recommend gh pr create.
+    assert "gh pr create" not in text
+    # Must surface the compare-page URL with the branch ref filled in.
+    branch = f"community-bench/{payload['submission_id']}"
+    assert (
+        f"https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}"
+        f"/compare/main...{branch}?expand=1"
+    ) in text
+    # Must also offer the paste-to-issue escape hatch so users with no
+    # git fluency at all still have a way to land their numbers.
+    assert (f"https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}/issues/new") in text
+    # Title (alias + chip) round-trips through urlencode — verify both
+    # appear unmodified after decoding.
+    import urllib.parse as _up
+
+    issue_line = next(
+        line for line in text.splitlines() if "issues/new" in line
+    ).strip()
+    query = issue_line.split("?", 1)[1]
+    parsed = dict(_up.parse_qsl(query))
+    assert parsed["title"] == "community-bench: qwen3.5-9b-4bit on Apple M3 Ultra"
+
+
+def test_manual_fallback_without_gh_uses_fork_owner_when_origin_is_fork(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: when origin is a contributor's fork (the normal
+    contribution path), the compare URL must use ``main...<owner>:<branch>``
+    so GitHub can find the head branch on the fork — bare ``main...<branch>``
+    only resolves on the upstream repo. (Codex PR #600 round-1 BLOCKING.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "qwen3.5-9b-4bit", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
+        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    # Mock origin → contributor's fork on github.com.
+    monkeypatch.setattr(
+        sub_mod,
+        "_origin_is_safe_github",
+        lambda _repo: (True, "some-contributor"),
+    )
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    branch = f"community-bench/{payload['submission_id']}"
+    # Cross-fork compare URL: head is owner-prefixed.
+    assert (f"compare/main...some-contributor:{branch}?expand=1") in text
+    # Must NOT print the bare same-repo form (would 404 for the user).
+    assert f"compare/main...{branch}?expand=1" not in text
+
+
+def test_manual_fallback_without_gh_skips_owner_when_origin_is_upstream(
+    tmp_path, monkeypatch
+) -> None:
+    """Counterpart to the fork case: when origin owner equals the
+    upstream owner (maintainer running locally), the URL must NOT
+    include the ``upstream:`` prefix — that would be redundant and
+    GitHub's compare page redirects it anyway.
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "x", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
+        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    upstream_owner = sub_mod.UPSTREAM_REPO_FOR_GH.split("/", 1)[0]
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        sub_mod,
+        "_origin_is_safe_github",
+        lambda _repo: (True, upstream_owner),
+    )
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    branch = f"community-bench/{payload['submission_id']}"
+    assert f"compare/main...{branch}?expand=1" in text
+    assert f"compare/main...{upstream_owner}:" not in text
+
+
+def test_manual_fallback_compare_url_quotes_owner_and_branch(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression: the ``main...<owner>:<branch>`` compare URL must
+    URL-quote both halves independently — any owner or branch ref
+    carrying ``#``, ``?``, ``%`` or other URL-reserved chars would
+    otherwise truncate or rewrite the URL silently. Branch is
+    constructed by us (``community-bench/<hex>``) and owner is
+    validated upstream, but pinning the quoting at this layer guards
+    against future loosening. (Codex PR #600 round-2 BLOCKING.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "x", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
+        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    # Deliberately pathological owner with URL-reserved chars — a real
+    # github.com username can't carry these, but we want the quoting
+    # layer to be load-bearing regardless.
+    monkeypatch.setattr(
+        sub_mod,
+        "_origin_is_safe_github",
+        lambda _repo: (True, "weird?owner#name%"),
+    )
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    # The pathological chars must appear percent-encoded — not raw —
+    # so the URL parses as a single path segment, not as a malformed
+    # query/fragment split.
+    compare_line = next(
+        line for line in text.splitlines() if "/compare/main..." in line
+    ).strip()
+    assert "weird?owner#name%" not in compare_line
+    assert "weird%3Fowner%23name%25" in compare_line
+    # The ``:`` between owner and branch stays literal (GitHub's
+    # syntax requirement).
+    assert ":community-bench/" in compare_line
+
+
+def test_manual_fallback_url_encodes_alias_special_chars(tmp_path, monkeypatch) -> None:
+    """Regression: aliases or chip names containing ``&``, ``#``, ``/``,
+    ``%``, or spaces must round-trip cleanly through the issue-new
+    URL. Bare ``.replace(' ', '%20')`` produced malformed URLs for
+    realistic aliases like ``qwen3.6/27b``. (Codex PR #600 round-1 NIT.)
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {
+            "alias": "qwen3.6/27b & friends #beta 50%",
+            "hf_path": "y/z",
+        },
+        "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
+        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    # Decode the title param back and assert it round-trips losslessly.
+    import urllib.parse as _up
+
+    issue_line = next(
+        line for line in text.splitlines() if "issues/new" in line
+    ).strip()
+    query = issue_line.split("?", 1)[1]
+    parsed = dict(_up.parse_qsl(query))
+    assert (
+        parsed["title"]
+        == "community-bench: qwen3.6/27b & friends #beta 50% on Apple M3 Ultra"
+    )
+
+
+def test_manual_fallback_with_gh_keeps_gh_command(tmp_path, monkeypatch) -> None:
+    """Counterpart: when ``gh`` IS installed, the fallback should keep
+    surfacing ``gh pr create`` (the original behavior — used when a
+    later git step failed mid-sequence). Pins that we don't drop the
+    gh path while fixing the gh-missing one.
+    """
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "submitted_at": "2026-06-15T10:30:00+00:00",
+        "model": {"alias": "x", "hf_path": "y/z"},
+        "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
+        "software": {"rapid_mlx": "0.7.13", "mlx": "0.31.2"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda name: "/opt/homebrew/bin/gh")
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    assert "gh pr create" in text
+    # Web-UI fallback shouldn't appear when gh is available.
+    assert "compare/main..." not in text
+    assert "/issues/new" not in text
+
+
 def test_decode_tps_formula_uses_n_minus_one(monkeypatch) -> None:
     """Regression: ``decode_tps`` must be computed as ``(N-1)/window``,
     not ``N/window`` — the inter-token window measures N-1 gaps for

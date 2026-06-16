@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -539,17 +540,80 @@ def _print_manual_fallback(
         )
     if "push" not in done:
         print(f"    git push -u origin {branch}", file=stdout)
-    # If we already pushed but pr_create failed, just retry pr_create —
-    # the user shouldn't re-do the branch ops. ``--repo`` forces the
-    # PR target to upstream regardless of whether origin is a fork.
-    # The owner-prefixed ``--head`` is omitted from the manual line
-    # because the contributor running it locally already has gh's
-    # fork-aware default applied; the explicit prefix only matters
-    # when we shell out non-interactively.
-    print(
-        f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {branch}",
-        file=stdout,
-    )
+    # The PR-create step has two paths depending on whether ``gh`` is on
+    # PATH. If we got here because gh is missing (the common newcomer
+    # case), recommending ``gh pr create`` is useless — point them at
+    # the GitHub web UI and at the "paste the file into a new issue"
+    # fallback instead. If gh is available (this branch only hits when
+    # git steps failed mid-sequence), surface gh as the resume command.
+    gh_available = shutil.which("gh") is not None
+    if gh_available:
+        # ``--repo`` forces the PR target to upstream regardless of
+        # whether origin is a fork. The owner-prefixed ``--head`` is
+        # omitted because the contributor running it locally already
+        # has gh's fork-aware default applied.
+        print(
+            f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {branch}",
+            file=stdout,
+        )
+    else:
+        print("", file=stdout)
+        print(
+            "  Then open the PR via the GitHub web UI (no `gh` CLI needed):",
+            file=stdout,
+        )
+        # GitHub's "compare across forks" URL uses ``main...<owner>:<branch>``
+        # when the head branch lives on a fork — bare ``main...<branch>``
+        # only works if the branch is on the upstream repo, which most
+        # community contributors don't have write access to. Detect the
+        # origin owner so the printed URL works for the fork workflow
+        # too. (Codex PR #600 round-1 BLOCKING.) Fall back to the
+        # owner-less form when we can't parse origin (covers the
+        # ``no git remote yet`` case where the user hasn't pushed).
+        is_safe, origin_owner = _origin_is_safe_github(repo)
+        upstream_owner = UPSTREAM_REPO_FOR_GH.split("/", 1)[0]
+        # Quote both halves before joining with the literal ``:`` GitHub
+        # expects between owner and branch in the compare path. Owner is
+        # the more constrained piece (GitHub usernames are ``[a-zA-Z0-9-]``
+        # by policy) but we still ``quote(safe="")`` defensively in case
+        # _origin_is_safe_github ever loosens. The branch ref allows ``/``
+        # — that's how we construct ``community-bench/<id>`` to begin with
+        # — so we keep ``/`` unescaped via ``safe="/"``. Without this any
+        # branch ref carrying ``#``, ``?``, or ``%`` would split the URL.
+        # (Codex PR #600 round-2 BLOCKING.)
+        branch_quoted = urllib.parse.quote(branch, safe="/")
+        if is_safe and origin_owner and origin_owner != upstream_owner:
+            head_ref = f"{urllib.parse.quote(origin_owner, safe='')}:{branch_quoted}"
+        else:
+            head_ref = branch_quoted
+        print(
+            f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/compare/main...{head_ref}?expand=1",
+            file=stdout,
+        )
+        print("", file=stdout)
+        print(
+            "  If you'd rather skip git entirely, paste the submission JSON",
+            file=stdout,
+        )
+        print(
+            "  contents (above path) into a new issue and we'll convert it",
+            file=stdout,
+        )
+        print("  to a PR for you:", file=stdout)
+        # ``urlencode`` over the whole querystring handles spaces, ``&``,
+        # ``#``, ``%``, and any other special chars that might appear
+        # in a model alias or in the chip name. Bare ``.replace(' ', '%20')``
+        # produced malformed URLs for aliases like ``qwen3.6/27b`` where
+        # the slash breaks GitHub's title parser. (Codex PR #600 round-1.)
+        title = (
+            f"community-bench: {payload['model']['alias']} "
+            f"on {payload['hardware']['chip']}"
+        )
+        query = urllib.parse.urlencode({"title": title})
+        print(
+            f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/issues/new?{query}",
+            file=stdout,
+        )
 
 
 def _print_thanks(payload: dict, *, stdout) -> None:
