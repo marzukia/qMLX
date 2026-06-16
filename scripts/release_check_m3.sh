@@ -194,6 +194,94 @@ fi
 rm -f "$sse"
 echo "    SSE: OK (response.created → response.completed)"
 
+# Part B.2 — codex-shape SSE: input[] + developer role + tool definition.
+# The bare-string `input` probe above only exercises the easy code path
+# (`input` → single user message) and missed THREE production regressions
+# at once on Codex CLI 0.136.0:
+#   1. `developer`-role items passed through verbatim → Qwen template
+#      raised `Unexpected message role.`
+#   2. After role mapping, multiple system messages tripped Qwen's
+#      "System message must be at the beginning." check
+#   3. tool_call XML was suppressed by tool_filter but the post-loop
+#      parser was reading the FILTERED text, so no `response.function_call`
+#      event ever emitted — Codex's agent loop terminated silently
+#
+# This probe exercises the codex-shape input + asserts a function_call
+# item gets emitted (the hardest signal — covers all three regressions
+# at once because a missing event 0 / 1 / 2 all result in zero items).
+sse2=$(mktemp)
+# Wrap in `if !` so `set -e` doesn't kill the script on a transport
+# failure before the diagnostic block + cleanup can run. Without this
+# wrapper, an HTTP 5xx or connection drop would exit the gauntlet with
+# zero context and a stale temp file (codex_review NIT).
+if ! curl -sNf -X POST "http://127.0.0.1:$PORT/v1/responses" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gpt-5",
+    "stream": true,
+    "max_output_tokens": 64,
+    "instructions": "You are a helpful agent.",
+    "input": [
+      {"type": "message", "role": "user", "content": "Call get_weather with city=SF"},
+      {"type": "message", "role": "developer", "content": "Always use the tool when asked."}
+    ],
+    "tools": [
+      {"type": "function", "name": "get_weather", "description": "Get the weather for a city",
+       "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}
+    ],
+    "tool_choice": "required"
+  }' > "$sse2"; then
+  echo "G7b codex-shape SSE FAIL: curl to /v1/responses errored — server crashed or rejected the codex-shape request" >&2
+  head -30 "$sse2" >&2
+  rm -f "$sse2"
+  exit 1
+fi
+for evt in "response.created" "response.output_item.added" "response.completed"; do
+  if ! grep -q "event: $evt" "$sse2"; then
+    echo "G7b codex-shape SSE FAIL: missing event '$evt' — codex agent loop would silently terminate" >&2
+    head -30 "$sse2" >&2
+    rm -f "$sse2"
+    exit 1
+  fi
+done
+# Function-call item is the strongest signal — without it Codex sees a
+# turn.completed with zero items and the agent loop ends with no output.
+# Parse SSE properly: pair each `event:` line with its `data:` payload
+# and assert at least one `response.output_item.added` carries an item
+# with `type == "function_call"`. Whole-file grep is unsafe — a text
+# delta containing the literal string `"type":"function_call"` would
+# spuriously pass without any function-call item ever being emitted.
+if ! python3 - "$sse2" <<'PY'
+import json, sys
+path = sys.argv[1]
+event = None
+ok = False
+for raw in open(path, encoding="utf-8", errors="replace"):
+    line = raw.rstrip("\n")
+    if line.startswith("event:"):
+        event = line[6:].strip()
+    elif line.startswith("data:") and event == "response.output_item.added":
+        try:
+            payload = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        item = payload.get("item") or {}
+        if item.get("type") == "function_call":
+            ok = True
+            break
+    elif line == "":
+        event = None
+sys.exit(0 if ok else 1)
+PY
+then
+  echo "G7b codex-shape SSE FAIL: no response.output_item.added with item.type=function_call — codex agent loop would terminate with zero items" >&2
+  head -30 "$sse2" >&2
+  rm -f "$sse2"
+  exit 1
+fi
+rm -f "$sse2"
+echo "    SSE (codex-shape): OK (function_call item emitted)"
+
 #-------------------- G6 fix-path repro ---------------------------
 line
 echo "  G6 — parallel_tool_calls=false cap (PR #518 fix path)"

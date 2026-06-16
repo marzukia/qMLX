@@ -13,6 +13,7 @@ from vllm_mlx.api.models import (
     ChatCompletionChoice,
     ChatCompletionResponse,
     FunctionCall,
+    Message,
     PromptTokensDetails,
     ToolCall,
     Usage,
@@ -22,6 +23,7 @@ from vllm_mlx.api.responses_adapter import (
     _convert_text_format,
     _convert_tool_choice,
     _convert_tools,
+    _merge_system_messages,
     openai_to_responses,
     responses_to_openai,
 )
@@ -200,6 +202,150 @@ class TestResponsesToOpenai:
         chat = responses_to_openai(req)
         assert chat.messages[0].role == "system"
         assert chat.messages[0].content == "You are helpful."
+        assert chat.messages[1].role == "user"
+        assert chat.messages[1].content == "Hi"
+
+    def test_developer_role_maps_to_system(self):
+        # Codex CLI 0.136.0 uses Responses-API "developer" role for the
+        # system-priority instruction channel. Open-weight chat templates
+        # (Qwen, Llama, Gemma) only know system/user/assistant/tool —
+        # passing "developer" through verbatim raises
+        # `jinja2.TemplateError: Unexpected message role.` mid-stream
+        # and Codex sees "stream disconnected".
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="developer",
+                    content="Always reply in JSON.",
+                ),
+            ],
+        )
+        chat = responses_to_openai(req)
+        assert chat.messages[0].role == "system"
+        assert chat.messages[0].content == "Always reply in JSON."
+
+    def test_developer_role_with_structured_content_does_not_raise(self):
+        # Defensive: today every system message reaches the merge step
+        # with a string content (`_message_item_to_chat` joins parts).
+        # codex_review flagged that a mutated path could leave a list in
+        # `Message.content` and `"\n\n".join([list, list])` would raise
+        # `TypeError: sequence item 0: expected str instance, list found`.
+        # The adapter must coerce defensively rather than crash.
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="developer",
+                    content=[
+                        ResponsesContentItem(type="input_text", text="part one"),
+                        ResponsesContentItem(type="input_text", text="part two"),
+                    ],
+                ),
+                ResponsesInputItem(type="message", role="user", content="hi"),
+            ],
+        )
+        # Must not raise.
+        chat = responses_to_openai(req)
+        assert chat.messages[0].role == "system"
+        assert "part one" in chat.messages[0].content
+        assert "part two" in chat.messages[0].content
+
+    def test_merge_system_messages_defends_list_content(self):
+        # Directly exercise the defensive `_to_text(list)` path that the
+        # public `responses_to_openai` flow cannot reach today (because
+        # `_message_item_to_chat` joins parts to a string before merge).
+        # Use `model_construct` to bypass pydantic validation and pass a
+        # raw list / dict through — without `_to_text` this would crash
+        # with `TypeError: sequence item 0: expected str instance, list
+        # found` once a future code path leaves `Message.content` un-
+        # coerced. codex_review NIT: cover the path directly.
+        msgs = [
+            Message.model_construct(
+                role="system",
+                content=[{"text": "alpha"}, {"text": "beta"}],
+            ),
+            Message.model_construct(
+                role="system",
+                content={"text": "gamma"},
+            ),
+            Message(role="user", content="hi"),
+        ]
+        merged = _merge_system_messages(msgs)
+        assert sum(1 for m in merged if m.role == "system") == 1
+        assert merged[0].role == "system"
+        assert merged[0].content == "alpha\nbeta\n\ngamma"
+        assert merged[1].role == "user"
+
+    def test_merge_system_messages_drops_empty_system_after_user(self):
+        # codex_review BLOCKING regression: a `developer` item with
+        # empty content reaches the merge step as `Message(role="system",
+        # content="")`. Old logic branched on whether the merged text
+        # was truthy and returned `messages` unchanged when it wasn't —
+        # leaving the empty system message at index 1 to trip Qwen's
+        # `System message must be at the beginning.` check.
+        msgs = [
+            Message(role="user", content="hi"),
+            Message(role="system", content=""),
+        ]
+        merged = _merge_system_messages(msgs)
+        # No system message survives — and the user message remains.
+        assert all(m.role != "system" for m in merged)
+        assert any(m.role == "user" and m.content == "hi" for m in merged)
+
+    def test_merge_system_messages_drops_empty_system_only(self):
+        # When the ONLY system messages are empty, drop them entirely
+        # rather than emit `Message(role="system", content="")` — some
+        # templates also reject that.
+        msgs = [
+            Message(role="system", content=""),
+            Message(role="user", content="hi"),
+        ]
+        merged = _merge_system_messages(msgs)
+        assert merged == [Message(role="user", content="hi")]
+
+    def test_merge_system_messages_unknown_shape_does_not_raise(self):
+        # `_to_text` returns "" for anything that isn't str / dict / list,
+        # so a lone unknown-shape system message yields empty
+        # `system_texts` and the message is dropped (same path as the
+        # empty-content case — keeping it would leave a non-leading or
+        # empty system message that some templates reject). Defends
+        # against future content shapes (e.g. int, custom object)
+        # without raising.
+        msgs = [
+            Message.model_construct(role="system", content=12345),
+            Message(role="user", content="hi"),
+        ]
+        # Must not raise.
+        merged = _merge_system_messages(msgs)
+        assert all(m.role != "system" for m in merged)
+        assert merged[0].role == "user"
+
+    def test_multiple_systems_merge_to_single_at_index_0(self):
+        # Codex sends BOTH `instructions` (which becomes system) AND a
+        # mid-conversation `developer`-role item (which we map to system).
+        # Qwen / Llama / Gemma templates require exactly ONE system message
+        # at index 0 — otherwise the template raises
+        # `System message must be at the beginning.` mid-stream and Codex
+        # sees "stream disconnected".
+        req = ResponsesRequest(
+            model="gpt-5",
+            instructions="You are the base agent.",
+            input=[
+                ResponsesInputItem(type="message", role="user", content="Hi"),
+                ResponsesInputItem(
+                    type="message", role="developer", content="Be terse."
+                ),
+            ],
+        )
+        chat = responses_to_openai(req)
+        # Exactly one system message at index 0, preserving order.
+        assert sum(1 for m in chat.messages if m.role == "system") == 1
+        assert chat.messages[0].role == "system"
+        assert chat.messages[0].content == ("You are the base agent.\n\nBe terse.")
+        # All other messages preserved in order.
         assert chat.messages[1].role == "user"
         assert chat.messages[1].content == "Hi"
 
