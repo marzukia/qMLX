@@ -64,6 +64,23 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
             converted = _convert_input_item(item)
             messages.extend(converted)
 
+    # Codex 0.136.0 sends BOTH `instructions` (the big system prompt)
+    # AND `developer`-role items interleaved with the user turns.
+    # After role mapping both become `system`. Qwen / Llama / Gemma
+    # chat templates require:
+    #   - at most ONE system message
+    #   - at position 0
+    # …otherwise `raise_exception('System message must be at the
+    # beginning.')` fires mid-stream and Codex sees "stream
+    # disconnected before completion".
+    #
+    # Concatenate every system message into a single one at index 0,
+    # preserving their relative order so the per-turn `developer`
+    # instructions sit *after* `instructions` (where Codex puts them
+    # semantically — the per-turn directive refines the base system
+    # prompt).
+    messages = _merge_system_messages(messages)
+
     tools = _convert_tools(request.tools)
     tool_choice = _convert_tool_choice(request.tool_choice)
     response_format = _convert_text_format(request.text)
@@ -85,6 +102,57 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
         parallel_tool_calls=request.parallel_tool_calls,
         response_format=response_format,
     )
+
+
+def _merge_system_messages(messages: list[Message]) -> list[Message]:
+    """Collapse all system messages into one at index 0.
+
+    Codex 0.136.0 sends BOTH ``instructions`` (the big system prompt)
+    AND ``developer``-role items interleaved with user turns. After role
+    mapping both become ``system``. Qwen / Llama / Gemma chat templates
+    require at most ONE system message at position 0 — otherwise
+    ``raise_exception('System message must be at the beginning.')``
+    fires mid-stream and Codex sees "stream disconnected".
+
+    Defensive coercion: today every system message reaches this point
+    with a string content (``_message_item_to_chat`` joins structured
+    content parts), so the join would be safe for current callers. The
+    explicit ``_to_text`` guard defends against future paths or hand-
+    crafted ``ChatCompletionRequest`` mutations that leave a list / dict
+    in ``content`` — without it, ``"\\n\\n".join([list, list])`` would
+    raise ``TypeError: sequence item 0: expected str instance, list
+    found`` mid-conversion.
+    """
+
+    def _to_text(value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            return value.get("text") or ""
+        if isinstance(value, list):
+            return "\n".join(_to_text(v) for v in value)
+        return ""
+
+    # Branch on role presence, not on whether the merged text is truthy.
+    # An empty / unsupported-shape `developer` item still appears as a
+    # system-role message after `_message_item_to_chat`, so leaving the
+    # list untouched when `system_texts` is empty would let a non-leading
+    # system message reach Qwen / Llama / Gemma — the exact template
+    # failure this function exists to prevent (codex_review BLOCKING).
+    has_system = any(m.role == "system" for m in messages)
+    if not has_system:
+        return messages
+    system_texts = [
+        t for t in (_to_text(m.content) for m in messages if m.role == "system") if t
+    ]
+    non_system = [m for m in messages if m.role != "system"]
+    if not system_texts:
+        # System messages existed but contributed no usable text. Drop
+        # them entirely rather than emit an empty system message, which
+        # some templates also reject.
+        return non_system
+    merged = Message(role="system", content="\n\n".join(system_texts))
+    return [merged] + non_system
 
 
 def openai_to_responses(
@@ -176,8 +244,23 @@ def _convert_input_item(item: ResponsesInputItem) -> list[Message]:
     return []
 
 
+_RESPONSES_TO_CHAT_ROLE = {
+    # Responses-API "developer" is the new high-priority instruction role
+    # (Codex CLI uses it for the system prompt). Qwen / Llama chat
+    # templates only know system/user/assistant/tool, so the unmapped
+    # "developer" raises `jinja2.TemplateError: Unexpected message role.`
+    # mid-stream — visible to Codex as "stream disconnected".
+    "developer": "system",
+    "system": "system",
+    "user": "user",
+    "assistant": "assistant",
+    "tool": "tool",
+}
+
+
 def _message_item_to_chat(item: ResponsesInputItem) -> Message:
-    role = item.role or "user"
+    raw_role = item.role or "user"
+    role = _RESPONSES_TO_CHAT_ROLE.get(raw_role, raw_role)
     content = item.content
 
     if isinstance(content, str):
