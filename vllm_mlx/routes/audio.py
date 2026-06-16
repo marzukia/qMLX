@@ -14,9 +14,216 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Security: cap audio upload size to prevent memory-/disk-exhaustion DoS.
+# 25 MB matches OpenAI's Whisper API limit and is far above any reasonable
+# transcription payload (~25 min of 16 kHz mono WAV). Multipart overhead
+# (boundary, form fields) adds a few hundred bytes; we allow one MB of slack
+# so a truthful 25 MB audio file isn't rejected at the request-level guard.
+MAX_AUDIO_UPLOAD_SIZE = 25 * 1024 * 1024
+_REQUEST_BODY_SLACK_BYTES = 1024 * 1024  # 1 MB headroom for multipart overhead
+_AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
+
 # Audio engines (lazy loaded, module-level to persist across requests)
 _stt_engine = None
 _tts_engine = None
+
+
+class AudioBodyLimitMiddleware:
+    """ASGI middleware that bounds the request body of audio-upload
+    routes BEFORE Starlette's multipart parser can spool it.
+
+    Why ASGI middleware and not a FastAPI ``Depends``: when the route
+    handler signature includes ``file: UploadFile``, Starlette's
+    ``MultiPartParser`` runs as part of parameter resolution and reads
+    the entire request body off the ``receive`` channel before any
+    ``Depends`` callable is invoked. A ``Depends`` that inspects
+    ``Content-Length`` therefore fires *after* the body has already been
+    drained and spooled to ``SpooledTemporaryFile`` on disk —
+    confirmed empirically with an ASGI ``receive`` probe.
+
+    Running at the ASGI layer lets us short-circuit the receive loop
+    in TWO complementary ways:
+
+    1. **Honest-``Content-Length`` fast path** — if the advertised
+       length exceeds the cap, return 413 immediately. Zero ``receive``
+       calls, zero bytes on the server.
+
+    2. **Chunked / no-``Content-Length`` slow path** — wrap ``receive``
+       so it tallies streamed body bytes and returns a synthetic
+       ``http.disconnect`` once the cap is exceeded. The middleware
+       then emits 413. Starlette's multipart parser sees the
+       disconnect, stops spooling, and unwinds — the server still
+       lands at most ``MAX_AUDIO_UPLOAD_SIZE + slack`` bytes on disk
+       (the threshold at which we trigger the abort), not the
+       multi-GB body the attacker tried to send.
+
+    Path scope is intentionally narrow — only
+    ``/v1/audio/transcriptions`` uploads a file; ``/v1/audio/speech``
+    and ``/v1/audio/voices`` have small JSON bodies bounded by other
+    means.
+    """
+
+    _GUARDED_PATHS: tuple[str, ...] = ("/v1/audio/transcriptions",)
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "POST":
+            return await self.app(scope, receive, send)
+        if scope.get("path") not in self._GUARDED_PATHS:
+            return await self.app(scope, receive, send)
+
+        limit = MAX_AUDIO_UPLOAD_SIZE + _REQUEST_BODY_SLACK_BYTES
+
+        # Honest-Content-Length fast path: reject before any receive call.
+        advertised: int | None = None
+        for raw_name, raw_value in scope.get("headers", ()):
+            if raw_name.lower() == b"content-length":
+                try:
+                    advertised = int(raw_value.decode("latin-1"))
+                except (UnicodeDecodeError, ValueError):
+                    advertised = None
+                break
+
+        if advertised is not None and advertised > limit:
+            await _send_413(
+                send,
+                (
+                    f"Audio upload too large: request body {advertised} bytes "
+                    f"(max {MAX_AUDIO_UPLOAD_SIZE} bytes per file)"
+                ),
+            )
+            return
+
+        # Streaming slow path: wrap receive so chunked/lying clients
+        # cannot bypass the cap by omitting Content-Length. We tally
+        # bytes as they cross the receive channel and abort the request
+        # the moment the running total exceeds the cap. The trip flag
+        # ensures we emit exactly one 413, even if Starlette keeps
+        # reading after we signal disconnect.
+        tripped = {"value": False}
+        total = {"bytes": 0}
+
+        async def bounded_receive():
+            if tripped["value"]:
+                # Once we've decided to abort, signal disconnect so the
+                # parser unwinds cleanly. (Starlette's MultiPartParser
+                # honors ``http.disconnect`` by stopping its read loop.)
+                return {"type": "http.disconnect"}
+            msg = await receive()
+            if msg.get("type") == "http.request":
+                body_len = len(msg.get("body", b"") or b"")
+                total["bytes"] += body_len
+                if total["bytes"] > limit:
+                    tripped["value"] = True
+                    return {"type": "http.disconnect"}
+            return msg
+
+        # Wrap send so that if the downstream app tries to emit a
+        # response after we've tripped, we substitute our 413 instead.
+        # This handles both the case where Starlette aborts on
+        # disconnect (no downstream response) and the case where it
+        # raises mid-stream (caught by FastAPI and turned into a 500
+        # that we'd otherwise mask).
+        sent_413 = {"value": False}
+
+        async def guarded_send(msg):
+            if tripped["value"] and not sent_413["value"]:
+                sent_413["value"] = True
+                await _send_413(
+                    send,
+                    (
+                        f"Audio upload too large: streamed body exceeded "
+                        f"{MAX_AUDIO_UPLOAD_SIZE} bytes per file"
+                    ),
+                )
+                return
+            if sent_413["value"]:
+                # Downstream tried to send after we already wrote 413;
+                # drop the message to avoid double-write.
+                return
+            await send(msg)
+
+        try:
+            await self.app(scope, bounded_receive, guarded_send)
+        except Exception:
+            # If we tripped the cap, the downstream app aborted because
+            # of the synthetic http.disconnect we injected — translate
+            # that into the documented 413. Otherwise it's a real
+            # error; re-raise so it surfaces normally.
+            if not tripped["value"]:
+                raise
+
+        # Send a fallback 413 if nothing was emitted: this catches both
+        # (a) the silent-drop-on-disconnect path (Starlette returns
+        #     cleanly without sending a response after seeing disconnect)
+        # (b) the exception path swallowed above.
+        if tripped["value"] and not sent_413["value"]:
+            sent_413["value"] = True
+            await _send_413(
+                send,
+                (
+                    f"Audio upload too large: streamed body exceeded "
+                    f"{MAX_AUDIO_UPLOAD_SIZE} bytes per file"
+                ),
+            )
+
+
+async def _send_413(send, detail: str) -> None:
+    """Emit a JSON 413 response from inside ASGI middleware.
+
+    Hand-rolling the response (rather than raising ``HTTPException``)
+    keeps the rejection self-contained inside the middleware — no
+    FastAPI exception handlers or dependency machinery have to run, so
+    the body is never read from ``receive``."""
+    import json as _json
+
+    body = _json.dumps({"detail": detail}).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body, "more_body": False})
+
+
+def install_audio_body_limit_middleware(app) -> None:
+    """Attach :class:`AudioBodyLimitMiddleware` to an ``app``.
+
+    Centralised so ``vllm_mlx.server`` and tests register the guard
+    through one entry point — keeps the wiring discoverable from this
+    module instead of buried in app-construction code."""
+    app.add_middleware(AudioBodyLimitMiddleware)
+
+
+async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
+    """Copy `file` into the open temp-file `tmp`, enforcing the size cap as
+    we go. Raises HTTPException(413) the moment the cap is exceeded.
+
+    Streaming in fixed-size chunks bounds peak memory to one chunk regardless
+    of how much the client sends — defending against chunked-transfer clients
+    that omit Content-Length entirely.
+    """
+    total = 0
+    while True:
+        chunk = await file.read(_AUDIO_READ_CHUNK_SIZE)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_AUDIO_UPLOAD_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Audio upload too large: exceeds {MAX_AUDIO_UPLOAD_SIZE} bytes"
+                ),
+            )
+        tmp.write(chunk)
 
 
 @router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
@@ -26,10 +233,40 @@ async def create_transcription(
     language: str | None = None,
     response_format: str = "json",
 ):
-    """Transcribe audio to text (OpenAI Whisper API compatible)."""
+    """Transcribe audio to text (OpenAI Whisper API compatible).
+
+    Two-layer size guard (defense in depth):
+
+    1. :class:`AudioBodyLimitMiddleware` runs at the ASGI layer and
+       rejects requests whose ``Content-Length`` exceeds the cap
+       BEFORE Starlette's multipart parser drains the receive channel.
+       Honest large uploads die there with zero disk I/O and no
+       handler invocation.
+
+    2. ``_stream_upload_to_tempfile`` (below) enforces the exact per-
+       file cap while copying chunks into our own temp file. Catches
+       chunked-transfer / no-``Content-Length`` clients that lied at
+       layer 1: even if Starlette already spooled the body to its own
+       ``SpooledTemporaryFile``, we refuse to copy more than the cap
+       into ours and abort early before any STT engine import /
+       ``.load()`` call happens.
+
+    The 25 MB ceiling matches OpenAI's Whisper API and bounds the
+    worst-case STT inference cost.
+    """
     global _stt_engine
 
+    tmp_path: str | None = None
     try:
+        # SECURITY: Stream the upload to a bounded temp file *before* doing
+        # anything expensive. Even a client that lies about / omits
+        # Content-Length cannot force model load or import — they will hit
+        # the streaming cap inside _stream_upload_to_tempfile() and get a
+        # 413 long before the STTEngine block below runs.
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+            await _stream_upload_to_tempfile(file, tmp)
+
         from ..audio.stt import STTEngine
 
         model_map = {
@@ -46,15 +283,7 @@ async def create_transcription(
             _stt_engine = STTEngine(model_name)
             _stt_engine.load()
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
-
-        try:
-            result = _stt_engine.transcribe(tmp_path, language=language)
-        finally:
-            os.unlink(tmp_path)
+        result = _stt_engine.transcribe(tmp_path, language=language)
 
         if response_format == "text":
             return result.text
@@ -70,9 +299,23 @@ async def create_transcription(
             status_code=503,
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
         )
+    except HTTPException:
+        # Preserve our own status codes (e.g. 413 for oversized uploads)
+        # instead of downgrading them to 500 via the catch-all below.
+        raise
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Failed to unlink temp audio file %s: %s", tmp_path, cleanup_err
+                )
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
