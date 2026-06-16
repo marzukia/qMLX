@@ -2,9 +2,11 @@
 """
 Gemma 4 text-only model loader for the LLM path.
 
-mlx-lm doesn't support gemma4 yet, but mlx-vlm does. This module loads
-just the language model portion from mlx-vlm and wraps it to be compatible
-with mlx-lm's generate_step() interface, enabling:
+mlx-lm 0.31+ added native ``gemma4`` (used by the 26B / 31B aliases), but
+``gemma4_unified`` (the model_type the four ``gemma-4-12b-*`` aliases ship
+under) is still not in mlx-lm. This module loads the language model
+portion from mlx-vlm and wraps it to be compatible with mlx-lm's
+generate_step() interface, enabling:
 - Prompt cache (KV reuse across requests)
 - DeltaNet state snapshots (if applicable)
 - All LLM-path optimizations
@@ -12,7 +14,7 @@ with mlx-lm's generate_step() interface, enabling:
 The wrapper is thin: it just ensures model(input_ids, cache=cache) returns
 a raw logits tensor instead of LanguageModelOutput.
 
-TODO: Remove once mlx-lm adds native gemma4 support.
+TODO: Remove once mlx-lm adds native ``gemma4_unified`` support (12B variants).
 """
 
 import json
@@ -26,16 +28,27 @@ logger = logging.getLogger(__name__)
 
 
 def is_gemma4_model(model_path: str | Path) -> bool:
-    """Check if the model at the given path is a Gemma 4 model."""
+    """Check if the model at the given path is a Gemma 4 model.
+
+    The previous implementation called ``snapshot_download(repo_id)`` to
+    populate a local cache before reading ``config.json``. That works,
+    but ``snapshot_download`` validates/fetches the ENTIRE model tree
+    (all safetensors shards, tokenizer files, generation config), which
+    for an 8-bit 35B model is ~35 GB of Xet-protocol revalidation on
+    every cold ``rapid-mlx serve`` start. Switch to ``hf_hub_download``
+    targeting ``config.json`` directly: a ~5 KB file, validated against
+    the existing HF cache. This was the root cause of stress_e2e_bench
+    server-boot timeouts on large models in PR #600 validation.
+    """
     p = Path(model_path)
     config_path = p / "config.json" if p.is_dir() else None
     if config_path is None or not config_path.exists():
-        # Try HF cache
         try:
-            from huggingface_hub import snapshot_download
+            from huggingface_hub import hf_hub_download
 
-            p = Path(snapshot_download(str(model_path)))
-            config_path = p / "config.json"
+            config_path = Path(
+                hf_hub_download(repo_id=str(model_path), filename="config.json")
+            )
         except Exception:
             return False
     if not config_path.exists():
