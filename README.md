@@ -61,27 +61,36 @@
 **Step 1 — Install** (pick one):
 
 ```bash
-# Homebrew (recommended — just works, no Python version issues)
-brew install raullenchai/rapid-mlx/rapid-mlx
-
-# pip (requires Python 3.10+ — macOS ships 3.9, so install Python first if needed)
-pip install rapid-mlx
-
-# uv (isolated tool env — to refresh later: `uv tool upgrade rapid-mlx`)
+# uv (recommended — one command, isolated env, auto-manages Python)
 uv tool install rapid-mlx@latest
+# Don't have uv yet? Install it first: curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Or one-liner with auto-setup (installs Python if needed)
 curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
+
+# Homebrew (Mac-native — needs tap + trust before install on Homebrew 4.x)
+brew tap raullenchai/rapid-mlx
+brew trust raullenchai/rapid-mlx
+brew install rapid-mlx
+
+# pip (requires Python 3.10+ — macOS ships 3.9, so install Python first if needed)
+pip install rapid-mlx
 ```
+
+Upgrade later: `uv tool upgrade rapid-mlx` / `brew upgrade rapid-mlx` / `pip install -U rapid-mlx`.
 
 > **Vision/multimodal models** (Gemma 4, Qwen-VL, etc.) need extras: `pip install 'rapid-mlx[vision]'`. Text-only install is ~460 MB; vision adds ~322 MB. See [Optional Extras](#optional-extras) for the full list.
 
 > **"No matching distribution" error?** Your Python is too old. Run `python3 --version` — if it says 3.9, install a newer Python: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`
 
+> **`Refusing to load formula ... from untrusted tap`?** Homebrew 4.x requires third-party taps to be explicitly trusted before install. The `brew trust raullenchai/rapid-mlx` line above is what marks the tap as trusted — without it, even after `brew tap`, the install is refused. Trust is per-machine and persists across upgrades.
+
 > **`Tapping homebrew/core` / `Operation not permitted` during `brew install`?** Brew 5.x's install sandbox can't auto-tap `homebrew/core` mid-install. Pre-tap it once, then retry:
 > ```bash
 > brew tap homebrew/core --force   # ~1.3 GB, one-time
-> brew install raullenchai/rapid-mlx/rapid-mlx
+> brew tap raullenchai/rapid-mlx
+> brew trust raullenchai/rapid-mlx
+> brew install rapid-mlx
 > ```
 
 **Step 2 — Talk to a model right now** (one command, no second terminal):
