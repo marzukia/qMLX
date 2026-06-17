@@ -37,6 +37,8 @@ import http.client
 import json
 import os
 import sys
+import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -668,6 +670,47 @@ def _print_dim(msg: str) -> None:
     print(msg)
 
 
+def _safe_display_name(fname: str, max_len: int = 80) -> str:
+    """Sanitize a HF-supplied filename for terminal display.
+
+    The catalog and HF model_info pass through filenames from external
+    metadata. ``_validate_relative_filename`` already rejects
+    path-traversal (``..``, absolute paths) but does NOT strip ANSI /
+    control characters — a malicious or accidentally-malformed entry
+    like ``evil\x1b[2Jfile.bin`` would clear the terminal when printed
+    by the per-file progress line. Filenames used for the actual
+    download / on-disk path stay untouched; this transformation only
+    applies to display.
+
+    Codex round-2 BLOCKING on PR #657.
+    """
+    # Strip ASCII controls (0x00-0x1F + DEL) AND Unicode control /
+    # format characters — both can drive terminal behavior:
+    #   * 0x00-0x1F + 0x7F: standard C0 controls + DEL.
+    #   * U+0080-U+009F: C1 controls (```` is CSI — same
+    #     terminal-injection vector as ESC[).
+    #   * U+200E / U+200F / U+202A-U+202E: bidi overrides — a
+    #     ``...‮exe.txt`` filename would render visually as
+    #     ``...txt.exe`` and mislead the user.
+    # Unicode category ``C*`` covers C0/C1 (Cc), format (Cf — includes
+    # bidi marks + zero-width joiners), surrogates (Cs), private-use
+    # (Co), unassigned (Cn). Codex round-3 BLOCKING on PR #657.
+    cleaned = "".join(c for c in fname if not unicodedata.category(c).startswith("C"))
+    if not cleaned:
+        cleaned = "<unprintable>"
+    if len(cleaned) > max_len:
+        # Keep the basename visible — that's the part the user actually
+        # recognizes. Truncate the middle. Budget 3 chars for the
+        # ellipsis, split the remainder evenly between head and tail.
+        budget = max_len - 3
+        head_len = budget // 2
+        tail_len = budget - head_len
+        head = cleaned[:head_len]
+        tail = cleaned[-tail_len:] if tail_len else ""
+        cleaned = f"{head}...{tail}"
+    return cleaned
+
+
 def download_with_mirror_fallback(
     repo_id: str,
     cache_dir: Path | None = None,
@@ -866,6 +909,20 @@ def download_with_mirror_fallback(
         # the real ``snapshot_download`` and gets its allow/ignore
         # patterns, retries, and repository-level error reporting.
         return False
+
+    # Issue #651 follow-up: surface the per-file work plan up front so
+    # the user sees activity instead of staring at the banner for
+    # minutes while multi-GB shards stream. Per-file completion lines
+    # are emitted in the ``as_completed`` loop below.
+    total_files_planned = len(files)
+    total_expected_bytes = sum(s for _, s, _ in files if s is not None)
+    if total_expected_bytes > 0:
+        gb = total_expected_bytes / 1e9
+        _print_dim(
+            f"  {DIM}Found {total_files_planned} files (~{gb:.1f} GB total){RESET}"
+        )
+    else:
+        _print_dim(f"  {DIM}Found {total_files_planned} files{RESET}")
 
     # Per-file plan: for each file, attempt R2 first (if eligible),
     # otherwise fall straight to HF. Run a small pool in parallel.
@@ -1096,6 +1153,10 @@ def download_with_mirror_fallback(
     from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
     from huggingface_hub.utils import RepositoryNotFoundError
 
+    # Issue #651 follow-up: track elapsed wall-time for the final
+    # summary so users see throughput, not just total bytes.
+    pull_started = time.monotonic()
+    completed = 0
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
         futures = {pool.submit(_do_file, item): item[0] for item in files}
         for fut in as_completed(futures):
@@ -1129,6 +1190,35 @@ def download_with_mirror_fallback(
                 total_bytes += size
             else:
                 misses.append(fname)
+            # Issue #651 follow-up: per-file completion line so the
+            # user sees forward progress while multi-GB shards stream.
+            # We emit one line per file at the point it lands — printing
+            # from the ``as_completed`` loop in the main thread avoids
+            # needing a stdout lock, even though the underlying workers
+            # finish in non-deterministic order. Misses are logged too
+            # so the user understands why we'll fall back to
+            # ``snapshot_download`` further down.
+            completed += 1
+            # Only the size-bearing kinds need a MB readout. ``size``
+            # is always an int (workers return 0 on miss) but keeping
+            # the divide inside the branches that use it makes it
+            # obvious that the miss tag never depends on bytes — codex
+            # round-1 NIT on PR #657.
+            if kind == "r2":
+                tag = f"{DIM}R2 ({size / 1e6:.0f} MB){RESET}"
+            elif kind == "hf":
+                tag = f"{DIM}HF ({size / 1e6:.0f} MB, fallback){RESET}"
+            elif kind == "cached":
+                tag = f"{DIM}cached ({size / 1e6:.0f} MB){RESET}"
+            else:
+                # ``miss`` / sanitized failure — surface the reason so
+                # users aren't surprised when the outer caller falls
+                # back to ``snapshot_download``.
+                tag = f"{DIM}miss (will retry via HF snapshot_download){RESET}"
+            _print_dim(
+                f"  {DIM}[{completed}/{total_files_planned}]{RESET} "
+                f"{_safe_display_name(fname)} {tag}"
+            )
 
     if misses:
         # At least one file we couldn't get from either source. Caller
@@ -1162,20 +1252,34 @@ def download_with_mirror_fallback(
         return False
 
     mb = total_bytes / 1e6
+    # Issue #651 follow-up: surface elapsed time + throughput so users
+    # can sanity-check link speed. Skip the elapsed suffix on warm
+    # cached pulls where it's just noise (sub-second), and on tiny
+    # downloads where the rate is meaningless. We can't perfectly
+    # separate cached-bytes from fetched-bytes (workers report kind +
+    # size but ``total_bytes`` aggregates both), so the displayed rate
+    # is approximate for mixed runs — the user-visible problem in
+    # issue #651 was multi-GB cold pulls, where cached_hits is 0 and
+    # the rate is exact.
+    elapsed = max(0.0, time.monotonic() - pull_started)
+    suffix = ""
+    if (r2_hits or hf_hits) and elapsed > 0.5:
+        rate_mbps = mb / elapsed
+        suffix = f" {DIM}in {elapsed:.0f}s ({rate_mbps:.0f} MB/s){RESET}"
     if r2_hits and hf_hits:
         _print_dim(
             f"  {BOLD}Pulled{RESET} {len(files)} files, {mb:.0f} MB "
-            f"{DIM}(R2: {r2_hits}, HF: {hf_hits}){RESET}"
+            f"{DIM}(R2: {r2_hits}, HF: {hf_hits}){RESET}{suffix}"
         )
     elif r2_hits:
         _print_dim(
             f"  {BOLD}Pulled{RESET} {len(files)} files, {mb:.0f} MB "
-            f"{DIM}(R2: {r2_hits}){RESET}"
+            f"{DIM}(R2: {r2_hits}){RESET}{suffix}"
         )
     elif hf_hits:
         _print_dim(
             f"  {BOLD}Pulled{RESET} {len(files)} files, {mb:.0f} MB "
-            f"{DIM}(HF: {hf_hits}){RESET}"
+            f"{DIM}(HF: {hf_hits}){RESET}{suffix}"
         )
     else:
         # All files were already cached — quiet success.
