@@ -1000,10 +1000,17 @@ class BatchedEngine(BaseEngine):
         # snapshot at the message boundary (#427). Set by ``chat()`` after
         # message-aware boundary computation; absent for raw-prompt callers.
         prefix_boundary = kwargs.pop("prefix_boundary", 0)
+        # PFlash routing hints (#287). chat()/stream_chat() set these
+        # from tools / response_format; raw-prompt callers default to
+        # the safe (un-protected) values.
+        has_tools = bool(kwargs.pop("has_tools", False))
+        requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
         output = await self._engine.generate(
             prompt=prompt,
             sampling_params=sampling_params,
             prefix_boundary=prefix_boundary,
+            has_tools=has_tools,
+            requires_prompt_integrity=requires_prompt_integrity,
         )
 
         text = clean_output_text(output.output_text)
@@ -1116,10 +1123,15 @@ class BatchedEngine(BaseEngine):
         )
 
         prefix_boundary = kwargs.pop("prefix_boundary", 0)
+        # PFlash routing hints (#287) — parity with generate().
+        has_tools = bool(kwargs.pop("has_tools", False))
+        requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
         request_id = await self._engine.add_request(
             prompt=prompt,
             sampling_params=sampling_params,
             prefix_boundary=prefix_boundary,
+            has_tools=has_tools,
+            requires_prompt_integrity=requires_prompt_integrity,
         )
 
         async for output in self._engine.stream_outputs(request_id):
@@ -1179,6 +1191,19 @@ class BatchedEngine(BaseEngine):
 
         # Extract enable_thinking before passing kwargs downstream
         enable_thinking = kwargs.pop("enable_thinking", None)
+        # PFlash routing hints (#287). ``requires_prompt_integrity`` is
+        # set by the route layer for response_format / structured-output
+        # requests — those are hard-protected (no opt-out flag exists).
+        # Tools, by contrast, are gated via ``has_tools`` + the
+        # ``skip_when_tools`` config knob (CLI ``--pflash-include-tools``
+        # inverts it). Do NOT force ``requires_prompt_integrity=True``
+        # for tool requests here: it would short-circuit before
+        # ``skip_when_tools`` is even consulted and make the documented
+        # ``--pflash-include-tools`` opt-in inert (codex r6 BLOCKING).
+        # The safe default still holds: ``skip_when_tools=True`` is the
+        # config default, so tool prompts skip compression unless the
+        # user explicitly opts in.
+        requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
 
         # Convert tools for template
         template_tools = convert_tools_for_template(tools) if tools else None
@@ -1210,6 +1235,11 @@ class BatchedEngine(BaseEngine):
             prefix_boundary = self._compute_prefix_boundary(messages, tools)
             if prefix_boundary > 0:
                 kwargs["prefix_boundary"] = prefix_boundary
+
+        if tools:
+            kwargs["has_tools"] = True
+        if requires_prompt_integrity:
+            kwargs["requires_prompt_integrity"] = True
 
         return await self.generate(
             prompt=prompt,
@@ -1644,6 +1674,12 @@ class BatchedEngine(BaseEngine):
 
         # Extract enable_thinking before passing kwargs downstream
         enable_thinking = kwargs.pop("enable_thinking", None)
+        # PFlash routing hints (#287) — parity with chat(). Tools are
+        # NOT auto-folded into ``requires_prompt_integrity``; the
+        # ``has_tools`` flag plus ``skip_when_tools`` is the user-
+        # facing knob (CLI ``--pflash-include-tools`` inverts the
+        # default skip). See chat() comment for the codex r6 fix.
+        requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
 
         # Convert tools for template
         template_tools = convert_tools_for_template(tools) if tools else None
@@ -1664,6 +1700,11 @@ class BatchedEngine(BaseEngine):
             prefix_boundary = self._compute_prefix_boundary(messages, tools)
             if prefix_boundary > 0:
                 kwargs["prefix_boundary"] = prefix_boundary
+
+        if tools:
+            kwargs["has_tools"] = True
+        if requires_prompt_integrity:
+            kwargs["requires_prompt_integrity"] = True
 
         router = self._create_output_router()
         stream = self.stream_generate(
