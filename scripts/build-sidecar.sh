@@ -173,6 +173,47 @@ rm -rf \
     "$STAGE/python/share/man"
 find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
 
+# ----- step 3.5: aggressive trim (post-strip, pre-compileall) ----------
+#
+# rapid-desktop's `.app` bundle hit 858 MB (machinefi/rapid-desktop#242
+# CI gate caps at 500 MB). The sidecar contributes ~498 MB raw; this
+# step trims ~80 MB of code we never load at runtime.
+#
+# Two safe drops:
+#   1. transformers/models/*/modeling_*.py — our inference path goes
+#      through mlx-lm's own model classes; we never instantiate
+#      transformers' AutoModel/PreTrainedModel. The bundle also has
+#      no PyTorch (`torch` not installed), so transformers' lazy
+#      `from transformers import AutoModel` already returns a
+#      "PyTorch was not found" placeholder — third parties calling
+#      `AutoModel.from_pretrained(...)` against this sidecar hit
+#      the placeholder error path long before any missing-module
+#      lookup, so deleting modeling_*.py is a no-op for the
+#      already-broken AutoModel surface. We DO still need the
+#      tokenizer + config dispatch in transformers/models/auto/, so
+#      that path is pruned out of the find.
+#   2. image_processing_*.py + feature_extraction_*.py — text-only
+#      sidecar; the vision stack ships via the `[vision]` extras
+#      which aren't installed here.
+
+echo "==> trimming transformers PyTorch model implementations"
+find "$STAGE/site-packages/transformers/models" \
+    -path "*/auto/*" -prune -o \
+    -name "modeling_*.py" -not -name "modeling_tf_*" -not -name "modeling_flax_*" \
+    -print -delete
+find "$STAGE/site-packages/transformers/models" \
+    -path "*/auto/*" -prune -o \
+    \( -name "image_processing_*.py" -o -name "feature_extraction_*.py" \) \
+    -print -delete
+
+echo "==> trimming numpy dev/test detritus"
+rm -rf \
+    "$STAGE/site-packages/numpy/random/_examples" \
+    "$STAGE/site-packages/numpy/typing/tests" \
+    "$STAGE/site-packages/numpy/f2py/tests" \
+    "$STAGE/site-packages/numpy/testing/_private/extbuild.py" \
+    "$STAGE/site-packages/numpy/distutils/tests" 2>/dev/null || true
+
 # Pre-compile every .py in the bundled stdlib + site-packages BEFORE
 # we codesign. Otherwise CPython's import machinery writes .pyc files
 # into __pycache__/ at runtime on first use, those additions are
@@ -202,6 +243,90 @@ echo "==> pre-compiling .pyc cache (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
     "$STAGE/python/lib/python3.12" \
     "$STAGE/site-packages" \
     || { echo "ERR: compileall failed; bundle would seal-break on first launch" >&2; exit 1; }
+
+# ----- step 3.6: drop .py sources in site-packages, hoist .pyc ---------
+#
+# Scope: site-packages only. The bundled stdlib under
+# $STAGE/python/lib/python3.12/ is left in source form on purpose — the
+# stdlib is only ~30 MB on disk after the step-3 strip, and its
+# __pycache__/ entries are already populated by the compileall step
+# above so import latency is identical either way.
+#
+# After compileall, every imported module has a sibling .pyc under
+# __pycache__/<name>.<cache-tag>.pyc. Python's regular-package loader
+# only treats __pycache__/<name>.<cache-tag>.pyc as a CACHE for an
+# adjacent <name>.py; if the .py is missing, that .pyc is ignored
+# (verified empirically — websockets.imports, every submodule, broke).
+#
+# For sourceless loading we hoist the .pyc up to the package directory
+# and rename it to plain <name>.pyc — that IS a real module file from
+# Python's perspective (see PEP 488 / importlib._bootstrap_external
+# SourcelessFileLoader). Then we can safely delete the .py.
+#
+# IMPORTANT EXCLUSIONS:
+#   * __init__.py — we keep the source to guarantee the package is
+#     treated as a regular package (sourceless __init__.pyc also works
+#     in theory, but keeping the source is ~negligible cost and avoids
+#     a class of namespace-package downgrade bugs in tools that probe
+#     __file__).
+#   * Anything under site-packages/transformers/models/ — transformers
+#     scans that subtree at import time (define_import_structure /
+#     create_import_structure_from_path) and only recognises .py
+#     files when building its lazy-load registry; sourceless .pyc
+#     makes the registry empty and the top-level `import transformers`
+#     raises `KeyError: frozenset()`. Other transformers subpackages
+#     (utils/, generation/, models/auto/) are hoisted normally.
+#
+# The sidecar-shim exports PYTHONDONTWRITEBYTECODE=1 so Python won't
+# attempt to write new .pyc on startup (which would also break the
+# codesign seal — see step 3 above).
+#
+# Caveat: crash tracebacks lose source-line CONTENT for non-__init__
+# modules (file:line is still shown, but the actual line of source is
+# not). Acceptable for the sidecar — we capture structured logs via
+# rapid-mlx telemetry. Set SKIP_SOURCE_DROP=1 to keep .py sources for
+# local sidecar debugging.
+
+if [[ "${SKIP_SOURCE_DROP:-0}" != "1" ]]; then
+    # Derive the cpython cache tag from the bundled interpreter so a
+    # future PBS bump to 3.13 / 3.14 doesn't silently skip this whole
+    # step (the .pyc filenames embed the major.minor in the tag —
+    # `cpython-312` today, `cpython-313` tomorrow). Falls back to the
+    # build-host interpreter if the bundled one can't be invoked, which
+    # is fine in practice (PBS_VERSION pins major.minor).
+    CACHE_TAG="$("$STAGE/python/bin/python3.12" -c \
+        'import sys; print(sys.implementation.cache_tag)' \
+        2>/dev/null || echo "cpython-312")"
+    PYC_SUFFIX=".${CACHE_TAG}.pyc"
+    echo "==> hoisting .pyc out of __pycache__/ and dropping .py sources (cache tag: $CACHE_TAG)"
+    # Strategy: walk every __pycache__/ in site-packages, for each
+    # <name>.<cache-tag>.pyc whose adjacent <parent>/<name>.py exists,
+    # `mv` the .pyc up to <parent>/<name>.pyc and delete the .py.
+    # Skip __init__ so packages stay regular packages.
+    #
+    # EXCLUSION: transformers/models/ is left in source form (see
+    # comment block above for why).
+    find "$STAGE/site-packages" -type d -name __pycache__ \
+        -not -path "*/transformers/models/*" -print | \
+    while read -r cachedir; do
+        parent="$(dirname "$cachedir")"
+        for pyc in "$cachedir"/*"$PYC_SUFFIX"; do
+            [[ -f "$pyc" ]] || continue
+            base="$(basename "$pyc" "$PYC_SUFFIX")"
+            [[ "$base" == "__init__" ]] && continue
+            src="$parent/$base.py"
+            [[ -f "$src" ]] || continue
+            mv -f "$pyc" "$parent/$base.pyc"
+            rm -f "$src"
+        done
+        # Drop the cache dir entirely if it's now empty. Keep a
+        # non-empty __pycache__ otherwise so packages that still
+        # have remaining .py (e.g. __init__.py) cache normally.
+        rmdir "$cachedir" 2>/dev/null || true
+    done
+else
+    echo "==> SKIP_SOURCE_DROP=1, keeping .py sources for sidecar debug"
+fi
 
 # ----- step 4: shim entrypoint -----------------------------------------
 
