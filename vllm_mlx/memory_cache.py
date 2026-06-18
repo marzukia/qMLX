@@ -45,6 +45,69 @@ _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
 _MAX_ENTRIES_FALLBACK = 50  # Fallback if memory detection fails
 
 
+def _adapt_should_abort(predicate):
+    """Adapt a ``should_abort`` predicate to the one-arg contract.
+
+    The forward-looking shape ``Callable[[float], bool]`` is the new
+    contract, but external callers / older fixtures may pass a
+    zero-arg ``Callable[[], bool]`` from the round-1 docstring.
+    Inspect the signature once and return a normalized
+    ``Callable[[float], bool]`` that calls the inner predicate
+    correctly. ``None`` passes through unchanged.
+
+    Codex PR #667 round 3 BLOCKING-2: round-2 unconditionally called
+    ``should_abort(predicted_sec)`` which raises ``TypeError`` against
+    zero-arg predicates documented in the previous contract.
+    """
+    if predicate is None:
+        return None
+
+    import inspect
+
+    try:
+        sig = inspect.signature(predicate)
+    except (TypeError, ValueError):
+        # Builtin / C-extension / partial — assume positional one-arg
+        # shape (it's the contract going forward); a runtime TypeError
+        # on invocation is no worse than what callers got before.
+        return lambda predicted_sec: predicate(predicted_sec)
+
+    # Classify the predicate's calling convention. Codex PR #667 round
+    # 4 BLOCKING-1: a naive "accepts ANY arg" check sent keyword-only
+    # and ``**kwargs``-only callables down the positional path, which
+    # raises ``TypeError`` on the very first call — defeating the
+    # whole point of the adapter. We have to distinguish the call
+    # shape, not just "accepts something".
+    accepts_positional = False
+    accepts_keyword_only_predicted_sec = False
+    has_var_kwargs = False
+    for p in sig.parameters.values():
+        if p.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.VAR_POSITIONAL,
+        ):
+            accepts_positional = True
+        elif p.kind == inspect.Parameter.KEYWORD_ONLY:
+            if p.name == "predicted_sec":
+                accepts_keyword_only_predicted_sec = True
+        elif p.kind == inspect.Parameter.VAR_KEYWORD:
+            has_var_kwargs = True
+
+    if accepts_positional:
+        # ``def pred(p)`` / ``def pred(p, **kw)`` / ``def pred(*args)``
+        # — positional is the natural shape.
+        return lambda predicted_sec: predicate(predicted_sec)
+    if accepts_keyword_only_predicted_sec or has_var_kwargs:
+        # ``def pred(*, predicted_sec=0.0)`` — must use the keyword.
+        # ``def pred(**kw)`` — keyword is the only shape it accepts;
+        # the predicate may or may not look for ``predicted_sec`` in
+        # ``kw``, but passing it by name is the contract.
+        return lambda predicted_sec: predicate(predicted_sec=predicted_sec)
+    # Zero parameters → call with no args (round-1 documented shape).
+    return lambda predicted_sec: predicate()
+
+
 def _safetensors_is_complete(path: str) -> bool:
     """Validate a safetensors file is at least as long as its header claims.
 
@@ -1145,7 +1208,11 @@ class MemoryAwarePrefixCache:
     # Disk persistence — survives server restarts
     # -----------------------------------------------------------------
 
-    def save_to_disk(self, cache_dir: str) -> bool:
+    def save_to_disk(
+        self,
+        cache_dir: str,
+        should_abort=None,
+    ) -> bool:
         """Save all cache entries to disk using mlx_lm's safetensors format.
 
         The snapshot is committed via a directory-rename to make it
@@ -1165,7 +1232,40 @@ class MemoryAwarePrefixCache:
               entry_1_tokens.bin
               ...
 
-        Returns True if at least one entry was saved.
+        Args:
+            cache_dir: Final committed directory path (``.new`` / ``.old``
+                staging dirs are siblings).
+            should_abort: Optional ``Callable[[float], bool]`` that returns
+                True when the caller wants the save loop to stop early. The
+                ``float`` arg is ``predicted_sec`` — the per-entry loop's
+                estimate of how long the NEXT entry's write will take, so
+                the predicate can answer "would starting that operation
+                push us past the deadline?" rather than only firing AFTER
+                wall-clock has already crossed it (codex PR #667 round 1
+                BLOCKING-2 — a single uninterruptible 300 MB
+                ``save_prompt_cache`` call can straddle the deadline and
+                still get SIGKILL'd mid-write if the check is at-now only).
+
+                Used by the lifespan shutdown to enforce a SIGTERM-grace
+                deadline so a multi-GB save doesn't get SIGKILLed mid-
+                flight and leave ``cache_dir.new/`` orphaned (rapid-
+                desktop only gives the sidecar ~5s before SIGKILL). When
+                the callable trips, the loop stops, the entries that did
+                finish are verified, and the staging dir is committed via
+                the same atomic rename as a normal save — so a partial
+                result is preferable to the previous behavior (truncated
+                mid-entry → orphaned ``.new`` → lost cache on next
+                launch).
+
+                Backwards-compatible: a zero-arg ``Callable[[], bool]``
+                (the round-1 documented shape) is auto-adapted via
+                ``_adapt_should_abort`` so external callers / older
+                fixtures don't break — see codex round 3 BLOCKING-2.
+                A ``None`` value preserves the pre-existing "save
+                everything, no deadline" behavior used by tests and the
+                offline ``rapid-mlx`` CLI.
+
+        Returns True if at least one entry was committed to disk.
         """
         import shutil
         import time as _time
@@ -1214,8 +1314,68 @@ class MemoryAwarePrefixCache:
         }
 
         saved = 0
+        aborted_early = False
+        total_entries = len(self._entries)
+        # Track observed disk throughput so we can predict whether the
+        # NEXT entry's write will fit within the shutdown budget. The
+        # predicate fires forward-looking — if we don't predict, a
+        # single in-flight ``save_prompt_cache`` call can run past the
+        # deadline and get SIGKILL'd mid-write (leaves ``cache_dir.new/``
+        # orphaned; this is the bug the deadline gate exists to prevent).
+        #
+        # Bootstrap floor for entry 0 (no observed sample yet) is
+        # 150 MB/s — calibrated so:
+        #   - typical Gemma 4 26B entry (~250 MB) predicts ~1.7 s,
+        #     comfortably fitting the 3.1 s safe budget (3.5 s budget −
+        #     0.4 s commit headroom);
+        #   - genuinely oversized entry (~600 MB+) predicts >4 s and
+        #     correctly trips before write starts — would straddle
+        #     deadline either way.
+        # Round 1 used 50 MB/s and over-predicted typical entries
+        # (codex round 2 BLOCKING-1). Round 2 used 0 and let huge
+        # entries straddle the deadline (codex round 3 BLOCKING-1).
+        # 150 MB/s is the goldilocks middle ground: 3× round 1, gives
+        # real-world observed throughput (~875 MB/s during the
+        # original incident) ~6× safety margin while still catching
+        # genuinely-too-large entries.
+        _BOOTSTRAP_BYTES_PER_SEC = 150 * _BYTES_PER_MB
+        # Support BOTH zero-arg and one-arg ``should_abort`` predicates
+        # at the per-entry layer. The new contract is
+        # ``Callable[[float], bool]`` (forward-looking) but external
+        # callers may still pass a zero-arg shape from the round 1
+        # docstring contract — auto-detect and adapt instead of
+        # raising TypeError. Codex PR #667 round 3 BLOCKING-2.
+        check_abort = _adapt_should_abort(should_abort)
+        total_bytes_written = 0
+        total_write_seconds = 0.0
         for i, (tokens_key, entry) in enumerate(self._entries.items()):
+            if total_write_seconds > 0:
+                observed_bps = total_bytes_written / total_write_seconds
+            else:
+                observed_bps = _BOOTSTRAP_BYTES_PER_SEC
+            predicted_sec = entry.memory_bytes / observed_bps
+            # Deadline-aware early exit: the lifespan handler installs a
+            # ``should_abort`` predicate driven by the SIGTERM-grace budget.
+            # Once it trips we stop persisting NEW entries but still run
+            # the verify + index + atomic-rename steps below so the
+            # partial snapshot we already have on disk gets COMMITTED
+            # rather than left in ``cache_dir.new/``. ``saved >= 1`` is
+            # the gate that controls whether the rename happens —
+            # nothing else changes from the full-flush path.
+            if check_abort is not None and check_abort(predicted_sec):
+                aborted_early = True
+                bps_label = "observed" if total_write_seconds > 0 else "bootstrap floor"
+                logger.warning(
+                    f"[cache_persist] shutdown budget would not fit "
+                    f"entry {i}/{total_entries} "
+                    f"(predicted {predicted_sec * 1000:.0f}ms write at "
+                    f"{observed_bps / _BYTES_PER_MB:.0f}MB/s "
+                    f"[{bps_label}]) — committing {saved} entries that "
+                    f"finished before deadline"
+                )
+                break
             entry_path, tokens_path = _entry_paths(i)
+            entry_t0 = _time.monotonic()
             try:
                 # Dequantize QuantizedKVCache layers before saving.
                 # save_prompt_cache requires .state and .meta_state which
@@ -1259,6 +1419,14 @@ class MemoryAwarePrefixCache:
                     }
                 )
                 saved += 1
+                # Feed the throughput estimator. We measure including
+                # both the safetensors write and the tokens sidecar so
+                # the next entry's prediction reflects the full per-
+                # entry cost, not just the KV blob.
+                elapsed = _time.monotonic() - entry_t0
+                if elapsed > 0:
+                    total_bytes_written += entry.memory_bytes
+                    total_write_seconds += elapsed
                 logger.info(
                     f"[cache_persist] saved entry {i}: "
                     f"{len(tokens_key)} tokens, "
@@ -1300,7 +1468,13 @@ class MemoryAwarePrefixCache:
                 f"persisting {len(verified)} that survived"
             )
             index["entries"] = verified
-            index["num_entries"] = len(verified)
+        # Always pin num_entries to the actually-verified count. The initial
+        # value was ``total_entries`` (set before the save loop) which is
+        # wrong both when we aborted early AND when some entry files
+        # vanished mid-save — index.json must agree with the entry list it
+        # ships alongside, or load_from_disk's ``num_entries`` read drifts
+        # from reality and downstream callers report a phantom count.
+        index["num_entries"] = len(index["entries"])
 
         # Defensively recreate new_dir before the index.json write — the
         # filter above proves at least one entry's files exist, so the
@@ -1354,10 +1528,11 @@ class MemoryAwarePrefixCache:
             shutil.rmtree(old_dir, ignore_errors=True)
 
         dt = _time.monotonic() - t0
+        tail = " (partial — shutdown deadline hit)" if aborted_early else ""
         logger.info(
-            f"[cache_persist] SAVED {saved}/{len(self._entries)} entries "
+            f"[cache_persist] SAVED {saved}/{total_entries} entries "
             f"to {cache_dir} in {dt:.1f}s "
-            f"({self._current_memory / _BYTES_PER_MB:.0f}MB total)"
+            f"({self._current_memory / _BYTES_PER_MB:.0f}MB total){tail}"
         )
         return saved > 0
 
