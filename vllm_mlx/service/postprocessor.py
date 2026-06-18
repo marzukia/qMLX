@@ -77,10 +77,39 @@ class StreamingPostProcessor:
         enable_thinking: bool | None = None,
         json_mode: bool = False,
         request: dict | None = None,
+        reasoning_max_tokens: int | None = None,
     ):
         self.cfg = cfg
         self.tools_requested = tools_requested
         self.json_mode = json_mode
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # When set and the model is still emitting on the reasoning
+        # channel after this many tokens, the processor force-closes
+        # the channel: text-parser engines see an injected ``</think>``
+        # marker on the next chunk so subsequent text routes to content;
+        # channel-routed engines (gemma4 / harmony) reclassify further
+        # reasoning deltas as content. ``None`` means "no cap" and is
+        # the documented default.
+        self._reasoning_max_tokens = reasoning_max_tokens
+        # Approximate count of reasoning tokens we've emitted so far.
+        # Engine deltas don't always carry per-channel token counts, so
+        # we approximate from the text length divided by 4 (the OpenAI
+        # spec's documented chars→tokens heuristic — same constant
+        # ``_build_usage`` uses in helpers.py for the reasoning_tokens
+        # split). This intentionally tracks EMITTED reasoning, not the
+        # raw model output, so the cap counts what the client sees.
+        self._reasoning_tokens_emitted = 0
+        # Flag: cap was hit. Set once the running count crosses the
+        # threshold; once True, the channel-routed branch reclassifies
+        # subsequent reasoning chunks as content and the text-parser
+        # branch injects ``</think>`` into the parser stream so it
+        # flips to content. Single-bit latch — never reset within a
+        # request (the cap is monotonic).
+        self._reasoning_cap_hit = False
+        # Whether the text-parser injection has already fired. Idempotent
+        # guard so we don't keep stuffing ``</think>`` into every
+        # subsequent chunk after the cap fired.
+        self._reasoning_close_injected = False
         # Forwarded to streaming tool parsers — qwen3_coder needs request.tools
         # for schema-driven type conversion (#171). Without it, raw XML leaks
         # into delta.content instead of structured tool_calls deltas.
@@ -240,6 +269,100 @@ class StreamingPostProcessor:
         self._is_thinking_model = (
             "nemotron" in model_name.lower() and not self.reasoning_parser
         )
+
+    def _consume_reasoning_budget(self, reasoning_text: str) -> tuple[str, str]:
+        """Account for ``reasoning_text`` against the per-request cap.
+
+        Returns ``(reasoning_kept, content_overflow)``:
+
+        * ``reasoning_kept`` — the portion that fits under the cap; this
+          is emitted as ``reasoning_content`` to the client.
+        * ``content_overflow`` — the portion past the cap; the caller
+          re-routes it to the CONTENT channel so no model output is
+          silently dropped.
+
+        Codex round-12 BLOCKING #1: cumulative-CHARACTER accounting
+        (not per-chunk ceiling). The earlier draft converted each
+        chunk to ``max(1, ceil(len/4))`` tokens, which made 4
+        one-character reasoning deltas consume 4 "tokens" while the
+        SAME 4 characters consume 1 token when chunked together. The
+        cap then depended on engine chunking — a transient SSE flush
+        could fire the cap pages earlier than expected. Fix: track
+        cumulative reasoning chars and compare against ``cap * 4``
+        (same character ceiling the non-stream
+        ``_apply_reasoning_cap`` uses). All chunking patterns yield
+        identical cap-firing positions, matching the non-stream path.
+
+        Sets ``_reasoning_cap_hit`` to True the moment the running
+        char count meets-or-exceeds ``cap * 4``.
+        ``_reasoning_max_tokens=None`` short-circuits to "no cap".
+        """
+        if self._reasoning_max_tokens is None or not reasoning_text:
+            return reasoning_text, ""
+        if self._reasoning_cap_hit:
+            # Cap already fired — anything still arriving on the
+            # reasoning channel is overflow content.
+            return "", reasoning_text
+        max_chars = self._reasoning_max_tokens * 4
+        # ``_reasoning_tokens_emitted`` actually stores CHARACTERS
+        # post-round-12 (the field name is kept for backward-compat
+        # with downstream usage-block consumers that grep for the
+        # symbol — the value is still divided by 4 for the
+        # ``completion_tokens_details.reasoning_tokens`` derivation).
+        new_total_chars = self._reasoning_tokens_emitted + len(reasoning_text)
+        if new_total_chars < max_chars:
+            self._reasoning_tokens_emitted = new_total_chars
+            return reasoning_text, ""
+        if new_total_chars == max_chars:
+            # Exact-boundary fit: the current chunk uses up the budget
+            # but doesn't overflow. Keep it as reasoning AND latch the
+            # cap so the NEXT incoming chunk is rerouted / triggers the
+            # ``</think>`` injection. Codex round-2 BLOCKING #1.
+            self._reasoning_tokens_emitted = new_total_chars
+            self._reasoning_cap_hit = True
+            return reasoning_text, ""
+        # Cap crosses inside this chunk. Split at the remaining char
+        # budget so the kept prefix stays under the ceiling and the
+        # rest spills to content.
+        remaining_chars = max_chars - self._reasoning_tokens_emitted
+        keep_chars = max(0, remaining_chars)
+        kept = reasoning_text[:keep_chars]
+        overflow = reasoning_text[keep_chars:]
+        self._reasoning_tokens_emitted = max_chars
+        self._reasoning_cap_hit = True
+        return kept, overflow
+
+    def _maybe_inject_reasoning_close(self, delta_text: str) -> str:
+        """Inject ``</think>`` once into the next model-text chunk when
+        the cap fires on a text-parser engine.
+
+        Text-parser engines (hermes / qwen3 / glm47) emit
+        ``<think>...</think>`` themselves and rely on the streaming
+        reasoning parser to split content from reasoning. Once the cap
+        fires, we forge the close marker so the parser flips to content
+        on the very next call to ``extract_reasoning_streaming`` —
+        mirrors the channel-routed engines' force-close behavior so the
+        client-visible semantic is identical across parser families.
+
+        Codex round-10 BLOCKING #1: the latch
+        (``_reasoning_close_injected = True``) used to flip HERE,
+        BEFORE the parser call. If the parser then raised on the
+        injected chunk, the next chunk would still see the latch set
+        and skip injection — leaving the parser permanently mid-think.
+        The latch is now flipped in the CALLER
+        (``_process_with_reasoning``) AFTER the parser call succeeds.
+        This function still gates on the latch (idempotency) and
+        prepends the marker, but no longer mutates state.
+        """
+        if not self._reasoning_cap_hit or self._reasoning_close_injected:
+            return delta_text
+        if self.reasoning_parser is None:
+            # Standard / channel-routed path doesn't need the injection.
+            return delta_text
+        # Prepend the marker so the parser sees ``</think>`` BEFORE the
+        # next body bytes. The caller flips ``_reasoning_close_injected``
+        # only after the parser call succeeds.
+        return "</think>" + delta_text
 
     def _parallel_tool_calls_allowed(self) -> bool:
         """Return False iff the request explicitly opted out of
@@ -491,6 +614,12 @@ class StreamingPostProcessor:
         self._no_index_admitted_id = None
         self._no_index_admitted_name = None
         self._no_index_last_dropped = False
+        # Per-request reasoning-cap counters reset to baseline. The
+        # configured cap itself (``self._reasoning_max_tokens``) is
+        # immutable — it was set at __init__ from the request.
+        self._reasoning_tokens_emitted = 0
+        self._reasoning_cap_hit = False
+        self._reasoning_close_injected = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
@@ -620,6 +749,19 @@ class StreamingPostProcessor:
         else:
             content, reasoning = delta_text, None
 
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # When the reasoning budget is exhausted, route the overflow
+        # portion of the current chunk — and every subsequent reasoning
+        # chunk — to the content channel instead of dropping it.
+        # Channel-routed engines (gemma4 / harmony) DON'T need a
+        # ``</think>`` injection since channels are tracked at the
+        # token level upstream; reclassifying the chunk is enough.
+        if reasoning is not None:
+            kept_reasoning, overflow_content = self._consume_reasoning_budget(reasoning)
+            reasoning = kept_reasoning or None
+            if overflow_content:
+                content = (content or "") + overflow_content
+
         # Tool call detection on content
         if self.tool_parser and content:
             result = self._detect_tool_calls(content)
@@ -731,11 +873,55 @@ class StreamingPostProcessor:
         self, delta_text: str, output: GenerationOutput
     ) -> list[StreamEvent]:
         """Handle models with text-based reasoning parsers."""
+        # If the reasoning cap fired on a prior chunk, splice ``</think>``
+        # into the parser's view of the stream so it flips to content on
+        # this call. Idempotent — only fires once per request.
+        #
+        # Codex round-8 BLOCKING #1: keep the synthetic ``</think>``
+        # marker OUT of the shared ``self.accumulated_text``. The
+        # earlier draft mutated ``delta_text`` to ``"</think>" +
+        # delta_text`` and then appended that mutated value to
+        # ``self.accumulated_text`` — poisoning the buffer with forged
+        # model bytes that downstream (usage chars-÷4 in chat.py, the
+        # ``finalize()`` tool-call fallback) would see and account
+        # against. Build the parser's ``current`` argument LOCALLY
+        # from the (true) ``previous_text`` + the injected marker +
+        # the ORIGINAL ``delta_text``. The shared buffer only ever
+        # holds real model output. Symmetric with the routes-side
+        # local-buffer pattern (round-6 fix).
+        original_delta_text = delta_text
         previous_text = self.accumulated_text
-        self.accumulated_text += delta_text
-        delta_msg = self.reasoning_parser.extract_reasoning_streaming(
-            previous_text, self.accumulated_text, delta_text
-        )
+        parser_delta_text = self._maybe_inject_reasoning_close(original_delta_text)
+        injected_this_chunk = parser_delta_text is not original_delta_text
+        if not injected_this_chunk:
+            # No injection — common path. Keep the shared buffer
+            # update minimal.
+            self.accumulated_text += original_delta_text
+            parser_current = self.accumulated_text
+        else:
+            # Injection fired this chunk: parser sees ``</think>`` +
+            # ``original_delta``; shared buffer only gets the original.
+            self.accumulated_text += original_delta_text
+            parser_current = previous_text + parser_delta_text
+        try:
+            delta_msg = self.reasoning_parser.extract_reasoning_streaming(
+                previous_text, parser_current, parser_delta_text
+            )
+        except Exception:
+            # Codex round-10 BLOCKING #1: if the parser raises on a
+            # chunk that carried the injected ``</think>``, do NOT
+            # flip the ``_reasoning_close_injected`` latch — let the
+            # NEXT chunk retry the forced transition. Re-raise so the
+            # caller can decide (a transient parser bug is still a
+            # bug; just don't lose retry on the cap-flush path).
+            raise
+        if injected_this_chunk:
+            # Parser flip succeeded this chunk — latch so subsequent
+            # chunks don't re-inject. Latch flip lives HERE (not in
+            # ``_maybe_inject_reasoning_close``) so a parser exception
+            # on the injection-carrying chunk leaves the latch clear
+            # and the next chunk retries.
+            self._reasoning_close_injected = True
 
         if delta_msg is None:
             # Skip (e.g., <think> token itself)
@@ -745,6 +931,89 @@ class StreamingPostProcessor:
 
         content = delta_msg.content
         reasoning = delta_msg.reasoning
+
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # Account for any reasoning bytes this chunk produced. Overflow
+        # is rerouted to content so no model output is silently dropped
+        # and the SSE stream gets a clean transition from reasoning to
+        # content even when the parser hasn't actually seen ``</think>``.
+        #
+        # Codex round-9 BLOCKING #1: when overflow is produced on the
+        # cap-crossing chunk and the parser hasn't yet seen
+        # ``</think>``, the parser is still LOGICALLY mid-think.
+        # Emitting overflow as content from that state leaks
+        # still-in-thinking bytes onto the wire as
+        # ``delta.content`` on the chat stream. Symmetric with the
+        # routes-side fix (round-7 + round-8): force the parser flip
+        # in THIS same chunk with a synthetic ``</think>`` against a
+        # LOCAL ``current`` (don't pollute ``self.accumulated_text`` —
+        # round-8 invariant). Only promote overflow to content when
+        # the flip succeeds; suppress on flip failure rather than
+        # mixing channels under a broken state machine.
+        if reasoning:
+            # Capture the FULL original reasoning text the parser
+            # returned BEFORE the cap truncates it. We need this to
+            # position the synthetic ``</think>`` marker at the
+            # CAP BOUNDARY (between kept and overflow) on the flip
+            # call below — not after the full over-budget chunk.
+            full_reasoning = reasoning
+            kept_reasoning, overflow_content = self._consume_reasoning_budget(reasoning)
+            reasoning = kept_reasoning or None
+            if overflow_content:
+                flip_succeeded = self._reasoning_close_injected
+                if not self._reasoning_close_injected:
+                    # Codex round-10 BLOCKING #1: only mark the close-
+                    # injected latch AFTER a SUCCESSFUL parser flip.
+                    # If the parser raises, we want the NEXT chunk to
+                    # retry the forced transition rather than skipping
+                    # it forever — otherwise a transient parser bug
+                    # leaves the parser permanently mid-think for the
+                    # rest of the request.
+                    #
+                    # Codex round-13 BLOCKING #1: position the
+                    # synthetic ``</think>`` AT THE CAP BOUNDARY (not
+                    # after the full over-budget chunk). The earlier
+                    # draft built ``flip_previous = self.accumulated_text``
+                    # which included the OVERFLOW bytes — the parser
+                    # was asked to close AFTER the over-budget bytes
+                    # rather than at the kept-reasoning boundary,
+                    # which would let stateful parsers mis-classify
+                    # the overflow as still-in-thinking. Build the
+                    # flip from ``previous_text + kept_reasoning`` —
+                    # this represents the model output "up to the cap
+                    # firing point" from the parser's POV.
+                    flip_previous = previous_text + kept_reasoning
+                    flip_delta = "</think>"
+                    flip_current = flip_previous + flip_delta
+                    try:
+                        flip_msg = self.reasoning_parser.extract_reasoning_streaming(
+                            flip_previous, flip_current, flip_delta
+                        )
+                        self._reasoning_close_injected = True
+                        flip_succeeded = True
+                    except Exception as e:
+                        logger.warning(
+                            "postprocessor in-chunk close-marker flip raised "
+                            "on %r: %s — parser state may stay mid-think; "
+                            "suppressing %d-byte overflow on this chunk; "
+                            "next chunk will retry the forced transition",
+                            type(self.reasoning_parser).__name__,
+                            e,
+                            len(overflow_content),
+                        )
+                        flip_msg = None
+                    flip_content = (
+                        getattr(flip_msg, "content", None)
+                        if flip_msg is not None
+                        else None
+                    )
+                    if isinstance(flip_content, str) and flip_content:
+                        content = (content or "") + flip_content
+                if flip_succeeded:
+                    content = (content or "") + overflow_content
+            # ``full_reasoning`` only needed within this block; release
+            # the reference to drop the temporary view.
+            del full_reasoning
 
         if reasoning:
             self.accumulated_reasoning += reasoning
@@ -970,6 +1239,72 @@ class StreamingPostProcessor:
         Call after the engine stream ends.
         """
         events = []
+
+        # Codex round-3 BLOCKING #1: when the per-request reasoning cap
+        # latches on the LAST reasoning chunk of the stream (model stops
+        # immediately at the budget, or stops within the exact-boundary
+        # chunk), no subsequent ``process_chunk`` call ever runs the
+        # ``</think>`` injection — the parser is left mid-think, any
+        # held content past the cap stays buffered, and the client sees
+        # a reasoning-only response with no visible answer. Force the
+        # injection here so a terminal cap-hit still flips the parser
+        # to content and any held bytes are flushed as a final content
+        # delta. Idempotent via ``_reasoning_close_injected`` so a
+        # mid-stream injection on a normal chunk doesn't double-fire.
+        if (
+            self.reasoning_parser is not None
+            and self._reasoning_cap_hit
+            and not self._reasoning_close_injected
+        ):
+            self._reasoning_close_injected = True
+            previous_text = self.accumulated_text
+            injected_delta = "</think>"
+            # Codex round-5 BLOCKING #1: build the parser's view of
+            # ``current`` LOCALLY rather than mutating
+            # ``self.accumulated_text``. Downstream (routes/chat.py
+            # post-finalize usage assembly) reads ``accumulated_text``
+            # to compute the chars-÷4 reasoning split for the usage
+            # block. Appending the forged ``</think>`` to the shared
+            # buffer would (a) make the usage tokens differ by 2 from
+            # what was actually streamed, and (b) — more importantly —
+            # if any future code path runs the parser's non-stream
+            # ``finalize_streaming`` over ``accumulated_text``, it
+            # would re-emit the same buffered bytes the in-finalize
+            # injection just released. Keep the mutation scoped.
+            local_current = previous_text + injected_delta
+            delta_msg = None
+            try:
+                delta_msg = self.reasoning_parser.extract_reasoning_streaming(
+                    previous_text, local_current, injected_delta
+                )
+            except Exception as e:
+                # Codex round-5 BLOCKING #2 / #3: a parser exception on
+                # the forced close path is an INTERNAL server failure,
+                # not a model answer. The earlier draft emitted a
+                # diagnostic string ``"[reasoning cap hit — parser
+                # flush failed]"`` directly into ``content``, which
+                # leaks server implementation details into the
+                # assistant message. Drop the fabrication and log only;
+                # the client sees an empty completion if the cap path
+                # fails (the route's existing error semantics handle
+                # truly catastrophic failures via 5xx).
+                logger.warning(
+                    "finalize close-marker injection raised on %r: %s — "
+                    "trailing reasoning content (if any) will not be "
+                    "promoted to content for this request",
+                    type(self.reasoning_parser).__name__,
+                    e,
+                )
+            if delta_msg is not None:
+                trailing_content = getattr(delta_msg, "content", None)
+                if isinstance(trailing_content, str) and trailing_content:
+                    trailing_content = sanitize_output(
+                        strip_special_tokens(trailing_content)
+                    )
+                    if trailing_content:
+                        events.append(
+                            StreamEvent(type="content", content=trailing_content)
+                        )
 
         # Fallback tool call detection: streaming parser missed a tool call
         # that the non-stream parser can recover. The streaming code path of

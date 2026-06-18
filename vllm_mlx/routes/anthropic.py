@@ -297,6 +297,12 @@ async def create_anthropic_message(
             enable_thinking=_effective_enable_thinking(
                 resolved_thinking, cfg.model_path or cfg.model_name
             ),
+            # Per-request reasoning cap (upstream vLLM PR #20859 / #42396
+            # backport). The adapter translated ``output_config.effort``
+            # or legacy ``thinking.budget_tokens`` into this field on
+            # the OpenAI-side request, so it propagates uniformly across
+            # all three API surfaces.
+            reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
         )
 
         final_content = None
@@ -556,6 +562,51 @@ async def _stream_anthropic_messages(
     if reasoning_parser:
         reasoning_parser.reset_state()
 
+    # Per-request reasoning cap (upstream vLLM PR #20859 / #42396 backport).
+    # Same chars-÷4 heuristic the OpenAI route uses so the same effective
+    # budget applies regardless of which API surface the client picked.
+    _reasoning_cap = getattr(openai_request, "reasoning_max_tokens", None)
+    _reasoning_tokens_emitted = 0
+    _reasoning_cap_hit = False
+    _reasoning_close_injected = False
+
+    def _account_for_reasoning(text: str) -> tuple[str, str]:
+        """``(kept_reasoning, overflow_content)``.
+
+        Codex round-12 BLOCKING #3: cumulative-CHARACTER accounting
+        against ``cap * 4`` (not per-chunk ceiling). The earlier
+        ``max(1, ceil(len/4))`` made fragmented reasoning deltas
+        consume more tokens than the same contiguous text, so the
+        cap on ``output_config.effort`` fired at different points
+        depending only on SSE chunk boundaries. Now identical model
+        output hits the cap at the same character offset regardless
+        of chunking — byte-for-byte consistent with the Responses
+        route + postprocessor + non-stream paths.
+
+        ``_reasoning_tokens_emitted`` now stores CHARACTERS (name kept
+        for back-compat). The cap *4 limit lives in the closure.
+        """
+        nonlocal _reasoning_tokens_emitted, _reasoning_cap_hit
+        if _reasoning_cap is None or not text:
+            return text, ""
+        if _reasoning_cap_hit:
+            return "", text
+        max_chars = _reasoning_cap * 4
+        new_total_chars = _reasoning_tokens_emitted + len(text)
+        if new_total_chars < max_chars:
+            _reasoning_tokens_emitted = new_total_chars
+            return text, ""
+        if new_total_chars == max_chars:
+            # Exact-boundary latch (codex round-2 BLOCKING #2).
+            _reasoning_tokens_emitted = new_total_chars
+            _reasoning_cap_hit = True
+            return text, ""
+        remaining_chars = max_chars - _reasoning_tokens_emitted
+        keep_chars = max(0, remaining_chars)
+        _reasoning_tokens_emitted = max_chars
+        _reasoning_cap_hit = True
+        return text[:keep_chars], text[keep_chars:]
+
     async for output in engine.stream_chat(messages=messages, **chat_kwargs):
         delta_text = output.new_text
 
@@ -616,7 +667,17 @@ async def _stream_anthropic_messages(
                 if output_channel == "reasoning":
                     reasoning = strip_special_tokens(delta_text)
                     if reasoning:
-                        pieces_routed.append(("thinking", reasoning))
+                        # Per-request reasoning cap — split into kept
+                        # (thinking) and overflow (text) so Claude-Code
+                        # eventually sees a final answer instead of an
+                        # endless thinking_delta stream.
+                        kept, overflow = _account_for_reasoning(reasoning)
+                        if kept:
+                            pieces_routed.append(("thinking", kept))
+                        if overflow:
+                            filtered = tool_filter.process(overflow)
+                            if filtered:
+                                pieces_routed.append(("text", filtered))
                 elif output_channel in ("content", "tool_call"):
                     # ``content`` and ``tool_call`` both render as
                     # user-facing text deltas; tool detection still
@@ -655,17 +716,127 @@ async def _stream_anthropic_messages(
                 # here and emit reasoning/content as their own block types
                 # directly.
                 previous_raw = accumulated_raw
+                # Text-parser cap force-close: splice ``</think>`` into the
+                # parser's incoming bytes once the cap has fired so the
+                # state machine flips to content on this chunk. Idempotent.
+                #
+                # Codex round-9 BLOCKING #3: earlier draft mutated
+                # ``delta_text`` to ``"</think>" + delta_text`` THEN ran
+                # ``accumulated_raw += delta_text``, poisoning the
+                # shared Anthropic raw buffer with the forged marker.
+                # The terminal injection / finalize_streaming path then
+                # re-parsed the mutated buffer, potentially mis-
+                # classifying the synthetic bytes. Fix: keep
+                # ``accumulated_raw`` to real model output only and
+                # build a LOCAL ``parser_current`` that includes the
+                # synthetic marker for the parser call. Shared buffer
+                # holds ``previous_raw + original_delta``; parser sees
+                # ``previous_raw + "</think>" + original_delta``.
+                # Codex round-10 BLOCKING #3: only flip the close-
+                # injected latch AFTER the parser call succeeds. If
+                # the parser raises on the injection-carrying chunk,
+                # the latch stays clear and the next chunk retries
+                # the forced transition.
+                injected_this_chunk = False
+                if _reasoning_cap_hit and not _reasoning_close_injected:
+                    parser_delta_text = "</think>" + delta_text
+                    parser_current = previous_raw + parser_delta_text
+                    injected_this_chunk = True
+                else:
+                    parser_delta_text = delta_text
+                    parser_current = previous_raw + delta_text
                 accumulated_raw += delta_text
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
-                    previous_raw, accumulated_raw, delta_text
+                    previous_raw, parser_current, parser_delta_text
                 )
+                if injected_this_chunk:
+                    # Parser succeeded with the synthetic marker —
+                    # latch so subsequent chunks don't re-inject.
+                    _reasoning_close_injected = True
                 if delta_msg is None:
                     continue
                 pieces: list[tuple[str, str]] = []
                 if delta_msg.reasoning:
                     reasoning = strip_special_tokens(delta_msg.reasoning)
                     if reasoning:
-                        pieces.append(("thinking", reasoning))
+                        kept, overflow = _account_for_reasoning(reasoning)
+                        if kept:
+                            pieces.append(("thinking", kept))
+                        if overflow:
+                            # Codex round-7 BLOCKING #1: emitting
+                            # overflow as a TEXT block while the parser
+                            # is still logically in thinking would open
+                            # an Anthropic ``content_block`` (text) that
+                            # is semantically inconsistent with the
+                            # parser's internal state. Force the parser
+                            # flip in THIS same chunk by re-running the
+                            # extractor with a synthetic ``</think>``
+                            # against a LOCAL ``current`` (don't mutate
+                            # ``accumulated_raw`` — round-6 invariant).
+                            flip_succeeded = _reasoning_close_injected
+                            if not _reasoning_close_injected:
+                                # Codex round-10 BLOCKING #3: flip
+                                # the latch AFTER success only — if
+                                # the parser raises, next chunk
+                                # retries the forced transition.
+                                # Codex round-13 BLOCKING #3:
+                                # position ``</think>`` at the CAP
+                                # BOUNDARY using ``previous_raw +
+                                # kept`` — not ``accumulated_raw``
+                                # (which would put the marker AFTER
+                                # the over-budget bytes). Stateful
+                                # parsers must see the close at the
+                                # exact kept-reasoning boundary so
+                                # the overflow bytes are
+                                # unambiguously past-cap content.
+                                flip_previous = previous_raw + kept
+                                flip_delta = "</think>"
+                                flip_current = flip_previous + flip_delta
+                                try:
+                                    flip_msg = (
+                                        reasoning_parser.extract_reasoning_streaming(
+                                            flip_previous, flip_current, flip_delta
+                                        )
+                                    )
+                                    _reasoning_close_injected = True
+                                    flip_succeeded = True
+                                except Exception as e:
+                                    # Codex round-8 BLOCKING #3: when
+                                    # the flip raises, the parser may
+                                    # still be mid-think. Emitting
+                                    # ``overflow`` as a TEXT
+                                    # content_block would visibly mix
+                                    # reasoning bytes into the
+                                    # assistant message under a failed
+                                    # transition. Suppress overflow on
+                                    # flip failure and log; the client
+                                    # may see a slightly-truncated
+                                    # response — strictly better than
+                                    # semantically-invalid content.
+                                    logger.warning(
+                                        "anthropic in-chunk close-marker flip "
+                                        "raised on %r: %s — parser state may "
+                                        "stay mid-think; suppressing %d-byte "
+                                        "overflow on this chunk to avoid "
+                                        "leaking reasoning bytes as content",
+                                        type(reasoning_parser).__name__,
+                                        e,
+                                        len(overflow),
+                                    )
+                                    flip_msg = None
+                                flip_content = (
+                                    getattr(flip_msg, "content", None)
+                                    if flip_msg is not None
+                                    else None
+                                )
+                                if isinstance(flip_content, str) and flip_content:
+                                    filtered_flip = tool_filter.process(flip_content)
+                                    if filtered_flip:
+                                        pieces.append(("text", filtered_flip))
+                            if flip_succeeded:
+                                filtered = tool_filter.process(overflow)
+                                if filtered:
+                                    pieces.append(("text", filtered))
                 if delta_msg.content:
                     content = strip_special_tokens(delta_msg.content)
                     if content:
@@ -729,8 +900,100 @@ async def _stream_anthropic_messages(
         yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
         block_index += 1
 
+    # Codex round-3 BLOCKING #2: if the reasoning cap latched on the
+    # last engine chunk of the stream (terminal exact-boundary case OR
+    # the model stopped immediately after overflow), the ``</think>``
+    # close marker was never spliced into the parser. The thinking
+    # block stays open in the Anthropic SSE shape — the
+    # ``content_block_stop`` for the thinking index never gets a
+    # matching text block, and any parser-held content past the cap is
+    # lost. Force the injection here so a terminal cap-hit still flips
+    # the parser to content and any trailing bytes are promoted to a
+    # text block before stream end. Idempotent via
+    # ``_reasoning_close_injected``.
+    terminal_injection_attempted = False
+    if (
+        reasoning_parser is not None
+        and _reasoning_cap_hit
+        and not _reasoning_close_injected
+    ):
+        _reasoning_close_injected = True
+        terminal_injection_attempted = True
+        # Codex round-6 BLOCKING #1: build the parser's ``current``
+        # argument LOCALLY rather than mutating the shared
+        # ``accumulated_raw``. If the injection produces no content
+        # (no held bytes / parser early-returns) and the subsequent
+        # ``finalize_streaming(accumulated_raw)`` were to run, it
+        # would parse a buffer that ends with the synthetic
+        # ``</think>`` marker — potentially mis-classifying the forged
+        # bytes as model output. Symmetric with the postprocessor and
+        # responses-route fixes.
+        previous_raw = accumulated_raw
+        injected_delta = "</think>"
+        local_current = previous_raw + injected_delta
+        try:
+            final_inject = reasoning_parser.extract_reasoning_streaming(
+                previous_raw, local_current, injected_delta
+            )
+        except Exception as e:
+            # Codex round-5 BLOCKING #2: an earlier draft emitted a
+            # diagnostic string ``"[reasoning cap hit — parser flush
+            # failed]"`` as an Anthropic text content_block, which
+            # fabricates assistant content from an INTERNAL server
+            # failure — clients see an "answer" that the model never
+            # produced. Log the parser failure and leave the assistant
+            # content empty. The route's existing 5xx / disconnect-
+            # guard semantics handle truly catastrophic failures
+            # upstream; a single reasoning-cap parser bug must not
+            # invent text.
+            logger.warning(
+                "anthropic terminal close-marker injection raised on %r: %s — "
+                "trailing reasoning content (if any) will not be promoted "
+                "to a text block for this request",
+                type(reasoning_parser).__name__,
+                e,
+            )
+            final_inject = None
+        if final_inject is not None and getattr(final_inject, "content", None):
+            inject_content = strip_special_tokens(final_inject.content)
+            if inject_content:
+                filtered = tool_filter.process(inject_content)
+                if filtered:
+                    events, current_block_type, block_index = _emit_content_pieces(
+                        [("text", filtered)], current_block_type, block_index
+                    )
+                    for event in events:
+                        yield event
+        # Close any block we opened above before falling through to the
+        # finalize_streaming path.
+        if current_block_type is not None:
+            yield (
+                f"event: content_block_stop\ndata: "
+                f"{json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+            )
+            block_index += 1
+            current_block_type = None
+
     # Handle reasoning parser finalization
-    if reasoning_parser and accumulated_raw:
+    # Codex round-4 BLOCKING #2 + round-6 BLOCKING #1: skip the
+    # parser's non-stream finalize pass when the terminal injection
+    # above ran at all (whether or not it produced content).
+    #
+    #   1. Injection emitted content — running ``finalize_streaming``
+    #      next would re-emit the SAME bytes the streaming
+    #      extraction just released (qwen3 / deepseek
+    #      ``finalize_streaming`` is a whole-buffer re-parse).
+    #   2. Injection produced no content — the parser already had
+    #      its chance to flush via the forced ``</think>``. Re-running
+    #      its non-stream pass on ``accumulated_raw`` (which excludes
+    #      the synthetic marker per the round-5/6 local-buffer fix)
+    #      could still re-classify cap-truncated reasoning as content
+    #      via the non-stream parser's broader heuristics.
+    #
+    # When NO terminal injection was attempted (cap never fired, or
+    # was already injected mid-stream), the finalize pass still runs
+    # as the safety net for normal parser-held content.
+    if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
         final_msg = (
             reasoning_parser.finalize_streaming(accumulated_raw)
             if hasattr(reasoning_parser, "finalize_streaming")

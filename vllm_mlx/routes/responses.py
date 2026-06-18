@@ -254,6 +254,10 @@ async def _non_stream(
         enable_thinking=_effective_enable_thinking(
             resolved_thinking, cfg.model_path or cfg.model_name
         ),
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # Forwarded from ``ResponsesRequest.reasoning_max_tokens`` via
+        # the Responses → OpenAI adapter. None → no cap (back-compat).
+        reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
     )
 
     final_content = None
@@ -409,6 +413,57 @@ async def _stream_responses(
         if reasoning_parser:
             reasoning_parser.reset_state()
 
+        # Per-request reasoning cap (upstream vLLM PR #20859 backport).
+        # Responses SSE drops reasoning to the floor (Codex doesn't read
+        # ``response.reasoning_text.delta`` in v1) so the cap's primary
+        # job here is to RECLASSIFY: once the budget is exhausted, any
+        # further reasoning bytes become ``response.output_text.delta``
+        # so the user actually sees a reply instead of an infinite
+        # silent thinking block.
+        _reasoning_cap = getattr(responses_request, "reasoning_max_tokens", None)
+        _reasoning_tokens_emitted = 0
+        _reasoning_cap_hit = False
+        _reasoning_close_injected = False
+
+        def _account_for_reasoning(text: str) -> tuple[str, str, bool]:
+            """Returns ``(kept_reasoning, overflow_content, just_hit)``.
+
+            Codex round-12 BLOCKING #2: cumulative-CHARACTER accounting
+            against ``cap * 4`` (not per-chunk ceiling). The earlier
+            ``max(1, ceil(len/4))`` made fragmented reasoning deltas
+            consume more tokens than the same contiguous text, so the
+            cap fired at different points depending only on SSE chunk
+            boundaries. Now identical model output hits the cap at the
+            same character offset regardless of chunking — matches
+            ``helpers._apply_reasoning_cap`` (non-stream) AND the
+            postprocessor's cumulative-char path.
+
+            The shared ``_reasoning_tokens_emitted`` counter now holds
+            CHARACTERS post-round-12 (name kept for back-compat). The
+            cap *4 limit lives in ``_reasoning_max_chars`` captured
+            from the request via the enclosing closure.
+            """
+            nonlocal _reasoning_tokens_emitted, _reasoning_cap_hit
+            if _reasoning_cap is None or not text:
+                return text, "", False
+            if _reasoning_cap_hit:
+                return "", text, False
+            max_chars = _reasoning_cap * 4
+            new_total_chars = _reasoning_tokens_emitted + len(text)
+            if new_total_chars < max_chars:
+                _reasoning_tokens_emitted = new_total_chars
+                return text, "", False
+            if new_total_chars == max_chars:
+                # Exact-boundary latch (codex round-2 BLOCKING #3).
+                _reasoning_tokens_emitted = new_total_chars
+                _reasoning_cap_hit = True
+                return text, "", True
+            remaining_chars = max_chars - _reasoning_tokens_emitted
+            keep_chars = max(0, remaining_chars)
+            _reasoning_tokens_emitted = max_chars
+            _reasoning_cap_hit = True
+            return text[:keep_chars], text[keep_chars:], True
+
         async def _open_message_item() -> str:
             """Emit response.output_item.added for the assistant message.
 
@@ -498,22 +553,159 @@ async def _stream_responses(
                         if filtered:
                             async for ev in _emit_text_delta(filtered):
                                 yield ev
+                elif output_channel == "reasoning":
+                    # Reasoning-cap reclassification: once the per-request
+                    # cap fires, route the overflow portion of this and
+                    # every subsequent reasoning chunk to ``content`` so
+                    # the user actually sees a reply instead of an
+                    # unending silent reasoning stream. Without the cap
+                    # the chunk drops as before (v1 Responses contract).
+                    _, overflow, _ = _account_for_reasoning(delta_text)
+                    if overflow:
+                        content = strip_special_tokens(overflow)
+                        if content:
+                            filtered = tool_filter.process(content)
+                            if filtered:
+                                async for ev in _emit_text_delta(filtered):
+                                    yield ev
                 # ``reasoning`` and unknown channels are dropped for v1.
                 continue
 
             if reasoning_parser:
-                # accumulated_raw already updated above; pass current/previous
-                # to the parser's streaming extractor.
+                # ``accumulated_raw`` already had the ORIGINAL
+                # ``delta_text`` appended above. Pass current/previous
+                # to the parser's streaming extractor. Note: ``previous_raw``
+                # here is computed from the buffer minus the ORIGINAL
+                # delta (round-9 fix — keep the shared buffer clean of
+                # synthetic markers).
                 previous_raw = (
                     accumulated_raw[: -len(delta_text)]
                     if delta_text
                     else accumulated_raw
                 )
+                # Text-parser path: once the cap fires, splice ``</think>``
+                # in front of the next chunk so the parser flips to
+                # content. Idempotent — only fires once per request.
+                #
+                # Codex round-9 BLOCKING #2: the earlier
+                # ``accumulated_raw = previous_raw + delta_text`` (where
+                # ``delta_text`` had been mutated to start with
+                # ``</think>``) wrote the forged marker INTO the shared
+                # buffer. The terminal injection path then re-parsed
+                # that mutated buffer via ``finalize_streaming``,
+                # potentially mis-classifying the synthetic bytes.
+                # Fix: keep ``accumulated_raw`` to real model output
+                # only (the original ``delta_text`` was already
+                # appended above), and build a LOCAL ``parser_current``
+                # for the parser call that includes the synthetic
+                # marker. The parser sees ``previous + "</think>" +
+                # original``; the shared buffer holds ``previous +
+                # original``.
+                # Codex round-10 BLOCKING #2: only flip the close-
+                # injected latch AFTER the parser call succeeds. The
+                # earlier draft flipped before the call, so a parser
+                # exception on the injection-carrying chunk left the
+                # latch set and the next chunk would skip injection —
+                # leaving the parser permanently mid-think.
+                injected_this_chunk = False
+                if _reasoning_cap_hit and not _reasoning_close_injected:
+                    parser_delta_text = "</think>" + delta_text
+                    parser_current = previous_raw + parser_delta_text
+                    injected_this_chunk = True
+                else:
+                    parser_delta_text = delta_text
+                    parser_current = accumulated_raw
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
-                    previous_raw, accumulated_raw, delta_text
+                    previous_raw, parser_current, parser_delta_text
                 )
+                if injected_this_chunk:
+                    # Parser call succeeded with the synthetic marker
+                    # — latch so subsequent chunks don't re-inject.
+                    _reasoning_close_injected = True
                 if delta_msg is None:
                     continue
+                if delta_msg.reasoning:
+                    # Account for reasoning bytes against the per-request
+                    # cap. Overflow is whatever crossed the budget mid-
+                    # chunk; it must NOT be promoted to content until the
+                    # parser has formally transitioned out of thinking,
+                    # otherwise (codex round-7 BLOCKING #2) clients see
+                    # ``response.output_text.delta`` while the parser
+                    # state is still logically inside reasoning. Force
+                    # the parser flip in THIS same chunk by re-running
+                    # the streaming extractor with a synthetic
+                    # ``</think>`` delta against a locally-built
+                    # ``current`` (don't mutate ``accumulated_raw`` —
+                    # the round-6 local-buffer invariant applies here
+                    # too).
+                    kept_reasoning, overflow, _ = _account_for_reasoning(
+                        delta_msg.reasoning
+                    )
+                    flip_succeeded = _reasoning_close_injected
+                    if overflow and not _reasoning_close_injected:
+                        # Codex round-10 BLOCKING #2: flip the latch
+                        # AFTER success only — if the parser raises,
+                        # next chunk retries the forced transition.
+                        # Codex round-13 BLOCKING #2: position the
+                        # synthetic ``</think>`` AT THE CAP BOUNDARY
+                        # (not after the full over-budget chunk).
+                        # ``previous_raw`` is the buffer before THIS
+                        # delta arrived; ``previous_raw +
+                        # kept_reasoning`` represents the model output
+                        # up to the cap firing point. Without the
+                        # boundary positioning, stateful parsers
+                        # would see ``</think>`` AFTER the over-budget
+                        # bytes and potentially mis-classify them.
+                        flip_previous = previous_raw + kept_reasoning
+                        flip_delta = "</think>"
+                        flip_current = flip_previous + flip_delta
+                        try:
+                            flip_msg = reasoning_parser.extract_reasoning_streaming(
+                                flip_previous, flip_current, flip_delta
+                            )
+                            _reasoning_close_injected = True
+                            flip_succeeded = True
+                        except Exception as e:
+                            # Codex round-8 BLOCKING #2: when the flip
+                            # raises, the parser may still be mid-think.
+                            # Emitting ``overflow`` here would leak
+                            # reasoning bytes onto the wire as
+                            # ``response.output_text.delta`` even though
+                            # the parser hasn't transitioned. Suppress
+                            # overflow on flip failure; log so operators
+                            # can see the parser bug. Worst case the
+                            # client sees a slightly-truncated response,
+                            # strictly preferable to mixing reasoning
+                            # into content under a failed transition.
+                            logger.warning(
+                                "responses in-chunk close-marker flip raised "
+                                "on %r: %s — parser state may stay mid-think; "
+                                "suppressing %d-byte overflow on this chunk "
+                                "to avoid leaking reasoning bytes as content",
+                                type(reasoning_parser).__name__,
+                                e,
+                                len(overflow),
+                            )
+                            flip_msg = None
+                        # Whatever content the flip released stays
+                        # ahead of the overflow bytes on the wire
+                        # (parser-derived content first, cap-overflow
+                        # bytes second).
+                        flip_content = (
+                            getattr(flip_msg, "content", None)
+                            if flip_msg is not None
+                            else None
+                        )
+                        if isinstance(flip_content, str) and flip_content:
+                            delta_msg.content = (delta_msg.content or "") + flip_content
+                    if overflow and flip_succeeded:
+                        # Safe to promote overflow: either the flip
+                        # this iteration succeeded, OR the parser
+                        # already transitioned on a PRIOR chunk
+                        # (``_reasoning_close_injected`` was already
+                        # True on entry, captured in ``flip_succeeded``
+                        # via the initial assignment above).
+                        delta_msg.content = (delta_msg.content or "") + overflow
                 if delta_msg.content:
                     content = strip_special_tokens(delta_msg.content)
                     if content:
@@ -557,7 +749,92 @@ async def _stream_responses(
                     async for ev in _emit_text_delta(piece):
                         yield ev
 
-        if reasoning_parser and accumulated_raw:
+        # Codex round-3 BLOCKING #3: if the reasoning cap latched on the
+        # last engine chunk of the stream (terminal exact-boundary case
+        # OR the model stopped immediately after overflow), the
+        # ``</think>`` close marker was never spliced into the parser —
+        # so any held content past the cap stays buffered and the
+        # client sees a silent reasoning-only response with no
+        # ``output_text.delta`` ever emitted. Force the injection here
+        # so a terminal cap-hit flips the parser to content and any
+        # trailing bytes are promoted to ``response.output_text.delta``.
+        # Idempotent via ``_reasoning_close_injected``.
+        terminal_injection_attempted = False
+        if (
+            reasoning_parser is not None
+            and _reasoning_cap_hit
+            and not _reasoning_close_injected
+        ):
+            _reasoning_close_injected = True
+            terminal_injection_attempted = True
+            # Codex round-6 BLOCKING #2: build the parser's
+            # ``current`` argument LOCALLY rather than mutating the
+            # shared ``accumulated_raw``. If the injection produces no
+            # content (no held bytes / parser early-returns), the
+            # subsequent ``finalize_streaming(accumulated_raw)`` would
+            # otherwise re-parse a buffer that ends with the synthetic
+            # ``</think>`` marker and could mis-classify the forged
+            # bytes as model output. Symmetric with the postprocessor
+            # fix in service/postprocessor.py.
+            previous_raw = accumulated_raw
+            injected_delta = "</think>"
+            local_current = previous_raw + injected_delta
+            try:
+                final_inject = reasoning_parser.extract_reasoning_streaming(
+                    previous_raw, local_current, injected_delta
+                )
+            except Exception as e:
+                # Codex round-5 BLOCKING #3: an earlier draft emitted a
+                # diagnostic string ``"[reasoning cap hit — parser
+                # flush failed]"`` as ``response.output_text.delta``,
+                # which fabricates assistant content from an INTERNAL
+                # server failure — clients see an "answer" that the
+                # model never produced. Log the parser failure and
+                # leave the assistant content empty. The route's
+                # existing 5xx / disconnect-guard semantics handle
+                # truly catastrophic failures upstream; a single
+                # reasoning-cap parser bug must not invent text.
+                logger.warning(
+                    "responses terminal close-marker injection raised on %r: %s — "
+                    "trailing reasoning content (if any) will not be "
+                    "promoted to output_text.delta for this request",
+                    type(reasoning_parser).__name__,
+                    e,
+                )
+                final_inject = None
+            if final_inject is not None and getattr(final_inject, "content", None):
+                content = strip_special_tokens(final_inject.content)
+                if content:
+                    filtered = tool_filter.process(content)
+                    if filtered:
+                        async for ev in _emit_text_delta(filtered):
+                            yield ev
+
+        # Codex round-4 BLOCKING #1 + round-6 BLOCKING #2: when the
+        # terminal injection above ran at all (whether or not it
+        # produced content), skip the parser's non-stream finalize
+        # pass. Two distinct hazards:
+        #
+        #   1. Injection emitted content — running ``finalize_streaming``
+        #      next would re-emit the SAME bytes the streaming
+        #      extraction just released (qwen3 / deepseek parsers'
+        #      ``finalize_streaming`` re-parses the whole accumulated
+        #      buffer and can't distinguish already-streamed from
+        #      still-held content).
+        #   2. Injection produced no content — the parser already had
+        #      its chance to flush via the forced ``</think>``. Running
+        #      the non-stream finalize on the original
+        #      ``accumulated_raw`` (which excludes ``</think>`` per
+        #      the round-5/6 local-buffer fix) might still re-classify
+        #      the cap-truncated reasoning as content via the
+        #      non-stream parser's broader heuristics, double-emitting
+        #      bytes already routed past the cap.
+        #
+        # When NO terminal injection was attempted (cap never fired,
+        # or it fired and was already injected mid-stream), the
+        # finalize pass still runs as the safety net for normal
+        # parser-held content.
+        if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
             final_msg = (
                 reasoning_parser.finalize_streaming(accumulated_raw)
                 if hasattr(reasoning_parser, "finalize_streaming")
