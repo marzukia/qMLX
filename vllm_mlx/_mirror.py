@@ -37,6 +37,7 @@ import http.client
 import json
 import os
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -76,6 +77,104 @@ _MAX_WORKERS = 4
 # and keeps tqdm-free progress redraws coarse enough to not flood the
 # terminal.
 _CHUNK_BYTES = 8 * 1024 * 1024
+
+
+# Aggregate byte-progress heartbeat — emitted at most once every
+# ``_PROGRESS_HEARTBEAT_SECONDS`` while the R2 puller is streaming files.
+# The R2 puller's existing ``[N/M] file R2 (X MB)`` completion lines fire
+# only when a single file lands, so a multi-GB shard (60-120 s on a typical
+# home connection) leaves the UI's file-count bar pinned at e.g. 5/6 = 83%
+# while the user waits in silence. rapid-desktop #?? (v0.7.10 "stuck at
+# 83%"): emit one ``[bytes] <done>/<total>`` line per heartbeat from
+# whichever worker happens to be writing — the desktop's DownloadProgress
+# parser feeds these into ``applyDiskObservation`` / ``setTotalBytes`` so
+# the bar advances smoothly through the long single-shard window. Each
+# ``download_with_mirror_fallback`` call instantiates its own tracker so
+# concurrent pulls in the same process don't trample each other's totals
+# (codex R1 BLOCKING on PR #682).
+_PROGRESS_HEARTBEAT_SECONDS = 0.5
+
+
+class _ProgressTracker:
+    """Aggregate bytes-done counter for one R2 pull.
+
+    Workers call ``add(delta)`` for each chunk they write; the call is
+    cheap (atomic int add under a lock) and at most one in every
+    ``_PROGRESS_HEARTBEAT_SECONDS`` window emits a ``[bytes] D/T``
+    line to stdout. Print is flushed eagerly so a non-TTY stdout
+    (desktop pipe) sees the line as soon as it's emitted.
+    """
+
+    def __init__(self, total: int = 0) -> None:
+        self._lock = threading.Lock()
+        self._done = 0
+        self._total = max(0, int(total))
+        self._last_emit = 0.0
+
+    def add(self, delta: int) -> None:
+        if delta <= 0:
+            return
+        emit: tuple[int, int] | None = None
+        with self._lock:
+            self._done += int(delta)
+            if self._total <= 0:
+                return
+            now = time.monotonic()
+            if now - self._last_emit >= _PROGRESS_HEARTBEAT_SECONDS:
+                self._last_emit = now
+                # Codex R3 BLOCKING on PR #682: clamp DISPLAY at total so
+                # an oversized/corrupt R2 stream (Content-Length lies,
+                # proxy injects extra bytes) can't emit ``[bytes] 1200/1000``
+                # before the final-size-mismatch rollback runs. Internal
+                # ``_done`` stays raw so ``subtract`` continues to balance
+                # against the actual credit (rollback of raw 1200 from
+                # raw 1200 leaves _done=0 → next ``add(1000)`` from HF
+                # lands at clean 1000/1000).
+                emit = (min(self._done, self._total), self._total)
+        if emit is not None:
+            done, total = emit
+            print(f"  [bytes] {done}/{total}", flush=True)
+
+    def subtract(self, delta: int) -> None:
+        """Roll back optimistic R2-chunk credits when the file fails
+        validation (short-read, sha mismatch, rename error) and the
+        dispatcher will retry via HF — without this the subsequent
+        ``progress_tracker.add(size)`` on the HF path would double-count
+        and the desktop bar could exceed 100% (codex R2 BLOCKING on
+        PR #682). Silent — no heartbeat emit; the next ``add()`` or
+        ``flush()`` carries the corrected total."""
+        if delta <= 0:
+            return
+        with self._lock:
+            self._done = max(0, self._done - int(delta))
+
+    def flush(self) -> None:
+        """Emit a final heartbeat at the end of a pull regardless of
+        throttle window — the last 500 ms of bytes would otherwise be
+        invisible to the UI."""
+        emit: tuple[int, int] | None = None
+        with self._lock:
+            if self._total > 0:
+                # Clamp display at total — same rationale as ``add()``.
+                emit = (min(self._done, self._total), self._total)
+        if emit is not None:
+            done, total = emit
+            print(f"  [bytes] {done}/{total}", flush=True)
+
+
+def _rollback_credits(
+    tracker: _ProgressTracker | None,
+    credited: int,
+) -> None:
+    """Subtract optimistic R2-chunk credits when the file fails any
+    post-stream validation (short-read, sha mismatch, final-size, LFS
+    install, rename) and the dispatcher will fall back to HF. Without
+    this rollback, the subsequent ``progress_tracker.add(size)`` on the
+    HF path would double-count and the desktop bar could exceed 100%
+    (codex R2 BLOCKING on PR #682). No-op when there's no tracker or
+    no bytes were credited yet."""
+    if tracker is not None and credited > 0:
+        tracker.subtract(credited)
 
 
 def _mirror_base() -> str:
@@ -251,6 +350,7 @@ def _download_one_from_r2(
     sidecar_dir: Path,
     sidecar_key: str,
     repo_root: Path | None = None,
+    progress_tracker: _ProgressTracker | None = None,
 ) -> tuple[bool, str]:
     """Download a single file from R2 into ``target``.
 
@@ -306,6 +406,7 @@ def _download_one_from_r2(
             expected_size,
             expected_sha256=expected_sha256,
             repo_root=repo_root,
+            progress_tracker=progress_tracker,
         )
     finally:
         _release_part_lock(lock_fh, lock_path)
@@ -319,6 +420,7 @@ def _do_r2_download(
     *,
     expected_sha256: str | None = None,
     repo_root: Path | None = None,
+    progress_tracker: _ProgressTracker | None = None,
 ) -> tuple[bool, str]:
     """Inner R2 download body — runs with the per-file lock held.
 
@@ -443,6 +545,27 @@ def _do_r2_download(
                     except OSError:
                         _safe_unlink(tmp)
                         return False, "prefix-rehash-failed"
+            # Codex R2 BLOCKING on PR #682: credit R2 chunks optimistically
+            # for smooth desktop heartbeats, but track how many bytes we
+            # credited so EVERY failure path past the chunk loop can roll
+            # back before falling back to HF — otherwise the HF success
+            # path's ``progress_tracker.add(size)`` would double-count and
+            # the desktop bar could exceed 100%.
+            chunks_credited = 0
+            # Codex R5 BLOCKING on PR #682: resumed downloads only stream
+            # the suffix; without crediting the validated ``.part``
+            # prefix the final heartbeat finishes short of 100% even
+            # though the file succeeded. Credit it once here and include
+            # it in ``chunks_credited`` — if R2 then fails the
+            # ``_safe_unlink(tmp)`` cleanup discards the prefix from
+            # disk, so the rollback must subtract it too (otherwise
+            # HF's full-file ``add(size)`` would still double-count).
+            # ``existing`` is the post-200/206 reconciled count: the 200
+            # branch above already zeroed it when the proxy ignored
+            # ``Range``.
+            if existing > 0 and progress_tracker is not None:
+                progress_tracker.add(existing)
+                chunks_credited += existing
             with tmp.open(mode) as fh:
                 while True:
                     chunk = resp.read(_CHUNK_BYTES)
@@ -452,12 +575,21 @@ def _do_r2_download(
                     if hasher is not None:
                         hasher.update(chunk)
                     read += len(chunk)
+                    # Forward chunk size into the per-pull byte tracker
+                    # so the desktop heartbeat advances smoothly inside a
+                    # single big-shard download. See ``_ProgressTracker``
+                    # docstring for the rationale (v0.7.11 fix for the
+                    # v0.7.10 "stuck at 83%" UX bug).
+                    if progress_tracker is not None:
+                        progress_tracker.add(len(chunk))
+                        chunks_credited += len(chunk)
 
             # Short-read guard — Content-Length lied or the connection
             # dropped silently. Don't rename a truncated file into the
             # snapshot; let HF redownload.
             if length > 0 and read != length:
                 _safe_unlink(tmp)
+                _rollback_credits(progress_tracker, chunks_credited)
                 return False, f"short-read:{read}!={length}"
 
             # Codex round-5 BLOCKING #1 — SHA-256 check (LFS files
@@ -467,6 +599,7 @@ def _do_r2_download(
                 got = hasher.hexdigest()
                 if got != expected_sha256:
                     _safe_unlink(tmp)
+                    _rollback_credits(progress_tracker, chunks_credited)
                     return (
                         False,
                         f"sha256-mismatch:{got[:8]}…!={expected_sha256[:8]}…",
@@ -479,6 +612,11 @@ def _do_r2_download(
         ValueError,
     ) as e:
         _safe_unlink(tmp)
+        # ``chunks_credited`` may not be bound if the exception fired
+        # before the chunk loop reached the credit branch (e.g. urlopen
+        # raised). ``locals().get`` keeps the rollback safe in either
+        # case.
+        _rollback_credits(progress_tracker, locals().get("chunks_credited", 0))
         return False, type(e).__name__
 
     # Codex round-5 BLOCKING #2: ``tmp.stat()`` was outside the
@@ -488,9 +626,11 @@ def _do_r2_download(
         final_size = tmp.stat().st_size if tmp.exists() else 0
     except OSError as e:
         _safe_unlink(tmp)
+        _rollback_credits(progress_tracker, chunks_credited)
         return False, f"final-stat:{type(e).__name__}"
     if expected_size is not None and final_size != expected_size:
         _safe_unlink(tmp)
+        _rollback_credits(progress_tracker, chunks_credited)
         return False, f"final-size-mismatch:{final_size}!={expected_size}"
 
     # Issue #?? — defensive 0-byte rejection when HF didn't tell us a
@@ -520,6 +660,7 @@ def _do_r2_download(
     # canonical size for.
     if expected_size is None and final_size == 0:
         _safe_unlink(tmp)
+        _rollback_credits(progress_tracker, chunks_credited)
         return False, "empty-response-no-size"
 
     # Issue #652: for LFS files (``expected_sha256`` known) land the
@@ -535,6 +676,7 @@ def _do_r2_download(
         )
         if not ok:
             _safe_unlink(tmp)
+            _rollback_credits(progress_tracker, chunks_credited)
             return False, reason
         return True, ""
 
@@ -542,6 +684,7 @@ def _do_r2_download(
         tmp.rename(target)
     except OSError as e:
         _safe_unlink(tmp)
+        _rollback_credits(progress_tracker, chunks_credited)
         return False, f"rename:{type(e).__name__}"
     return True, ""
 
@@ -1074,6 +1217,18 @@ def download_with_mirror_fallback(
     else:
         _print_dim(f"  {DIM}Found {total_files_planned} files{RESET}")
 
+    # Per-pull aggregate byte tracker so chunk writes inside
+    # ``_do_r2_download`` and per-file completions in the ``as_completed``
+    # loop below can emit smooth ``[bytes] D/T`` heartbeats. ``total`` is
+    # the SUM of HF-advertised sizes — if HF lied (cf. the size guards
+    # below) the tracker simply caps at 100% on the desktop side. When
+    # ``total_expected_bytes`` is 0 (HF didn't expose sizes), heartbeats
+    # are silently skipped — the existing per-file ``[N/M]`` lines remain
+    # the user-visible signal. Per-call (not module-global) so two
+    # concurrent ``download_with_mirror_fallback`` calls in one process
+    # don't trample each other's totals (codex R1 BLOCKING on PR #682).
+    progress_tracker = _ProgressTracker(total=total_expected_bytes)
+
     # Per-file plan: for each file, attempt R2 first (if eligible),
     # otherwise fall straight to HF. Run a small pool in parallel.
     r2_hits = 0
@@ -1262,6 +1417,7 @@ def download_with_mirror_fallback(
                 sidecar_dir=sidecar_dir,
                 sidecar_key=_sidecar_key_for(fname),
                 repo_root=repo_root,
+                progress_tracker=progress_tracker,
             )
             if ok:
                 try:
@@ -1335,10 +1491,27 @@ def download_with_mirror_fallback(
             elif kind == "hf":
                 hf_hits += 1
                 total_bytes += size
+                # HF fallback's tqdm doesn't feed into the R2 chunk loop,
+                # so the aggregate tracker would miss these bytes
+                # entirely. Bump it at completion so the heartbeat
+                # reflects HF-fallback files too (size known once
+                # ``hf_hub_download`` returned). Codex R4 defensive
+                # guard: skip the credit when stat() returned 0 (rare —
+                # broken symlink / disappearing snapshot path), since
+                # ``add(0)`` is a no-op anyway. Belt-and-braces against
+                # future refactors that might surface a non-int ``size``.
+                if isinstance(size, int) and size > 0:
+                    progress_tracker.add(size)
             elif kind == "cached":
                 # Already present — count as r2/hf-neutral but include
                 # bytes so the summary reflects the full snapshot size.
                 total_bytes += size
+                # Cached files never enter the chunk loop — credit them
+                # to the tracker on the dispatcher thread so the
+                # heartbeat doesn't undercount a warm pull. Same defensive
+                # guard as the HF arm above (codex R4 on PR #682).
+                if isinstance(size, int) and size > 0:
+                    progress_tracker.add(size)
             else:
                 misses.append(fname)
             # Issue #651 follow-up: per-file completion line so the
@@ -1370,6 +1543,13 @@ def download_with_mirror_fallback(
                 f"  {DIM}[{completed}/{total_files_planned}]{RESET} "
                 f"{_safe_display_name(fname)} {tag}"
             )
+
+    # Final heartbeat: a sub-500 ms tail of bytes can finish between the
+    # last throttle window and the loop exit. Emit one unconditional
+    # ``[bytes] D/T`` so the desktop's progress bar lands at 100% before
+    # the next phase banner ("Verifying snapshot…", "Warming up…")
+    # appears.
+    progress_tracker.flush()
 
     if misses:
         # At least one file we couldn't get from either source. Caller

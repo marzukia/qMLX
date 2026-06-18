@@ -3062,6 +3062,462 @@ def test_progress_file_count_matches_downloaded_files(
     assert f"Pulled {len(files)} files" in captured.out
 
 
+def test_bytes_heartbeat_emitted_during_r2_pull(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """The aggregate ``[bytes] D/T`` heartbeat must fire during an R2
+    pull and the final value must equal the planned snapshot size.
+
+    Regression guard for rapid-desktop v0.7.10's "stuck at 83%" bug:
+    without the per-chunk byte counter the desktop has no signal to
+    advance its progress bar while a multi-GB shard streams between
+    ``[N/M] file R2 (X MB)`` completion lines.
+    """
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    files = [
+        ("config.json", 100),
+        ("model.safetensors", 600),
+        ("tokenizer.json", 50),
+    ]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    for fname, size in files:
+        router.add(
+            f"https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/{fname}",
+            _FakeResponse(200, b"x" * size),
+        )
+
+    # Force at least one heartbeat to land — drop the throttle window to
+    # zero so every chunk emits. Production keeps it at 500 ms; the test
+    # only needs to verify the emission shape + final total.
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    import re
+
+    matches = re.findall(r"\[bytes\] (\d+)/(\d+)", captured.out)
+    assert matches, (
+        f"expected at least one '[bytes] D/T' heartbeat in stdout:\n{captured.out}"
+    )
+    planned_total = sum(s for _, s in files)
+    # Every heartbeat uses the same denominator — the snapshot total.
+    for done_s, total_s in matches:
+        assert int(total_s) == planned_total
+        assert 0 <= int(done_s) <= planned_total
+    # Final heartbeat (flush) hits 100% of planned bytes.
+    final_done = int(matches[-1][0])
+    assert final_done == planned_total, (
+        f"final heartbeat done={final_done} != planned_total={planned_total}\n"
+        f"{captured.out}"
+    )
+    # Monotonic — no heartbeat regresses below an earlier one.
+    dones = [int(d) for d, _ in matches]
+    assert dones == sorted(dones)
+
+
+def test_bytes_heartbeat_skipped_when_total_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """When HF doesn't expose file sizes the tracker total stays at 0
+    and the heartbeat must stay silent — emitting ``[bytes] D/0`` would
+    divide-by-zero on the desktop side.
+    """
+    # Build a model_info where every sibling has ``size=None`` so
+    # ``total_expected_bytes`` stays at 0.
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "0000" * 10
+    files: list[tuple[str, int | None]] = [
+        ("config.json", None),
+        ("tokenizer.json", None),
+    ]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    for fname, _ in files:
+        # 404 → HF fallback. HF fallback path also bumps the tracker —
+        # if ``_total == 0`` the add() short-circuits without printing.
+        router.add(
+            f"https://models.rapidmlx.com/mlx-community/Qwen3-0.6B-4bit/{fname}",
+            _FakeResponse(404, b""),
+        )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        (snap / filename).write_bytes(b"x" * 30)
+        return str(snap / filename)
+
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    assert "[bytes]" not in captured.out, (
+        f"heartbeat must stay silent when total is unknown:\n{captured.out}"
+    )
+
+
+def test_progress_tracker_is_per_pull_not_global(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Two concurrent pulls must NOT share a tracker.
+
+    Codex R1 BLOCKING on PR #682: an earlier draft used a module-global
+    ``_PROGRESS = _ProgressTracker()`` instance. Two simultaneous calls
+    to ``download_with_mirror_fallback`` would overwrite each other's
+    ``_total`` and emit byte heartbeats with the wrong denominator,
+    making the desktop bar stuck at >100% or capped early. Fixed by
+    instantiating a fresh tracker inside each call; this test pins that
+    by running two pulls in parallel threads on differently-sized repos
+    and asserting each one's final heartbeat matches its OWN planned
+    total (the cross-pull contamination would shift one side).
+    """
+    import re
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+
+    # Two pulls with very different total sizes — if a global tracker
+    # were still in play, the smaller pull's final flush would emit
+    # ``done=small/total=large`` or vice-versa.
+    files_a = [("config.json", 100), ("model.safetensors", 900)]  # 1000
+    files_b = [("config.json", 50), ("model.safetensors", 250)]  # 300
+    repo_a, repo_b = "mlx-community/A", "mlx-community/B"
+    rev_a, rev_b = "a" * 40, "b" * 40
+
+    catalog = _catalog_payload(
+        [
+            ("a", repo_a, "mirrored"),
+            ("b", repo_b, "mirrored"),
+        ]
+    )
+
+    router = _UrlRouter()
+    # Factory closures so each urlopen call gets a fresh BytesIO — the
+    # two parallel pulls would otherwise drain a shared buffer.
+    catalog_bytes = json.dumps(catalog).encode()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        lambda req: _FakeResponse(200, catalog_bytes),
+    )
+    for fname, size in files_a:
+        body = b"x" * size
+        router.add(
+            f"https://models.rapidmlx.com/{repo_a}/{fname}",
+            lambda req, body=body: _FakeResponse(200, body),
+        )
+    for fname, size in files_b:
+        body = b"y" * size
+        router.add(
+            f"https://models.rapidmlx.com/{repo_b}/{fname}",
+            lambda req, body=body: _FakeResponse(200, body),
+        )
+
+    # Capture each pull's stdout in isolation by routing prints through
+    # a thread-local sink installed via monkeypatching ``builtins.print``.
+    local = threading.local()
+    real_print = print
+
+    def routed_print(*args, **kwargs):
+        sink = getattr(local, "sink", None)
+        if sink is None:
+            return real_print(*args, **kwargs)
+        sink.append(" ".join(str(a) for a in args))
+
+    monkeypatch.setattr("builtins.print", routed_print)
+
+    # Dispatch model_info by repo_id so two parallel pulls each get
+    # their own files list. ``unittest.mock.patch`` isn't thread-safe at
+    # context exit, so install the mocks once at the test scope and
+    # leave the per-thread variation to the side_effect.
+    by_repo = {repo_a: (rev_a, files_a), repo_b: (rev_b, files_b)}
+
+    def _fake_model_info(repo_id, **kwargs):
+        rev, fs = by_repo[repo_id]
+        return _mk_model_info(rev, fs)
+
+    def _pull(repo: str, cache: Path) -> list[str]:
+        local.sink = []
+        try:
+            ok = _mirror.download_with_mirror_fallback(repo, cache_dir=cache)
+            assert ok
+            return list(local.sink)
+        finally:
+            local.sink = None
+
+    cache_a = tmp_path / "a"
+    cache_b = tmp_path / "b"
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch("huggingface_hub.model_info", side_effect=_fake_model_info),
+        patch("huggingface_hub.hf_hub_download"),
+        ThreadPoolExecutor(max_workers=2) as ex,
+    ):
+        fut_a = ex.submit(_pull, repo_a, cache_a)
+        fut_b = ex.submit(_pull, repo_b, cache_b)
+        out_a = fut_a.result(timeout=30)
+        out_b = fut_b.result(timeout=30)
+
+    def _final_total(lines: list[str]) -> int:
+        matches = [
+            m for line in lines for m in re.findall(r"\[bytes\] \d+/(\d+)", line)
+        ]
+        assert matches, f"no heartbeat in pull stdout:\n{lines}"
+        # Every heartbeat from one pull must use that pull's denominator.
+        denoms = {int(m) for m in matches}
+        assert len(denoms) == 1, f"mixed denominators leaked across pulls: {denoms}"
+        return int(matches[-1])
+
+    assert _final_total(out_a) == sum(s for _, s in files_a)  # 1000
+    assert _final_total(out_b) == sum(s for _, s in files_b)  # 300
+
+
+def test_progress_no_double_count_on_r2_short_read_then_hf(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """When R2 streams partial bytes then short-reads → HF fallback
+    succeeds, the heartbeat must NOT report ``done > total``.
+
+    Codex R2 BLOCKING on PR #682: R2 chunks were credited optimistically
+    inside the chunk loop, so an R2 file that streamed N bytes and then
+    failed validation (short-read here, also sha-mismatch / rename) would
+    leave N bytes on the tracker. The HF fallback then added the file's
+    full canonical size again on top, blowing the desktop bar past 100%.
+    Fixed by rolling back ``chunks_credited`` at every post-credit
+    failure path before the dispatcher hands off to HF.
+    """
+    import re
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    # Single big-ish file whose R2 fetch fails short-read; HF fallback
+    # serves the full thing.
+    files = [("model.safetensors", 1000)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+    # R2 advertises Content-Length: 1000 but delivers only 400 → triggers
+    # the short-read path. Workers credit 400 bytes during streaming.
+    router.add(
+        f"https://models.rapidmlx.com/{repo_id}/model.safetensors",
+        _FakeResponse(200, b"x" * 400, headers={"Content-Length": "1000"}),
+    )
+
+    def _fake_hf(repo_id, filename, revision, cache_dir=None):
+        snap = (
+            Path(cache_dir)
+            / f"models--{repo_id.replace('/', '--')}"
+            / "snapshots"
+            / revision
+        )
+        snap.mkdir(parents=True, exist_ok=True)
+        (snap / filename).write_bytes(b"x" * 1000)
+        return str(snap / filename)
+
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download", side_effect=_fake_hf),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    matches = re.findall(r"\[bytes\] (\d+)/(\d+)", captured.out)
+    assert matches, f"no heartbeat at all:\n{captured.out}"
+    # Every heartbeat carries the same denominator and never exceeds it.
+    for done_s, total_s in matches:
+        assert int(total_s) == 1000
+        assert int(done_s) <= 1000, (
+            f"heartbeat done={done_s} exceeds total={total_s} — "
+            f"R2 chunks weren't rolled back before HF credit:\n{captured.out}"
+        )
+    # Final heartbeat after flush lands at exactly 1000 (HF success
+    # credit of the full file).
+    assert int(matches[-1][0]) == 1000
+
+
+def test_progress_resumed_r2_credits_existing_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Resumed R2 downloads must credit the validated ``.part`` prefix
+    so the final heartbeat lands at 100%, not just the suffix.
+
+    Codex R5 BLOCKING on PR #682: ``_do_r2_download`` only credited
+    bytes streamed in the CURRENT process. When a prior interrupted
+    pull left an N-byte ``.part`` and R2 honors ``Range: bytes=N-`` with
+    a valid 206, the chunk loop streams only the remaining bytes — and
+    the final heartbeat used to land at ``length/total`` instead of
+    ``(existing + length)/total``. Fix: credit ``existing`` once before
+    the chunk loop and include it in ``chunks_credited`` so rollback
+    stays balanced if R2 then fails.
+    """
+    import re
+
+    repo_id = "mlx-community/Qwen3-0.6B-4bit"
+    revision = "feed" * 10
+    files = [("model.safetensors", 1000)]
+    catalog = _catalog_payload([("qwen3-0.6b-4bit", repo_id, "mirrored")])
+
+    # Pre-seed a 400-byte ``.part`` so R2's request goes out with
+    # ``Range: bytes=400-`` and the server returns 206 with the suffix.
+    # The sidecar layout matches what ``_do_file`` computes.
+    sidecar = tmp_path / f"models--{repo_id.replace('/', '--')}" / ".rapid-mlx-mirror"
+    sidecar.mkdir(parents=True)
+    part_key = _mirror._sidecar_key_for("model.safetensors")
+    (sidecar / f"{part_key}.part").write_bytes(b"x" * 400)
+
+    router = _UrlRouter()
+    router.add(
+        "https://models.rapidmlx.com/api/models",
+        _FakeResponse(200, json.dumps(catalog).encode()),
+    )
+
+    # Range-aware fake: honor the request's Range header by returning a
+    # 206 with just the suffix and the correct Content-Range total.
+    def _ranged(req):
+        rng = req.headers.get("Range", "")
+        m = re.match(r"bytes=(\d+)-", rng)
+        if m:
+            start = int(m.group(1))
+            suffix = b"x" * (1000 - start)
+            return _FakeResponse(
+                206,
+                suffix,
+                headers={
+                    "Content-Length": str(len(suffix)),
+                    "Content-Range": f"bytes {start}-999/1000",
+                },
+            )
+        return _FakeResponse(200, b"x" * 1000)
+
+    router.add(
+        f"https://models.rapidmlx.com/{repo_id}/model.safetensors",
+        _ranged,
+    )
+
+    monkeypatch.setattr(_mirror, "_PROGRESS_HEARTBEAT_SECONDS", 0.0)
+    monkeypatch.setenv("RAPID_MLX_MODEL_MIRROR", "https://models.rapidmlx.com")
+    with (
+        patch("urllib.request.urlopen", side_effect=router),
+        patch(
+            "huggingface_hub.model_info",
+            return_value=_mk_model_info(revision, files),
+        ),
+        patch("huggingface_hub.hf_hub_download"),
+    ):
+        ok = _mirror.download_with_mirror_fallback(repo_id, cache_dir=tmp_path)
+
+    assert ok
+    captured = capsys.readouterr()
+    matches = re.findall(r"\[bytes\] (\d+)/(\d+)", captured.out)
+    assert matches, f"no heartbeat:\n{captured.out}"
+    # Final heartbeat must reflect the FULL file (prefix + suffix),
+    # not just the suffix that streamed in this attempt.
+    assert int(matches[-1][0]) == 1000, (
+        f"resumed pull's final heartbeat short of total — prefix wasn't "
+        f"credited: {matches[-1]}\n{captured.out}"
+    )
+
+
+def test_progress_tracker_clamps_display_at_total():
+    """Direct unit test on ``_ProgressTracker``: an over-credit during
+    streaming must not emit ``done > total``.
+
+    Codex R3 BLOCKING on PR #682: rollback only fires AFTER the stream
+    completes; while streaming, an oversized/corrupt R2 response
+    (Content-Length lies, proxy injects extra bytes) can already trip
+    the heartbeat above 100% before the final-size-mismatch validation
+    catches it. Display is clamped at total; internal counter stays raw
+    so subsequent ``subtract`` correctly balances against the actual
+    credit.
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    # Force every add() to emit.
+    saved = _mirror._PROGRESS_HEARTBEAT_SECONDS
+    _mirror._PROGRESS_HEARTBEAT_SECONDS = 0.0
+    try:
+        t = _mirror._ProgressTracker(total=1000)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            t.add(800)  # 800/1000
+            t.add(400)  # over-streamed: internal _done=1200, display 1000/1000
+            t.subtract(1200)  # rollback raw 1200 → internal _done=0
+            t.add(1000)  # HF fallback adds full file → 1000/1000
+            t.flush()
+        out = buf.getvalue()
+        import re
+
+        matches = re.findall(r"\[bytes\] (\d+)/(\d+)", out)
+        assert matches, f"no heartbeat: {out!r}"
+        for done_s, total_s in matches:
+            assert int(total_s) == 1000
+            assert int(done_s) <= 1000, (
+                f"display exceeded total: done={done_s} total={total_s}"
+            )
+        # Final heartbeat lands at exactly 1000.
+        assert int(matches[-1][0]) == 1000
+    finally:
+        _mirror._PROGRESS_HEARTBEAT_SECONDS = saved
+
+
 def test_safe_display_name_strips_control_chars():
     """Filenames from external HF metadata can't inject terminal escapes.
 
