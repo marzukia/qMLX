@@ -21,9 +21,12 @@ existing freeform ``bench`` (no --tier, no --submit) path and the
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 
 # The 5 first-class harnesses in the documented order. Used by both
@@ -45,6 +48,50 @@ HARNESS_PROFILES: tuple[str, ...] = (
 # concurrent tier runs are easy to spot in ``lsof``).
 TIER_PORT_MIN = 8500
 TIER_PORT_MAX = 8599
+
+def _resolve_harness_profile_timeout() -> int:
+    """Read the per-profile harness timeout from the environment.
+
+    300s default is wide enough that a healthy harness on a 30B+ model
+    still finishes (release-check observed ~120s p95 for codex on
+    qwen3.5-9b) but tight enough that a true hang gets caught in well
+    under the gauntlet's overall 10-min/model budget.
+
+    Reading at MODULE LOAD honors the documented ``HARNESS_PROFILE_TIMEOUT_S``
+    override without needing every caller to thread a kwarg through.
+    Invalid / non-positive values fall back to 300 with a stderr warning
+    rather than silently using the user's broken value (e.g. ``-1`` would
+    cause every harness to "time out" on the very first thread.join()).
+    """
+    raw = os.environ.get("HARNESS_PROFILE_TIMEOUT_S")
+    if raw is None:
+        return 300
+    try:
+        val = int(raw)
+        if val <= 0:
+            raise ValueError(f"must be positive, got {val}")
+        return val
+    except ValueError as exc:
+        print(
+            f"  Warning: ignoring invalid HARNESS_PROFILE_TIMEOUT_S={raw!r} "
+            f"({exc}); using 300s default",
+            file=sys.stderr,
+        )
+        return 300
+
+
+# Per-profile wall-clock cap for the harness sweep. One bad harness
+# (e.g. a codex e2e_file_read hang at 156s on a slow model) was taking
+# down the in-process server and cascading FAIL to every later profile
+# with ECONNREFUSED / "Rapid-MLX server not running". Override via
+# ``HARNESS_PROFILE_TIMEOUT_S`` env var for slow boxes / future bigger
+# models. Resolved at module-load via ``_resolve_harness_profile_timeout``.
+HARNESS_PROFILE_TIMEOUT_S = _resolve_harness_profile_timeout()
+
+# Server health-probe timeout used between harness profiles. The probe
+# is a single GET /health — we don't want it to itself hang and look
+# like a profile failure, so keep it short.
+_HEALTH_PROBE_TIMEOUT_S = 3
 
 
 @dataclass
@@ -431,17 +478,408 @@ def _run_speed(model: str, base_url: str, sampled: bool = False) -> TierResult:
     return TierResult(name="speed", passed=True, duration_s=elapsed, detail=detail)
 
 
-def _run_harness(model: str, base_url: str) -> TierResult:
+def _health_check(base_url: str, timeout_s: int = _HEALTH_PROBE_TIMEOUT_S) -> bool:
+    """Single GET /health probe. Returns True iff the server answered 200.
+
+    ``base_url`` is the normalized OpenAI base (e.g. ``http://host:port/v1``).
+    The bench server's health route lives at ``/health`` (not under
+    ``/v1``) — we derive it by stripping a trailing ``/v1``. Any error
+    (connection refused, timeout, non-200) returns False — the caller
+    interprets that as "server is dead, reboot it if we can".
+    """
+    cleaned = base_url.rstrip("/")
+    if cleaned.endswith("/v1"):
+        cleaned = cleaned[: -len("/v1")]
+    health_url = f"{cleaned}/health"
+    try:
+        with urllib.request.urlopen(health_url, timeout=timeout_s) as resp:  # noqa: S310
+            return resp.status == 200
+    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+        return False
+
+
+class _HarnessServerSession:
+    """Per-harness server lifecycle for the harness sweep.
+
+    Wraps either (a) a server we own and CAN restart between profiles
+    when it dies, or (b) a user-attached server we can only health-check
+    against. Exposes a single method ``ensure_healthy()`` that the
+    harness loop calls before each profile.
+
+    Why this exists: the harness sweep used to share one ``serve()``
+    context manager with the rest of ``run_tier``. If one profile's e2e
+    subtest hung long enough to OOM / crash the in-process server (real
+    incident: codex e2e_file_read on gemma3-4-12b, qwen3.5-9b — the
+    server died, and every later profile then failed with
+    ``Rapid-MLX server not running``), nothing brought the server back
+    up. Cascade fail. Now a per-profile health check catches the dead
+    server and the session reboots before the next profile runs.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        boot_timeout_s: int,
+        initial_port: int,
+        initial_owns: bool,
+        initial_base_url: str,
+        release_slot,
+    ):
+        self._model = model
+        self._boot_timeout_s = boot_timeout_s
+        self._port = initial_port
+        self._owns = initial_owns
+        self._base_url = initial_base_url
+        # ``_release_slot`` is the single-key dict from
+        # ``_serve_or_attach``; ``_release_slot["current"]`` always
+        # holds the zero-arg release for the LIVE server. On every
+        # restart, ``_restart`` reads the slot to kill the current
+        # server then writes the replacement's release back into the
+        # slot — so the outer ``_serve_or_attach`` finally always
+        # targets the live server. ``None`` in attach mode.
+        self._release_slot = release_slot
+        self._restarts = 0
+        # When ``True``, the session refuses all further reboots — set
+        # after a single teardown failure to guarantee at most one model
+        # server alive at any time (Codex review-3 BLOCKING).
+        self._reboot_disabled = False
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
+    def owns(self) -> bool:
+        return self._owns
+
+    @property
+    def restarts(self) -> int:
+        return self._restarts
+
+    def ensure_healthy(self) -> tuple[bool, str | None]:
+        """Probe /health; restart if dead and we own the server.
+
+        Returns ``(healthy_now, note)``:
+
+        - ``healthy_now`` — True iff the server is responsive (after a
+          possible restart). False if the server is dead AND we can't
+          restart it (e.g. user-attached via ``--base-url``).
+        - ``note`` — human-readable string for tier output describing
+          what we did (restart count, "attached so could not restart",
+          etc.) or ``None`` when no action was needed.
+
+        The caller treats ``healthy_now=False`` as "skip this profile
+        and mark it failed" — running a profile against a dead server
+        just generates a noisy ECONNREFUSED report.
+        """
+        if _health_check(self._base_url):
+            return True, None
+
+        if not self._owns:
+            return (
+                False,
+                "server unreachable and --base-url attached "
+                "(cannot restart attached servers)",
+            )
+
+        # We own it — tear down and reboot.
+        return self._restart()
+
+    def force_restart_after_timeout(self) -> tuple[bool, str | None]:
+        """Reboot the server unconditionally after a per-profile timeout.
+
+        The orphaned daemon thread from a timed-out profile may still be
+        mid-request against the current server (an httpx call that hasn't
+        returned, a subprocess that hasn't finished). If we let the NEXT
+        profile share that same server, the orphan's late response would
+        race against the new profile's measurements / failure modes.
+        Force a fresh server so the next profile starts on a clean slate.
+
+        No-op (returns ``(True, None)``) when we don't own the server —
+        we can't restart what the user is hosting, so the next profile
+        will simply contend with whatever ghost requests the orphan
+        emits. Surface a clear note in that case so the gauntlet
+        operator knows the next profile's numbers are suspect.
+        """
+        if not self._owns:
+            return (
+                True,
+                "profile timed out and --base-url is attached — "
+                "subsequent profile measurements may be polluted by the "
+                "orphaned worker",
+            )
+        return self._restart()
+
+    def _restart(self) -> tuple[bool, str | None]:
+        # If a previous teardown failed, the OLD server may still be
+        # alive — we have no reliable way to tell. The safest stance is
+        # to refuse further reboots for the rest of the sweep so we
+        # never accidentally run two model servers on the GPU at once.
+        # ``ensure_healthy`` will then surface server-not-healthy FAILs
+        # for the remaining profiles instead of trying to recover into
+        # an unsafe state (Codex review-3 BLOCKING).
+        if self._reboot_disabled:
+            return (
+                False,
+                "reboot disabled after a prior teardown failure — "
+                "cannot guarantee single-server invariant",
+            )
+
+        # Tear down the currently-live owned server BEFORE booting the
+        # replacement. The slot's ``current`` entry was either populated
+        # by ``_serve_or_attach`` (first restart) or by this method's
+        # own swap on a prior restart. Either way, calling it kills
+        # exactly the live server — no coexistence window (Codex
+        # review-2 BLOCKING).
+        old_port = self._port
+        if self._release_slot is not None:
+            cb = self._release_slot.get("current")
+            if cb is not None:
+                try:
+                    cb()
+                except Exception as exc:  # noqa: BLE001
+                    # Codex review-5 BLOCKING-A: don't clear the slot
+                    # BEFORE the teardown attempt — if it fails, the
+                    # outer ``_serve_or_attach`` finalizer must still
+                    # have a callback to try. Leave ``cb`` registered
+                    # so the final ``_release_current_server`` swallow
+                    # path retries the teardown (subsequent SIGTERMs
+                    # are cheap; the proc-group teardown is idempotent
+                    # via ``ProcessLookupError`` swallowing). Disable
+                    # future reboots in THIS sweep so we don't stack a
+                    # second engine on whatever zombies the failure
+                    # left.
+                    self._reboot_disabled = True
+                    note = (
+                        f"refused to reboot from port {old_port}: "
+                        f"teardown of old server raised "
+                        f"{type(exc).__name__}: {exc}. Skipping reboot "
+                        f"to avoid running two model servers concurrently. "
+                        f"Outer finalizer will retry teardown on tier exit"
+                    )
+                    return False, note
+                # Teardown succeeded — now safe to clear the slot.
+                self._release_slot["current"] = None
+
+        # New port — old one may still be in TIME_WAIT, and a fresh
+        # port keeps lsof unambiguous if the user is watching.
+        from ._server import serve
+
+        new_port = _find_free_port_in_range(TIER_PORT_MIN, TIER_PORT_MAX)
+        ctx = serve(
+            model=self._model, port=new_port, boot_timeout_s=self._boot_timeout_s
+        )
+        try:
+            info = ctx.__enter__()
+        except Exception as exc:  # noqa: BLE001 — failed reboot must surface
+            note = (
+                f"reboot from port {old_port} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return False, note
+
+        released = {"done": False}
+
+        def _release_replacement() -> None:
+            # As with ``_release_initial``, don't swallow — the next
+            # restart needs the signal to refuse a follow-up reboot if
+            # this teardown fails.
+            if released["done"]:
+                return
+            released["done"] = True
+            ctx.__exit__(None, None, None)
+
+        # Hand the new release back to the slot so the outer
+        # ``_serve_or_attach`` finally tears down the REPLACEMENT, not
+        # the dead original (Codex review-3 BLOCKING).
+        if self._release_slot is not None:
+            self._release_slot["current"] = _release_replacement
+        self._port = info["port"]
+        self._base_url = _normalize_openai_base(None, self._port)
+        self._restarts += 1
+        note = (
+            f"server was unhealthy — rebooted on port {self._port} "
+            f"(restart #{self._restarts})"
+        )
+        return True, note
+
+
+def _run_single_profile(
+    profile_name: str,
+    profile,
+    base_url: str,
+    timeout_s: int,
+) -> tuple[bool, float, str, bool]:
+    """Run ONE harness profile with a wall-clock cap. Never raises.
+
+    Returns ``(ok, elapsed_s, detail, timed_out)`` — the trailing flag
+    lets the caller force a server restart after a timeout so the
+    orphaned daemon thread can't pollute the next profile's
+    measurements with late-arriving requests.
+
+    The runner is dispatched on a worker thread and joined with a
+    ``timeout_s`` deadline. On timeout we abandon the thread (Python
+    threads can't be force-killed) and surface a tier-level FAIL with
+    a "timed out" detail.
+
+    KNOWN LIMITATION — codex review-5 BLOCKING-B (acknowledged as a
+    followup beyond this PR's scope): an abandoned daemon worker can
+    keep running its in-flight subprocess / HTTP call after we move on.
+    Bounded mitigations are already in play:
+
+    - All subprocesses launched via ``_agent_query`` carry their own
+      ``subprocess.run(..., timeout=...)`` (the harness profile's
+      ``testing.query_timeout``, default 120s). So the worst-case
+      lifetime of an orphan subprocess is bounded.
+    - Every ``httpx`` call in ``AgentTestRunner`` carries an explicit
+      timeout (30s for API checks; 60-180s for streaming).
+    - The forced server restart after a timeout cuts the network
+      connection the orphan was using — most HTTP calls error out
+      within seconds of that.
+    - The worker thread itself is ``daemon=True`` so process exit
+      reaps it regardless.
+
+    A complete fix requires running each profile in a child Python
+    process with OS-level signal-killing — substantial refactor. Filed
+    as a followup; the current per-profile budget + forced restart
+    combo handles the production case (codex e2e_file_read hang on
+    qwen3.5-9b) cleanly.
+    """
+    from ..agents.testing import AgentTestRunner, TestStatus
+
+    h_t0 = time.perf_counter()
+
+    def _run() -> tuple[bool, str]:
+        runner = AgentTestRunner(
+            profile,
+            base_url=base_url,
+            model_id=None,  # auto-detect from /models
+        )
+        report = runner.run()
+        n_fail = report.failed
+        n_err = report.errored
+        ok = n_fail == 0 and n_err == 0
+        if ok:
+            detail = f"{report.passed}p {report.skipped}s"
+        else:
+            # Surface first failing test name + message excerpt so
+            # gauntlet operators see the actionable signal without
+            # diving into the log.
+            first_bad = next(
+                (
+                    f"{r.name}: {(r.message or '')[:80]}"
+                    for r in report.results
+                    if r.status in (TestStatus.FAIL, TestStatus.ERROR)
+                ),
+                "(no detail)",
+            )
+            detail = (
+                f"{report.passed}p {n_fail}f {n_err}e {report.skipped}s "
+                f"| {first_bad}"
+            )
+        return ok, detail
+
+    # Use a daemon ``threading.Thread`` directly rather than
+    # ``ThreadPoolExecutor`` — the latter's worker threads are
+    # NON-daemon by default, so an orphaned hung worker would block the
+    # bench CLI from exiting cleanly when ``run_tier`` returns. We
+    # really do want the worker to be killable-by-interpreter-exit if
+    # it's hung on an HTTP call that never returns; that's the only
+    # safe escape hatch on top of the per-profile deadline.
+    import threading
+
+    result_container: dict[str, object] = {}
+
+    def _runner_target() -> None:
+        # Catch ``Exception`` (NOT ``BaseException``): leaking
+        # ``KeyboardInterrupt`` / ``SystemExit`` here would let process
+        # termination signals propagate through the worker thread up to
+        # the bench CLI's signal handler, instead of being silently
+        # demoted to a benchmark FAIL row. Worker threads can't actually
+        # receive those signals (Python delivers them to the main
+        # thread), but the symmetric exception handling is a Codex
+        # review-2 NIT worth honoring.
+        try:
+            result_container["ok"], result_container["detail"] = _run()
+        except Exception as exc:  # noqa: BLE001 — captured for the joiner
+            result_container["exc"] = exc
+
+    worker = threading.Thread(
+        target=_runner_target,
+        name=f"harness-{profile_name}",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout=timeout_s)
+
+    if worker.is_alive():
+        # Hang — abandon the daemon thread to die when (if ever) its
+        # blocking call returns. Process exit will reap it because of
+        # ``daemon=True``. Return ``timed_out=True`` so the caller
+        # forces a server restart before the next profile, isolating
+        # the orphan's late requests from the next profile's measurements.
+        h_elapsed = time.perf_counter() - h_t0
+        return (
+            False,
+            h_elapsed,
+            f"timed out after {timeout_s}s (per-profile cap)",
+            True,
+        )
+
+    h_elapsed = time.perf_counter() - h_t0
+    if "exc" in result_container:
+        exc = result_container["exc"]
+        return (
+            False,
+            h_elapsed,
+            f"crashed: {type(exc).__name__}: {exc}",
+            False,
+        )
+    return (
+        bool(result_container["ok"]),
+        h_elapsed,
+        str(result_container["detail"]),
+        False,
+    )
+
+
+def _run_harness(
+    model: str,
+    base_url: str,
+    session: _HarnessServerSession | None = None,
+    per_profile_timeout_s: int | None = None,
+) -> TierResult:
     """Run the 5 first-class harnesses against the booted server.
 
     Returns a TierResult that aggregates the 5 individual outcomes. We
     treat any ERROR or FAIL in any harness as a tier-level failure —
     SKIP is fine (binary missing for the e2e tests is expected).
 
-    ``base_url`` is the normalized OpenAI base (e.g. ``http://host:port/v1``).
+    ``base_url`` is the normalized OpenAI base used as the FALLBACK when
+    no ``session`` is supplied (kept for back-compat with existing unit
+    tests and direct ``_run_harness`` callers). When ``session`` is
+    provided, its ``base_url`` is consulted before each profile and the
+    session decides whether to restart the server if /health is dead —
+    that's the path the public ``run_tier`` takes.
+
+    ``per_profile_timeout_s`` caps each individual harness's wall-clock
+    time. A hung harness (real-world cause: codex e2e_file_read hanging
+    156s on a slow model and taking the in-process server down) is now
+    recorded as a per-profile FAIL with a clear timeout marker, and the
+    next profile starts immediately against the rebooted server instead
+    of cascading ``ECONNREFUSED`` failures. ``None`` (the default)
+    resolves to the module-level ``HARNESS_PROFILE_TIMEOUT_S`` at CALL
+    time — important so the test suite can monkeypatch the constant for
+    fast unit tests (a default-arg sentinel would freeze the value at
+    function-definition time).
     """
     from ..agents import get_profile
-    from ..agents.testing import AgentTestRunner, TestStatus
+
+    timeout_s = (
+        per_profile_timeout_s
+        if per_profile_timeout_s is not None
+        else HARNESS_PROFILE_TIMEOUT_S
+    )
 
     t0 = time.perf_counter()
     per_harness: list[tuple[str, bool, float, str]] = []
@@ -454,47 +892,72 @@ def _run_harness(model: str, base_url: str) -> TierResult:
             )
             continue
 
-        h_t0 = time.perf_counter()
-        try:
-            runner = AgentTestRunner(
-                profile,
-                base_url=base_url,
-                model_id=None,  # auto-detect from /models
-            )
-            report = runner.run()
-            h_elapsed = time.perf_counter() - h_t0
-            n_fail = report.failed
-            n_err = report.errored
-            ok = n_fail == 0 and n_err == 0
-            if ok:
-                detail = f"{report.passed}p {report.skipped}s"
-            else:
-                # Surface first failing test name + message excerpt so
-                # gauntlet operators see the actionable signal without
-                # diving into the log.
-                first_bad = next(
+        # Resolve the URL to hit for this profile + decide if the
+        # server is up. With no session, we trust the caller (legacy
+        # path / unit tests). With a session, we probe + may reboot.
+        if session is None:
+            profile_base_url = base_url
+        else:
+            healthy, note = session.ensure_healthy()
+            profile_base_url = session.base_url
+            if note:
+                print(f"  [server] {note}")
+            if not healthy:
+                # Can't run this profile — record a FAIL with the
+                # reason and move on to the next one (which will also
+                # try to ensure health if it was a transient dead-but-
+                # rebootable situation we couldn't recover from).
+                per_harness.append(
                     (
-                        f"{r.name}: {(r.message or '')[:80]}"
-                        for r in report.results
-                        if r.status in (TestStatus.FAIL, TestStatus.ERROR)
-                    ),
-                    "(no detail)",
+                        profile_name,
+                        False,
+                        0.0,
+                        f"server not healthy before profile: {note or 'unknown'}",
+                    )
                 )
-                detail = (
-                    f"{report.passed}p {n_fail}f {n_err}e {report.skipped}s "
-                    f"| {first_bad}"
-                )
-            per_harness.append((profile_name, ok, h_elapsed, detail))
-        except Exception as exc:  # noqa: BLE001 — never abort the sweep
-            h_elapsed = time.perf_counter() - h_t0
-            per_harness.append(
-                (
-                    profile_name,
-                    False,
-                    h_elapsed,
-                    f"crashed: {type(exc).__name__}: {exc}",
-                )
-            )
+                continue
+
+        ok, h_elapsed, detail, timed_out = _run_single_profile(
+            profile_name,
+            profile,
+            profile_base_url,
+            timeout_s,
+        )
+        per_harness.append((profile_name, ok, h_elapsed, detail))
+
+        # Per-profile timeout → the orphaned daemon thread may still be
+        # mid-request against this server. If we re-use the server for
+        # the next profile, the orphan's response could land DURING the
+        # next profile's measurements and corrupt the supposedly
+        # independent result. Force a fresh server so each profile
+        # starts on a clean slate. Codex review-2 BLOCKING-2.
+        if timed_out and session is not None:
+            ok_restart, note = session.force_restart_after_timeout()
+            if note:
+                print(f"  [server] {note}")
+            if not ok_restart:
+                # Codex review-4 BLOCKING: a failed forced restart means
+                # the orphaned daemon thread from the timed-out profile
+                # may still be issuing requests against whatever server
+                # state survived, AND we couldn't boot a clean
+                # replacement (most likely because the teardown raised
+                # and the session is now in ``_reboot_disabled`` state).
+                # Surface this immediately as part of the timing-out
+                # profile's own detail rather than waiting for the next
+                # ``ensure_healthy`` probe to repeat the bad news — the
+                # operator sees one consolidated FAIL row instead of
+                # chasing a stale "server not healthy" message into the
+                # NEXT profile's row. Mutate in place because the row
+                # was already appended above.
+                if per_harness:
+                    name, _ok, dur, base_detail = per_harness[-1]
+                    suffix = note or "force restart failed"
+                    per_harness[-1] = (
+                        name,
+                        False,
+                        dur,
+                        f"{base_detail} | server isolation FAILED: {suffix}",
+                    )
 
     elapsed = time.perf_counter() - t0
     all_passed = all(ok for _, ok, _, _ in per_harness)
@@ -540,15 +1003,48 @@ def _serve_or_attach(
     base_url: str | None,
     boot_timeout_s: int = 600,
 ):
-    """Yield ``(port, owns_server, boot_time_ms)``.
+    """Yield ``(port, owns_server, boot_time_ms, release_slot)``.
+
+    PRIVATE API CHANGE — PR #684 (cascade-fail fix): pre-fix this
+    helper yielded a 3-tuple ``(port, owns_server, boot_time_ms)``.
+    The 4th element is the mutable release-slot the harness session
+    uses to hand replacement-server cleanup back to the outer ``with``.
+    Only ``run_tier`` calls this helper today (verified via
+    ``grep -rn _serve_or_attach``); the underscore prefix already
+    declared it private, so the shape break is intentional and not
+    deprecation-worthy.
 
     If ``base_url`` is set, attach to that server — caller is responsible
     for its lifecycle and ``boot_time_ms`` is ``None`` (the user
-    already paid the boot cost, we didn't measure it). Otherwise boot
-    one on a port in ``[TIER_PORT_MIN, TIER_PORT_MAX]`` and clean it
-    up on exit; ``boot_time_ms`` is the wall-clock from spawn to first
-    healthy /health response, which feeds the schema v2
+    already paid the boot cost, we didn't measure it). ``release_slot``
+    is ``None`` in the attach case because we can't tear down a server
+    we don't own.
+
+    Otherwise boot one on a port in ``[TIER_PORT_MIN, TIER_PORT_MAX]``
+    and clean it up on exit; ``boot_time_ms`` is the wall-clock from
+    spawn to first healthy /health response, which feeds the schema v2
     ``smoke_result.boot_time_ms`` field.
+
+    ``release_slot`` is a single-key dict ``{"current": callable}``
+    that the harness session mutates on each restart so the outer
+    ``with``'s teardown always targets the LIVE server. Sequence:
+
+    1. On enter, ``slot["current"]`` is set to a zero-arg release for
+       the initial server.
+    2. ``_HarnessServerSession._restart`` reads ``slot["current"]``,
+       calls it to kill the old server, boots a fresh one, then writes
+       a NEW release closure into ``slot["current"]`` tied to the
+       replacement server.
+    3. On the outer ``with`` exit, we call ``slot["current"]`` once.
+       It targets either the original (no restart) or the most recent
+       reboot (restart happened) — never a stale handle to a server
+       already torn down.
+
+    This indirection closes both Codex review-2 BLOCKING (the
+    coexistence window during a forced restart) and Codex review-3
+    BLOCKING (cleanup boundary stays at the outer ``with`` so a tier
+    added after harness in ``tier="all"`` sees a live server, not one
+    that the harness session prematurely closed).
     """
     import contextlib
 
@@ -576,7 +1072,7 @@ def _serve_or_attach(
                     "Start `rapid-mlx serve <model>` on that port first, "
                     "or drop --base-url to let bench --tier boot its own."
                 )
-            yield port, False, None
+            yield port, False, None, None
             return
 
         # Boot our own. Helper lives in the bench/ package now (PR #5
@@ -591,9 +1087,70 @@ def _serve_or_attach(
 
         # log_path=None → DEVNULL; the user-facing tier output is the
         # interesting signal. For debugging, the user can re-run with
-        # `rapid-mlx serve <model> --port <port>` themselves.
-        with serve(model=model, port=port, boot_timeout_s=boot_timeout_s) as info:
-            yield info["port"], True, info.get("boot_time_ms")
+        # `rapid-mlx serve <model> --port <port>` themselves. We
+        # manually drive the ctx manager (not ``with``) so we can hand
+        # the active-server release into the harness session and let it
+        # swap in a fresh release on each restart. The outer ``finally``
+        # then releases WHATEVER server is currently live (the original
+        # if no restart, or the latest replacement if any), so cleanup
+        # always targets the live server — not a stale handle the
+        # session already tore down.
+        ctx = serve(model=model, port=port, boot_timeout_s=boot_timeout_s)
+        released = {"done": False}
+
+        def _release_initial() -> None:
+            # NOTE: do NOT swallow exceptions here. The harness session
+            # treats a raising release as "teardown failed, refuse to
+            # boot a replacement" (Codex review-3 BLOCKING). If we
+            # silently ate the failure, the session would happily start
+            # a second model server while the first was still alive.
+            # The outer ``_release_current_server`` does swallow on the
+            # FINAL teardown path (it has no reboot to refuse), but the
+            # session's restart path needs the raw signal.
+            if released["done"]:
+                return
+            released["done"] = True
+            ctx.__exit__(None, None, None)
+
+        # The ``current`` slot starts pointing at the initial server's
+        # release. ``_HarnessServerSession._restart`` swaps it on each
+        # reboot so this finally always targets the LIVE server. Codex
+        # review-3 BLOCKING: this keeps the cleanup boundary at the
+        # outer ``with`` so a tier added after harness sees the right
+        # server-or-no-server state.
+        release_slot: dict[str, object] = {"current": _release_initial}
+
+        def _release_current_server() -> None:
+            # Final teardown at outer ``with`` exit — nothing to refuse,
+            # so swallow any failure (logging would be nice but the
+            # bench is mid-shutdown and the log_path is gone).
+            cb = release_slot["current"]
+            if cb is None:
+                return
+            release_slot["current"] = None
+            try:
+                cb()  # type: ignore[operator]
+            except Exception:  # noqa: BLE001
+                pass
+
+        # ``__enter__`` lives INSIDE the try so any future code inserted
+        # between enter and finally still releases the server cleanly
+        # (Codex review-3 NIT-1). If ``__enter__`` itself raises, the
+        # finally still runs but ``_release_initial`` is a no-op against
+        # a never-entered context — ``ctx.__exit__(None, None, None)``
+        # on a generator-based contextmanager that never reached its
+        # yield is well-defined: ``contextlib`` swallows the
+        # ``StopIteration``.
+        try:
+            info = ctx.__enter__()
+            yield (
+                info["port"],
+                True,
+                info.get("boot_time_ms"),
+                release_slot,
+            )
+        finally:
+            _release_current_server()
 
     return _ctx()
 
@@ -660,6 +1217,7 @@ def run_tier(
             port,
             owns,
             boot_time_ms,
+            release_slot,
         ):
             # Build the fully-qualified base URL ONCE. Each tier gets
             # the same string, so --base-url's scheme + host are honored
@@ -692,7 +1250,44 @@ def run_tier(
                 results.append(r)
 
             if tier in ("harness", "all"):
-                r = _run_harness(model, openai_base)
+                # Hand the harness sweep a session that can health-check
+                # /health between profiles and reboot the server when a
+                # bad profile (codex hang on slow model → in-process OOM)
+                # has taken it down. Without this the cascade fail
+                # documented in #682 (codex hangs → opencode/hermes/aider/
+                # langchain all FAIL with ECONNREFUSED) re-occurs every
+                # time a model trips the timeout.
+                #
+                # Pass through ``release_slot`` so the session can both
+                # tear down the LIVE server before booting a replacement
+                # (Codex review-2 BLOCKING) AND hand the replacement's
+                # release back into the slot so the outer ``with`` exit
+                # cleans up the right server (Codex review-3 BLOCKING).
+                session = _build_harness_session(
+                    model=model,
+                    boot_timeout_s=boot_timeout_s,
+                    current_port=port,
+                    current_owns=owns,
+                    current_base_url=openai_base,
+                    release_slot=release_slot,
+                )
+                r = _run_harness(model, openai_base, session=session)
+                # Per Codex review-3 BLOCKING: defer ALL server cleanup
+                # to the outer ``_serve_or_attach`` finally block. We
+                # DON'T close the session here even though harness is
+                # currently the last tier in ``tier="all"``:
+                #   - If the session never restarted, the outer release
+                #     still points at the live server and the outer
+                #     finally tears it down correctly.
+                #   - If the session DID restart, ``_restart`` already
+                #     swapped ``_serve_or_attach``'s mutable
+                #     ``current_server_release`` slot to point at the
+                #     latest live server (see ``_restart`` for the
+                #     handoff). The outer finally then tears down the
+                #     CURRENT server, not the dead original.
+                # This keeps cleanup at the outer ``with`` boundary so
+                # adding a tier AFTER harness in the future won't see
+                # a surprise-dead server.
                 _print_tier_result(r)
                 results.append(r)
     except Exception as exc:  # noqa: BLE001 — surface as exit code, not traceback
@@ -702,6 +1297,36 @@ def run_tier(
         return 1
 
     return _finalize_with_results(results, overall_t0, return_results)
+
+
+def _build_harness_session(
+    model: str,
+    boot_timeout_s: int,
+    current_port: int,
+    current_owns: bool,
+    current_base_url: str,
+    release_slot,
+) -> _HarnessServerSession:
+    """Construct a ``_HarnessServerSession`` for the harness sweep.
+
+    ``release_slot`` is the mutable ``{"current": callable}`` dict
+    yielded by ``_serve_or_attach`` (or ``None`` in attach mode). The
+    session reads/writes ``slot["current"]`` on each restart:
+    - Read: get the live server's release, call it to kill the old one
+      (closes Codex review-2 BLOCKING coexistence window).
+    - Write: install the replacement's release so the outer
+      ``_serve_or_attach`` finally targets the live server (closes
+      Codex review-3 BLOCKING — cleanup boundary stays at the outer
+      ``with`` block).
+    """
+    return _HarnessServerSession(
+        model=model,
+        boot_timeout_s=boot_timeout_s,
+        initial_port=current_port,
+        initial_owns=current_owns,
+        initial_base_url=current_base_url,
+        release_slot=release_slot,
+    )
 
 
 def _collect_payload(results: list[TierResult]) -> dict:
