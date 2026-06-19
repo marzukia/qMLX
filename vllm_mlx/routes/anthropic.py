@@ -47,6 +47,7 @@ from ..service.helpers import (
     _rescue_silent_drop_from_reasoning,
     _resolve_enable_thinking,
     _resolve_max_tokens,
+    _resolve_reasoning_enabled,
     _resolve_temperature,
     _resolve_top_p,
     _validate_model_name,
@@ -342,8 +343,27 @@ async def create_anthropic_message(
             usage=_build_usage(output, reasoning_text),
         )
 
+        # Issue #702: signal the alias's reasoning capability to the
+        # adapter so it can suppress the ``thinking`` content block when
+        # the served alias has ``reasoning_parser: null`` in
+        # ``aliases.json``. Without this gate, an OpenAI-side response
+        # that happens to carry ``reasoning_content`` (or the
+        # ``_rescue_silent_drop_from_reasoning`` duplication into
+        # ``content`` above) would emit a ``thinking`` block on a model
+        # that Anthropic's public API would never produce one for,
+        # breaking client capability detection and rendering the same
+        # paragraph twice.
+        #
+        # Resolve via ``_resolve_reasoning_enabled`` so the predicate
+        # consults the per-request registry entry first (multi-model
+        # mode) and only falls back to the global ``cfg.reasoning_parser``
+        # singleton. Codex r1 BLOCKING on PR #705 — global-only lookup
+        # would let the duplicate leak when a non-thinking alias is
+        # served alongside a thinking default.
         anthropic_response = openai_to_anthropic(
-            openai_response, cfg.model_name or anthropic_request.model
+            openai_response,
+            cfg.model_name or anthropic_request.model,
+            reasoning_enabled=_resolve_reasoning_enabled(anthropic_request.model),
         )
         return Response(
             content=anthropic_response.model_dump_json(exclude_none=True),
@@ -489,6 +509,149 @@ async def _stream_anthropic_messages(
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
 
+    # Issue #702: per-request alias-level reasoning capability gate.
+    # When the served alias declares ``reasoning_parser: null`` in
+    # ``aliases.json``, the streaming path must NEVER open a
+    # ``thinking`` content block — Anthropic's public API doesn't
+    # emit one for non-extended-thinking models, so any client that
+    # branches on ``content_block.type == "thinking"`` would
+    # mis-detect capability. Applied via ``_gate_thinking_pieces``
+    # below to every place this function constructs
+    # ``("thinking", ...)`` pieces: channel-routed (engine
+    # OutputRouter), reasoning-parser delta split, and the raw
+    # ``<think>`` think_router heuristic. When the gate fires the
+    # reasoning bytes are demoted to a ``text`` piece so the
+    # assistant turn still surfaces the model's output (silent drop
+    # is the worse failure mode, #569).
+    #
+    # Resolution: consult the per-request registry entry first
+    # (multi-model mode), fall back to the global parser pair in
+    # single-model mode (codex r1 BLOCKING on PR #705). Inlined here
+    # so the predicate consumes the SAME ``cfg`` object the rest of
+    # this function already reads — sharing avoids a second
+    # ``get_config()`` call that test fixtures patching
+    # ``anthropic_route.get_config`` would miss.
+    #
+    # Capability is captured ONCE at request entry and frozen in the
+    # ``_gate_thinking_pieces`` closure for the entire SSE response.
+    # A hot-reload that mutates ``cfg.model_registry`` mid-stream
+    # MUST NOT change the gating behavior partway through one
+    # response — clients expect a single coherent SSE contract per
+    # request (codex r3 NIT probe 4).
+    _reasoning_enabled = False
+    if cfg.model_registry:
+        try:
+            _entry = cfg.model_registry.get_entry(anthropic_request.model)
+        except KeyError:
+            _entry = None
+        if _entry is not None:
+            _reasoning_enabled = bool(getattr(_entry, "reasoning_parser", None))
+        else:
+            _reasoning_enabled = cfg.reasoning_parser is not None or bool(
+                cfg.reasoning_parser_name
+            )
+    else:
+        _reasoning_enabled = cfg.reasoning_parser is not None or bool(
+            cfg.reasoning_parser_name
+        )
+
+    def _gate_thinking_pieces(
+        pieces: list[tuple[str, str]],
+        current_block_type: str | None,
+    ) -> list[tuple[str, str]]:
+        """Apply the #702 capability gate + non-stream parity filter.
+
+        Two concerns, in one pass:
+
+        1. **Non-thinking alias demotion.** When ``_reasoning_enabled``
+           is False (per-request alias has ``reasoning_parser: null``
+           in ``aliases.json``), every ``("thinking", text)`` piece is
+           rewritten to ``("text", text)``. The rewrite preserves order
+           so downstream ``_emit_content_pieces`` still merges
+           consecutive same-type pieces into a single content block.
+
+        2. **No-empty-block parity with non-stream.** The non-stream
+           ``openai_to_anthropic`` predicate skips a thinking block when
+           ``reasoning_text.strip() == ""``. Mirror that on the
+           streaming surface so a model that emits ``<think> </think>``
+           or a whitespace-only reasoning channel delta does NOT open a
+           thinking ``content_block_start`` + whitespace
+           ``thinking_delta`` that Claude Code surfaces as a blank
+           thought bubble.
+
+        The whitespace guard is **state-aware**: a whitespace-only
+        thinking piece is only dropped when it would OPEN a blank
+        thinking block — i.e. no thinking block is currently open in
+        the SSE stream (``current_block_type != "thinking"``) AND no
+        later piece in this batch carries non-whitespace thinking
+        content that would mark the leading whitespace as an
+        intra-thinking separator. This preserves the
+        ``"first" + "\n\n" + "second"`` shape that the model uses to
+        break thinking into paragraphs without leaking the
+        ``"   " -> open empty block`` shape (codex r3 MAJOR probe 1,
+        refined per codex r4 MAJOR).
+
+        ``current_block_type`` is the block type currently OPEN at the
+        downstream emitter (None / "text" / "thinking") — when it's
+        "thinking" we ALWAYS keep whitespace because it's an intra-block
+        continuation, never a block opener.
+        """
+        # Track the EFFECTIVE open block type — i.e. what the
+        # downstream emitter currently has open after the gate's
+        # rewrites, NOT the raw piece type the model emitted. This
+        # lets the non-thinking branch route a whitespace-only
+        # ``("thinking", " ")`` piece into an already-open TEXT block
+        # (demoted to ("text", " ")) instead of dropping it. Codex r5
+        # MAJOR.
+        #
+        # ``effective`` is one of None / "text" / "thinking" and
+        # reflects what ``_emit_content_pieces`` will have open after
+        # consuming the pieces ``out`` so far.
+        effective: str | None = current_block_type
+        out: list[tuple[str, str]] = []
+        for block_type, text in pieces:
+            if block_type == "thinking":
+                if not text.strip():
+                    # Whitespace-only thinking piece. Decide whether to
+                    # drop, keep as thinking, or demote to text based
+                    # on which (if any) block is currently open.
+                    if effective == "thinking":
+                        # Intra-thinking separator — keep as-is on the
+                        # reasoning-enabled path. (The non-thinking
+                        # branch can't see ``effective == "thinking"``
+                        # because demotion below sets ``effective`` to
+                        # "text" rather than "thinking".)
+                        out.append(("thinking", text))
+                    elif effective == "text" and not _reasoning_enabled:
+                        # Non-thinking branch with an open text block:
+                        # demote the whitespace so it lands inside the
+                        # current text block (codex r5 MAJOR — without
+                        # this, ``("thinking", "hello") + ("thinking",
+                        # " ")`` would stream as ``"hello"`` instead of
+                        # ``"hello "``).
+                        out.append(("text", text))
+                    else:
+                        # No relevant open block — dropping it avoids
+                        # opening a blank thinking OR blank text block.
+                        # The non-stream predicate (.strip()) does the
+                        # same.
+                        continue
+                    continue
+                # Non-whitespace thinking content. Reasoning-enabled
+                # keeps as thinking; non-thinking demotes to text.
+                if _reasoning_enabled:
+                    out.append(("thinking", text))
+                    effective = "thinking"
+                else:
+                    out.append(("text", text))
+                    effective = "text"
+            else:
+                out.append((block_type, text))
+                # ``block_type`` is already not "thinking" in this
+                # branch — track the effective open block as that type.
+                effective = block_type
+        return out
+
     # Emit message_start
     message_start = {
         "type": "message_start",
@@ -558,6 +721,21 @@ async def _stream_anthropic_messages(
     # up the work, and `_should_start_in_thinking` already returns False
     # for enable_thinking=False, so the answer streams as text.
     if chat_kwargs.get("enable_thinking") is False:
+        reasoning_parser = None
+    # Issue #702 codex r2 BLOCKING: when the per-request alias is NOT
+    # reasoning-capable, also bypass the parser entirely. Implicit-mode
+    # parsers (Qwen3 / hermes) classify ordinary chunks as reasoning
+    # until ``finalize_streaming`` emits a correction at end-of-stream
+    # — and the finalize correction is emitted as plain ``text``
+    # without going through ``_gate_thinking_pieces``. If we only
+    # gated the per-delta pieces, a non-thinking alias served beside a
+    # thinking global would stream the demoted reasoning bytes as
+    # text AND then the finalize correction would emit the SAME bytes
+    # again — visible duplication. Dropping the parser here puts the
+    # stream on the ``think_router`` path which only opens thinking
+    # blocks on literal ``<think>`` tags in the raw stream (and is
+    # itself gated by ``_gate_thinking_pieces`` below).
+    if not _reasoning_enabled:
         reasoning_parser = None
     if reasoning_parser:
         reasoning_parser.reset_state()
@@ -673,6 +851,17 @@ async def _stream_anthropic_messages(
                         # endless thinking_delta stream.
                         kept, overflow = _account_for_reasoning(reasoning)
                         if kept:
+                            # Don't filter whitespace here — a
+                            # whitespace-only chunk may be an
+                            # intra-thinking separator (e.g. "\n\n"
+                            # between two thinking paragraphs). The
+                            # state-aware ``_gate_thinking_pieces``
+                            # below preserves separators when a thinking
+                            # block is already open and only drops a
+                            # piece that would otherwise OPEN a blank
+                            # thinking block. Mirrors the non-stream
+                            # predicate's whole-text ``.strip()`` check
+                            # (codex r3 probe 1, refined per r4 MAJOR).
                             pieces_routed.append(("thinking", kept))
                         if overflow:
                             filtered = tool_filter.process(overflow)
@@ -698,8 +887,22 @@ async def _stream_anthropic_messages(
                         delta_text[:64],
                     )
                 if pieces_routed:
+                    # Issue #702: gate thinking-piece emission on the
+                    # alias's reasoning capability. ``OutputRouter`` is
+                    # purely token-based and would surface reasoning
+                    # for ANY alias whose tokenizer carries
+                    # ``<|channel>thought`` / harmony analysis tokens
+                    # — including aliases that declared
+                    # ``reasoning_parser: null`` (capability opt-out
+                    # for a tokenizer that nominally supports
+                    # channels). Demote to text so the model output
+                    # still surfaces and clients don't see a
+                    # ``thinking`` block on a non-extended-thinking
+                    # alias.
                     events, current_block_type, block_index = _emit_content_pieces(
-                        pieces_routed, current_block_type, block_index
+                        _gate_thinking_pieces(pieces_routed, current_block_type),
+                        current_block_type,
+                        block_index,
                     )
                     for event in events:
                         yield event
@@ -761,6 +964,11 @@ async def _stream_anthropic_messages(
                     if reasoning:
                         kept, overflow = _account_for_reasoning(reasoning)
                         if kept:
+                            # See site A's note: intra-thinking
+                            # whitespace separators must reach
+                            # ``_gate_thinking_pieces`` so it can
+                            # preserve them when a thinking block is
+                            # already open (codex r4 MAJOR).
                             pieces.append(("thinking", kept))
                         if overflow:
                             # Codex round-7 BLOCKING #1: emitting
@@ -847,7 +1055,9 @@ async def _stream_anthropic_messages(
                             pieces.append(("text", filtered))
                 if pieces:
                     events, current_block_type, block_index = _emit_content_pieces(
-                        pieces, current_block_type, block_index
+                        _gate_thinking_pieces(pieces, current_block_type),
+                        current_block_type,
+                        block_index,
                     )
                     for event in events:
                         yield event
@@ -865,7 +1075,9 @@ async def _stream_anthropic_messages(
                     continue
                 pieces = think_router.process(filtered)
                 events, current_block_type, block_index = _emit_content_pieces(
-                    pieces, current_block_type, block_index
+                    _gate_thinking_pieces(pieces, current_block_type),
+                    current_block_type,
+                    block_index,
                 )
                 for event in events:
                     yield event
@@ -881,7 +1093,9 @@ async def _stream_anthropic_messages(
         else:
             pieces_flush = think_router.process(remaining)
         events, current_block_type, block_index = _emit_content_pieces(
-            pieces_flush, current_block_type, block_index
+            _gate_thinking_pieces(pieces_flush, current_block_type),
+            current_block_type,
+            block_index,
         )
         for event in events:
             yield event
@@ -890,7 +1104,9 @@ async def _stream_anthropic_messages(
         flush_pieces = think_router.flush()
         if flush_pieces:
             events, current_block_type, block_index = _emit_content_pieces(
-                flush_pieces, current_block_type, block_index
+                _gate_thinking_pieces(flush_pieces, current_block_type),
+                current_block_type,
+                block_index,
             )
             for event in events:
                 yield event
