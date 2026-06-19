@@ -66,6 +66,78 @@ def _port_arg(value: str) -> int:
     return port
 
 
+def _listen_fd_arg(value: str) -> int:
+    """Argparse ``type`` callable: validate ``--listen-fd`` is a sane fd.
+
+    ``--listen-fd`` enables socket activation — the supervisor (launchd,
+    systemd, an external parent process) binds the listening socket
+    itself and execve's into ``rapid-mlx serve`` with the pre-bound fd.
+    This closes the bind→auth TOCTOU window: by the time rapid-mlx
+    runs, the socket is already bound but no requests can be accepted
+    until ``uvicorn.run`` calls ``accept()`` — at which point the
+    FastAPI app (with all route auth dependencies wired) is already
+    constructed. See ``vllm_mlx/server.py`` and the regression test
+    pinning the bind→auth invariant.
+
+    Accept integers in ``[3, 1023]``:
+
+    * 0/1/2 are stdin/stdout/stderr — never a listening socket.
+    * 3 is the conventional "first non-stdio fd" (systemd's
+      ``LISTEN_FDS_START`` and launchd both follow this convention).
+    * 1023 is the SysV soft-limit ceiling — anything higher is almost
+      certainly a typo, not a real fd.
+    """
+    try:
+        fd = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--listen-fd must be an integer, got {value!r}"
+        ) from None
+    if not (3 <= fd <= 1023):
+        raise argparse.ArgumentTypeError(
+            f"--listen-fd must be between 3 and 1023, got {fd}"
+        )
+    return fd
+
+
+def _run_uvicorn(app, args, log_level: str) -> None:
+    """Dispatch into ``uvicorn.run`` with the kwargs that match the
+    current ``--listen-fd`` / ``--host``/``--port`` mode.
+
+    Extracted so the call-site contract is unit-testable WITHOUT booting
+    the heavy ``serve_command`` prologue (version check, model download,
+    server import). The companion bytecode test in
+    ``tests/test_serve_listen_fd.py`` pins that ``serve_command``
+    actually references this helper so a future refactor that drops the
+    dispatch silently is caught — that's the regression-detection codex
+    round-1 PR #696 review was after.
+    """
+    import uvicorn
+
+    listen_fd = getattr(args, "listen_fd", None)
+    if listen_fd is not None:
+        # ``fd=`` overrides ``host``/``port``: uvicorn skips its own
+        # ``socket.bind()`` and adopts the inherited fd directly. This
+        # is the close of the bind→auth TOCTOU window — the supervisor
+        # bound + validated the auth secret BEFORE execve'ing, and the
+        # FastAPI ``app`` (with route auth dependencies) is fully
+        # constructed at module load before this call.
+        uvicorn.run(
+            app,
+            fd=listen_fd,
+            log_level=log_level,
+            timeout_keep_alive=30,
+        )
+    else:
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level=log_level,
+            timeout_keep_alive=30,
+        )
+
+
 def _chat_config_dir() -> str:
     """Directory for first-launch tip markers (and future per-user chat
     state). Honors ``RAPID_MLX_CONFIG_HOME`` override; otherwise falls back
@@ -623,8 +695,6 @@ def serve_command(args):
     import logging
     import os
     import sys
-
-    import uvicorn
 
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
@@ -1268,29 +1338,54 @@ def serve_command(args):
     # curl immediately and get connection-refused while shaders compile.
     print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
-    print(
-        f"  Starting server on http://{host_display}:{args.port} (warming up — this can take a few seconds)"
-    )
+    listen_fd = getattr(args, "listen_fd", None)
+    if listen_fd is not None:
+        # Socket activation path — supervisor pre-bound the listening
+        # socket. We don't know the actual address from the fd without a
+        # ``getsockname`` lookup; surfacing fd=<N> in the banner is the
+        # honest thing to print here.
+        print(
+            f"  Starting server on inherited fd {listen_fd} "
+            "(warming up — this can take a few seconds)"
+        )
+    else:
+        print(
+            f"  Starting server on http://{host_display}:{args.port} (warming up — this can take a few seconds)"
+        )
     from vllm_mlx._version_check import print_staleness_warning_if_any
 
     print_staleness_warning_if_any()
     print()
 
-    # Stash host/port so the lifespan hook can print the real "Ready:" banner
-    # after warmup. ServerConfig.bind_host/bind_port → used in server.lifespan().
+    # Stash the source of truth for the lifespan "Ready:" banner —
+    # which shape depends on the bind mode:
+    #
+    #   * Default (host+port): stamp ``bind_host``/``bind_port`` so the
+    #     banner prints ``Ready: http://host:port/v1``.
+    #   * ``--listen-fd``: stamp ``bind_listen_fd`` instead. The
+    #     supervisor's ``getsockname`` is the only honest source for the
+    #     address — stamping ``args.host``/``args.port`` here would lie
+    #     to log readers (the supervisor might have bound to a different
+    #     address). Codex rounds 1+3 PR #696 review.
     from vllm_mlx.config import get_config
 
+    # Always reset BOTH source-of-truth fields before stamping the
+    # active branch — the singleton config persists across in-process
+    # ``serve_command`` invocations (test harnesses, embedded usage), so
+    # a prior host/port stash would otherwise take precedence over a
+    # subsequent fd stash (and vice-versa) and the Ready banner would
+    # lie about which listener is live. Codex round-4 PR #696 review.
     _cfg = get_config()
-    _cfg.bind_host = host_display
-    _cfg.bind_port = args.port
+    _cfg.bind_host = None
+    _cfg.bind_port = None
+    _cfg.bind_listen_fd = None
+    if listen_fd is None:
+        _cfg.bind_host = host_display
+        _cfg.bind_port = args.port
+    else:
+        _cfg.bind_listen_fd = listen_fd
 
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level=uvicorn_log_level,
-        timeout_keep_alive=30,
-    )
+    _run_uvicorn(app, args, uvicorn_log_level)
 
 
 def _run_tier_submit_flow(args) -> int:
@@ -4045,6 +4140,36 @@ Examples:
         "--host", type=str, default="0.0.0.0", help="Host to bind"
     )
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    # Socket activation — let an external supervisor (launchd, systemd,
+    # parent process) bind the listening socket and execve into
+    # ``rapid-mlx`` with the pre-bound fd. This closes the bind→auth
+    # TOCTOU window described in issue #574: no co-located process can
+    # land an unauthenticated request between socket bind and FastAPI
+    # auth dependency registration, because by the time
+    # ``rapid-mlx serve`` runs, the app (with auth dependencies wired
+    # into chat/embeddings/audio/models routers) is already constructed
+    # before ``uvicorn.run`` starts ``accept()``-ing on the fd.
+    #
+    # When ``--listen-fd`` is set, ``--host``/``--port`` are IGNORED:
+    # the supervisor controls the bind address. The "Ready:" banner
+    # prints the inherited fd shape (``Ready: inherited fd N``) — NOT
+    # the user-supplied host/port, since those don't reflect the
+    # supervisor's actual bind. Setting both ``--listen-fd`` and a
+    # non-default ``--port`` is allowed but the port has no effect;
+    # the active listener is the inherited fd.
+    serve_parser.add_argument(
+        "--listen-fd",
+        type=_listen_fd_arg,
+        default=None,
+        metavar="FD",
+        help=(
+            "File descriptor of a pre-bound listening socket (3-1023). "
+            "Used for socket activation (launchd/systemd/parent-process "
+            "supervision) — supervisor binds the loopback socket, "
+            "validates auth secret, then execve's into rapid-mlx. "
+            "When set, --host/--port are ignored for binding."
+        ),
+    )
     serve_parser.add_argument(
         "--log-level",
         type=_log_level_choice,
