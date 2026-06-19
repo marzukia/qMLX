@@ -67,6 +67,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    enforce_context_length_for_messages,
     get_engine,
     get_usage,
 )
@@ -736,6 +737,18 @@ async def _create_chat_completion_impl(
 
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
+
+    # Context-length pre-check (DoS defense + UX, rapid-desktop#273 / #463).
+    # See ``service/helpers.py::enforce_context_length_for_messages`` for
+    # the rationale (8 MiB body still holds ~2M tokens → context window
+    # blown → ~60–90 s of wasted prefill before client gives up). Same
+    # gate runs in routes/completions, routes/anthropic, routes/responses.
+    enforce_context_length_for_messages(
+        engine,
+        messages,
+        tools=request.tools,
+        max_tokens=chat_kwargs.get("max_tokens"),
+    )
 
     # Cloud routing: offload large-context requests to cloud LLM.
     #

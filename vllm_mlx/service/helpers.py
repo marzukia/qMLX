@@ -1455,3 +1455,280 @@ async def _wait_with_disconnect(
             disconnect_task.cancel()
         if not task.done():
             task.cancel()
+
+
+# ─── Context-length pre-check (DoS defense, rapid-desktop#273 / #463) ──
+#
+# A 8 MiB body of plain ASCII is still ~2M tokens — well past any model's
+# context window. The body-size middleware ``vllm_mlx/middleware/body_size.py``
+# stops the worst of the DoS, but a request that fits inside the byte
+# cap can still drag a small-context model into pointless prefill.
+#
+# These helpers surface the model's max context length and raise a
+# structured OpenAI ``context_length_exceeded`` error when a prompt is
+# too long, so the rejection lands BEFORE the engine starts prefill.
+
+# Sentinel-large fallback used when the model exposes no useful context
+# field. We do NOT silently bypass the gate (returning ``None`` would
+# accept any prompt); instead we use a value so large that legitimate
+# requests pass while the DoS pattern (≈ millions of tokens in one body)
+# still trips. Sized for 8 MiB body cap × ~3.5 chars/token worst-case.
+_FALLBACK_MAX_CONTEXT_TOKENS = 4_194_304
+
+
+def get_model_max_context(engine) -> int:
+    """Return the model's max prompt-token context window for ``engine``.
+
+    Resolution order (first hit wins):
+      1. ``engine._model.args.max_position_embeddings`` — mlx-lm dense
+         LLMs and most MLX models expose the HF config there.
+      2. ``engine._model.args.text_config.max_position_embeddings`` —
+         multimodal Qwen3.5 / Gemma 4 nest the text-config inside.
+      3. ``engine._model.config.max_position_embeddings`` — older
+         attribute style.
+      4. ``engine.tokenizer.model_max_length`` if not the HuggingFace
+         "VERY_LARGE_INTEGER" sentinel (``1e30``). Some tokenizers
+         report a useful cap here even when the model object doesn't.
+      5. ``_FALLBACK_MAX_CONTEXT_TOKENS`` — see module-level comment.
+
+    The function is intentionally permissive about missing fields: we'd
+    rather pass through a request the model can handle than refuse a
+    legitimate one on metadata absence. The byte cap stays as the
+    last-resort DoS gate even if every probe falls through.
+    """
+
+    def _maybe_int(value) -> int | None:
+        try:
+            ivalue = int(value)
+        except (TypeError, ValueError):
+            return None
+        if ivalue <= 0:
+            return None
+        return ivalue
+
+    model = getattr(engine, "_model", None) or getattr(engine, "model", None)
+
+    if model is not None:
+        args = getattr(model, "args", None)
+        if args is not None:
+            direct = _maybe_int(getattr(args, "max_position_embeddings", None))
+            if direct is not None:
+                return direct
+            text_cfg = getattr(args, "text_config", None)
+            if text_cfg is not None:
+                nested = _maybe_int(getattr(text_cfg, "max_position_embeddings", None))
+                if nested is not None:
+                    return nested
+        config = getattr(model, "config", None)
+        if config is not None:
+            cfg_direct = _maybe_int(getattr(config, "max_position_embeddings", None))
+            if cfg_direct is not None:
+                return cfg_direct
+            text_cfg = getattr(config, "text_config", None)
+            if text_cfg is not None:
+                nested = _maybe_int(getattr(text_cfg, "max_position_embeddings", None))
+                if nested is not None:
+                    return nested
+
+    tokenizer = getattr(engine, "tokenizer", None) or getattr(
+        engine, "_tokenizer", None
+    )
+    if tokenizer is not None:
+        tok_max = getattr(tokenizer, "model_max_length", None)
+        if tok_max is not None:
+            # HuggingFace tokenizers report 1e30 ("no cap known") which
+            # is useless as a guard. Treat anything above 10M as the
+            # sentinel since no real model has that context yet.
+            if isinstance(tok_max, int | float) and 0 < tok_max < 10_000_000:
+                return int(tok_max)
+
+    return _FALLBACK_MAX_CONTEXT_TOKENS
+
+
+def count_prompt_tokens(engine, prompt) -> int:
+    """Return the integer prompt-token count under ``engine``'s tokenizer.
+
+    Accepts both string prompts (chat-template output, raw completions)
+    and pre-tokenised forms (list[int] / list[list[int]]). The
+    completions API contract today is ``str | list[str]`` (token-id
+    prompts would be an OpenAI feature flag), but the helper is the
+    one DoS-gate boundary and codex round-2 BLOCKING #3 flagged that a
+    list arriving there should not silently bypass the cap. So we
+    handle both shapes explicitly: token-id lists skip tokenization
+    entirely and use ``len()``; strings flow through ``tokenizer.encode``
+    with BOS-aware ``add_special_tokens`` handling that mirrors
+    ``BatchedEngine.estimate_new_tokens``.
+
+    Returns 0 on tokenizer failure / unknown shape so the caller
+    falls through to engine-side validation rather than 500-ing on a
+    metadata edge case. The wire-level body cap stays as the last
+    line of DoS defense.
+    """
+    # Pre-tokenised forms — pure-arithmetic answer, no tokenizer needed.
+    if isinstance(prompt, list):
+        if not prompt:
+            return 0
+        first = prompt[0]
+        if isinstance(first, int):
+            # list[int] — a single tokenised prompt.
+            return len(prompt)
+        if isinstance(first, list):
+            # list[list[int]] — multi-prompt batch; conservatively
+            # return the longest so the cap fires on the worst entry.
+            try:
+                return max((len(p) for p in prompt if isinstance(p, list)), default=0)
+            except TypeError:
+                return 0
+        # Fall through for list[str] — caller should have unpacked it,
+        # but defensively handle the single-string case.
+        if isinstance(first, str) and len(prompt) == 1:
+            prompt = first
+        else:
+            return 0
+    if not isinstance(prompt, str):
+        return 0
+
+    tokenizer = getattr(engine, "tokenizer", None) or getattr(
+        engine, "_tokenizer", None
+    )
+    if tokenizer is None:
+        return 0
+    try:
+        bos = getattr(tokenizer, "bos_token", None)
+        add_special_tokens = bos is None or not prompt.startswith(bos)
+        token_ids = tokenizer.encode(prompt, add_special_tokens=add_special_tokens)
+        return len(token_ids)
+    except Exception:
+        logger.debug("count_prompt_tokens: tokenizer.encode failed", exc_info=True)
+        return 0
+
+
+def enforce_context_length(
+    engine,
+    prompt_tokens: int,
+    *,
+    max_tokens: int | None = None,
+) -> None:
+    """Raise HTTP 400 ``context_length_exceeded`` if ``prompt_tokens`` is
+    over the model's max context window.
+
+    The check also includes ``max_tokens`` (the requested completion
+    budget) so a borderline prompt that would force the decoder past
+    the cap is rejected up-front rather than mid-generation. OpenAI's
+    own error is shaped the same way — ``context_length_exceeded``
+    fires when ``prompt + completion > model max``.
+    """
+    max_context = get_model_max_context(engine)
+    completion = int(max_tokens) if max_tokens else 0
+    requested_total = int(prompt_tokens) + max(0, completion)
+    if requested_total <= max_context:
+        return
+
+    # Format the message in the OpenAI shape so SDKs can branch on the
+    # ``code`` field. The exception handler in ``vllm_mlx/server.py``
+    # wraps the ``detail`` payload back into the OpenAI envelope.
+    detail = (
+        f"This model's maximum context length is {max_context} tokens. "
+        f"However, you requested {requested_total} tokens "
+        f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
+        "Please reduce the length of the messages or completion."
+    )
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": {
+                "message": detail,
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+                "param": "messages",
+            }
+        },
+    )
+
+
+def enforce_context_length_for_messages(
+    engine,
+    messages: list,
+    *,
+    tools: list | None = None,
+    max_tokens: int | None = None,
+) -> None:
+    """Run the context-length gate for a chat-style request.
+
+    Renders the prompt through the engine's chat template (same path
+    used by ``BatchedEngine.build_prompt``), counts the tokens, then
+    delegates to :func:`enforce_context_length`. Wraps the template /
+    tokenization step in a permissive try-except so a metadata edge
+    case (e.g. unloaded engine on a route stub) doesn't 500 — the
+    downstream scheduler still has its own validation.
+
+    Scoped to text-only engines: MLLM models accept image / video /
+    audio inputs whose token cost is computed by the multimodal
+    processor and tracked separately by ``MLLMScheduler``. The
+    body-size middleware still bounds the wire-level payload for
+    those routes.
+
+    Used by chat, anthropic, and responses routes so the same DoS gate
+    applies regardless of which compatibility surface the client uses.
+    """
+    if getattr(engine, "is_mllm", False):
+        return
+    build_prompt = getattr(engine, "build_prompt", None)
+    if build_prompt is None:
+        return
+    try:
+        prompt = build_prompt(messages, tools=tools)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Chat-template / malformed-tools-schema failures are user-
+        # facing config errors. Fail fast with a clean 400 here so the
+        # route doesn't waste cycles re-rendering the same template
+        # downstream just to surface the same diagnosis (codex r3 F7).
+        # Other exception shapes (tokenizer 500s, engine half-loaded
+        # races) keep their original silent-fallthrough so the
+        # scheduler's own validation has a chance to run — the
+        # body-size middleware is still the last DoS line.
+        err_msg = str(exc)
+        err_type = type(exc).__name__
+        if (
+            "TemplateError" in err_type
+            or "template" in err_msg.lower()
+            or ("user" in err_msg.lower() and "found" in err_msg.lower())
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Chat template error: {err_msg}",
+            )
+        return
+    if not prompt:
+        return
+    prompt_tokens = count_prompt_tokens(engine, prompt)
+    if prompt_tokens <= 0:
+        return
+    enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
+
+
+def enforce_context_length_for_prompt(
+    engine,
+    prompt,
+    *,
+    max_tokens: int | None = None,
+) -> None:
+    """Run the context-length gate for a raw-prompt completion request.
+
+    Same shape as :func:`enforce_context_length_for_messages` but for
+    routes that already hold a raw text prompt (``/v1/completions``).
+    No chat template applied — the client provided the string (or
+    list-of-ints token sequence) verbatim. ``count_prompt_tokens``
+    handles both shapes; see its docstring for the codex round-2
+    BLOCKING #3 rationale on non-string prompts.
+    """
+    if getattr(engine, "is_mllm", False):
+        return
+    if not prompt:
+        return
+    prompt_tokens = count_prompt_tokens(engine, prompt)
+    if prompt_tokens <= 0:
+        return
+    enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
