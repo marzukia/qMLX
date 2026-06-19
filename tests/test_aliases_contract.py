@@ -602,6 +602,54 @@ def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "alias",
+    ["vibethinker-1.5b-4bit", "vibethinker-3b-8bit"],
+)
+def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> None:
+    """VibeThinker (Weibo AI; 1.5B base = Qwen2.5-Math-1.5B, 3B base =
+    Qwen2.5-Coder-3B) is a reasoning family whose chat template does
+    NOT inject ``<think>`` — the model emits ``<think>...</think>``
+    blocks autonomously on every response. Without ``reasoning_parser``
+    set, those blocks leak into ``choices[0].message.content`` as plain
+    text and break clients that expect ``reasoning_content`` to carry
+    the chain-of-thought.
+
+    Pin the wiring so a future PR can't silently revert it to ``null``
+    for either size. Also pins ``tool_call_parser=None`` — the model
+    card explicitly states tool calling is unsupported even though the
+    inherited Qwen2 vocab carries ``<tool_call>`` tokens (community
+    reports confirm the model reasons about the template instead of
+    emitting tool calls).
+    Verified format sources:
+    https://huggingface.co/mlx-community/VibeThinker-3B-8bit
+    https://huggingface.co/mlx-community/VibeThinker-1.5B-mlx-4bit
+    """
+    profiles = list_profiles()
+    assert alias in profiles, f"{alias} missing from aliases.json"
+    assert profiles[alias].reasoning_parser == "deepseek_r1", (
+        f"{alias}: reasoning_parser must be 'deepseek_r1' (VibeThinker emits "
+        f"`<think>` blocks autonomously). Got {profiles[alias].reasoning_parser!r}."
+    )
+    assert profiles[alias].tool_call_parser is None, (
+        f"{alias}: tool_call_parser must be None — VibeThinker is not "
+        f"trained for tool calling per the upstream model card. "
+        f"Got {profiles[alias].tool_call_parser!r}."
+    )
+    # Reasoning-model sampling guidance: temperature=1.0, top_p=0.95
+    # (paper-recommended; greedy temperature=0 produces garbage on
+    # reasoning models that depend on diverse beam exploration).
+    sampling = dict(profiles[alias].recommended_sampling or ())
+    assert sampling.get("temperature") == 1.0, (
+        f"{alias}: recommended_sampling.temperature must be 1.0 per the "
+        f"VibeThinker paper. Got {sampling.get('temperature')!r}."
+    )
+    assert sampling.get("top_p") == 0.95, (
+        f"{alias}: recommended_sampling.top_p must be 0.95 per the "
+        f"VibeThinker paper. Got {sampling.get('top_p')!r}."
+    )
+
+
 def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
     """Pin replacement paths for aliases that previously pointed at HF
     repos that no longer exist (or never existed).
