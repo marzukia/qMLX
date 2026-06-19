@@ -783,6 +783,29 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # When the streaming parser carries BOTH a content
+                # delta AND a tool-call delta in one return (one
+                # delta carried ``preface + tool_close`` — codex r4
+                # BLOCKING on llama parser), the content half must
+                # be emitted regardless of how the parallel-cap
+                # rules out the tool half — otherwise enabling
+                # ``parallel_tool_calls=false`` silently drops
+                # assistant prose (codex r6 MAJOR). Apply the same
+                # strip_special_tokens + sanitize_output pipeline the
+                # plain-content branch (lines 850-852) uses so mixed
+                # preface/trailing content can't leak special markup
+                # to the client — codex r7 MAJOR.
+                mixed_content = result.get("content")
+                events: list[StreamEvent] = []
+                if isinstance(mixed_content, str) and mixed_content:
+                    mixed_content = strip_special_tokens(mixed_content)
+                    if mixed_content:
+                        mixed_content = sanitize_output(mixed_content)
+                    if mixed_content:
+                        events.append(
+                            StreamEvent(type="content", content=mixed_content)
+                        )
+
                 # Issue #517 — apply ``parallel_tool_calls=false`` cap
                 # uniformly across all streaming paths. Round-1 codex
                 # BLOCKING: admit by ``index`` so continuation deltas
@@ -792,23 +815,24 @@ class StreamingPostProcessor:
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
-                        return [
+                        events.append(
                             StreamEvent(
                                 type="finish",
                                 finish_reason="tool_calls",
                                 tool_calls_detected=True,
                             )
-                        ]
-                    return []
+                        )
+                    return events
                 self.tool_calls_detected = True
-                return [
+                events.append(
                     StreamEvent(
                         type="tool_call",
                         tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
-                ]
+                )
+                return events
             content = result.get("content", "")
 
         if self.tool_calls_detected:
@@ -1047,6 +1071,26 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # Combined content+tool delta — emit content half
+                # regardless of how the parallel-cap rules out the
+                # tool half (codex r6 MAJOR: enabling
+                # ``parallel_tool_calls=false`` used to silently drop
+                # the preface when cap rejected the call). Apply the
+                # same strip_special_tokens + sanitize_output pipeline
+                # the plain-content branch (lines 835-839) uses so
+                # mixed preface/trailing content can't leak special
+                # markup to the client — codex r7 MAJOR.
+                mixed_content = result.get("content")
+                events: list[StreamEvent] = []
+                if isinstance(mixed_content, str) and mixed_content:
+                    mixed_content = strip_special_tokens(mixed_content)
+                    if mixed_content:
+                        mixed_content = sanitize_output(mixed_content)
+                    if mixed_content:
+                        events.append(
+                            StreamEvent(type="content", content=mixed_content)
+                        )
+
                 # Issue #517 — apply ``parallel_tool_calls=false`` cap
                 # uniformly across all streaming paths. Round-1 codex
                 # BLOCKING: admit by ``index`` so continuation deltas
@@ -1056,23 +1100,24 @@ class StreamingPostProcessor:
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
-                        return [
+                        events.append(
                             StreamEvent(
                                 type="finish",
                                 finish_reason="tool_calls",
                                 tool_calls_detected=True,
                             )
-                        ]
-                    return []
+                        )
+                    return events
                 self.tool_calls_detected = True
-                return [
+                events.append(
                     StreamEvent(
                         type="tool_call",
                         tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
-                ]
+                )
+                return events
             content = result.get("content", "")
 
         if self.tool_calls_detected:
@@ -1164,6 +1209,23 @@ class StreamingPostProcessor:
                     ]
                 return []
             if result.get("tool_calls"):
+                # Combined content+tool delta — emit content half
+                # regardless of how the parallel-cap rules out the
+                # tool half (codex r6 MAJOR). Match the plain-content
+                # branch (line 1265) with ``sanitize_output`` so mixed
+                # preface/trailing content can't leak special markup
+                # — codex r7 MAJOR.
+                mixed_content = result.get("content")
+                events: list[StreamEvent] = []
+                if isinstance(mixed_content, str) and mixed_content:
+                    mixed_content = strip_special_tokens(mixed_content)
+                    if mixed_content:
+                        mixed_content = sanitize_output(mixed_content)
+                    if mixed_content:
+                        events.append(
+                            StreamEvent(type="content", content=mixed_content)
+                        )
+
                 # Apply ``parallel_tool_calls=false`` cap (issue #517).
                 # Round-1 codex BLOCKING: admit by ``index`` so
                 # incremental argument fragments don't each consume a
@@ -1173,23 +1235,24 @@ class StreamingPostProcessor:
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
-                        return [
+                        events.append(
                             StreamEvent(
                                 type="finish",
                                 finish_reason="tool_calls",
                                 tool_calls_detected=True,
                             )
-                        ]
-                    return []
+                        )
+                    return events
                 self.tool_calls_detected = True
-                return [
+                events.append(
                     StreamEvent(
                         type="tool_call",
                         tool_calls=allowed_tcs,
                         finish_reason="tool_calls" if output.finished else None,
                         tool_calls_detected=True,
                     )
-                ]
+                )
+                return events
             content = strip_special_tokens(result.get("content", ""))
 
         if self.tool_calls_detected:
