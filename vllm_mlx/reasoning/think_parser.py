@@ -50,12 +50,27 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # prefix. Used to flush them on the next delta when the prefix
         # turned out NOT to be a tag.
         self._held_tag_suffix_len = 0
+        # Codex r3 BLOCKING on PR #722: track streaming phase
+        # explicitly instead of recomputing it from whole-history
+        # ``previous_text.count(...)``. Counting historical tag
+        # occurrences misclassifies literal ``<think>`` or
+        # ``</think>`` substrings inside ALREADY-EMITTED CONTENT
+        # (e.g. a closed ``<think>...</think>`` pair that survived
+        # the conservative sweep) as structural tags and flips the
+        # phase. ``None`` means we have not yet entered the
+        # multi-block router; the router seeds it the first time it
+        # fires (always "content" at that point, because the FIRST
+        # ``</think>`` has just been consumed). Subsequent deltas
+        # read this field and update it as they cross structural
+        # tags inside the delta.
+        self._streaming_phase: str | None = None
 
     def reset_state(self):
         """Reset state for a new streaming request."""
         super().reset_state()
         self._saw_any_tag = False
         self._held_tag_suffix_len = 0
+        self._streaming_phase = None
 
     def extract_reasoning(
         self,
@@ -111,12 +126,27 @@ class BaseThinkingReasoningParser(ReasoningParser):
             _, _, after_start = text.partition(self.start_token)
             # Split on end token
             reasoning, _, content = after_start.partition(self.end_token)
+            # Sweep any residual think blocks the naive first-pair
+            # partition left in ``content``. The first-pair split
+            # consumes ONLY the first ``<think>…</think>`` block, so
+            # multi-block outputs (phi-4-mini-reasoning emits a second
+            # block after the answer when ``reasoning_max_tokens``
+            # truncates mid-thought — 2026-06-19 round-1 fuzz repro)
+            # would otherwise ship the trailing ``<think>`` or
+            # ``</think>`` literal bytes through to ``message.content``.
+            reasoning, content = self._sweep_residual_think_tags(reasoning, content)
             return reasoning.strip() or None, content.strip() or None
 
         # Case 2: Only closing tag (think was injected in prompt)
         # Everything before </think> is reasoning
         if self.end_token in text:
             reasoning, _, content = text.partition(self.end_token)
+            # Same multi-block sweep as Case 1 — Case 2 hits when the
+            # chat template pre-injected ``<think>`` and the model
+            # emitted ``</think>answer<think>more</think>`` (the
+            # implicit-think analogue of the phi-4-mini-reasoning
+            # repro).
+            reasoning, content = self._sweep_residual_think_tags(reasoning, content)
             return reasoning.strip() or None, content.strip() or None
 
         # Case 3: Only start tag (incomplete reasoning, no end yet)
@@ -155,11 +185,53 @@ class BaseThinkingReasoningParser(ReasoningParser):
         Returns:
             DeltaMessage with reasoning/content, or None to skip.
         """
-        # Skip if delta is just the special tokens themselves
+        # Skip if delta is just the special tokens themselves.
+        # Codex r3 BLOCKING follow-up on PR #722: when the multi-block
+        # router has already taken over phase tracking
+        # (``_streaming_phase is not None``), flip the phase here so
+        # the NEXT delta enters the router with the correct phase
+        # state. The router's intra-delta walk only sees tags
+        # scanned from ``prev_len - held``, so a tag that arrived as
+        # a stand-alone delta would otherwise be missed and the
+        # phase would lie on the following delta.
+        #
+        # Codex r4 BLOCKING follow-up on PR #722: ALSO seed the phase
+        # when ``_streaming_phase is None``. The single-block path
+        # (``_handle_explicit_think`` before ``end_in_prev``) never
+        # writes ``_streaming_phase`` — it stays None right up until
+        # the multi-block router fires for the first time. If the
+        # SECOND ``<think>`` block arrives as a stand-alone delta
+        # IMMEDIATELY after the first ``</think>`` (no intermediate
+        # content delta to trigger the router), the early-skip below
+        # would leave the phase at None — and the next reasoning
+        # delta would enter the router with ``in_reasoning_prev =
+        # False`` (the documented fall-through), causing the second
+        # reasoning block to leak into ``content``. Seeding the
+        # phase here when ``previous_text`` already contains a
+        # structural closer (resp. opener) closes that hole without
+        # breaking the literal-tag-in-text known-limitation contract
+        # — the seed only fires when the delta IS the bare tag
+        # (overwhelmingly structural in practice; the whole-history
+        # count drift codex r3 documented is bounded here to this
+        # single-delta event).
         stripped_delta = delta_text.strip()
         if stripped_delta == self.start_token:
+            if self._streaming_phase is not None:
+                self._streaming_phase = "reasoning"
+            elif self.end_token in previous_text:
+                # Standalone opener after the first ``</think>`` —
+                # this is the second-block opener; seed the phase so
+                # the next delta's router call routes reasoning bytes
+                # correctly.
+                self._streaming_phase = "reasoning"
             return None
         if stripped_delta == self.end_token:
+            if self._streaming_phase is not None:
+                self._streaming_phase = "content"
+            elif self.start_token in previous_text:
+                # Standalone closer after an opener — seed to content
+                # so trailing answer bytes don't get misrouted.
+                self._streaming_phase = "content"
             return None
 
         # Check token positions in text (stateless text-based detection)
@@ -228,6 +300,96 @@ class BaseThinkingReasoningParser(ReasoningParser):
             return None
         return DeltaMessage(reasoning=emit)
 
+    def _sweep_residual_think_tags(
+        self, reasoning: str, content: str
+    ) -> tuple[str, str]:
+        """Strip any residual ``<think>…</think>`` blocks left in
+        ``content`` after the first-pair partition, and reroute
+        the TRAILING unclosed thought into ``reasoning``.
+
+        2026-06-19 round-1 fuzz repro (phi-4-mini-reasoning-4bit):
+        when the model emits multiple ``<think>`` blocks (closed
+        inner ones before the answer and a TRAILING opener after
+        the answer that ``reasoning_max_tokens`` / ``max_tokens``
+        truncates before its closing tag), the naive first-pair
+        ``partition`` in ``extract_reasoning`` Case 1 consumes
+        ONLY the first pair. The trailing ``<think>thought_N…``
+        opener was leaking verbatim into ``message.content`` —
+        neither ``strip_thinking_tags`` (matches closed blocks
+        only) nor ``sanitize_output`` (matches a stray
+        ``</think>`` only) catch an orphan ``<think>`` opener,
+        so the tag bytes survived all the way to the wire.
+
+        Codex r3 BLOCKING on PR #722: an earlier draft of this
+        sweep stripped EVERY closed ``<think>…</think>`` block
+        from content too. That broke a documented but rare case
+        — answers that legitimately contain a literal ``<think>``
+        substring in the text (e.g. ``"The user said: <think>
+        is literal"``) — by silently reclassifying the literal
+        text as a structural reasoning block. Pre-PR behaviour
+        preserved that text in content (the first-pair partition
+        only ate one pair and ``strip_thinking_tags`` only
+        matches CLOSED blocks, which DO get cleaned but the
+        unclosed literal opener stays in content as the user
+        sees it). The conservative scope below restores that
+        pre-PR behaviour for closed blocks while STILL closing
+        the actual round-1 leak (trailing unclosed opener).
+
+        Sweep scope (codex r3-final, conservative):
+
+        * Closed ``<think>…</think>`` blocks left in content are
+          UNTOUCHED here — downstream ``strip_thinking_tags`` /
+          ``sanitize_output`` handles them, AND if any remain
+          they were legitimate literal text the user intended.
+        * Only the TRAILING unclosed ``<think>…`` (the round-1
+          leak shape) gets routed into ``reasoning``. The opener
+          must have NO matching ``</think>`` AFTER it for this
+          branch to fire.
+        * Stray ``</think>`` closers with no preceding opener
+          in content are LEFT for ``sanitize_output`` to strip.
+
+        The fix lives in the base class so every thinking-tag
+        parser (DeepSeek-R1, Qwen3, VibeThinker, …) benefits
+        without per-subclass duplication — the user's directive
+        was explicit on this. ``GLM4`` / ``Minimax`` / ``Gemma4``
+        parsers do not subclass ``BaseThinkingReasoningParser`` so
+        their wire formats are unaffected; they have their own
+        sweepers where the wire grammar requires them.
+        """
+        if not content:
+            return reasoning, content
+        # Locate the LAST ``<think>`` opener in content. If it has
+        # NO matching ``</think>`` after it, it's the trailing
+        # unclosed block from the round-1 leak shape — route to
+        # reasoning. Otherwise leave content untouched so any
+        # closed ``<think>…</think>`` blocks (potentially literal
+        # text) survive the sweep and reach the downstream
+        # ``strip_thinking_tags`` / ``sanitize_output`` stages
+        # unaltered.
+        last_open = content.rfind(self.start_token)
+        if last_open < 0:
+            return reasoning, content
+        after_last_open = content[last_open + len(self.start_token) :]
+        if self.end_token in after_last_open:
+            # The last opener has a matching closer — it's a fully
+            # formed block (closed OR contains a closer). Leave
+            # content alone; the downstream regex strippers will
+            # remove the structural form, and a literal-text form
+            # stays as-is.
+            return reasoning, content
+        # Trailing unclosed opener — route its body to reasoning,
+        # truncate content at the opener. Matches Case 3
+        # "no end tag → reasoning" semantics.
+        trailing_reasoning = after_last_open.rstrip()
+        if trailing_reasoning:
+            reasoning = (
+                (reasoning.rstrip() + "\n" + trailing_reasoning)
+                if reasoning
+                else trailing_reasoning
+            )
+        content = content[:last_open].rstrip()
+        return reasoning, content
+
     def _held_partial_tag_len(self, current_text: str) -> int:
         """Length of the suffix of ``current_text`` that could be a strict
         prefix of ``start_token`` or ``end_token``.
@@ -289,11 +451,31 @@ class BaseThinkingReasoningParser(ReasoningParser):
             )
             emitted_so_far = after_start_in_current + already_emitted_after_opener
             if end_in_prev:
-                # Already past reasoning phase - pure content. No
-                # held bookkeeping (we're outside the reasoning
-                # region); just emit the delta.
-                self._held_tag_suffix_len = 0
-                return DeltaMessage(content=delta_text)
+                # We're past the FIRST ``</think>`` — but the model
+                # may have re-entered reasoning by emitting another
+                # ``<think>`` after the answer (the 2026-06-19
+                # round-1 fuzz repro on phi-4-mini-reasoning-4bit
+                # emits 6–7 think blocks across a single 2 K-token
+                # response when ``reasoning_max_tokens`` truncates
+                # the first one). Delegate to a multi-block-aware
+                # router so subsequent ``<think>…</think>`` pairs
+                # are correctly split instead of leaking the
+                # literal tag bytes into ``content`` via the prior
+                # "all delta = content" fallback.
+                #
+                # Codex r1 BLOCKING on PR #722: do NOT clear
+                # ``_held_tag_suffix_len`` here. The held suffix
+                # from the prior chunk encodes a partial tag that
+                # may STRADDLE into this delta (e.g. prev ended
+                # with ``A<thi``, delta is ``nk>R``) — the router
+                # needs to see the held value to back its scan
+                # window up by that many bytes and recognise the
+                # completed straddle. The router resets the held
+                # value itself based on this delta's trailing
+                # partial-tag suffix.
+                return self._handle_multi_block_after_close(
+                    previous_text, current_text, delta_text
+                )
             # End tag may be in current_text (delta or straddle) or
             # still pending.
             end_idx_cur = current_text.find(self.end_token)
@@ -348,13 +530,19 @@ class BaseThinkingReasoningParser(ReasoningParser):
             start_idx = delta_text.find(self.start_token)
 
             if end_in_delta:
-                # Both tokens in this delta
-                end_idx = delta_text.find(self.end_token)
-                reasoning_part = delta_text[start_idx + len(self.start_token) : end_idx]
-                content_part = delta_text[end_idx + len(self.end_token) :]
-                return DeltaMessage(
-                    reasoning=reasoning_part if reasoning_part else None,
-                    content=content_part if content_part else None,
+                # Both tokens in this delta. Use the multi-block router
+                # so a delta carrying ``<think>R1</think>A<think>R2</think>B…``
+                # (the model emitted multiple ``<think>`` blocks in a
+                # single SSE chunk — observed on small thinking models
+                # with low ``stream_interval`` settings or fast-batched
+                # output) splits cleanly without leaking the literal
+                # tag bytes of the second-and-later blocks into
+                # ``content``. 2026-06-19 round-1 fuzz follow-on.
+                # Pre-fix the single-pair partition below consumed only
+                # the FIRST opener/closer and emitted the rest as
+                # content verbatim.
+                return self._handle_multi_block_after_close(
+                    previous_text, current_text, delta_text
                 )
             else:
                 # Only start token - beginning of reasoning
@@ -428,6 +616,166 @@ class BaseThinkingReasoningParser(ReasoningParser):
             keep = max(0, safe_end_in_current - reasoning_start_in_current)
             reasoning_part = reasoning_part[:keep]
         return DeltaMessage(reasoning=reasoning_part or None)
+
+    def _handle_multi_block_after_close(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+    ) -> DeltaMessage | None:
+        """Route a delta that arrives AFTER the first ``</think>``.
+
+        2026-06-19 round-1 fuzz repro (phi-4-mini-reasoning-4bit):
+        the model re-enters reasoning after the answer by emitting a
+        SECOND ``<think>`` block (and may do this many times before
+        ``max_tokens`` hits). The pre-fix streaming path emitted the
+        whole post-close delta as ``content``, leaking every
+        subsequent ``<think>`` / ``</think>`` literal to the wire.
+
+        Multi-block streaming rule:
+
+        * Determine the current phase from ``<think>`` / ``</think>``
+          counts in ``current_text``. Equal counts → CONTENT. One
+          excess opener → REASONING (inside an unclosed block).
+        * Compute the position in ``current_text`` where the LAST
+          phase transition happened (last ``<think>`` for a
+          REASONING phase, last ``</think>`` for a CONTENT phase).
+        * Emit only the bytes in ``delta_text`` that lie in the
+          current phase. Bytes from ``delta_text`` that span a
+          phase boundary are split — pre-boundary goes to the prior
+          phase, post-boundary to the new one.
+        * Withhold any trailing partial-tag suffix so a tag that
+          straddles SSE chunks gets recovered on the next delta
+          (same machinery as the Case-3 / start_in_prev branches).
+        * Strip the tag bytes themselves — they're structural, not
+          user-visible.
+
+        The simpler single-block streaming path is unchanged; this
+        helper only fires when ``start_in_prev AND end_in_prev``
+        (i.e. at least one full ``<think>…</think>`` pair has
+        already been streamed).
+
+        Known limitation (codex r2 finding on PR #722): a literal
+        ``<think>`` substring inside the model's answer text
+        (e.g. ``"The user said: <think> is a tag"``) is
+        reclassified as a structural opener and subsequent bytes
+        flow to reasoning. The non-streaming
+        ``extract_reasoning`` ``partition`` path has the SAME
+        behaviour — there's no out-of-band signal in the tag-based
+        protocol to distinguish a structural tag from a literal
+        substring. The router preserves the existing semantic
+        (streaming ↔ non-streaming parity, pinned by
+        ``test_literal_think_in_answer_text_is_known_limitation``)
+        so any future fix (e.g. tokenizer-id-level structural-tag
+        detection) lands once and benefits both paths.
+        """
+        prev_len = len(current_text) - len(delta_text)
+        # Phase at the END OF PREVIOUS DELTA (start of this delta).
+        #
+        # Codex r3 BLOCKING fix on PR #722: do NOT recompute phase
+        # from whole-history ``previous_text.count(<think>)`` vs
+        # ``count(</think>)``. A literal ``<think>`` or ``</think>``
+        # substring in already-emitted content (e.g. a closed
+        # ``<think>...</think>`` pair that survived the conservative
+        # non-streaming sweep, or a user-facing answer that mentions
+        # the tag) inflates the historical count and makes the
+        # phase decision lie — subsequent structural reasoning
+        # chunks would then leak into ``content`` (or vice versa).
+        # Instead, persist the phase as instance state and update
+        # it ONLY when this router crosses structural tag
+        # boundaries. ``_streaming_phase is None`` means this is
+        # the first time the multi-block router fires — by
+        # construction (we dispatched on ``end_in_prev`` or on a
+        # full pair landing in this delta) the phase at that
+        # entry point is "content" (we've just exited the first
+        # ``<think>...</think>`` block). For subsequent calls we
+        # read the field directly.
+        if self._streaming_phase is None:
+            in_reasoning_prev = False
+        else:
+            in_reasoning_prev = self._streaming_phase == "reasoning"
+        # Walk through ``current_text`` from ``prev_len`` to the end,
+        # splitting at each tag boundary. Emit the segments in the
+        # appropriate phase, stripping the tag bytes themselves.
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        cursor = prev_len
+        # Codex r1 BLOCKING fix: backtrack the scan window by the
+        # ``_held_tag_suffix_len`` so a tag that STRADDLES the SSE
+        # boundary (e.g. ``previous_text`` ends with ``<thi``,
+        # ``delta_text`` opens with ``nk>R``) is recognised as a
+        # complete tag at position ``prev_len - prev_held``. Without
+        # this backtrack, the scan from ``prev_len`` misses the
+        # straddle and the ``nk>R`` bytes fall through to the
+        # trailing-emit path as raw content, leaking the closing tag
+        # bytes onto the wire — symmetric to the
+        # ``start_in_prev`` straddle case the single-block path
+        # already handles. The held suffix bytes were withheld on
+        # the prior delta and have NOT been emitted, so including
+        # them in the scan is safe (they're not double-counted).
+        prev_held = self._held_tag_suffix_len
+        scan_from = max(0, prev_len - prev_held)
+        # When a straddle is recognised, ``cursor`` also needs to
+        # back up to ``scan_from`` so the tag bytes (including the
+        # held prefix from previous_text) are dropped. The
+        # emit-by-position bookkeeping naturally handles this
+        # because the inter-tag segments start from ``cursor`` and
+        # we advance ``cursor`` past each tag.
+        cursor = scan_from
+        # Build a sorted list of all tag occurrences in current_text
+        # from ``scan_from`` onwards.
+        tags: list[tuple[int, int, str]] = []
+        idx = current_text.find(self.start_token, scan_from)
+        while idx != -1:
+            tags.append((idx, len(self.start_token), "open"))
+            idx = current_text.find(self.start_token, idx + 1)
+        idx = current_text.find(self.end_token, scan_from)
+        while idx != -1:
+            tags.append((idx, len(self.end_token), "close"))
+            idx = current_text.find(self.end_token, idx + 1)
+        tags.sort(key=lambda t: t[0])
+        # Phase at cursor — start with the phase that was active at
+        # the end of previous_text MINUS the held suffix region
+        # (which we've now folded back into the scan, so its
+        # contribution to the prev_n_open/prev_n_close counts
+        # — always zero because a partial-tag prefix is strictly
+        # shorter than the tag — is unchanged).
+        phase = "reasoning" if in_reasoning_prev else "content"
+        for tag_start, tag_len, tag_kind in tags:
+            # Emit bytes between cursor and tag_start in the current
+            # phase.
+            if tag_start > cursor:
+                segment = current_text[cursor:tag_start]
+                if phase == "reasoning":
+                    reasoning_parts.append(segment)
+                else:
+                    content_parts.append(segment)
+            # Drop the tag bytes (structural) and flip phase.
+            cursor = tag_start + tag_len
+            phase = "reasoning" if tag_kind == "open" else "content"
+        # Trailing bytes after the last tag. Withhold any partial-tag
+        # suffix so an in-progress tag at the SSE boundary gets
+        # recovered on the next delta.
+        held = self._held_partial_tag_len(current_text)
+        self._held_tag_suffix_len = held
+        safe_end = len(current_text) - held
+        if safe_end > cursor:
+            segment = current_text[cursor:safe_end]
+            if phase == "reasoning":
+                reasoning_parts.append(segment)
+            else:
+                content_parts.append(segment)
+        # Phase invariant: after walking all tags in the delta,
+        # ``phase`` reflects the end-of-delta structural state
+        # (modulo the held partial-tag suffix). Persist it so the
+        # NEXT delta starts from the correct phase without having
+        # to recount historical tags (codex r3 BLOCKING fix).
+        self._streaming_phase = phase
+        reasoning = "".join(reasoning_parts) or None
+        content = "".join(content_parts) or None
+        if reasoning is None and content is None:
+            return None
+        return DeltaMessage(reasoning=reasoning, content=content)
 
     def _handle_implicit_think(
         self,
