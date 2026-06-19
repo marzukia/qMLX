@@ -28,6 +28,7 @@ the retry branch.
 
 from __future__ import annotations
 
+from vllm_mlx.reasoning.deepseek_r1_parser import DeepSeekR1ReasoningParser
 from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
 from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from vllm_mlx.service.helpers import _finalize_content_and_reasoning
@@ -497,3 +498,351 @@ def test_575_r2_qwen3_case4_still_clears_when_thinking_on():
     )
     assert reasoning == _QWEN3_TRUNCATED_THOUGHT.strip()
     assert not cleaned
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-17 VibeThinker live-test regression: truncated ``<think>`` opener
+# without ``</think>`` (``finish_reason=length`` mid-thought) used to leak
+# the byte-identical reasoning trace into BOTH ``content`` AND
+# ``reasoning_content``. The helper now clears ``cleaned_text`` when the
+# parser returns ``(reasoning, None)`` AND ``cleaned_text`` opens with an
+# unclosed ``<think>``. See ``first_parse_was_truncated_think`` in
+# ``vllm_mlx/service/helpers.py``.
+# ---------------------------------------------------------------------------
+
+_VIBETHINKER_TRUNCATED_THINK = (
+    "<think>\nStep 1: Let's analyze the problem.\n"
+    "Step 2: Apply the formula.\n"
+    "Step 3: We need to compute 7 * 12 = 84.\n"
+    "Step 4: Then we add 5 to get 89.\n"
+    "Step 5: Let me double-check by another method"
+    # NO ``</think>`` — finish_reason=length truncated mid-thought.
+)
+
+
+def test_vibethinker_truncated_think_no_duplicate_content_reasoning():
+    """2026-06-17 VibeThinker live-test repro: ``<think>...`` truncated
+    with no ``</think>`` used to surface the whole trace identically in
+    BOTH ``content`` and ``reasoning_content`` (live-test math row:
+    content_len == reasoning_len == 5449, byte-identical). The fix
+    clears ``cleaned_text`` when the parser returns ``(reasoning,
+    None)`` AND ``cleaned_text`` opens with an unclosed ``<think>``.
+
+    This test would FAIL on main because the leak plug in
+    ``_finalize_content_and_reasoning`` only fires on Case-4 (no tag at
+    all) — Case-3 (unclosed ``<think>`` opener) falls through and the
+    raw text echoes into both fields.
+    """
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_VIBETHINKER_TRUNCATED_THINK,
+        cleaned_text=_VIBETHINKER_TRUNCATED_THINK,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        # No ``enable_thinking`` signal from the caller — the literal
+        # ``<think>`` token in the output is the model's own evidence
+        # of thinking, so the fix must NOT be gated on this flag.
+        enable_thinking=None,
+    )
+    # Reasoning trace recovered
+    assert reasoning is not None
+    assert "Step 3" in reasoning
+    # Content explicitly blanked — must NOT duplicate the reasoning
+    # trace (the live-test bug signature).
+    assert not cleaned, f"truncated <think> trace leaked into content: {cleaned!r}"
+    # Defensive: the trace must not appear in content.
+    assert "Step 1" not in (cleaned or "")
+
+
+def test_vibethinker_truncated_think_with_thinking_enabled_explicit():
+    """Same as the test above but with the caller passing
+    ``enable_thinking=True``. The plug must also fire on this path
+    (was already implicitly covered by the Case-4 ``enable_thinking=True``
+    branch, but Case-3 is gated independently — pin both paths)."""
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=_VIBETHINKER_TRUNCATED_THINK,
+        cleaned_text=_VIBETHINKER_TRUNCATED_THINK,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,
+    )
+    assert reasoning is not None
+    assert "Step 3" in reasoning
+    assert not cleaned
+
+
+def test_normal_closed_think_block_still_splits_correctly():
+    """Counter-test: a normal ``<think>...</think>answer`` shape with
+    BOTH tags present must still split into reasoning + content. The
+    new leak-plug gate requires ``</think>`` to be ABSENT, so this
+    well-formed case must be unaffected."""
+    raw = "<think>step by step reasoning</think>The answer is 42."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+    )
+    assert reasoning == "step by step reasoning"
+    assert cleaned == "The answer is 42."
+
+
+def test_vibethinker_truncated_think_engine_routed_no_duplicate():
+    """2026-06-17 VibeThinker live-test repro — engine-routed path.
+
+    When ``engine_reasoning_text`` is non-empty the helper short-
+    circuits to ``_apply_reasoning_cap`` BEFORE the reasoning-parser
+    branch runs. In that path the leak-plug below the parser never
+    fires, so a truncated ``<think>`` opener in ``cleaned_text``
+    leaks straight into the client's ``content`` field (live-test
+    math row: content_starts_with='<think>We need to find...').
+
+    The fix blanks ``cleaned_text`` in the engine-routed branch too
+    when ``cleaned_text`` opens with an unclosed ``<think>``,
+    mirroring the post-parser plug.
+    """
+    raw = "<think>Let me work through this step by step. 7 * 12 ="
+    engine_reasoning = "Let me work through this step by step. 7 * 12 ="
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        # Any parser will do — the engine-reasoning short-circuit
+        # bypasses the parser entirely.
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text=engine_reasoning,
+        enable_thinking=None,
+    )
+    # Reasoning comes from the engine (router-routed).
+    assert reasoning == engine_reasoning
+    # Content explicitly blanked — must NOT duplicate the trace
+    # (the live-test bug signature).
+    assert not cleaned, (
+        f"truncated <think> trace leaked into engine-routed content: {cleaned!r}"
+    )
+
+
+def test_engine_routed_closed_think_block_passes_through():
+    """Counter-test for the engine-routed branch: a normal closed
+    ``<think>...</think>answer`` shape in ``cleaned_text`` MUST be
+    preserved. The new gate requires the opening tag at lstrip-start
+    AND no closing tag, so a well-formed block is unaffected."""
+    raw = "<think>reasoning</think>The answer is 42."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="reasoning",
+        enable_thinking=None,
+    )
+    assert reasoning == "reasoning"
+    # cleaned_text passed through intact — both ``<think>`` and
+    # ``</think>`` are present, the gate is OFF.
+    assert cleaned == raw
+
+
+def test_engine_routed_truncated_think_preserves_preamble():
+    """Same as the engine-routed test above, but with a chatty
+    preamble before the unclosed ``<think>``. ``partition`` preserves
+    the preamble as content while dropping the leaked trace."""
+    raw = (
+        "Okay, let me think about this carefully and step by step.\n\n"
+        "<think>I should compute 7 * 12 = 84, then add 5..."
+    )
+    engine_reasoning = "I should compute 7 * 12 = 84, then add 5..."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text=engine_reasoning,
+        enable_thinking=None,
+    )
+    assert reasoning == engine_reasoning
+    # Preamble preserved, leaked thought dropped.
+    assert cleaned == "Okay, let me think about this carefully and step by step."
+    assert "compute 7 * 12" not in cleaned
+    assert "<think>" not in cleaned
+
+
+def test_truncated_think_with_pre_think_content_preserves_preamble():
+    """Codex r1 P2 follow-up: when the model emits a preamble BEFORE
+    ``<think>`` and is then truncated, the trim must preserve the
+    preamble as content while dropping the unclosed thought trace.
+
+    The original VibeThinker bug report explicitly calls out this
+    shape (the merge_intervals streaming case — model emits a chatty
+    multi-sentence intro before its ``<think>`` opener). The first
+    iteration of this fix used a conservative
+    ``lstrip().startswith("<think>")`` gate that LEAKED the trace
+    into content for this case; codex r1 flagged it.
+
+    The fix uses ``partition("<think>")[0]`` so:
+      * Start-aligned (math row): preamble == "" → cleaned == ""
+      * Preamble shape (merge_intervals): preamble preserved →
+        content stays semantically meaningful while the leaked thought
+        is dropped.
+    """
+    raw = "Here is some content\n<think>truncated thought"
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+    )
+    # Parser extracts the post-``<think>`` portion as reasoning.
+    assert reasoning == "truncated thought"
+    # The preamble is preserved; the unclosed ``<think>`` opener and
+    # the leaked trace are dropped. (Trailing whitespace before
+    # ``<think>`` is also stripped by ``.rstrip()`` for clean
+    # downstream rendering.)
+    assert cleaned == "Here is some content"
+    # Defensive: the raw thought must NOT survive in content.
+    assert "truncated thought" not in cleaned
+    assert "<think>" not in cleaned
+
+
+# Codex r3 P2 — reasoning cap must not re-leak truncated thought.
+
+
+def test_truncated_think_with_reasoning_cap_does_not_leak_overflow():
+    """Codex r3 P2: ``_apply_reasoning_cap`` prepends over-cap reasoning
+    into ``cleaned_text`` so the wire ordering matches the model's
+    emission. That's correct for closed ``<think>...</think>answer``
+    splits but WRONG for truncated thoughts — the overflow IS the
+    leaked thought trace.
+
+    The fix routes the truncated-``<think>`` paths through
+    ``_truncate_reasoning_only`` which caps reasoning but does NOT
+    rewrite ``cleaned_text``. Without this, a client setting
+    ``reasoning_max_tokens=100`` against a 4000-char truncated
+    thought would still see ~3600 chars of reasoning prose in
+    ``content``.
+
+    Both branches (engine-routed and parser-routed) of
+    ``_finalize_content_and_reasoning`` must use the
+    reasoning-only cap when the plug fires.
+    """
+    # Long enough that the cap (default chars≈max_tokens*4) bites.
+    long_thought = "<think>" + ("step by step reasoning " * 100)
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=long_thought,
+        cleaned_text=long_thought,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+        reasoning_max_tokens=10,  # 40 chars
+    )
+    # Reasoning capped at 40 chars.
+    assert reasoning is not None
+    assert len(reasoning) == 40
+    # The overflow MUST NOT be written into cleaned_text — the
+    # client setting a small cap explicitly asked for thought
+    # truncation, not for the overflow to surface as content.
+    assert cleaned == ""
+    assert "step by step reasoning" not in (cleaned or "")
+
+
+def test_engine_routed_truncated_think_with_cap_does_not_leak_overflow():
+    """Same as above but for the engine-routed short-circuit branch."""
+    raw = "<think>" + ("the model is thinking out loud " * 100)
+    engine_reasoning = "the model is thinking out loud " * 100
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text=engine_reasoning,
+        enable_thinking=None,
+        reasoning_max_tokens=10,  # 40 chars
+    )
+    assert reasoning is not None
+    assert len(reasoning) == 40
+    assert cleaned == ""
+    assert "thinking out loud" not in (cleaned or "")
+
+
+# ---------------------------------------------------------------------------
+# Bug B (PR #715 fuzz bundle): the truncated-``<think>`` leak plug must
+# fire for ALL reasoning parsers whose ``extract_reasoning`` returns
+# ``(reasoning, None)`` on unclosed-``<think>`` input — including the
+# Qwen3 parser used by ``qwen3-4b-thinking-2507-4bit``. The plug lives in
+# the shared ``_finalize_content_and_reasoning`` helper so coverage
+# should be parser-agnostic; pinning here so a parser-specific override
+# can't silently regress.
+# ---------------------------------------------------------------------------
+
+
+def test_qwen3_truncated_think_no_duplicate_content_reasoning():
+    """Same bug shape as the VibeThinker repro above, but via the
+    ``Qwen3ReasoningParser`` (the parser wired for
+    ``qwen3-4b-thinking-2507-4bit`` and the rest of the Qwen3
+    thinking family). The fuzz battery confirmed
+    ``finish_reason=length`` mid-``<think>`` on Qwen3-4B-Thinking-2507
+    produced byte-identical content + reasoning_content before the
+    leak plug landed.
+
+    Since the plug fires on the parser's ``(reasoning, None)`` return
+    shape rather than the parser class, this test would FAIL if a
+    future PR routed Qwen3 truncated-think through a different
+    branch that bypasses the plug.
+    """
+    raw = _VIBETHINKER_TRUNCATED_THINK
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+    )
+    assert reasoning is not None
+    assert "Step 3" in reasoning
+    assert not cleaned, (
+        f"qwen3 truncated <think> trace leaked into content: {cleaned!r}"
+    )
+
+
+def test_qwen3_truncated_think_with_enable_thinking_true():
+    """Qwen3 + ``enable_thinking=True`` — the explicit-thinking signal
+    must NOT cause the plug to mis-fire and also must NOT double-clear
+    cleaned_text in a way that breaks the existing #575 Case-4 path."""
+    raw = _VIBETHINKER_TRUNCATED_THINK
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,
+    )
+    assert reasoning is not None
+    assert "Step 3" in reasoning
+    assert not cleaned
+
+
+def test_qwen3_engine_routed_truncated_think_no_duplicate():
+    """Engine-routed path with Qwen3 parser wired (the typical
+    Qwen3-4B-Thinking-2507 production shape: OutputRouter handles the
+    ``<think>`` token boundary, then helper finalizes)."""
+    raw = "<think>Let me solve this. 7 * 12 = 84, then I need to..."
+    engine_reasoning = "Let me solve this. 7 * 12 = 84, then I need to..."
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text=engine_reasoning,
+        enable_thinking=None,
+    )
+    assert reasoning == engine_reasoning
+    assert not cleaned, (
+        f"qwen3 engine-routed truncated <think> trace leaked: {cleaned!r}"
+    )

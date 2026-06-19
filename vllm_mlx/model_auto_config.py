@@ -138,18 +138,32 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # Pure-attention Qwen2 architecture; chat template does NOT inject
     # ``<think>`` — the model emits ``<think>...</think>`` autonomously on
     # every response. ``deepseek_r1`` parser handles that "model decides"
-    # contract (same as DeepSeek-R1 distill on Qwen base). Model card
-    # explicitly states tool calling is unsupported even though the
-    # inherited Qwen2 vocab carries ``<tool_call>`` tokens, so leave
-    # ``tool_call_parser=None``. Placed before the generic ``qwen`` regex
-    # would have been (there is none today) — this pattern is the only
-    # signal for full-HF-path serves of ``WeiboAI/VibeThinker-3B`` or
+    # contract (same as DeepSeek-R1 distill on Qwen base).
+    #
+    # 2026-06-17 VibeThinker live test (PR for #708 follow-up): although
+    # the upstream model card disowns tool calling, the inherited Qwen2
+    # vocab carries the ``<tool_call>`` / ``</tool_call>`` and
+    # ``<function=...>`` tokens AND the live test confirmed the 3B-8bit
+    # weights emit BOTH shapes when prompted with tools (Test 4 of the
+    # live-test report). Wire ``hermes`` parser so the bare
+    # ``<function=name>...</function>`` shape (which the OutputRouter
+    # token-fallback misses) lands in ``tool_calls`` instead of leaking
+    # as raw text into ``content``.
+    #
+    # Placed before the generic ``qwen`` regex would have been (there is
+    # none today) — this pattern is the only signal for full-HF-path
+    # serves of ``WeiboAI/VibeThinker-3B`` or
     # ``mlx-community/VibeThinker-3B-*`` that miss the alias lookup.
     (
         re.compile(r"vibethinker", re.IGNORECASE),
         ModelConfig(
-            tool_call_parser=None,
-            reasoning_parser="deepseek_r1",
+            tool_call_parser="hermes",
+            # ``vibethinker`` parser — DeepSeek-R1 variant with a 1024-char
+            # no-tag threshold for the preamble-before-``<think>`` shape
+            # (codex r2 P2 — keeps the base ``deepseek_r1`` threshold at 64
+            # for distilled-on-Qwen aliases that DO open with ``<think>``
+            # immediately).
+            reasoning_parser="vibethinker",
         ),
     ),
     # Qwen3-Coder-Next / Qwen3-Next — hybrid linear attention, BEFORE
@@ -188,6 +202,28 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # Qwen3-Coder (older, pure-attention) — not Coder-Next
     (
         re.compile(r"qwen3[-_]?coder", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser=None,
+        ),
+    ),
+    # Qwen3 non-thinking variants — these explicitly DO NOT emit
+    # ``<think>...</think>`` and the qwen3 reasoning parser's Case-4
+    # fallback ("no tags + ``enable_thinking=True`` → all output is
+    # reasoning", #575) duplicates the entire response into BOTH
+    # ``content`` and ``reasoning_content`` when the client passes
+    # ``enable_thinking=True``. The 2026-06-18 fuzz battery against PR
+    # #714 caught this on the Qwen3-VL-2B-Instruct and
+    # Qwen3-4B-Instruct-2507 4-bit MLX repacks.
+    #
+    # MUST come BEFORE the generic ``qwen3`` regex below. The Thinking
+    # sibling (Qwen3-4B-Thinking-2507) takes the family default since
+    # ``thinking`` won't match either of these.
+    (
+        re.compile(
+            r"qwen3[-_]?(?:vl[-_]?2b|4b[-_]?instruct)",
+            re.IGNORECASE,
+        ),
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser=None,
@@ -259,6 +295,20 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="gemma4",
         ),
     ),
+    # Gemma 3n — on-device multimodal (text+image+audio). The chat
+    # template does NOT define tool-call special tokens, and the 2026-
+    # 06-18 fuzz battery against PR #714 confirmed the model ignores
+    # tool prompts entirely (returns prose, not a parseable envelope).
+    # ``tool_call_parser=hermes`` advertised tool capability the model
+    # cannot honour. Match BEFORE the generic ``gemma`` regex so the
+    # 3n variants resolve to ``tool_call_parser=None``.
+    (
+        re.compile(r"gemma[-_]?3n", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser=None,
+            reasoning_parser=None,
+        ),
+    ),
     # Gemma 2/3 (hermes format)
     (
         re.compile(r"gemma", re.IGNORECASE),
@@ -325,6 +375,21 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser="deepseek_r1",
+        ),
+    ),
+    # Phi-3.5-mini — the chat template only defines ``<|user|>`` /
+    # ``<|assistant|>`` / ``<|end|>`` (no ``<tool_call>`` special token);
+    # the 2026-06-18 fuzz battery against PR #714 confirmed the model
+    # ignores tool prompts. Pin ``tool_call_parser=None`` BEFORE the
+    # generic ``phi`` regex so the bare-HF-path serves don't advertise
+    # tool capability the model cannot honour. The Phi-4 family (which
+    # CAN tool-call) and Phi-4-mini-reasoning (handled above) are
+    # unaffected.
+    (
+        re.compile(r"phi[-_]?3\.?5", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser=None,
+            reasoning_parser=None,
         ),
     ),
     # Phi

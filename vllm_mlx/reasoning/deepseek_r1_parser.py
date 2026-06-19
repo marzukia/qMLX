@@ -82,7 +82,16 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
     # Character threshold for no-tag content detection.
     # If no think tags are seen after this many characters, treat output as
     # content rather than reasoning. Real reasoning models emit <think> within
-    # the first few tokens; 64 chars (~15-20 tokens) is a safe threshold.
+    # the first few tokens; 64 chars (~15-20 tokens) is a safe threshold for
+    # DeepSeek-R1, which always opens with the ``<think>`` token.
+    #
+    # Subclasses can override this when their model emits a preamble before
+    # the ``<think>`` opener — see ``VibeThinkerReasoningParser`` for the
+    # Qwen2-derived VibeThinker family (2026-06-17 live test) which needs a
+    # larger window. Codex r2 P2: keeping the base threshold at 64 avoids
+    # globally widening the reasoning-buffer window for all DeepSeek-R1-family
+    # callers (the parent class is still wired to ``deepseek-r1`` and several
+    # distilled-on-Qwen aliases that DO open with ``<think>`` immediately).
     NO_TAG_CONTENT_THRESHOLD = 64
 
     def extract_reasoning_streaming(
@@ -164,3 +173,35 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             # yield a chunk that moves reasoning → content.
             return DeltaMessage(content=accumulated_text)
         return None
+
+
+class VibeThinkerReasoningParser(DeepSeekR1ReasoningParser):
+    """DeepSeek-R1 variant for the VibeThinker (Weibo AI) family.
+
+    VibeThinker is Qwen2-derived (1.5B base = Qwen2.5-Math-1.5B, 3B base
+    = Qwen2.5-Coder-3B) and emits a chatty multi-sentence preamble BEFORE
+    its ``<think>`` opener — observed in the 2026-06-17 live test:
+
+        "Okay, let me think about this carefully and step by step.\n\n"
+        "<think>Step 1: scan the intervals..."
+
+    The 80-char preamble (~13 tokens) blows past the parent class's
+    64-char ``NO_TAG_CONTENT_THRESHOLD``, so streaming routing flipped
+    from reasoning → content mid-preamble; by the time the literal
+    ``<think>`` arrived, the reasoning trace was already leaking into
+    ``content`` deltas (live-test merge_intervals row).
+
+    A 1024-char (~250-300 token) window gives the model room to produce
+    a multi-sentence preamble before ``<think>`` while ``finalize_streaming``
+    still issues the reasoning → content correction for genuinely no-tag
+    short responses that stay under the new threshold for the entire
+    stream.
+
+    Scoped narrowly to the VibeThinker family (codex r2 P2): widening the
+    parent class's threshold globally would push every DeepSeek-R1-family
+    no-tag answer under 1024 chars into the reasoning channel and delay
+    visible ``content`` until completion. This subclass localises the
+    larger window to the only model that actually needs it.
+    """
+
+    NO_TAG_CONTENT_THRESHOLD = 1024
