@@ -695,6 +695,144 @@ class TestStreamingEngineCapability:
         assert r.status_code == 501
 
 
+class TestStreamingCompletionIdStable:
+    """F-154 regression: every SSE chunk emitted by
+    ``stream_completion`` MUST share one ``cmpl-XXXX`` id (and one
+    ``created`` timestamp). Pre-fix the route minted a fresh
+    ``uuid.uuid4().hex[:8]`` per chunk, so client-side aggregators
+    that key on ``id`` to correlate chunks to a request treated each
+    chunk as a separate response and cross-chunk assembly was
+    impossible. ``/v1/chat/completions`` already shares one
+    ``chatcmpl-XXXX`` across chunks; this pins the legacy route to
+    parity with the OpenAI spec.
+    """
+
+    def _build_multichunk_engine(self):
+        class _Chunk:
+            def __init__(self, text, finished, finish_reason=None):
+                self.text = text
+                self.new_text = text
+                self.tokens = []
+                self.new_token_ids = []
+                self.prompt_tokens = 1
+                self.completion_tokens = 1
+                self.finished = finished
+                self.finish_reason = finish_reason
+                self.cached_tokens = 0
+                # ``logprobs`` is the route's signal to call
+                # ``_extract_streaming_token_logprobs`` — leave as None
+                # so the test exercises the no-logprobs branch (which
+                # is the surface the F-154 repro hits).
+                self.logprobs = None
+
+        async def _stream(*_a, **_kw):
+            yield _Chunk("hello", finished=False)
+            yield _Chunk(" there", finished=False)
+            yield _Chunk("!", finished=True, finish_reason="length")
+
+        e = MagicMock()
+        e.stream_generate = _stream
+        return e
+
+    def _parse_sse(self, body: str) -> list[dict]:
+        """Parse SSE ``data:`` lines into JSON, skipping ``[DONE]``."""
+        import json
+
+        chunks = []
+        for line in body.splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[len("data: ") :].strip()
+            if payload == "[DONE]":
+                continue
+            chunks.append(json.loads(payload))
+        return chunks
+
+    def test_all_stream_chunks_share_one_completion_id(
+        self, patched_config, monkeypatch
+    ):
+        client, _ = _build_completions_app(
+            patched_config,
+            monkeypatch,
+            engine_factory=self._build_multichunk_engine,
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "max_tokens": 5,
+                "stream": True,
+            },
+        )
+        assert r.status_code == 200, r.text
+        chunks = self._parse_sse(r.text)
+        assert len(chunks) >= 2, f"expected multiple stream chunks, got {len(chunks)}"
+        ids = {c["id"] for c in chunks}
+        assert len(ids) == 1, (
+            f"F-154 regression: stream emitted distinct ids per chunk "
+            f"({len(ids)} unique across {len(chunks)} chunks): "
+            f"{sorted(ids)}"
+        )
+        # The shared id still follows the canonical ``cmpl-XXXX``
+        # prefix so OpenAI-shape-strict clients don't get surprised.
+        sole_id = next(iter(ids))
+        assert sole_id.startswith("cmpl-"), (
+            f"shared id must keep the OpenAI ``cmpl-`` prefix, got {sole_id!r}"
+        )
+
+    def test_all_stream_chunks_share_one_created_timestamp(
+        self, patched_config, monkeypatch
+    ):
+        """Counterpart to the id contract: ``created`` is also pinned
+        once per request. Pre-fix each chunk called ``int(time.time())``
+        again, so chunks straddling a second boundary disagreed on the
+        request start time. Clients that derive request latency from
+        the first/last chunk timestamps would see jitter rather than
+        a stable origin.
+
+        Codex round-1 BLOCKING on PR #752: a real-time test would
+        usually pass even against the pre-fix code because three
+        synthetic chunks generally fit inside a single integer second,
+        so ``int(time.time())`` returns the same value for each call.
+        Monkeypatch ``time.time`` to return a strictly-increasing
+        sequence (1000.0, 1001.0, 1002.0, ...) so every call yields a
+        distinct integer — if the production code calls ``time.time``
+        once per chunk we'd see 3 distinct timestamps; if it calls it
+        once per request we see 1. This makes the test actually
+        exercise the fix instead of accidentally passing on timing.
+        """
+        from vllm_mlx.routes import completions as comp_route
+
+        _tick = iter(range(1000, 2000))
+
+        def _fake_time():
+            return float(next(_tick))
+
+        monkeypatch.setattr(comp_route.time, "time", _fake_time)
+        client, _ = _build_completions_app(
+            patched_config,
+            monkeypatch,
+            engine_factory=self._build_multichunk_engine,
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "max_tokens": 5,
+                "stream": True,
+            },
+        )
+        assert r.status_code == 200
+        chunks = self._parse_sse(r.text)
+        timestamps = {c["created"] for c in chunks}
+        assert len(timestamps) == 1, (
+            f"F-154 regression: stream emitted distinct ``created`` "
+            f"timestamps ({sorted(timestamps)}) — must share one start"
+        )
+
+
 class TestFieldDeclarations:
     """The pre-fix schema silently dropped ``n``, ``best_of``, ``echo``
     on parse — equivalent to the silent-compat lie F-152 closes."""

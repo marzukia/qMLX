@@ -91,9 +91,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     # range with a 400 so ``logprobs=20`` (chat-shape ``top_logprobs``
     # ceiling) doesn't slip through and DoS the server with
     # top-of-vocab work.
-    if request.logprobs is not None and (
-        request.logprobs < 0 or request.logprobs > 5
-    ):
+    if request.logprobs is not None and (request.logprobs < 0 or request.logprobs > 5):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -253,8 +251,15 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     async for chunk in it:
                         _stream_yielded = True
                         output = chunk
-                        _accum_text_parts.append(chunk.new_text or "")
-                        token_logprobs_list.extend(
+                        # B023 is a false positive here: the closure is
+                        # invoked synchronously inside the same loop
+                        # iteration via ``await _wait_with_disconnect``
+                        # below, so ``_accum_text_parts`` /
+                        # ``token_logprobs_list`` always reference the
+                        # current iteration's bindings. Suppress so the
+                        # ruff baseline stays clean.
+                        _accum_text_parts.append(chunk.new_text or "")  # noqa: B023
+                        token_logprobs_list.extend(  # noqa: B023
                             _extract_streaming_token_logprobs(
                                 chunk, engine.tokenizer, effective_top_k
                             )
@@ -368,10 +373,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                         top_lps.append({})
                     else:
                         top_lps.append(
-                            {
-                                tl.token: tl.logprob
-                                for tl in (entry.top_logprobs or [])
-                            }
+                            {tl.token: tl.logprob for tl in (entry.top_logprobs or [])}
                         )
                     text_offset.append(offset)
                     offset += len(entry.token)
@@ -445,11 +447,22 @@ async def stream_completion(
     # after the non-streaming branch was fixed — a silent split-brain
     # SDK clients would discover only at runtime.
     model_name = _resolve_model_name(request.model)
+    # F-154: every SSE chunk in a single streamed completion shares
+    # one ``cmpl-XXXX`` id (per OpenAI legacy /v1/completions spec).
+    # Pre-fix this branch minted a fresh id at every yield point —
+    # client-side aggregators that key on ``id`` to correlate chunks
+    # to a request treated each chunk as a separate response, making
+    # cross-chunk assembly impossible. ``/v1/chat/completions``
+    # already shares one ``chatcmpl-XXXX`` across all chunks; this
+    # change brings the legacy route to parity. ``created`` is also
+    # captured once so all chunks report the same start timestamp.
+    completion_id = f"cmpl-{uuid.uuid4().hex[:8]}"
+    created_ts = int(time.time())
     if request.echo:
         echo_data = {
-            "id": f"cmpl-{uuid.uuid4().hex[:8]}",
+            "id": completion_id,
             "object": "text_completion",
-            "created": int(time.time()),
+            "created": created_ts,
             "model": model_name,
             "choices": [
                 {
@@ -501,10 +514,7 @@ async def stream_completion(
                         top_lps.append({})
                     else:
                         top_lps.append(
-                            {
-                                tl.token: tl.logprob
-                                for tl in (entry.top_logprobs or [])
-                            }
+                            {tl.token: tl.logprob for tl in (entry.top_logprobs or [])}
                         )
                     text_offsets.append(text_offset_cursor)
                     text_offset_cursor += len(entry.token)
@@ -524,14 +534,14 @@ async def stream_completion(
                 # slice ``chunk.text[offset:offset+len(token)]``
                 # would read garbage.
                 choice["text"] = "".join(tokens_arr)
-        # NOTE: distinct per-chunk ``cmpl-XXXX`` ids are F-154 — fixing
-        # that here would broaden this PR's scope (F-152/F-153 only).
-        # Mint a fresh id per chunk to preserve current behaviour and
-        # leave F-154 as a separate one-line follow-up.
+        # F-154: reuse ``completion_id`` / ``created_ts`` minted once
+        # above so every chunk shares the same id+timestamp — matches
+        # the OpenAI legacy /v1/completions spec and brings parity with
+        # the ``/v1/chat/completions`` SSE path.
         data = {
-            "id": f"cmpl-{uuid.uuid4().hex[:8]}",
+            "id": completion_id,
             "object": "text_completion",
-            "created": int(time.time()),
+            "created": created_ts,
             "model": model_name,
             "choices": [choice],
         }
