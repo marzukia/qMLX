@@ -14,6 +14,7 @@ from ..api.models import (
     CompletionChoice,
     CompletionRequest,
     CompletionResponse,
+    LegacyCompletionLogProbs,
     PromptTokensDetails,
     Usage,
 )
@@ -23,6 +24,7 @@ from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
     _check_admission_or_503,
     _disconnect_guard,
+    _extract_streaming_token_logprobs,
     _release_admission_unless_committed,
     _resolve_max_tokens,
     _resolve_model_name,
@@ -54,6 +56,74 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             detail=(
                 "FIM (fill-in-the-middle) 'suffix' is not supported by this "
                 "server. Use the chat completions API or omit 'suffix'."
+            ),
+        )
+    # F-152: legacy completions params that have NO implementation on
+    # Rapid-MLX must fail loudly instead of returning 200 with a single
+    # completion (the silent-compat lie SDKs port broken from). The
+    # canonical chat-completions handler already rejects ``n > 1``;
+    # mirror that here and extend to ``best_of`` (a top-k rerank knob
+    # we don't implement at all). ``n == 1`` and ``best_of == 1`` are
+    # the OpenAI defaults — accept them silently so well-behaved
+    # clients passing the documented default don't see a 400.
+    if request.n is not None and request.n > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "n > 1 is not supported on /v1/completions. Rapid-MLX "
+                "generates one completion per request — send "
+                "individual requests if you need multiple samples."
+            ),
+        )
+    if request.best_of is not None and request.best_of > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "best_of > 1 is not supported on /v1/completions. "
+                "Rapid-MLX has no server-side reranker — send "
+                "individual requests and rerank client-side."
+            ),
+        )
+    # F-153: ``logprobs`` on legacy completions is an INTEGER (top-k
+    # count, 0..5 per OpenAI spec). The pydantic ``mode="before"``
+    # validator on ``CompletionRequest`` already rejects the
+    # chat-shape ``bool`` form with a 422; here we enforce the spec
+    # range with a 400 so ``logprobs=20`` (chat-shape ``top_logprobs``
+    # ceiling) doesn't slip through and DoS the server with
+    # top-of-vocab work.
+    if request.logprobs is not None and (
+        request.logprobs < 0 or request.logprobs > 5
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "logprobs must be between 0 and 5 on /v1/completions "
+                "(OpenAI legacy spec)."
+            ),
+        )
+    # F-152 follow-up (codex r1 BLOCKING): legacy clients use
+    # ``echo:true + logprobs:N`` SPECIFICALLY to score prompt tokens
+    # (lm-evaluation-harness, ``openai.Completion.create`` with
+    # ``echo=True``). Producing logprobs arrays that cover only the
+    # generated tokens — with a leading prompt prefix in ``text`` —
+    # would mis-align the ``text_offset`` cursor against ``tokens``
+    # and silently corrupt every prompt-conditioned score. We don't
+    # replay the prompt through the sampler (no per-token
+    # distributions available without a dedicated prefill-with-
+    # logprobs path), so reject the combination with a clear 400
+    # instead of returning partial-but-wrong data. Either knob
+    # alone keeps working; only the combination is rejected.
+    if request.echo and request.logprobs is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "`echo` combined with `logprobs` is not supported on "
+                "/v1/completions: Rapid-MLX does not replay the prompt "
+                "through the sampler, so we cannot return per-token "
+                "logprobs for the echoed prefix. Send `echo` and "
+                "`logprobs` in separate requests (the `echo` request "
+                "returns the prompt-prefixed text; the `logprobs` "
+                "request returns the generated-token distributions)."
             ),
         )
     engine = get_engine(request.model)
@@ -90,6 +160,29 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         for _p in prompts:
             enforce_context_length_for_prompt(engine, _p, max_tokens=_resolved_max)
 
+        # Codex r2/r3 BLOCKING: engine capability guard for ``logprobs``
+        # applies to BOTH streaming and non-streaming paths. Without
+        # this check on the streaming branch, the AttributeError fires
+        # inside the SSE generator (already-committed
+        # ``StreamingResponse``) and clients see an EventSource that
+        # disconnects after the first chunk instead of a controlled
+        # 501. Lift to the top so both branches are covered.
+        _want_logprobs = request.logprobs is not None
+        if _want_logprobs and (
+            not hasattr(engine, "stream_generate")
+            or getattr(engine, "tokenizer", None) is None
+        ):
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "logprobs requested but this engine does not expose "
+                    "the streaming logprobs extraction path "
+                    "(``stream_generate`` + ``tokenizer``). Reissue "
+                    "without ``logprobs`` or use a model that supports "
+                    "per-token distributions."
+                ),
+            )
+
         if request.stream:
             _admission_committed = True
             return StreamingResponse(
@@ -112,27 +205,196 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
 
         extended_kwargs = build_extended_sampling_kwargs(request)
 
+        # F-152/F-153: ``logprobs`` is an integer (top-k count). When
+        # non-None we route through ``stream_generate`` to accumulate
+        # per-token distributions chunk by chunk (the same pattern
+        # ``routes/chat.py`` uses for ``logprobs=true, top_logprobs=K``
+        # — the non-streaming ``generate`` path doesn't surface the
+        # per-step ``mx.array`` distributions a top-k logprobs payload
+        # needs). ``logprobs=0`` is a valid OpenAI request that asks
+        # for the sampled-token logprob WITHOUT alternatives — we
+        # still need ``_extract_streaming_token_logprobs`` to surface
+        # the sampled probability, but pass ``effective_top_k=1`` to
+        # avoid the ``argpartition(-0)[-0:]``-returns-full-vocab
+        # pre-existing footgun in ``_extract_token_logprob`` (chat
+        # route side-steps this by gating ``logprobs && top_logprobs``;
+        # we have to handle ``top_k=0`` explicitly). The resulting
+        # ``top_logprobs`` dict is stripped to ``{}`` below so the
+        # response shape stays spec-correct.
+        want_logprobs = request.logprobs is not None
+        top_k_logprobs = request.logprobs or 0
+        effective_top_k = max(1, top_k_logprobs)
+
+        # Engine capability guard for ``logprobs`` is enforced earlier
+        # (top of the route, covers both streaming + non-streaming).
+
         for i, prompt in enumerate(prompts):
-            output = await _wait_with_disconnect(
-                engine.generate(
+            token_logprobs_list = []
+            if want_logprobs:
+                # Accumulate streaming chunks; the engine emits one
+                # GenerationOutput per generated token (or per flush
+                # under ``stream_interval > 1`` — the helper's per-step
+                # iteration handles both shapes; see
+                # ``service/helpers.py::_extract_streaming_token_logprobs``).
+                output = None
+                _accum_text_parts: list[str] = []
+                _stream_yielded = False
+                stream_iter = engine.stream_generate(
                     prompt=prompt,
                     max_tokens=_resolve_max_tokens(request.max_tokens),
                     temperature=_resolve_temperature(request.temperature),
                     top_p=_resolve_top_p(request.top_p),
                     stop=request.stop,
                     **extended_kwargs,
-                ),
-                raw_request,
-                timeout=timeout,
-            )
-            if output is None:
-                return Response(status_code=499)  # Client closed request
+                )
+
+                async def _drain_stream(it=stream_iter):
+                    nonlocal output, _stream_yielded
+                    async for chunk in it:
+                        _stream_yielded = True
+                        output = chunk
+                        _accum_text_parts.append(chunk.new_text or "")
+                        token_logprobs_list.extend(
+                            _extract_streaming_token_logprobs(
+                                chunk, engine.tokenizer, effective_top_k
+                            )
+                        )
+                    return output
+
+                output = await _wait_with_disconnect(
+                    _drain_stream(), raw_request, timeout=timeout
+                )
+                # Codex r2/r3 BLOCKING: ``_wait_with_disconnect``
+                # returns ``None`` on client disconnect, on timeout,
+                # OR when ``_drain_stream`` exits cleanly without
+                # yielding any chunks. Disambiguate three cases:
+                #   1. ``_stream_yielded`` — at least one chunk
+                #      reached us; bailing now is a mid-flight
+                #      disconnect or timeout → 499.
+                #   2. ``await raw_request.is_disconnected()`` — the
+                #      client closed BEFORE the first chunk; also
+                #      499. (Codex r3 BLOCKING #2: without this
+                #      check, a disconnect-before-first-token was
+                #      misclassified as a successful empty
+                #      completion.)
+                #   3. Otherwise — engine genuinely returned an empty
+                #      stream; synthesize an empty ``GenerationOutput``
+                #      so the response matches OpenAI's empty-
+                #      completion shape.
+                if output is None:
+                    if _stream_yielded:
+                        return Response(status_code=499)
+                    try:
+                        client_gone = await raw_request.is_disconnected()
+                    except Exception:
+                        client_gone = False
+                    if client_gone:
+                        return Response(status_code=499)
+                    from ..engine.base import GenerationOutput
+
+                    output = GenerationOutput(
+                        text="",
+                        finish_reason="stop",
+                        prompt_tokens=0,
+                        completion_tokens=0,
+                    )
+                # The stream's last chunk carries the aggregate text on
+                # the LLM engine path (it's accumulated by
+                # ``RequestOutput.output_text``), but the MLLM
+                # scheduler historically populated only the per-chunk
+                # ``new_text`` — fold the accumulated parts to cover
+                # both paths.
+                final_text = output.text or "".join(_accum_text_parts)
+            else:
+                output = await _wait_with_disconnect(
+                    engine.generate(
+                        prompt=prompt,
+                        max_tokens=_resolve_max_tokens(request.max_tokens),
+                        temperature=_resolve_temperature(request.temperature),
+                        top_p=_resolve_top_p(request.top_p),
+                        stop=request.stop,
+                        **extended_kwargs,
+                    ),
+                    raw_request,
+                    timeout=timeout,
+                )
+                if output is None:
+                    return Response(status_code=499)  # Client closed request
+                final_text = output.text
+
+            # F-152: ``echo:true`` prepends the prompt to the response
+            # text (legacy OpenAI behaviour — used by eval harnesses
+            # like ``lm-evaluation-harness`` to score prompt-conditioned
+            # token log-probs). Cheap to implement (just a string
+            # concat); without it the silent-drop pre-fix made every
+            # eval that depends on the prompt prefix score garbage.
+            if request.echo:
+                final_text = prompt + final_text
+
+            # Build the legacy logprobs payload per OpenAI spec: four
+            # parallel arrays keyed positionally per generated token.
+            # ``echo + logprobs`` is rejected upstream (see route
+            # entry) so ``offset`` always starts at 0 here.
+            #
+            # Codex r2 BLOCKING #3: ``text_offset`` is documented as
+            # offsets into ``choices[0].text``. We compute offsets
+            # cumulatively from ``len(decoded_token)`` so they
+            # ALWAYS align with ``"".join(tokens_arr)``. When
+            # ``output.text`` differs from that concatenation
+            # (whitespace normalization in ``clean_output_text``,
+            # tokenizer-side cleanup) the spec-correct move is to
+            # surface the token-concatenated text as ``text`` so
+            # ``text_offset`` is byte-exact against the field it
+            # references. Falls back to ``output.text`` only when no
+            # token entries were captured (empty stream / engine
+            # quirk).
+            choice_logprobs = None
+            if want_logprobs:
+                tokens_arr: list[str] = []
+                token_lps: list[float] = []
+                top_lps: list[dict[str, float]] = []
+                text_offset: list[int] = []
+                offset = 0  # echo+logprobs is rejected upstream
+                for entry in token_logprobs_list:
+                    tokens_arr.append(entry.token)
+                    token_lps.append(entry.logprob)
+                    # ``logprobs=0`` per OpenAI spec asks for the
+                    # sampled-token logprob WITHOUT any alternatives.
+                    # ``effective_top_k=1`` above means
+                    # ``entry.top_logprobs`` carries a single-element
+                    # list; strip it so the response shape matches
+                    # what a real OpenAI call returns (``{}``).
+                    if top_k_logprobs == 0:
+                        top_lps.append({})
+                    else:
+                        top_lps.append(
+                            {
+                                tl.token: tl.logprob
+                                for tl in (entry.top_logprobs or [])
+                            }
+                        )
+                    text_offset.append(offset)
+                    offset += len(entry.token)
+                choice_logprobs = LegacyCompletionLogProbs(
+                    tokens=tokens_arr,
+                    token_logprobs=token_lps,
+                    top_logprobs=top_lps,
+                    text_offset=text_offset,
+                )
+                # Pin ``final_text`` to the token concatenation so
+                # ``text_offset`` is byte-exact. Skip when no tokens
+                # were captured (e.g. engine quirk that yielded
+                # ``new_text`` without ``new_token_ids``) — keep the
+                # accumulated raw text in that case.
+                if tokens_arr:
+                    final_text = "".join(tokens_arr)
 
             choices.append(
                 CompletionChoice(
                     index=i,
-                    text=output.text,
+                    text=final_text,
                     finish_reason=output.finish_reason,
+                    logprobs=choice_logprobs,
                 )
             )
             total_completion_tokens += output.completion_tokens
@@ -177,6 +439,39 @@ async def stream_completion(
     """Stream completion response."""
     extended_kwargs = build_extended_sampling_kwargs(request)
 
+    # F-152: ``echo`` on the streaming path emits the prompt as the
+    # FIRST SSE chunk, then continues with generated tokens. Without
+    # this initial chunk, the streaming branch ignored ``echo`` even
+    # after the non-streaming branch was fixed — a silent split-brain
+    # SDK clients would discover only at runtime.
+    model_name = _resolve_model_name(request.model)
+    if request.echo:
+        echo_data = {
+            "id": f"cmpl-{uuid.uuid4().hex[:8]}",
+            "object": "text_completion",
+            "created": int(time.time()),
+            "model": model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "text": prompt,
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(echo_data)}\n\n"
+
+    # F-152: ``logprobs`` on streaming surfaces per-chunk top-k
+    # alternatives in the spec-correct legacy shape (four parallel
+    # arrays). Each SSE chunk represents one (or a few) generated
+    # tokens; emit a fresh ``logprobs`` object per chunk keyed to
+    # those token(s) only. Cumulative ``text_offset`` is preserved
+    # across chunks so client-side accumulators can concat directly.
+    want_logprobs = request.logprobs is not None
+    top_k_logprobs = request.logprobs or 0
+    effective_top_k = max(1, top_k_logprobs)  # see non-stream branch
+    text_offset_cursor = 0  # echo+logprobs is rejected upstream
+
     async for output in engine.stream_generate(
         prompt=prompt,
         max_tokens=_resolve_max_tokens(request.max_tokens),
@@ -185,18 +480,60 @@ async def stream_completion(
         stop=request.stop,
         **extended_kwargs,
     ):
+        choice = {
+            "index": 0,
+            "text": output.new_text,
+            "finish_reason": output.finish_reason if output.finished else None,
+        }
+        if want_logprobs:
+            entries = _extract_streaming_token_logprobs(
+                output, engine.tokenizer, effective_top_k
+            )
+            if entries:
+                tokens_arr = []
+                token_lps = []
+                top_lps = []
+                text_offsets = []
+                for entry in entries:
+                    tokens_arr.append(entry.token)
+                    token_lps.append(entry.logprob)
+                    if top_k_logprobs == 0:
+                        top_lps.append({})
+                    else:
+                        top_lps.append(
+                            {
+                                tl.token: tl.logprob
+                                for tl in (entry.top_logprobs or [])
+                            }
+                        )
+                    text_offsets.append(text_offset_cursor)
+                    text_offset_cursor += len(entry.token)
+                choice["logprobs"] = {
+                    "tokens": tokens_arr,
+                    "token_logprobs": token_lps,
+                    "top_logprobs": top_lps,
+                    "text_offset": text_offsets,
+                }
+                # Codex r3 BLOCKING #3: pin chunk ``text`` to the
+                # token concatenation so ``text_offset`` is byte-
+                # exact against the field it references (matches the
+                # non-streaming path's alignment fix). Without this
+                # rebind, ``output.new_text`` may differ from
+                # ``"".join(tokens_arr)`` after tokenizer cleanup
+                # or whitespace normalization, and clients that
+                # slice ``chunk.text[offset:offset+len(token)]``
+                # would read garbage.
+                choice["text"] = "".join(tokens_arr)
+        # NOTE: distinct per-chunk ``cmpl-XXXX`` ids are F-154 — fixing
+        # that here would broaden this PR's scope (F-152/F-153 only).
+        # Mint a fresh id per chunk to preserve current behaviour and
+        # leave F-154 as a separate one-line follow-up.
         data = {
             "id": f"cmpl-{uuid.uuid4().hex[:8]}",
             "object": "text_completion",
             "created": int(time.time()),
-            "model": _resolve_model_name(request.model),
-            "choices": [
-                {
-                    "index": 0,
-                    "text": output.new_text,
-                    "finish_reason": output.finish_reason if output.finished else None,
-                }
-            ],
+            "model": model_name,
+            "choices": [choice],
         }
         if output.finished:
             data["usage"] = get_usage(output).model_dump(exclude_none=True)
