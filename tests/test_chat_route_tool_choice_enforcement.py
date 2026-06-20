@@ -39,6 +39,7 @@ from fastapi.testclient import TestClient
 
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.middleware.exception_handlers import install_exception_handlers
 from vllm_mlx.routes.chat import _tool_call_name
 from vllm_mlx.routes.chat import router as chat_router
 
@@ -331,6 +332,48 @@ def test_tool_choice_function_missing_name_with_no_tools_returns_400():
         },
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("tools_field", [None, []])
+def test_tool_choice_required_without_tools_returns_400(tools_field):
+    """F-034: ``tool_choice="required"`` with ``tools`` absent or empty
+    must surface as HTTP 400 — the request is unsatisfiable, since
+    "required" guarantees a tool_call but there is no tool to call.
+    Pre-fix both cases silently 200'd as plain chat completions,
+    masking a client bug.
+
+    Wires the production OpenAI-shape exception middleware via
+    ``install_exception_handlers`` so the assertion pins the SAME wire
+    behavior the real serve binary returns (Pydantic ValidationError
+    -> 400 with ``error.type='invalid_request_error'`` envelope).
+    """
+    engine = _RecordingEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(chat_router)
+    client = TestClient(app)
+    payload: dict[str, Any] = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tool_choice": "required",
+        "max_tokens": 32,
+    }
+    if tools_field is not None:
+        payload["tools"] = tools_field
+    resp = client.post("/v1/chat/completions", json=payload)
+    # Production wire contract: middleware rewrites the Pydantic 422
+    # into the OpenAI ``invalid_request_error`` 400 envelope.
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["type"] == "invalid_request_error"
+    assert "tool_choice='required'" in body["error"]["message"]
+    assert "non-empty 'tools'" in body["error"]["message"]
 
 
 # ──────────────────────────────────────────────────────────────────
