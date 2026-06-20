@@ -431,8 +431,111 @@ async def create_anthropic_message(
     ],
 )
 async def count_anthropic_tokens(request: Request):
-    """Count tokens for an Anthropic Messages API request."""
+    """Count tokens for an Anthropic Messages API request.
+
+    Validation contract — mirrors ``/v1/messages``:
+
+    * Malformed JSON body → 400 via the global ``json.JSONDecodeError``
+      handler in ``server.py`` (F-161).
+    * Missing or empty ``messages`` → 400 ``invalid_request_error``
+      instead of the silent ``{"input_tokens": 0}`` cost-estimation
+      footgun (F-160). Anthropic's real endpoint requires a non-empty
+      ``messages`` array; mirror that here so clients don't ship a
+      pricing-page bug into production.
+    * Unknown ``model`` → 404 via ``_validate_model_name`` instead of
+      silently using the loaded model's tokenizer (F-167). A fallback
+      count is mathematically meaningless to a client estimating cost
+      for a *different* model.
+    """
     body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "Request body must be a JSON object",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "param": None,
+                }
+            },
+        )
+
+    # Validate ``messages`` first — Anthropic's contract requires at
+    # least one message. Returning 0 tokens here is worse than an error
+    # because clients use this endpoint to estimate cost and a silent
+    # zero looks like "free request" rather than "bad request".
+    raw_messages = body.get("messages", None)
+    if raw_messages is None or (
+        isinstance(raw_messages, list) and len(raw_messages) == 0
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        "`messages` must be a non-empty array of "
+                        "Anthropic message objects"
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "param": "messages",
+                }
+            },
+        )
+    if not isinstance(raw_messages, list):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "`messages` must be a JSON array",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "param": "messages",
+                }
+            },
+        )
+
+    # Validate model name — mirror ``/v1/chat/completions`` and
+    # ``/v1/responses``. Claude/Codex aliases pass through to the
+    # loaded engine just like in ``create_anthropic_message`` above
+    # (PR #557 contract). A *present* non-string ``model`` (or empty
+    # string) is a client bug — if we silently dropped it the loaded
+    # engine's tokenizer would still produce a count and a cost
+    # estimator would treat it as authoritative (codex bundled review
+    # on the F-167 fix, follow-up to F-160).
+    if "model" in body:
+        requested_model = body["model"]
+        if requested_model is not None and not isinstance(requested_model, str):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": "`model` must be a string",
+                        "type": "invalid_request_error",
+                        "code": "invalid_request",
+                        "param": "model",
+                    }
+                },
+            )
+        if isinstance(requested_model, str) and requested_model == "":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": "`model` must not be empty",
+                        "type": "invalid_request_error",
+                        "code": "invalid_request",
+                        "param": "model",
+                    }
+                },
+            )
+        if (
+            isinstance(requested_model, str)
+            and requested_model
+            and not requested_model.startswith(("claude-", "gpt-"))
+        ):
+            _validate_model_name(requested_model)
 
     engine = get_engine()
     tokenizer = engine.tokenizer
