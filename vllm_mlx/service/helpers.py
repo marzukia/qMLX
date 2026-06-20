@@ -40,6 +40,31 @@ _FALLBACK_TEMPERATURE = 0.7
 _FALLBACK_TOP_P = 0.9
 
 
+# ── SSE response headers (F-070 / F-073) ───────────────────────────
+# Anti-buffering headers shared by every ``StreamingResponse`` that
+# yields ``text/event-stream`` chunks. Without them, an intermediate
+# nginx / Cloudflare / haproxy / Vercel-style reverse proxy will
+# buffer the entire SSE response and emit it as one blob at end of
+# generation, defeating streaming entirely. Both headers are
+# documented anti-buffering knobs:
+#
+#   - ``Cache-Control: no-cache, no-transform`` tells caches not to
+#     store the response AND tells transforming proxies (gzip, etc.)
+#     to leave the byte stream alone. Mirrors what OpenAI's API
+#     emits on its own SSE responses.
+#   - ``X-Accel-Buffering: no`` is the nginx-specific opt-out
+#     (consulted by ``ngx_http_proxy_module`` to disable
+#     ``proxy_buffering`` per-response). Cloudflare, Vercel, and
+#     several SaaS gateways also honour the same header.
+#
+# Use ``SSE_RESPONSE_HEADERS`` in every ``StreamingResponse(...)``
+# that returns ``media_type="text/event-stream"``.
+SSE_RESPONSE_HEADERS: dict[str, str] = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+}
+
+
 def _check_admission_or_503(engine) -> None:
     """Atomic admission gate for route handlers — reserves a slot.
 
@@ -1655,6 +1680,7 @@ async def _disconnect_guard(
     raw_request: Request,
     poll_interval: float = 0.5,
     engine=None,
+    keepalive_seconds: float | None = None,
 ) -> AsyncIterator[str]:
     """Wrap streaming generator to abort on client disconnect.
 
@@ -1665,6 +1691,18 @@ async def _disconnect_guard(
     generator raises). The release is the safety net for the
     streaming path; non-streaming routes mirror it via
     ``_wait_with_disconnect``.
+
+    SSE keepalive (F-070): when ``keepalive_seconds > 0`` (default
+    falls through to ``ServerConfig.sse_keepalive_seconds``), emit an
+    SSE comment line (``: keepalive\\n\\n``) whenever the upstream
+    generator stalls for that many seconds without producing a chunk.
+    SSE comments start with ``:`` per the WHATWG spec, are dropped by
+    every conforming consumer (``EventSource``, OpenAI SDK), and
+    serve as TCP-level heartbeats that prevent intermediate proxies
+    (nginx ``proxy_read_timeout=60``, Cloudflare 100 s, EventSource
+    ~45 s) from tearing down the connection during long prefills. Set
+    ``keepalive_seconds=0`` or ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0``
+    to disable.
     """
     import time as _time
 
@@ -1673,7 +1711,22 @@ async def _disconnect_guard(
     def _elapsed():
         return f"{_time.monotonic() - _t0:.1f}s"
 
-    logger.info(f"[disconnect_guard] START poll_interval={poll_interval}s")
+    # Resolve keepalive interval from the live ServerConfig at start
+    # time. Per-call ``keepalive_seconds`` argument wins (lets
+    # ``stream_chat_completion_guided`` and tests pin a value); else
+    # consult the config singleton. A non-positive value disables
+    # heartbeats entirely.
+    if keepalive_seconds is None:
+        try:
+            keepalive_seconds = float(get_config().sse_keepalive_seconds)
+        except Exception:
+            keepalive_seconds = 20.0
+    keepalive_enabled = keepalive_seconds and keepalive_seconds > 0
+
+    logger.info(
+        f"[disconnect_guard] START poll_interval={poll_interval}s "
+        f"keepalive_seconds={keepalive_seconds}"
+    )
 
     async def _wait_disconnect():
         poll_count = 0
@@ -1690,21 +1743,52 @@ async def _disconnect_guard(
                 return
 
     chunk_count = 0
+    keepalive_count = 0
     disconnect_task: asyncio.Task | None = None
     anext_task: asyncio.Task | None = None
     try:
         aiter = generator.__aiter__()
         disconnect_task = asyncio.create_task(_wait_disconnect())
+        # Single in-flight ``__anext__`` future at any time. We
+        # re-create it at the TOP of each iteration (NOT eagerly after
+        # ``yield chunk``) so each iteration begins with the consumer
+        # having pulled the previous chunk before we schedule the next
+        # one. Codex r3 BLOCKING on PR #732: eagerly scheduling the
+        # next anext_task right after ``yield`` lets the upstream
+        # generator advance one token ahead of the response stream,
+        # wasting inference work if the consumer is about to
+        # disconnect. Lazy re-creation keeps the generator at most one
+        # token ahead — and that token is the one whose yield we're
+        # already awaiting from the wait below.
+        #
+        # The ``anext_task`` reference is preserved across keepalive
+        # ticks: a keepalive cycle returns to the loop top without
+        # consuming the still-pending anext, so the upstream's work in
+        # flight (the long prefill) is not cancelled mid-step.
         while True:
-            anext_task = asyncio.ensure_future(aiter.__anext__())
-            done, _ = await asyncio.wait(
+            # Lazy (re)create the in-flight ``__anext__``:
+            #   * first iteration: ``anext_task`` is None.
+            #   * after a real chunk: ``anext_task.done()`` is True
+            #     (we consumed ``.result()`` last iteration), and now
+            #     the consumer has pulled the yielded chunk — safe to
+            #     ask the upstream for another token.
+            #   * during a keepalive cycle: ``anext_task.done()`` is
+            #     False (upstream still mid-prefill), so we keep the
+            #     existing future. The wait below ignores it.
+            if anext_task is None or anext_task.done():
+                anext_task = asyncio.ensure_future(aiter.__anext__())
+            wait_kwargs: dict = {"return_when": asyncio.FIRST_COMPLETED}
+            if keepalive_enabled:
+                wait_kwargs["timeout"] = keepalive_seconds
+            done, _pending = await asyncio.wait(
                 [anext_task, disconnect_task],
-                return_when=asyncio.FIRST_COMPLETED,
+                **wait_kwargs,
             )
             if disconnect_task in done:
                 logger.info(
                     f"[disconnect_guard] CLIENT DISCONNECTED after "
-                    f"{chunk_count} chunks, elapsed={_elapsed()}"
+                    f"{chunk_count} chunks ({keepalive_count} keepalives), "
+                    f"elapsed={_elapsed()}"
                 )
                 anext_task.cancel()
                 try:
@@ -1712,12 +1796,28 @@ async def _disconnect_guard(
                 except (asyncio.CancelledError, StopAsyncIteration):
                     pass
                 break
+            if anext_task not in done:
+                # Neither completed within ``keepalive_seconds``: the
+                # upstream generator is still working (e.g. mid-prefill
+                # on a 64k-token prompt). Emit an SSE comment line so
+                # the connection stays alive across proxies + browser
+                # EventSource. The comment is a no-op to the parsed
+                # event stream — F-070 fix.
+                keepalive_count += 1
+                if keepalive_count == 1 or keepalive_count % 5 == 0:
+                    logger.info(
+                        f"[disconnect_guard] emitting keepalive "
+                        f"#{keepalive_count}, elapsed={_elapsed()}"
+                    )
+                yield ": keepalive\n\n"
+                continue
             try:
                 chunk = anext_task.result()
             except StopAsyncIteration:
                 logger.info(
                     f"[disconnect_guard] generator exhausted normally, "
-                    f"{chunk_count} chunks, elapsed={_elapsed()}"
+                    f"{chunk_count} chunks ({keepalive_count} keepalives), "
+                    f"elapsed={_elapsed()}"
                 )
                 break
             except Exception as exc:
@@ -1762,10 +1862,22 @@ async def _disconnect_guard(
                     f"[disconnect_guard] first chunk arrived, elapsed={_elapsed()}"
                 )
             yield chunk
+            # Loop top will re-create the anext_task now that the
+            # consumer has pulled this chunk. Do NOT eagerly schedule
+            # the next ``__anext__`` here — see the docstring at loop
+            # entry for the rationale (codex r3 BLOCKING).
     except GeneratorExit:
         logger.info(
             f"[disconnect_guard] GeneratorExit after {chunk_count} chunks, elapsed={_elapsed()}"
         )
+        # Codex r3 BLOCKING follow-up: ensure any in-flight
+        # ``anext_task`` is cancelled the moment the consumer aborts
+        # the iteration — the ``finally`` block below also cancels,
+        # but doing it here makes the ordering explicit and avoids a
+        # tiny window where the upstream might advance one more token
+        # before the cleanup runs.
+        if anext_task is not None and not anext_task.done():
+            anext_task.cancel()
     finally:
         if disconnect_task and not disconnect_task.done():
             disconnect_task.cancel()
