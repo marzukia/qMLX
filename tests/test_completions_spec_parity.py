@@ -88,16 +88,25 @@ class TestN:
     """``n>1`` must 400 (mirroring the chat-completions route)."""
 
     def test_n_above_one_rejected_with_400(self, patched_config, monkeypatch):
+        # F-155: schema-layer validator now catches ``n != 1`` BEFORE
+        # the route layer's ``n > 1`` reject runs, so the test app
+        # (which does not install the production
+        # ``RequestValidationError`` handler that rewrites 422→400)
+        # surfaces the raw Pydantic 422 instead. The production server
+        # still emits 400 with the OpenAI-shaped envelope — this test
+        # pins the schema-layer contract; the envelope is covered by
+        # the live curl repro in the F-155 PR.
         client, _ = _build_completions_app(patched_config, monkeypatch)
         r = client.post(
             "/v1/completions",
             json={"model": "stub-model", "prompt": "hi", "n": 3},
         )
-        assert r.status_code == 400
-        detail = (r.json().get("error") or {}).get("message") or r.json().get(
-            "detail", ""
-        )
-        assert "n > 1" in detail or "n>1" in detail.replace(" ", "")
+        assert r.status_code == 422
+        detail = str(r.json())
+        # The new message names the rule ("n must equal 1") rather than
+        # the old "n > 1" wording, since the schema layer enforces a
+        # tighter equality contract that also covers ``n=0`` / ``n=-1``.
+        assert "must equal 1" in detail
 
     def test_n_one_is_accepted(self, patched_config, monkeypatch):
         """``n: 1`` is the OpenAI default — must not trip the new guard."""
@@ -303,9 +312,7 @@ class TestEchoLogprobsCombination:
     silently corrupt prompt-conditioned scores in lm-eval-harness).
     Reject with 400 until we wire prompt-prefill-with-logprobs."""
 
-    def test_echo_with_logprobs_rejected_with_400(
-        self, patched_config, monkeypatch
-    ):
+    def test_echo_with_logprobs_rejected_with_400(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(patched_config, monkeypatch)
         r = client.post(
             "/v1/completions",
@@ -322,9 +329,7 @@ class TestEchoLogprobsCombination:
         )
         assert "echo" in detail.lower() and "logprobs" in detail.lower()
 
-    def test_echo_with_logprobs_zero_still_rejected(
-        self, patched_config, monkeypatch
-    ):
+    def test_echo_with_logprobs_zero_still_rejected(self, patched_config, monkeypatch):
         """``logprobs:0`` is still a logprobs request — must reject too."""
         client, _ = _build_completions_app(patched_config, monkeypatch)
         r = client.post(
@@ -414,9 +419,7 @@ class TestLogprobsResponseShape:
         e.tokenizer = _Tokenizer()
         return e
 
-    def test_logprobs_five_returns_four_arrays(
-        self, patched_config, monkeypatch
-    ):
+    def test_logprobs_five_returns_four_arrays(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,
@@ -448,9 +451,7 @@ class TestLogprobsResponseShape:
         # synthetic vocab of size 5 in the fixture).
         assert all(len(d) == 5 for d in lp["top_logprobs"])
 
-    def test_logprobs_zero_returns_empty_top_dicts(
-        self, patched_config, monkeypatch
-    ):
+    def test_logprobs_zero_returns_empty_top_dicts(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,
@@ -509,9 +510,7 @@ class TestLogprobsEngineCapability:
         )
         assert "logprobs" in detail.lower()
 
-    def test_engine_without_tokenizer_returns_501(
-        self, patched_config, monkeypatch
-    ):
+    def test_engine_without_tokenizer_returns_501(self, patched_config, monkeypatch):
         def _factory():
             e = MagicMock()
             e.tokenizer = None
