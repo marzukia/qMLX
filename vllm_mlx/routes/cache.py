@@ -14,7 +14,9 @@ fill in with the engine-level save/load body. Stub behavior:
   the wire-level contract is exercised today.
 * ``GET /v1/cache/info`` — fully implemented: reads the manifest at a
   whitelisted path and returns it. Lets a peer instance (or oai-mlx) GC
-  / inspect an export root without round-tripping a full import.
+  / inspect an export root without round-tripping a full import. H-12:
+  response carries ``protocol_version`` + ``manifest`` only — the
+  resolved sandbox root stays in the server log, never on the wire.
 
 Auth follows ``vllm_mlx.routes.health``'s ``router``: the bearer key is
 enforced when ``--api-key`` is set, no new header is invented.
@@ -261,12 +263,35 @@ async def cache_info(path: str | None = None):
     Returns the manifest dict so callers (peer instances, oai-mlx, ops
     tooling) can GC / route / version-gate without paying a full import.
     Path resolution follows the same sandbox rules as export/import.
+
+    H-12: pre-fix this handler echoed the resolved sandbox root back to
+    the caller in a top-level ``"path"`` field. ``str(root)`` expands to
+    ``/Users/<USERNAME>/.cache/rapid-mlx/cache_exports/<sub>`` on macOS
+    — same operator home-dir / username disclosure that H-02 fixed on
+    the 403 envelope. Same treatment here: keep the resolved root in
+    the server log only, omit it from the wire envelope. Callers that
+    need to dedupe by location already have the request-side ``path``
+    they supplied.
     """
     root = _resolve_or_400(path)
     manifest = _read_manifest_or_http(root)
 
+    # Codex r1 follow-up: log at DEBUG (not INFO) so the resolved root
+    # only lands in operator logs when the operator explicitly opts in
+    # (RAPID_MLX_LOG_LEVEL=DEBUG or equivalent). Routine 200 traffic
+    # carries no path on the wire AND no path in the default log stream
+    # — but the breadcrumb is still there for ops who need to debug a
+    # peer-sync issue. Sibling concern: H-02's logger.warning on the
+    # 403 path is fine because that's an anomaly worth recording at
+    # default verbosity, whereas every successful info read shouldn't
+    # rewrite the sandbox path into the rolling log.
+    logger.debug(
+        "cache/info: resolved root=%s model_id=%s entries=%s",
+        root,
+        manifest.model_id,
+        manifest.entries,
+    )
     return {
-        "path": str(root),
         "protocol_version": PROTOCOL_VERSION,
         "manifest": manifest.to_dict(),
     }
