@@ -1897,12 +1897,176 @@ def _maybe_pin_system_prompt(messages: list) -> None:
 # ── Disconnect detection ───────────────────────────────────────────
 
 
+def _resolve_sync_scheduler_for_abort(engine):
+    """C-01 codex r1 BLOCKING #2 helper: find the SYNC scheduler-side
+    ``abort_request`` entry point for the **currently active**
+    backend.
+
+    The codex reviewer pointed out that ``engine.abort_request`` may
+    be a coroutine (``BatchedEngine.abort_request`` when the LLM path
+    is loaded, because ``AsyncEngineCore.abort_request`` is async).
+    Fire-and-forget via ``asyncio.ensure_future`` doesn't actually
+    free the GPU on the next ``step()`` — the coroutine has to run
+    to reach ``scheduler.abort_request`` (which IS sync). So we walk
+    the engine's backend graph to find that sync entry point
+    directly.
+
+    codex r2 BLOCKING #1: the walk MUST respect the engine's active
+    path. ``BatchedEngine`` declares BOTH ``_engine`` (AsyncEngineCore
+    for the text path) AND ``_mllm_scheduler`` (MLLM path) as
+    instance attributes. They start at ``None`` and get populated by
+    ``start()`` based on the model's modality — but only ONE is the
+    active backend the live ``request_id`` was admitted into. Calling
+    ``_mllm_scheduler.abort_request(rid)`` on a request that lives in
+    ``_engine.scheduler`` would enqueue the abort into the wrong
+    pending set and leave the real request running. The
+    ``_is_mllm`` flag is the canonical active-path signal — same
+    predicate ``stream_generate`` uses to pick which backend to call
+    in the first place.
+
+    Resolution order:
+
+      * ``engine.scheduler``                          — plain engines
+                                                       exposing the
+                                                       scheduler
+                                                       directly (eg.
+                                                       AsyncEngineCore
+                                                       passed in
+                                                       unwrapped).
+      * MLLM-active: ``engine._mllm_scheduler``       — only when
+                                                       ``engine._is_mllm``
+                                                       is True.
+      * text-active: ``engine._engine.scheduler``     — only when
+                                                       ``engine._is_mllm``
+                                                       is False (or
+                                                       absent).
+
+    Returns the first callable found, or ``None`` when none of the
+    paths resolve (caller falls back to the public async
+    ``engine.abort_request`` as a last resort with documented
+    fire-and-forget semantics).
+    """
+    # Plain engines that expose .scheduler directly (no active-path
+    # ambiguity). Includes AsyncEngineCore and the fake engines used
+    # in tests.
+    direct_scheduler = getattr(engine, "scheduler", None)
+    if direct_scheduler is not None:
+        abort = getattr(direct_scheduler, "abort_request", None)
+        if abort is not None and not asyncio.iscoroutinefunction(abort):
+            return abort
+    # BatchedEngine and similar wrappers — gate on the active path.
+    # Default to text-active (``_is_mllm = False``) when the flag is
+    # missing so older engine shapes still resolve sanely.
+    is_mllm_active = bool(getattr(engine, "_is_mllm", False))
+    if is_mllm_active:
+        mllm = getattr(engine, "_mllm_scheduler", None)
+        if mllm is not None:
+            abort = getattr(mllm, "abort_request", None)
+            if abort is not None and not asyncio.iscoroutinefunction(abort):
+                return abort
+    else:
+        inner = getattr(engine, "_engine", None)
+        if inner is not None:
+            inner_sched = getattr(inner, "scheduler", None)
+            if inner_sched is not None:
+                abort = getattr(inner_sched, "abort_request", None)
+                if abort is not None and not asyncio.iscoroutinefunction(abort):
+                    return abort
+    return None
+
+
+def _force_abort_request(engine, request_id_holder) -> bool:
+    """C-01: synchronously enqueue an abort for the live request id.
+
+    Looks up ``request_id_holder[0]`` (populated by
+    ``BatchedEngine.stream_generate`` once ``add_request`` returns)
+    and invokes the loaded backend's SYNC
+    ``scheduler.abort_request(rid)`` — a thread-safe, non-blocking
+    ``set.add`` per ``Scheduler.abort_request`` docstring. The
+    sync-path resolver (``_resolve_sync_scheduler_for_abort``) walks
+    ``engine.scheduler`` first, then the active-backend branch on
+    ``BatchedEngine`` (gated by ``engine._is_mllm`` per codex r2
+    BLOCKING #1): MLLM → ``engine._mllm_scheduler``, text →
+    ``engine._engine.scheduler``.
+
+    Falls back to ``engine.abort_request(rid)`` (the public engine
+    surface — may be async on engines that haven't been refactored)
+    only when no sync path exists. In that case the async coroutine
+    is scheduled with ``asyncio.ensure_future`` so the caller stays
+    synchronous, and we log a warning so operators can see that the
+    abort is NOT guaranteed to be in flight by the time the
+    disconnect path returns (codex r1 BLOCKING #2). The cascade via
+    ``generator.aclose()`` remains as the safety net for that case.
+
+    Returns ``True`` when a sync abort was issued (force-abort
+    contract satisfied), ``False`` for the no-op cases (holder unset,
+    engine missing, no request id yet) AND for the
+    async-fallback-only case where the abort was scheduled but
+    didn't reach the scheduler synchronously. Never raises — log on
+    the warning channel and swallow so disconnect handling never
+    derails on an engine-side error.
+    """
+    if request_id_holder is None or engine is None:
+        return False
+    try:
+        request_id = request_id_holder[0]
+    except (IndexError, TypeError):
+        return False
+    if not request_id:
+        return False
+    try:
+        sync_abort = _resolve_sync_scheduler_for_abort(engine)
+        if sync_abort is not None:
+            result = sync_abort(request_id)
+            logger.info(
+                f"[disconnect_guard] force-abort scheduler.abort_request("
+                f"{str(request_id)[:12]}) -> {result}"
+            )
+            return True
+        # No sync path resolved — the engine is wrapping its scheduler
+        # behind an async-only ``abort_request``. Best-effort fire-and-
+        # forget; return ``False`` so the contract reflects that the
+        # abort did NOT land synchronously and the cascade through
+        # ``generator.aclose()`` is the operative defense (codex r1
+        # BLOCKING #2). Tests that pin the "force-abort fired sync"
+        # contract should fail loudly on this fallback path.
+        public_abort = getattr(engine, "abort_request", None)
+        if public_abort is not None:
+            result = public_abort(request_id)
+            if asyncio.iscoroutine(result):
+                asyncio.ensure_future(result)
+                logger.warning(
+                    f"[disconnect_guard] force-abort fell back to async "
+                    f"engine.abort_request({str(request_id)[:12]}); the "
+                    f"scheduler abort is NOT guaranteed in flight by the "
+                    f"time disconnect handling returns. The "
+                    f"generator-close cascade is the remaining defense."
+                )
+                # ``False`` so the contract reflects async-fallback;
+                # callers / tests treat that as "I tried, cascade is
+                # the remaining defense".
+                return False
+            logger.info(
+                f"[disconnect_guard] force-abort engine.abort_request("
+                f"{str(request_id)[:12]}) -> {result}"
+            )
+            return True
+    except Exception:
+        logger.warning(
+            "[disconnect_guard] force-abort raised; falling back to "
+            "generator-close cascade",
+            exc_info=True,
+        )
+    return False
+
+
 async def _disconnect_guard(
     generator: AsyncIterator[str],
     raw_request: Request,
     poll_interval: float = 0.5,
     engine=None,
     keepalive_seconds: float | None = None,
+    request_id_holder: list | None = None,
 ) -> AsyncIterator[str]:
     """Wrap streaming generator to abort on client disconnect.
 
@@ -1925,6 +2089,25 @@ async def _disconnect_guard(
     ~45 s) from tearing down the connection during long prefills. Set
     ``keepalive_seconds=0`` or ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0``
     to disable.
+
+    C-01 force-abort (Astrid r3 dogfooding): when
+    ``request_id_holder`` is a mutable list AND the engine publishes
+    the admitted scheduler ``request_id`` into ``holder[0]``, the
+    guard force-calls ``engine.scheduler.abort_request(holder[0])`` (or
+    ``engine.abort_request(holder[0])`` as a thread-safe alternative)
+    the moment a client disconnect is detected. Pre-C-01 the abort
+    relied entirely on the generator-close cascade
+    (``generator.aclose()`` in the ``finally`` → ``GeneratorExit``
+    propagates upstream → ``stream_generate.finally`` calls
+    ``scheduler.abort_request``). That cascade still runs as a
+    belt-and-suspenders, but the EXPLICIT abort here closes Astrid's
+    failure mode where a runaway no-EOS generation kept consuming GPU
+    for >35 s after the client TCP-RST'd because nothing on the path
+    actually reached into the scheduler with an abort signal until
+    the generation hit its token cap. ``holder=None`` (default)
+    preserves the pre-C-01 contract for non-streaming callers and for
+    cloud-routed streams that don't have a local scheduler request
+    id.
     """
     import time as _time
 
@@ -1968,6 +2151,13 @@ async def _disconnect_guard(
     keepalive_count = 0
     disconnect_task: asyncio.Task | None = None
     anext_task: asyncio.Task | None = None
+    # C-01 codex r1 NIT #3: track whether we got to a clean
+    # ``StopAsyncIteration`` exhaust (normal stream end). When True,
+    # the ``finally`` block skips the belt-and-suspenders force-abort —
+    # otherwise every successful response would enqueue a spurious
+    # abort against an already-finished request id, making the abort
+    # logs/metrics indistinguishable from real disconnect cleanup.
+    finished_normally = False
     try:
         aiter = generator.__aiter__()
         disconnect_task = asyncio.create_task(_wait_disconnect())
@@ -2012,6 +2202,24 @@ async def _disconnect_guard(
                     f"{chunk_count} chunks ({keepalive_count} keepalives), "
                     f"elapsed={_elapsed()}"
                 )
+                # C-01 force-abort: call into the scheduler directly
+                # the moment the disconnect signal fires, BEFORE we
+                # cancel the in-flight ``anext_task`` and close the
+                # upstream generator. Pre-C-01 the abort relied solely
+                # on the close cascade kicking ``stream_generate.finally``
+                # → ``scheduler.abort_request``; Astrid r3 showed that
+                # path can stall for ~35s under a runaway no-EOS
+                # generation because the cancellation of ``anext_task``
+                # only interrupts the in-flight ``__anext__``, while
+                # the upstream batch step continues to chew GPU until
+                # the next yield boundary. Hitting the scheduler's
+                # ``_pending_abort_ids`` set NOW means the very next
+                # ``step()`` drops the request and frees the slot. This
+                # is purely defense in depth — the cascade still runs
+                # via ``generator.aclose()`` in ``finally`` and
+                # ``scheduler.abort_request`` is idempotent against
+                # double-enqueue.
+                _force_abort_request(engine, request_id_holder)
                 anext_task.cancel()
                 try:
                     await anext_task
@@ -2041,6 +2249,12 @@ async def _disconnect_guard(
                     f"{chunk_count} chunks ({keepalive_count} keepalives), "
                     f"elapsed={_elapsed()}"
                 )
+                # C-01 codex r1 NIT #3: mark the clean-exit case so
+                # ``finally`` skips the force-abort. The upstream
+                # generator already drained, the scheduler already
+                # marked the request as finished — a defensive abort
+                # here would only pollute logs.
+                finished_normally = True
                 break
             except Exception as exc:
                 logger.error(
@@ -2100,15 +2314,46 @@ async def _disconnect_guard(
         # before the cleanup runs.
         if anext_task is not None and not anext_task.done():
             anext_task.cancel()
+        # C-01: GeneratorExit means the consumer (Starlette's
+        # ``StreamingResponse`` task) is tearing down — usually
+        # because uvicorn detected a write failure to the closed
+        # socket. Force-abort the scheduler request before we close
+        # the generator so the upstream doesn't get one more
+        # token-worth of GPU work between here and the cascade.
+        _force_abort_request(engine, request_id_holder)
     finally:
         if disconnect_task and not disconnect_task.done():
             disconnect_task.cancel()
         if anext_task and not anext_task.done():
             anext_task.cancel()
+        # Drive the cascade first: ``generator.aclose()`` propagates
+        # ``GeneratorExit`` into the upstream so its ``finally`` runs
+        # (calls ``stream_generate.finally`` → ``scheduler.abort_request``).
+        # Then the belt-and-suspenders below covers the case where the
+        # cascade itself raised or the upstream's finally didn't reach
+        # the abort. Ordering ``aclose()`` before the belt-and-
+        # suspenders also gives the test layer a clean observable
+        # discriminator between the ``except GeneratorExit`` branch
+        # (which runs BEFORE the cascade) and this finally fallback
+        # (which runs AFTER the cascade).
         try:
             await generator.aclose()
         except Exception:
             pass
+        # C-01 belt-and-suspenders: cover the abnormal-exit paths the
+        # explicit ``if disconnect_task in done`` and ``except
+        # GeneratorExit`` branches don't see — e.g. an exception
+        # raised mid-stream that escaped the ``except Exception`` inline
+        # handler. Codex r1 NIT #3 fix: skip when the stream
+        # exhausted cleanly via ``StopAsyncIteration`` — the upstream
+        # generator already finished and the scheduler already marked
+        # the request finished, so a defensive abort here would just
+        # pollute logs without freeing any GPU work. The
+        # ``Scheduler.abort_request`` idempotency contract still
+        # protects against the case where this fires concurrently
+        # with the cascade.
+        if not finished_normally:
+            _force_abort_request(engine, request_id_holder)
         if engine is not None:
             release = getattr(engine, "release_admission_reservation", None)
             if release is not None:
