@@ -1231,20 +1231,77 @@ class BatchedEngine(BaseEngine):
             requires_prompt_integrity=requires_prompt_integrity,
         )
 
-        async for output in self._engine.stream_outputs(request_id):
-            text = clean_output_text(output.output_text)
+        # F-012 belt-and-suspenders: ``stream_outputs.finally`` already
+        # aborts on any abnormal exit AFTER it enters its ``try`` block.
+        # But there is a narrow window between ``add_request`` returning
+        # (request is in the scheduler) and ``stream_outputs.try``
+        # actually starting (the implicit ``await __anext__`` on the
+        # async generator) where a propagated ``GeneratorExit`` /
+        # ``CancelledError`` would skip the inner ``finally`` entirely,
+        # leaving the request alive in the scheduler with no consumer.
+        # The window is one implicit ``await`` deep but real under
+        # storm conditions — cancellations triggered by the
+        # ``StreamingResponse`` task group can land between the two
+        # yields here. The outer ``try/finally`` below ensures we
+        # ALWAYS abort once ``add_request`` has succeeded, no matter
+        # how this generator unwinds. The deferred-abort scheduler
+        # path (``_pending_abort_ids`` set processed by the next
+        # ``step()``) is idempotent, so the common case where
+        # ``stream_outputs.finally`` also aborts cannot corrupt
+        # anything — the second abort just no-ops on a request that
+        # was already finished.
+        try:
+            async for output in self._engine.stream_outputs(request_id):
+                text = clean_output_text(output.output_text)
 
-            yield GenerationOutput(
-                text=text,
-                new_text=output.new_text,
-                tokens=output.new_token_ids,
-                prompt_tokens=output.prompt_tokens,
-                completion_tokens=output.completion_tokens,
-                finished=output.finished,
-                finish_reason=output.finish_reason,
-                logprobs=output.logprobs,
-                cached_tokens=output.cached_tokens,
-            )
+                yield GenerationOutput(
+                    text=text,
+                    new_text=output.new_text,
+                    tokens=output.new_token_ids,
+                    prompt_tokens=output.prompt_tokens,
+                    completion_tokens=output.completion_tokens,
+                    finished=output.finished,
+                    finish_reason=output.finish_reason,
+                    logprobs=output.logprobs,
+                    cached_tokens=output.cached_tokens,
+                )
+        finally:
+            # Best-effort defensive abort. Codex r2 P1 #2 concern: this
+            # runs on the asyncio event-loop thread (we're inside an
+            # async generator's finally), while scheduler.add_request
+            # is dispatched through the MLX executor. The thread-safety
+            # contract that makes this safe is documented on
+            # ``Scheduler.abort_request`` itself ("Queue request for
+            # abort. Thread-safe, called from any thread. The actual
+            # abort is deferred to the executor thread (inside step())
+            # to avoid race conditions with in-flight Metal GPU
+            # operations.") — it is a one-line ``set.add`` + log, NOT
+            # the executor-thread ``_do_abort_request`` which the
+            # scheduler's own ``_process_pending_aborts`` will run on
+            # the next ``step()``. So the event loop is never blocked
+            # here, and the executor-thread invariant is preserved.
+            # ``_cleanup_request`` is also non-blocking — just dict
+            # pops + a ``scheduler.remove_finished_request`` ``pop``.
+            #
+            # Idempotent against double-abort from
+            # ``stream_outputs.finally``: adds the same id to
+            # ``_pending_abort_ids`` twice, and ``_do_abort_request``
+            # is itself idempotent for the already-finished case.
+            try:
+                eng = self._engine
+                if eng is not None and hasattr(eng, "scheduler"):
+                    # Thread-safe non-blocking enqueue — see
+                    # docstring on ``Scheduler.abort_request``.
+                    eng.scheduler.abort_request(request_id)
+                if eng is not None and hasattr(eng, "_cleanup_request"):
+                    # Non-blocking dict pops + idempotent.
+                    eng._cleanup_request(request_id)
+            except Exception:
+                logger.debug(
+                    "[stream_generate] best-effort cleanup raised for %s",
+                    request_id,
+                    exc_info=True,
+                )
 
     async def chat(
         self,
