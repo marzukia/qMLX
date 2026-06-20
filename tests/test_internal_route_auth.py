@@ -33,19 +33,11 @@ from fastapi.testclient import TestClient
 # Routes that MUST require ``X-Rapid-MLX-Internal: true``. Parametrize over all
 # of them so a future addition to ``admin_router`` only needs an entry here to
 # get full unauth/auth/leak coverage.
-#
-# F-180: ``/v1/cache/{export,import,info}`` were originally on the
-# unauth-when-no-api-key ``cache`` router. They are now gated by the same
-# ``verify_internal_admin`` dep — pin that here so a future refactor splitting
-# the cache router doesn't silently drop the gate again.
 _DESTRUCTIVE_ROUTES = [
     ("POST", "/v1/cache/clear"),
     ("POST", "/v1/requests/some-request-id/cancel"),
     ("DELETE", "/v1/requests/some-request-id"),
     ("DELETE", "/v1/cache"),
-    ("POST", "/v1/cache/export"),
-    ("POST", "/v1/cache/import"),
-    ("GET", "/v1/cache/info"),
 ]
 
 
@@ -59,7 +51,6 @@ def client_factory():
     503-check guard in the route handlers.
     """
     from vllm_mlx.config import get_config
-    from vllm_mlx.routes.cache import router as cache_router
     from vllm_mlx.routes.health import admin_router, router
 
     cfg = get_config()
@@ -96,10 +87,6 @@ def client_factory():
         app = FastAPI()
         app.include_router(router)
         app.include_router(admin_router)
-        # F-180: ``cache_router`` carries the three sibling cache routes
-        # (export/import/info) that PR #728 missed. Mount it here so the
-        # _DESTRUCTIVE_ROUTES parametrize matrix can pin their auth shape.
-        app.include_router(cache_router)
         # ``TestClient(app, client=(host, port))`` injects the supplied
         # tuple into ``scope["client"]`` so ``request.client.host`` reads
         # back as ``host``. The default ``("testclient", 50000)`` is NOT
@@ -463,61 +450,69 @@ def test_cancel_500_error_path_does_not_leak_exception_detail(client_factory):
 
 
 # ---------------------------------------------------------------------------
-# F-180 specific: cache export/import 501 envelope must not leak operator-
-# controlled disk paths or GitHub tracking URLs.
+# Cache export/import 501 envelope sanitization (kept from #737 after the
+# revert moved these routes off ``verify_internal_admin`` per operator intent
+# — single-machine UX, no API key gate). The 501 stubs are reachable to
+# anyone with a valid api-key (or anyone at all when ``--api-key`` is unset),
+# so the envelope still has to be path-free or we'd hand operator home-dir
+# strings to LAN callers — closing codex r2 #2 (test coverage gap) + r2 #3
+# (exact-envelope shape assertion, not just message + type).
 # ---------------------------------------------------------------------------
 
 
+_EXPECTED_NOT_IMPLEMENTED_ENVELOPE = {
+    "error": {
+        "message": "engine integration pending",
+        "type": "not_implemented_error",
+        "code": None,
+    }
+}
+
+
 def test_cache_export_501_envelope_does_not_leak_operator_path(client_factory):
-    """F-180: pre-fix, ``POST /v1/cache/export`` 501-stubbed back the resolved
-    sandbox destination — which expands to ``/Users/<USERNAME>/.cache/rapid-mlx/
-    cache_exports`` and leaks the operator's home dir / username. The fix
-    sanitizes the envelope to a minimal ``{"error": {...}}`` shape; the
-    resolved path stays in server logs only.
-    """
+    """``POST /v1/cache/export`` 501 stub must not echo the resolved sandbox
+    destination — that expands to ``/Users/<USERNAME>/.cache/rapid-mlx/
+    cache_exports`` and leaks operator home dir / username to any
+    bearer-token holder. After the #756 partial revert the route runs on
+    plain ``verify_api_key``, so this leak shape matters even more when
+    ``--api-key`` is unset."""
+    from vllm_mlx.routes.cache import router as cache_router
+
     build, _ = client_factory
     client = build(api_key=None)
+    client.app.include_router(cache_router)
 
-    r = client.post(
-        "/v1/cache/export",
-        headers={"X-Rapid-MLX-Internal": "true"},
-        json={},
-    )
+    r = client.post("/v1/cache/export", json={})
     assert r.status_code == 501, r.text
     body = r.json()
     # No resolved-path-shaped strings in the body.
-    assert "/Users/" not in r.text
-    assert ".cache" not in r.text
-    assert "rapid-mlx" not in r.text
-    assert "cache_exports" not in r.text
-    # No tracking-URL leak either (per test-loop8 finding).
-    assert "github.com" not in r.text
-    assert "issues/" not in r.text
-    # Minimal envelope shape.
-    detail = body.get("detail")
-    assert isinstance(detail, dict) and "error" in detail, body
+    for needle in ("/Users/", ".cache", "rapid-mlx", "cache_exports"):
+        assert needle not in r.text, f"{needle!r} leaked into 501 body: {r.text!r}"
+    # No tracking-URL leak either.
+    for needle in ("github.com", "issues/"):
+        assert needle not in r.text, f"{needle!r} leaked into 501 body: {r.text!r}"
+    # Exact-envelope shape — codex r2 #3: any future code path that adds
+    # an extra key (resolved path, manifest excerpt, issue URL) trips
+    # this rather than slipping through a soft string-denylist.
+    assert body.get("detail") == _EXPECTED_NOT_IMPLEMENTED_ENVELOPE, body
 
 
 def test_cache_import_501_envelope_does_not_leak_operator_path(
     client_factory, tmp_path, monkeypatch
 ):
-    """F-180: same shape check for ``POST /v1/cache/import``. We point the
-    sandbox env at a tmp dir so we can hand-craft a manifest the route accepts,
-    then assert the resulting 501 body is path-free.
-    """
-    # Point the export sandbox at tmp_path so the resolved source / manifest
-    # path is under the test rig, not the operator's home dir.
+    """Same shape check for ``POST /v1/cache/import``. Point the sandbox at
+    a tmp dir, hand-craft a valid manifest so the route gets past validation
+    into the 501 stub, then assert the body is path-free + manifest-free."""
     monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(tmp_path))
 
-    # Hand-craft a valid manifest.json so import gets past the validation
-    # branches and into the 501 stub.
     import json
 
     from vllm_mlx.cache.protocol import PROTOCOL_VERSION
+    from vllm_mlx.routes.cache import router as cache_router
 
     manifest = {
         "protocol_version": PROTOCOL_VERSION,
-        "model_id": "test-model",
+        "model_id": "secret-org-model-12b-8bit",
         "entries": 0,
         "total_bytes": 0,
         "created_at": "2026-06-20T00:00:00Z",
@@ -526,21 +521,23 @@ def test_cache_import_501_envelope_does_not_leak_operator_path(
 
     build, _ = client_factory
     client = build(api_key=None)
+    client.app.include_router(cache_router)
 
-    r = client.post(
-        "/v1/cache/import",
-        headers={"X-Rapid-MLX-Internal": "true"},
-        json={"source": str(tmp_path)},
-    )
+    r = client.post("/v1/cache/import", json={"source": str(tmp_path)})
     assert r.status_code == 501, r.text
     body = r.json()
-    # No resolved-path-shaped strings.
-    assert str(tmp_path) not in r.text
-    assert "/Users/" not in r.text
-    assert "cache_exports" not in r.text
-    # No tracking-URL leak.
-    assert "github.com" not in r.text
-    assert "issues/" not in r.text
-    # Minimal envelope shape.
-    detail = body.get("detail")
-    assert isinstance(detail, dict) and "error" in detail, body
+    # Codex r3 #2: the resolved source path is the most direct leak the
+    # 501 stub could surface — assert the literal ``str(tmp_path)`` is
+    # absent before falling back to the substring sweep. Without this
+    # check, a body echoing the validated source under e.g. ``/tmp/...``
+    # would slip past the "/Users/" / ".cache" / "cache_exports" denylist.
+    assert str(tmp_path) not in r.text, (
+        f"resolved source path {str(tmp_path)!r} leaked into 501 body: {r.text!r}"
+    )
+    # Defense-in-depth: also sweep the well-known operator-path fragments.
+    for needle in ("/Users/", ".cache", "cache_exports"):
+        assert needle not in r.text, f"{needle!r} leaked into 501 body: {r.text!r}"
+    # No manifest contents leaked (model_id is a recognizable canary).
+    assert "secret-org-model" not in r.text
+    # Exact-envelope shape.
+    assert body.get("detail") == _EXPECTED_NOT_IMPLEMENTED_ENVELOPE, body

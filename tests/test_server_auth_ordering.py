@@ -213,15 +213,16 @@ def _route_paths_with_auth(router):
     family — currently:
 
     * ``verify_api_key`` — OpenAI-style bearer-token gate used by
-      chat/completions/embeddings/audio/health/mcp/models/responses.
+      chat/completions/embeddings/audio/cache/health/mcp/models/responses.
     * ``verify_api_key_or_x_api_key`` — same gate, additionally
       accepting Anthropic-native ``x-api-key`` header. Used by the
       ``/v1/messages*`` routes that mirror Anthropic's API shape.
     * ``verify_internal_admin`` (F-180) — strictly stronger than
       ``verify_api_key``: requires ``X-Rapid-MLX-Internal: true`` AND
-      either a valid api-key or a loopback caller. Used by the cache
-      router (export/import/info) and the health admin router (cache
-      clear, request cancel).
+      either a valid api-key or a loopback caller. Still used by the
+      health admin router (cache clear, request cancel from #728) —
+      the cache router moves to plain ``verify_api_key`` per user-intent
+      revert (#756) but other admin routes keep this gate.
 
     All gates run BEFORE the route handler executes; each is
     structurally equivalent for the bind→auth ordering invariant.
@@ -235,6 +236,8 @@ def _route_paths_with_auth(router):
     }
     # F-180: ``verify_internal_admin`` is a strictly-stronger gate than
     # ``verify_api_key`` — accept it under the same ordering invariant.
+    # Kept in the detector even though #756 moves the cache router off it,
+    # because the health admin router still gates cache-clear / cancel.
     if hasattr(auth_mod, "verify_internal_admin"):
         auth_funcs.add(auth_mod.verify_internal_admin)
     for r in router.routes:
