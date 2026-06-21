@@ -13,6 +13,7 @@ The scheduler follows vLLM's design with:
 
 import logging
 import os
+import threading
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -1865,6 +1866,44 @@ class Scheduler:
         # Thread-safe set for deferred aborts (main thread → executor thread)
         # CPython GIL guarantees set.add() and `x in set` are atomic.
         self._pending_abort_ids: set[str] = set()
+        # M-01 codex r2 BLOCKING #1: lifetime de-dup set for the
+        # cancellation counter. ``_pending_abort_ids`` is the wrong
+        # ledger to dedupe against — it's a DEFERRED-ABORT QUEUE that
+        # gets drained on every step via ``_process_pending_aborts``.
+        # Once drained, a later ``abort_request(rid)`` for a request
+        # that's still resident (e.g. a sequence of cancel attempts
+        # while the request lives in ``running``, or request_id reuse
+        # across distinct lifetimes) would see ``already_pending=False``
+        # again and double-count. ``_cancelled_request_ids`` is a
+        # lifetime ledger — every id that has ever advanced the
+        # counter stays in it for the process lifetime. Memory is
+        # bounded by the cancel traffic (one ~36-byte uuid per cancel),
+        # which is the same scale as ``finished_req_ids`` and not a
+        # concern. The set is wiped only on ``reset()`` (matches the
+        # _pending_abort_ids treatment there).
+        self._cancelled_request_ids: set[str] = set()
+        # M-01: once-per-request guard for the disconnect-cause
+        # sub-counter. ``_force_abort_request`` calls
+        # ``record_disconnect_abort`` from BOTH the disconnect branch
+        # AND the GeneratorExit branch AND the finally belt-and-
+        # suspenders; without this de-dup the sub-counter would over-
+        # count by up to 3x per disconnect. Lifetime ledger like
+        # ``_cancelled_request_ids`` above — never drained between
+        # cancels.
+        self._disconnect_abort_ids: set[str] = set()
+        # M-01 codex r1 BLOCKING #2/#3: serialize the cancellation-
+        # counter mutations against the dedupe-set membership checks.
+        # ``set.add`` and ``x in set`` are individually GIL-atomic,
+        # but the check-add-increment sequence is NOT — two threads
+        # calling ``abort_request(rid)`` concurrently can both observe
+        # ``already_counted=False`` and double-count the same request.
+        # The disconnect_guard fires from up to three branches per
+        # disconnect (potentially on different async tasks) and the
+        # explicit cancel route can race with engine_core's own
+        # cleanup-abort enqueue — both real concurrency surfaces. The
+        # lock cost is negligible (microseconds per abort), well below
+        # the existing per-step Metal latency.
+        self._cancel_counter_lock = threading.Lock()
 
         # Statistics
         self.num_requests_processed = 0
@@ -1881,6 +1920,22 @@ class Scheduler:
         # stays flat. Observability only — bypass semantics unchanged.
         self.pflash_bypass_count = 0
         self.pflash_compressed_tokens_dropped = 0
+        # Cancellation observability (M-01). ``num_requests_processed``
+        # deliberately excludes aborted requests, so operators staring at
+        # ``rapid_mlx_requests_processed_total = 0`` after fifty bailed-
+        # out clients can't tell whether the route is broken, the model
+        # is idle, or every caller is disconnecting before EOS. The total
+        # counter increments inside ``abort_request`` the moment a
+        # newly-known request_id transitions into the pending-abort set
+        # (idempotent re-enqueues do NOT double-count), so it reflects
+        # accepted public-API aborts irrespective of cause. The disconnect
+        # sub-counter is bumped separately by ``_force_abort_request`` in
+        # the disconnect-guard path via ``record_disconnect_abort`` so
+        # the (total - disconnect) gap surfaces explicit-cancel-route +
+        # timeout traffic. Both observability only — abort semantics are
+        # untouched.
+        self.num_requests_cancelled = 0
+        self.num_requests_cancelled_via_disconnect = 0
 
         # Memory management: periodic mx.clear_cache() to free Metal command buffers
         # Lower interval = less VRAM spike during generation but slight throughput cost
@@ -3075,19 +3130,100 @@ class Scheduler:
         # True so a double-cancel doesn't 404 the second caller). We do NOT
         # treat ``finished_req_ids`` as "known" because the abort would be
         # a no-op and the route contract is "404 when already finished".
-        if (
-            request_id in self.requests
-            or request_id in self.request_id_to_uid
-            or request_id in self.running
-            or request_id in self._pending_abort_ids
-        ):
+        # M-01 codex r1 BLOCKING #2 + r2 BLOCKING #1 + r6 BLOCKING #1:
+        # the membership check AND the check-add-increment sequence
+        # MUST be atomic together — checking ``request_id in
+        # self.requests`` outside the lock leaves a window where
+        # ``remove_finished_request`` can race in, pop ``self.requests``,
+        # clear the dedupe ledger, and let THIS path then re-add the id
+        # to ``_pending_abort_ids`` and increment ``num_requests_cancelled``
+        # for an already-removed request lifetime. By re-validating
+        # membership INSIDE the lock against the same maps
+        # ``remove_finished_request`` mutates (``self.requests``) and
+        # the abort-state maps (``request_id_to_uid`` / ``running`` /
+        # ``_pending_abort_ids``), we guarantee:
+        #   * any abort that passes the inside-lock predicate has a
+        #     live referent that can't be popped concurrently;
+        #   * the dedupe-ledger check + add + counter increment
+        #     remain serialized across all callers.
+        # The lock cost is negligible (microseconds per abort).
+        with self._cancel_counter_lock:
+            if not (
+                request_id in self.requests
+                or request_id in self.request_id_to_uid
+                or request_id in self.running
+                or request_id in self._pending_abort_ids
+            ):
+                logger.info(
+                    "[abort_request] unknown request_id (rejected without enqueue)"
+                )
+                return False
+            already_counted = request_id in self._cancelled_request_ids
+            self._cancelled_request_ids.add(request_id)
             self._pending_abort_ids.add(request_id)
-            logger.info(
-                f"[abort_request] {request_id[:12]} enqueued for deferred abort"
-            )
-            return True
-        logger.info("[abort_request] unknown request_id (rejected without enqueue)")
-        return False
+            if not already_counted:
+                self.num_requests_cancelled += 1
+        logger.info(f"[abort_request] {request_id[:12]} enqueued for deferred abort")
+        return True
+
+    def record_disconnect_abort(self, request_id: str) -> None:
+        """M-01: attribute a previously-accepted abort to client disconnect.
+
+        Called by ``_force_abort_request`` (service/helpers.py) AFTER
+        the sync ``abort_request`` returned True (or the async fallback
+        scheduled the abort), so the total counter was already bumped
+        exactly once on the public entry-point. The ``request_id`` is
+        recorded into the dedicated ``_disconnect_abort_ids`` set so
+        concurrent disconnect-guard + finally belt-and-suspenders
+        paths (both fire the helper) only attribute once per request
+        — matching the once-per-request semantics of the total
+        counter.
+
+        Codex r1 BLOCKING #3: the check-add-increment sequence is
+        serialized against the same ``_cancel_counter_lock`` that
+        guards the total counter, because the disconnect_guard fires
+        from up to three branches per disconnect across potentially
+        different async tasks. Without the lock two threads could
+        both observe ``request_id not in _disconnect_abort_ids`` and
+        double-count the sub-counter. The lock cost is microseconds
+        per call, negligible against the existing disconnect-path
+        latency.
+
+        Codex r7 NIT #3: validate against ``_cancelled_request_ids``
+        BEFORE incrementing so a future caller (or a bug) that
+        records a disconnect for an id the scheduler never accepted
+        as a cancel cannot push the ``via_disconnect`` sub-counter
+        above the total. The contract is now "disconnect
+        attribution is only valid for ids the scheduler ALSO
+        accepted via ``abort_request``"; ids not in the lifetime
+        ledger silently no-op. This guarantees the dashboard
+        invariant ``via_disconnect_total <= cancelled_total`` holds
+        even on programmer error in callers that record without
+        first hitting the public abort path.
+
+        Safe to call from any thread, never raises. Empty / None ids
+        are no-ops.
+        """
+        try:
+            if not request_id:
+                return
+            with self._cancel_counter_lock:
+                # Codex r7 NIT #3: gate on the lifetime ledger so
+                # ``via_disconnect_total <= cancelled_total`` holds
+                # by construction. Callers MUST hit
+                # ``abort_request`` first; this method only
+                # attributes a previously-accepted abort.
+                if request_id not in self._cancelled_request_ids:
+                    return
+                if request_id not in self._disconnect_abort_ids:
+                    self._disconnect_abort_ids.add(request_id)
+                    self.num_requests_cancelled_via_disconnect += 1
+        except Exception:  # pragma: no cover - belt-and-suspenders
+            # Observability must never break a live disconnect path —
+            # a counter that fails to advance is preferable to one
+            # that escapes back through ``_force_abort_request`` and
+            # masks the abort in the caller's exception handler.
+            pass
 
     def _process_pending_aborts(self) -> None:
         """Drain and process pending abort requests. Called from executor thread."""
@@ -3164,6 +3300,21 @@ class Scheduler:
             request._extracted_cache = None
         self.finished_req_ids.add(request_id)
         self._cleanup_detokenizer(request_id)
+
+        # M-01 codex r4 BLOCKING #1: do NOT discard the dedupe
+        # ledgers here. The text scheduler intentionally keeps the
+        # ``Request`` object in ``self.requests`` between
+        # ``_do_abort_request`` and the later
+        # ``remove_finished_request`` call (engine_core cleanup),
+        # so ``abort_request`` would still observe
+        # ``request_id in self.requests`` and admit a redundant
+        # enqueue. Discarding the dedupe ledger HERE would let
+        # that redundant enqueue double-count the same request
+        # lifetime. The discard happens in ``remove_finished_request``
+        # instead — by which point the request has truly left every
+        # admit-able map and a fresh ``abort_request`` could only
+        # land via a new admit() with the same id (a distinct
+        # lifetime).
 
         # Flush Metal encoders after removing arrays from batch
         mx.clear_cache()
@@ -4025,8 +4176,43 @@ class Scheduler:
         return self.requests.get(request_id)
 
     def remove_finished_request(self, request_id: str) -> Request | None:
-        """Remove a finished request from tracking."""
-        return self.requests.pop(request_id, None)
+        """Remove a finished request from tracking.
+
+        M-01 codex r4 BLOCKING #1 + codex r5 BLOCKING: this is the
+        canonical request-leaves-scheduler boundary, so the
+        cancellation dedupe ledgers (``_cancelled_request_ids`` /
+        ``_disconnect_abort_ids``) are also discarded here. Before
+        this method runs, a redundant ``abort_request`` for the
+        same id would still pass the
+        ``request_id in self.requests`` predicate — so the ledger
+        must stay populated to prevent double-counting that
+        redundant enqueue. After this method runs, ``request_id``
+        is no longer admit-able via the abort-path predicate, so
+        the only way a future ``abort_request(rid)`` can hit
+        ``True`` is through a fresh ``add_request`` (a distinct
+        lifetime), which is exactly when the counter SHOULD tick
+        again.
+
+        Codex r5 BLOCKING: the ``self.requests.pop`` AND the
+        ledger discards MUST happen under a single critical
+        section. Otherwise the window between "ledger discarded"
+        and "request popped" is a race where a concurrent
+        ``abort_request`` observes ``request_id in self.requests``
+        (still True) AND an empty ledger (because we just cleared
+        it) and double-counts the same lifetime. The pop is moved
+        INSIDE the lock and runs BEFORE the discard so any
+        concurrent ``abort_request`` either sees the id still in
+        ``self.requests`` AND in the ledger (no double-count, the
+        dedupe gate catches it) OR sees the id not in
+        ``self.requests`` (returns False per F-151).
+
+        Discards are idempotent — re-entry is safe.
+        """
+        with self._cancel_counter_lock:
+            popped = self.requests.pop(request_id, None)
+            self._cancelled_request_ids.discard(request_id)
+            self._disconnect_abort_ids.discard(request_id)
+        return popped
 
     def get_running_requests_info(self) -> list[dict[str, Any]]:
         """Per-request details for status endpoint."""
@@ -4114,6 +4300,20 @@ class Scheduler:
             # series.
             "pflash_bypass_count": self.pflash_bypass_count,
             "pflash_compressed_tokens_dropped": self.pflash_compressed_tokens_dropped,
+            # M-01: cancellation observability. ``num_requests_cancelled``
+            # is the total count of public-API aborts the scheduler
+            # accepted (one increment per unique request_id transitioning
+            # into ``_pending_abort_ids``). ``num_requests_cancelled_via_
+            # disconnect`` is the subset attributed to client disconnect
+            # via ``_force_abort_request``. Both default to zero on
+            # engines that never see traffic so /metrics stays at a
+            # flat-line series rather than an absent one. See the init
+            # comment for the rationale on why ``num_requests_processed``
+            # alone is insufficient.
+            "num_requests_cancelled": self.num_requests_cancelled,
+            "num_requests_cancelled_via_disconnect": (
+                self.num_requests_cancelled_via_disconnect
+            ),
         }
         # Include Metal memory stats
         try:
@@ -4144,7 +4344,22 @@ class Scheduler:
         return None
 
     def reset(self) -> None:
-        """Reset the scheduler state."""
+        """Reset the scheduler state.
+
+        M-01 codex r8 BLOCKING #1: the cancellation dedupe ledgers
+        (``_cancelled_request_ids`` / ``_disconnect_abort_ids``)
+        MUST be cleared AFTER the abort loop, not before. Clearing
+        before means a concurrent ``record_disconnect_abort`` for a
+        still-live in-flight request could either no-op (id removed
+        from ledger ahead of its lifetime ending) or, worse, re-add
+        the id after ``_do_abort_request`` runs (because that path
+        also does a discard, and the ``add`` came from
+        ``abort_request`` racing against the loop). Clearing AFTER
+        the abort loop AND under the lock means any concurrent
+        ``record_disconnect_abort`` either ran fully BEFORE reset
+        started (correct) or sees the cleared state and no-ops
+        (correct: the request is gone, attribution is meaningless).
+        """
         # Drain any pending deferred aborts
         self._pending_abort_ids.clear()
 
@@ -4161,6 +4376,25 @@ class Scheduler:
         self._detokenizer_pool.clear()
         self._close_batch_generator()
         self._current_sampler_params = None
+
+        # M-01: drop the cancellation lifetime ledgers AFTER the
+        # tear-down loop completes. The counters themselves
+        # (``num_requests_cancelled`` /
+        # ``num_requests_cancelled_via_disconnect``) are NOT zeroed —
+        # they're lifetime-cumulative Prometheus counters and
+        # resetting them would make /metrics report a non-monotonic
+        # step change to scrapers. The sticky-counter accumulator in
+        # routes/metrics.py would then fold the apparent reset into
+        # a baseline, which is the right behaviour for the cache
+        # series but here we'd rather never trip it. Wiping the
+        # dedupe ledgers AFTER the abort loop is safe because the
+        # request_ids they tracked have all been torn down by then,
+        # and is correct against the codex r8 BLOCKING #1 race
+        # (clearing before reset's _do_abort_request loop ran would
+        # have re-opened the dedupe window during the tear-down).
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.clear()
+            self._disconnect_abort_ids.clear()
 
         # Clear caches
         if self.block_aware_cache is not None:

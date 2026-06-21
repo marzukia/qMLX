@@ -20,6 +20,7 @@ Architecture:
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from collections import deque
@@ -245,6 +246,29 @@ class MLLMScheduler:
         # Thread-safe set for deferred aborts (event loop → executor thread).
         # CPython GIL guarantees set.add() and set.pop() are atomic.
         self._pending_abort_ids: set[str] = set()
+        # M-01 codex r2 BLOCKING #2: lifetime de-dup ledger for the
+        # total cancellation counter. Mirror of
+        # ``Scheduler._cancelled_request_ids`` — see that comment for
+        # the rationale (TL;DR: ``_pending_abort_ids`` drains every
+        # step so it's the wrong ledger to dedupe a lifetime counter
+        # against).
+        self._cancelled_request_ids: set[str] = set()
+        # M-01: once-per-request guard for the disconnect-cause
+        # sub-counter. Mirrors ``Scheduler._disconnect_abort_ids`` —
+        # the helper-layer ``_force_abort_request`` may fire two or
+        # three times per disconnect (disconnect branch + GeneratorExit
+        # branch + finally belt-and-suspenders) so the sub-counter
+        # needs its own de-dup set instead of leaning on
+        # ``_pending_abort_ids`` which drains every step.
+        self._disconnect_abort_ids: set[str] = set()
+        # M-01 codex r1 BLOCKING #4/#5: same atomicity rationale as
+        # ``Scheduler._cancel_counter_lock`` — the check-add-increment
+        # for both the total and via_disconnect counters must be
+        # serialized across threads. MLLM-active engines reach this
+        # path from the same disconnect_guard multi-branch fire AND
+        # the explicit cancel route, so the concurrency surface is
+        # identical.
+        self._cancel_counter_lock = threading.Lock()
         # Aborted request IDs that need queue signaling (executor → event loop).
         self._aborted_queue_ids: set[str] = set()
 
@@ -261,6 +285,12 @@ class MLLMScheduler:
         self.num_requests_processed = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # M-01: cancellation observability — mirror of the text-path
+        # scheduler counters so /metrics renders a stable series on
+        # MLLM-active engines. See ``Scheduler.__init__`` for the full
+        # rationale. Observability only — abort semantics unchanged.
+        self.num_requests_cancelled = 0
+        self.num_requests_cancelled_via_disconnect = 0
 
     def _get_stop_tokens(self) -> set[int]:
         """Get stop token IDs from tokenizer.
@@ -423,17 +453,52 @@ class MLLMScheduler:
         # running, or already pending abort (idempotent double-cancel). We
         # do NOT count ``finished_req_ids`` — the route contract is
         # "404 when already finished".
-        if (
-            request_id in self.requests
-            or request_id in self.request_id_to_uid
-            or request_id in self.running
-            or request_id in self._pending_abort_ids
-        ):
+        # M-01 codex r1 BLOCKING #4 + r2 BLOCKING #2 + r6 BLOCKING #2:
+        # membership check AND check-add-increment serialized under
+        # the same lock to close the stale-admission race against
+        # ``_do_abort_request`` clearing the dedupe ledgers. See
+        # ``Scheduler.abort_request`` for the full rationale.
+        with self._cancel_counter_lock:
+            if not (
+                request_id in self.requests
+                or request_id in self.request_id_to_uid
+                or request_id in self.running
+                or request_id in self._pending_abort_ids
+            ):
+                logger.debug("Rejected abort for unknown MLLM request_id")
+                return False
+            already_counted = request_id in self._cancelled_request_ids
+            self._cancelled_request_ids.add(request_id)
             self._pending_abort_ids.add(request_id)
-            logger.debug(f"Enqueued abort for request {request_id}")
-            return True
-        logger.debug("Rejected abort for unknown MLLM request_id")
-        return False
+            if not already_counted:
+                self.num_requests_cancelled += 1
+        logger.debug(f"Enqueued abort for request {request_id}")
+        return True
+
+    def record_disconnect_abort(self, request_id: str) -> None:
+        """M-01: attribute a previously-accepted abort to client disconnect.
+
+        Mirrors ``Scheduler.record_disconnect_abort`` so MLLM-active
+        engines surface the same ``via_disconnect`` sub-counter on
+        /metrics. See that method's docstring for the once-per-request
+        semantics, lock-based atomicity contract (codex r1 BLOCKING
+        #5), and thread-safety guarantees.
+
+        Codex r7 NIT #3: gate on ``_cancelled_request_ids`` so the
+        ``via_disconnect_total <= cancelled_total`` dashboard
+        invariant holds by construction even on programmer error.
+        """
+        try:
+            if not request_id:
+                return
+            with self._cancel_counter_lock:
+                if request_id not in self._cancelled_request_ids:
+                    return
+                if request_id not in self._disconnect_abort_ids:
+                    self._disconnect_abort_ids.add(request_id)
+                    self.num_requests_cancelled_via_disconnect += 1
+        except Exception:  # pragma: no cover - belt-and-suspenders
+            pass
 
     def _process_pending_aborts(self) -> None:
         """Drain and execute pending abort requests.
@@ -479,9 +544,24 @@ class MLLMScheduler:
         if request is not None:
             request.status = RequestStatus.FINISHED_ABORTED
         self.finished_req_ids.add(request_id)
-        self.requests.pop(request_id, None)
 
-        self._detokenizer_pool.pop(request_id, None)
+        # M-01 codex r8 BLOCKING #2: pop ``self.requests`` AND
+        # discard the cancellation lifetime ledgers under the SAME
+        # critical section. Pre-r8 the pop ran outside the lock,
+        # leaving a window where a concurrent ``abort_request``
+        # acquiring the lock could observe inconsistent state
+        # across ``self.requests`` / ``request_id_to_uid`` /
+        # ``running`` / ``_pending_abort_ids``. With both inside
+        # the lock, any concurrent abort-path predicate (codex r6
+        # fix: also inside the lock) sees a consistent
+        # transition — either everything pre-cleanup or
+        # everything post-cleanup. Detokenizer pool pop also
+        # joins the section for symmetric ordering.
+        with self._cancel_counter_lock:
+            self.requests.pop(request_id, None)
+            self._detokenizer_pool.pop(request_id, None)
+            self._cancelled_request_ids.discard(request_id)
+            self._disconnect_abort_ids.discard(request_id)
 
         # Do NOT write to output_queues here — this may run on the
         # executor thread where asyncio.Queue is not safe.  Mark for
@@ -1161,6 +1241,14 @@ class MLLMScheduler:
             "num_requests_processed": self.num_requests_processed,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
+            # M-01: cancellation observability — mirror of the text
+            # scheduler stats so the same /metrics renderer surfaces a
+            # flat-line zero on MLLM-active engines that never see an
+            # abort. See ``Scheduler.get_stats`` for the full rationale.
+            "num_requests_cancelled": self.num_requests_cancelled,
+            "num_requests_cancelled_via_disconnect": (
+                self.num_requests_cancelled_via_disconnect
+            ),
         }
 
         if self.batch_generator is not None:
@@ -1198,6 +1286,17 @@ class MLLMScheduler:
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
         self._detokenizer_pool.clear()
+        # M-01 codex r2/r8: drop the cancellation lifetime ledgers
+        # alongside the in-flight state. The Prometheus counters
+        # themselves are NOT zeroed (lifetime-cumulative contract).
+        # Codex r8 BLOCKING #1 ordering: clear AFTER the abort loop
+        # so a concurrent ``record_disconnect_abort`` for an
+        # in-flight request can't interleave inconsistently, AND
+        # under the lock so the clear is atomic against any
+        # concurrent abort-path mutation.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.clear()
+            self._disconnect_abort_ids.clear()
 
         if self.batch_generator is not None:
             self.batch_generator.close()

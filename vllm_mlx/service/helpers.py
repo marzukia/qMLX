@@ -1997,6 +1997,120 @@ def _resolve_sync_scheduler_for_abort(engine):
     return None
 
 
+def _resolve_disconnect_abort_recorder(engine):
+    """M-01: walk the engine backend graph and return the bound
+    ``record_disconnect_abort`` method of the active-path scheduler.
+
+    Codex r2 NIT: returns the BOUND METHOD, not the scheduler object,
+    so the call site stays one expression
+    (``recorder(rid)``) without having to know which attribute name
+    to look up. The name is honest about that — earlier draft was
+    ``_resolve_scheduler_for_cancel_attribution`` which suggested a
+    scheduler object would be returned.
+
+    The cancel-attribution sub-counter lives on the same scheduler
+    where the public-API total counter lives, so the resolver must
+    follow the active-path gate (``_is_mllm``). We deliberately keep
+    this separate from ``_resolve_sync_scheduler_for_abort`` (which
+    gates on ``not iscoroutinefunction(abort_request)``) because the
+    sub-counter is a sync-only method wholly independent of the abort
+    path — re-using the abort resolver would skip schedulers that
+    expose a fine sync ``record_disconnect_abort`` but happen to have
+    an async ``abort_request`` shim.
+
+    Production text path walks one extra level versus the abort
+    resolver: ``BatchedEngine._engine`` is ``AsyncEngineCore`` (which
+    does NOT expose ``.scheduler`` directly) and the actual
+    ``Scheduler`` lives at ``BatchedEngine._engine.engine.scheduler``
+    (``AsyncEngineCore`` wraps ``EngineCore`` via ``self.engine``).
+    The abort resolver doesn't dig that deep because
+    ``AsyncEngineCore`` has its own async ``abort_request`` shim and
+    falls through to the public-async fallback — but the
+    attribution counter must NOT fall back because the sub-counter
+    only lives on ``Scheduler``. Without this extra hop the
+    via_disconnect series would stay flat through every real
+    production disconnect (Mei + Yana surfaced the cancel-rate
+    counter; the operator would still have no way to see whether
+    the bulk of cancels came from disconnect vs. timeout vs.
+    explicit /cancel).
+
+    Returns ``None`` if no scheduler in the active backend exposes
+    the method, in which case the helper-layer caller silently
+    no-ops (older schedulers without M-01 simply don't surface the
+    sub-counter, the total counter on the route side still defaults
+    to zero).
+    """
+    # M-01 codex r7 BLOCKING #2: when ``_is_mllm`` is set we MUST
+    # honor it before falling back to a direct ``engine.scheduler``
+    # — otherwise a dual-shaped engine (one that exposes
+    # ``.scheduler`` for the text path AND ``_mllm_scheduler`` for
+    # the MLLM path, depending on which backend is active) will
+    # mis-attribute disconnects to the text scheduler when the
+    # MLLM path is the live one. The check pattern is the same as
+    # the abort resolver's codex r2 BLOCKING #1 fix — active-path
+    # gate first, plain-engine fallback last.
+    is_mllm_flag = getattr(engine, "_is_mllm", None)
+    if is_mllm_flag is True:
+        mllm = getattr(engine, "_mllm_scheduler", None)
+        if mllm is not None:
+            recorder = getattr(mllm, "record_disconnect_abort", None)
+            if recorder is not None:
+                return recorder
+    elif is_mllm_flag is False:
+        inner = getattr(engine, "_engine", None)
+        if inner is not None:
+            # ``engine._engine.scheduler`` — matches the abort
+            # resolver shape (used by every test stub today).
+            inner_sched = getattr(inner, "scheduler", None)
+            if inner_sched is not None:
+                recorder = getattr(inner_sched, "record_disconnect_abort", None)
+                if recorder is not None:
+                    return recorder
+            # ``engine._engine.engine.scheduler`` — the production
+            # ``BatchedEngine`` over ``AsyncEngineCore`` shape. The
+            # extra hop is where AsyncEngineCore wraps EngineCore.
+            inner_engine = getattr(inner, "engine", None)
+            if inner_engine is not None:
+                deep_sched = getattr(inner_engine, "scheduler", None)
+                if deep_sched is not None:
+                    recorder = getattr(deep_sched, "record_disconnect_abort", None)
+                    if recorder is not None:
+                        return recorder
+    # Plain-engine fallback: only used when ``_is_mllm`` is absent
+    # (older / external engine shapes that pre-date BatchedEngine).
+    # Distinct from ``is_mllm_flag is False`` above, which means
+    # "explicitly text-active on a BatchedEngine".
+    direct_scheduler = getattr(engine, "scheduler", None)
+    if direct_scheduler is not None:
+        recorder = getattr(direct_scheduler, "record_disconnect_abort", None)
+        if recorder is not None:
+            return recorder
+    return None
+
+
+def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
+    """M-01 attribution helper — bumps the disconnect sub-counter on
+    whichever active-path scheduler owns this ``request_id``.
+
+    Wraps the resolver in a try/except so the cancel-attribution path
+    never leaks back into ``_force_abort_request``. The total counter
+    is already incremented inside ``Scheduler.abort_request`` the
+    moment the sync entry returns True, so failure of this attribution
+    helper at worst leaves the (total - disconnect) gap one larger
+    than reality — never breaks the abort itself.
+    """
+    try:
+        recorder = _resolve_disconnect_abort_recorder(engine)
+        if recorder is not None:
+            recorder(request_id)
+    except Exception:  # pragma: no cover - belt-and-suspenders
+        logger.warning(
+            "[disconnect_guard] record_disconnect_abort raised; "
+            "via_disconnect sub-counter may under-count this abort",
+            exc_info=True,
+        )
+
+
 def _force_abort_request(engine, request_id_holder) -> bool:
     """C-01: synchronously enqueue an abort for the live request id.
 
@@ -2044,6 +2158,19 @@ def _force_abort_request(engine, request_id_holder) -> bool:
                 f"[disconnect_guard] force-abort scheduler.abort_request("
                 f"{str(request_id)[:12]}) -> {result}"
             )
+            # M-01: attribute the abort to client disconnect so
+            # ``rapid_mlx_requests_cancelled_via_disconnect_total`` ticks
+            # alongside the total. We bump only when the sync entry
+            # actually accepted the abort (``result == True``) — the
+            # scheduler returns False for unknown ids and we must not
+            # over-count those. The disconnect_guard fires
+            # ``_force_abort_request`` from up to three branches per
+            # disconnect (disconnect/GeneratorExit/finally), so the
+            # scheduler-side ``_disconnect_abort_ids`` set provides
+            # the once-per-request de-dup. Observability only — never
+            # let a counter-side error mask the actual abort.
+            if result:
+                _record_disconnect_abort_on_scheduler(engine, request_id)
             return True
         # No sync path resolved — the engine is wrapping its scheduler
         # behind an async-only ``abort_request``. Best-effort fire-and-
@@ -2056,7 +2183,55 @@ def _force_abort_request(engine, request_id_holder) -> bool:
         if public_abort is not None:
             result = public_abort(request_id)
             if asyncio.iscoroutine(result):
-                asyncio.ensure_future(result)
+                # M-01 codex r1 BLOCKING #1: attribution MUST chain on
+                # the abort result, not fire-and-forget. Pre-fix this
+                # path called ``_record_disconnect_abort_on_scheduler``
+                # IMMEDIATELY after scheduling the coroutine, so a
+                # stale / unknown ``request_id`` (which makes
+                # ``Scheduler.abort_request`` return False and skip
+                # the total counter) would still tick the sub-counter
+                # — corrupting the (total - via_disconnect) gap
+                # operators rely on for cause attribution. The fix:
+                # wrap the coroutine in an awaiter that records ONLY
+                # after the awaited abort returns truthy. The
+                # ``ensure_future`` still keeps the disconnect path
+                # synchronous (we don't await it here), but the
+                # eventual coroutine resolution is now the gate for
+                # the sub-counter.
+                attribution_engine = engine
+
+                async def _await_and_record(coro=result, rid=request_id):
+                    try:
+                        accepted = await coro
+                    except Exception:  # pragma: no cover - belt-and-suspenders
+                        logger.warning(
+                            "[disconnect_guard] async force-abort raised; "
+                            "via_disconnect sub-counter NOT advanced for "
+                            f"{str(rid)[:12]}",
+                            exc_info=True,
+                        )
+                        return
+                    if accepted:
+                        _record_disconnect_abort_on_scheduler(attribution_engine, rid)
+                    else:
+                        # Codex r2 NIT #3: surface the "abort coroutine
+                        # returned False" path to operators. Without
+                        # this log, a stale holder (request_id reused
+                        # or already finished by the time the
+                        # disconnect_guard fired) silently leaves the
+                        # ``via_disconnect`` sub-counter behind the
+                        # total, and the operator-facing
+                        # (total - via_disconnect) gap drifts with no
+                        # diagnostic trail. INFO-level — the sync
+                        # path also INFO-logs its rejected aborts.
+                        logger.info(
+                            "[disconnect_guard] async force-abort returned "
+                            "False for %s; via_disconnect sub-counter NOT "
+                            "advanced (stale holder / already finished?)",
+                            str(rid)[:12],
+                        )
+
+                asyncio.ensure_future(_await_and_record())
                 logger.warning(
                     f"[disconnect_guard] force-abort fell back to async "
                     f"engine.abort_request({str(request_id)[:12]}); the "
@@ -2072,6 +2247,11 @@ def _force_abort_request(engine, request_id_holder) -> bool:
                 f"[disconnect_guard] force-abort engine.abort_request("
                 f"{str(request_id)[:12]}) -> {result}"
             )
+            # Sync public-abort path (no coroutine to schedule) —
+            # attribute disconnect symmetric with the sync-scheduler
+            # branch above when the engine accepted the abort.
+            if result:
+                _record_disconnect_abort_on_scheduler(engine, request_id)
             return True
     except Exception:
         logger.warning(
