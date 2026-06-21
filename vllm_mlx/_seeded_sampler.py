@@ -57,6 +57,53 @@ from collections.abc import Callable
 import mlx.core as mx
 
 
+def _apply_argmax_rescue(mask: mx.array, argmax_idx: mx.array) -> mx.array:
+    """Apply the round-7 conditional argmax rescue to a combined mask.
+
+    Factored out as a module-level helper so the rescue's intersection-
+    preserving contract can be unit-tested directly without driving
+    the whole sampler closure. Codex round-8 BLOCKING regression guard:
+    the prior round-7 sampler test only proved same-seed determinism
+    and would pass under the OLD unconditional ``mask | argmax_keep``
+    behaviour, so the test was vacuous. Exposing the rescue as a pure
+    helper lets the test inject a hand-built non-empty mask that
+    excludes ``argmax_idx`` and assert the rescue does NOT add argmax
+    back — the property the round-7 fix exists to enforce.
+
+    Args:
+        mask: Bool tensor shaped ``[..., vocab]`` — the combined
+            kept-token mask after applying top-p / top-k / min-p.
+        argmax_idx: Int tensor shaped ``[..., 1]`` — the per-row
+            argmax positions (``mx.argmax(work, axis=-1, keepdims=True)``).
+
+    Returns:
+        Bool tensor shaped ``[..., vocab]`` with the round-2 invariant:
+        each row has at least one ``True`` entry, and rows that already
+        had at least one ``True`` entry are returned UNCHANGED (no
+        argmax injected). Rows that were all ``False`` fall back to a
+        single-True at ``argmax_idx``.
+
+    The conditional gate ``mx.where(any_kept, mask, argmax_keep)`` is
+    what makes the contract observable: under the old unconditional
+    form (``mask | argmax_keep``), a non-empty row that excluded
+    argmax would still have argmax OR'd in — violating ``top_k``
+    intersection semantics.
+    """
+    # Build the single-True argmax mask in vocab order.
+    argmax_keep = mx.zeros(mask.shape, dtype=mx.bool_)
+    argmax_keep = mx.put_along_axis(
+        argmax_keep,
+        argmax_idx,
+        mx.ones(argmax_idx.shape, dtype=mx.bool_),
+        axis=-1,
+    )
+    # Per-row "any token kept after intersection?" detector. ``keepdims=True``
+    # gives shape ``[..., 1]`` which broadcasts against ``[..., vocab]``
+    # under ``mx.where``.
+    any_kept = mx.any(mask, axis=-1, keepdims=True)
+    return mx.where(any_kept, mask, argmax_keep)
+
+
 def make_seeded_sampler(
     *,
     seed: int,
@@ -260,30 +307,37 @@ def make_seeded_sampler(
             min_p_mask = probs_for_min >= (min_p_val * max_prob)
             mask = mask & min_p_mask
 
-        # Codex round-2 BLOCKING #2 fix: guarantee at least one
-        # sampleable token. Intersecting top-p, top-k, min-p can
-        # produce an all-False row when the cutoffs are too
-        # aggressive (e.g. ``min_p=0.999`` plus a flat distribution)
-        # — ``masked`` would become all ``-inf`` and
-        # ``mx.random.categorical`` would receive an invalid
-        # distribution and return nonsense (uint32 garbage that
-        # decodes to whatever token id it lands on). OR in the
-        # per-row argmax position so the highest-likelihood token is
-        # always kept — same "at least one token" invariant the
-        # top-p branch enforces inside its sorted-space mask, but
-        # applied to the COMBINED mask so it covers any combination
-        # of cutoffs. Mathematically equivalent to "argmax always
-        # wins" which is mlx-lm's documented fallback shape
-        # (apply_top_k / apply_min_p both keep at least one token).
+        # Codex round-2 BLOCKING #2 + round-7 BLOCKING fix: guarantee
+        # at least one sampleable token WITHOUT changing the intersection
+        # semantics for non-empty rows.
+        #
+        # The original round-2 fix unconditionally OR'd argmax into the
+        # combined mask, which fixed the empty-row crash but silently
+        # broke ``top_k`` when combined with a tight ``top_p`` / ``min_p``
+        # that excluded argmax from the top-k set — the rescue would
+        # re-introduce a token the caller's intersection contract had
+        # already filtered out. Codex r7 caught this: ``top_k`` no
+        # longer means "sample only from the top K" when layered with
+        # a stricter cutoff.
+        #
+        # The conditional form below preserves the round-2 contract
+        # (no all-``-inf`` rows ever reach ``mx.random.categorical``)
+        # while only invoking the argmax rescue when the row would
+        # otherwise be empty. Non-empty rows keep their exact mask,
+        # so ``top_k`` / ``top_p`` / ``min_p`` intersection semantics
+        # match the documented behaviour and the fused fast path.
+        #
+        # Empty-row case (combined cutoffs filtered every token): fall
+        # back to argmax so the sampler returns a sensible token
+        # rather than uint32 garbage from a degenerate ``-inf``
+        # distribution. This matches mlx-lm's "at least one token
+        # kept" invariant on the individual ``apply_top_p`` /
+        # ``apply_top_k`` / ``apply_min_p`` masks — each preserves a
+        # token by construction, so empty rows can only arise from
+        # the combined intersection, which is exactly the case the
+        # rescue targets.
         argmax_idx = mx.argmax(work, axis=-1, keepdims=True)
-        argmax_keep = mx.zeros(work.shape, dtype=mx.bool_)
-        argmax_keep = mx.put_along_axis(
-            argmax_keep,
-            argmax_idx,
-            mx.ones(argmax_idx.shape, dtype=mx.bool_),
-            axis=-1,
-        )
-        mask = mask | argmax_keep
+        mask = _apply_argmax_rescue(mask, argmax_idx)
 
         # Apply mask + temperature scaling. Use ``-inf`` for masked
         # positions so categorical never picks them.
