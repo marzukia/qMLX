@@ -46,6 +46,7 @@ from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
+    _apply_reasoning_cutoff_notice,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
@@ -328,6 +329,29 @@ async def _non_stream(
         final_content = sanitize_output(final_content)
 
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
+
+    # H-01: /v1/responses mirror of the chat-route cutoff sentinel.
+    #
+    # Codex r1 NIT (PR #802): the Responses surface intentionally does
+    # NOT run ``_rescue_silent_drop_from_reasoning`` (this endpoint
+    # never carried the issue#569 silent-drop pre-history, and the
+    # adapter shape makes the rescue's #569 promotion semantically
+    # ambiguous), so the predicate set this helper sees on Responses
+    # is broader than on chat/anthropic — ANY length-finished response
+    # with empty content + non-empty reasoning + no tool calls trips
+    # the sentinel, NOT specifically "rescue-suppressed promotion".
+    # That broader scope is OK here: the same UX gap (SDK consumers
+    # see empty bubbles) is exactly what the sentinel fixes, and on
+    # this surface there is no ``_rescue_silent_drop_from_reasoning``
+    # call that could have produced the empty shape for a different
+    # reason. Helper owns the env opt-out + finish-reason gate so
+    # back-compat is preserved.
+    final_content = _apply_reasoning_cutoff_notice(
+        final_content,
+        reasoning_text,
+        tool_calls,
+        finish_reason,
+    )
 
     openai_response = ChatCompletionResponse(
         model=cfg.model_name or openai_request.model,
