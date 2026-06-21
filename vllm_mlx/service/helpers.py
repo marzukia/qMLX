@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import logging
+import threading
 import uuid
 from collections.abc import AsyncIterator
 
@@ -2036,11 +2037,42 @@ def _resolve_sync_scheduler_for_abort(engine):
     else:
         inner = getattr(engine, "_engine", None)
         if inner is not None:
+            # ``engine._engine.scheduler`` — synthetic test-stub shape
+            # where AsyncEngineCore-like is stubbed with a direct
+            # ``.scheduler`` attribute. Kept for back-compat with the
+            # existing pre-D-M01 test corpus.
             inner_sched = getattr(inner, "scheduler", None)
             if inner_sched is not None:
                 abort = getattr(inner_sched, "abort_request", None)
                 if abort is not None and not asyncio.iscoroutinefunction(abort):
                     return abort
+            # D-M01-DEAD (0.8.2 dogfood): the PRODUCTION ``rapid-mlx
+            # serve`` shape is ``BatchedEngine._engine`` →
+            # ``AsyncEngineCore.engine`` → ``EngineCore.scheduler``.
+            # ``AsyncEngineCore`` does NOT expose ``.scheduler``
+            # directly — its scheduler lives behind ``self.engine``
+            # which is an ``EngineCore``. Without this extra hop the
+            # sync resolver returns ``None`` on every real production
+            # engine and ``_force_abort_request`` falls into the
+            # async fallback. That fallback awaits
+            # ``EngineCore.abort_request`` which interleaves
+            # ``scheduler.abort_request`` + ``_cleanup_request``
+            # (which wipes the lifetime ledger), racing the
+            # attribution helper and causing the 2x over-count +
+            # flat-zero via_disconnect sub-counter that three
+            # 0.8.2 personas independently reported.
+            #
+            # Mirror the same deep-path walk
+            # ``_resolve_disconnect_abort_recorder`` already does so
+            # the sync abort and the attribution call resolve to the
+            # SAME ``Scheduler`` instance on every backend shape.
+            inner_engine = getattr(inner, "engine", None)
+            if inner_engine is not None:
+                deep_sched = getattr(inner_engine, "scheduler", None)
+                if deep_sched is not None:
+                    abort = getattr(deep_sched, "abort_request", None)
+                    if abort is not None and not asyncio.iscoroutinefunction(abort):
+                        return abort
     return None
 
 
@@ -2135,6 +2167,36 @@ def _resolve_disconnect_abort_recorder(engine):
     return None
 
 
+# M-01 / D-M01-DEAD: once-per-engine-type ledger for the unresolved-
+# engine warning. Without this dedupe, an operator running on an
+# engine shape the resolvers don't yet recognise would see one
+# warning per ABORT — at 1 cancel/second that's 86,400 warnings/day,
+# enough to drown the disconnect_guard log signal entirely. The
+# warning is informational ("which backend shape do the resolvers
+# need to learn") so once-per-engine-type is the right cardinality.
+# Bounded by the number of distinct engine classes in the process,
+# typically 1.
+_unresolved_engine_logged: set[tuple[str, str]] = set()
+_unresolved_engine_lock = threading.Lock()
+
+
+def _unresolved_engine_dedupe_key(engine_cls: type) -> tuple[str, str]:
+    """Codex r11 NIT: dedupe by the fully-qualified class identity
+    so two distinct unresolved engine classes that happen to share
+    a leaf name (e.g. ``mod_a.BatchedEngine`` vs.
+    ``mod_b.BatchedEngine``) do NOT suppress each other's warning.
+    ``__qualname__`` covers nested classes; pairing with
+    ``__module__`` makes the key bijective with the class identity
+    for any sensibly-defined production class. Falling back to the
+    class object itself for stragglers (lambda-defined / no
+    qualname) would also work but a tuple is cheaper to hash and
+    easier to inspect in a heap dump.
+    """
+    module = getattr(engine_cls, "__module__", "<unknown>") or "<unknown>"
+    qualname = getattr(engine_cls, "__qualname__", engine_cls.__name__)
+    return (module, qualname)
+
+
 def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
     """M-01 attribution helper — bumps the disconnect sub-counter on
     whichever active-path scheduler owns this ``request_id``.
@@ -2145,11 +2207,54 @@ def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
     moment the sync entry returns True, so failure of this attribution
     helper at worst leaves the (total - disconnect) gap one larger
     than reality — never breaks the abort itself.
+
+    D-M01-DEAD (0.8.2 dogfood): the previous implementation silently
+    no-op'd when ``_resolve_disconnect_abort_recorder`` returned
+    ``None``. That swallow-with-no-log let PR #783 ship without
+    catching that the production ``BatchedEngine`` over
+    ``AsyncEngineCore`` shape exposed no recorder — three personas
+    independently observed flat-zero ``via_disconnect_total`` on
+    PyPI 0.8.2. The WARNING below (rate-limited to once-per-engine-
+    type so it doesn't drown the log under sustained cancel traffic)
+    ensures the next engine-shape change cannot silently regress the
+    sub-counter again. The high-cardinality ``request_id`` is logged
+    at DEBUG only — codex r10 NIT.
     """
     try:
         recorder = _resolve_disconnect_abort_recorder(engine)
-        if recorder is not None:
-            recorder(request_id)
+        if recorder is None:
+            engine_cls = type(engine)
+            dedupe_key = _unresolved_engine_dedupe_key(engine_cls)
+            # Display name is "module.qualname" so the operator log
+            # carries the full backend identity, not a leaf name that
+            # might collide across modules.
+            engine_display = f"{dedupe_key[0]}.{dedupe_key[1]}"
+            should_warn = False
+            with _unresolved_engine_lock:
+                if dedupe_key not in _unresolved_engine_logged:
+                    _unresolved_engine_logged.add(dedupe_key)
+                    should_warn = True
+            if should_warn:
+                logger.warning(
+                    "[disconnect_guard] no record_disconnect_abort recorder "
+                    "found on engine type=%s — via_disconnect sub-counter "
+                    "WILL NOT advance for aborts routed through this engine. "
+                    "This indicates an unrecognised engine shape; the "
+                    "resolvers in _resolve_disconnect_abort_recorder + "
+                    "_resolve_sync_scheduler_for_abort must learn the new "
+                    "backend graph. Further occurrences for this engine "
+                    "type will be suppressed at DEBUG.",
+                    engine_display,
+                )
+            else:
+                logger.debug(
+                    "[disconnect_guard] no recorder for engine type=%s "
+                    "(request_id=%s) — warning already emitted",
+                    engine_display,
+                    str(request_id)[:12] if request_id else request_id,
+                )
+            return
+        recorder(request_id)
     except Exception:  # pragma: no cover - belt-and-suspenders
         logger.warning(
             "[disconnect_guard] record_disconnect_abort raised; "
