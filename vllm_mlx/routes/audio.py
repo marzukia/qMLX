@@ -444,6 +444,15 @@ async def create_transcription(
         else (response_format_query if response_format_query is not None else "json")
     )
 
+    # F-D05: STT-lane audio dep probe — same envelope as the TTS
+    # lane shares. Fires BEFORE we spool any upload bytes so a broken
+    # ``mlx_audio.stt`` install rejects cheaply (no temp file, no
+    # read loop). Codex r3 BLOCKING: probe the STT lane SPECIFICALLY
+    # so a torn TTS install doesn't 503 transcriptions and vice versa.
+    from ..audio.probe import require_mlx_audio_stt
+
+    require_mlx_audio_stt()
+
     # Resolve / validate the requested model BEFORE draining the upload.
     # Previously every failure mode (unknown alias, missing mlx-audio,
     # bad audio bytes) collapsed into a 500 "could not open/decode
@@ -527,8 +536,29 @@ async def create_speech(
     speed: float = 1.0,
     response_format: str = "wav",
 ):
-    """Generate speech from text (OpenAI TTS API compatible)."""
+    """Generate speech from text (OpenAI TTS API compatible).
+
+    F-D05: probe ``mlx_audio`` availability through the shared
+    :func:`vllm_mlx.audio.probe.require_mlx_audio` helper so this
+    route's 503 envelope matches ``/v1/audio/voices`` and
+    ``/v1/audio/transcriptions``. Pre-fix each audio route hand-rolled
+    its own check; the voices route never probed at all, the speech
+    route only saw the ImportError, and operators couldn't tell from
+    one endpoint that the others were also broken.
+    """
     global _tts_engine
+
+    # TTS-lane audio dep probe (F-D05 + codex r3 BLOCKING). Fires
+    # BEFORE the lazy TTSEngine import — if the TTS sub-module of
+    # mlx_audio is missing or broken at runtime, both ``/v1/audio/
+    # speech`` and ``/v1/audio/voices`` return the SAME 503 envelope
+    # with the actual failure reason embedded. A torn STT lane does
+    # NOT 503 this route — the lane separation closes the codex r3
+    # regression where a broken STT install would mask TTS-usable
+    # installs as fully broken.
+    from ..audio.probe import require_mlx_audio_tts
+
+    require_mlx_audio_tts()
 
     try:
         from ..audio.tts import TTSEngine
@@ -555,10 +585,21 @@ async def create_speech(
         )
         return Response(content=audio_bytes, media_type=content_type)
 
-    except ImportError:
+    except HTTPException:
+        # Preserve probe-emitted 503 (and any other explicit status)
+        # rather than collapsing into the generic 500 catch-all below.
+        raise
+    except ImportError as e:
+        # Defense in depth: if a future refactor introduces an import
+        # path the probe doesn't cover (or the cached verdict is stale
+        # in some edge case), still surface a meaningful 503 instead
+        # of leaking a stack trace through the catch-all 500.
         raise HTTPException(
             status_code=503,
-            detail="mlx-audio not installed. Install with: pip install mlx-audio",
+            detail=(
+                f"mlx-audio import failed at runtime: {e}. "
+                "Install with: pip install 'rapid-mlx[audio]'"
+            ),
         )
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
@@ -567,7 +608,29 @@ async def create_speech(
 
 @router.get("/v1/audio/voices", dependencies=[Depends(verify_api_key)])
 async def list_voices(model: str = "kokoro"):
-    """List available voices for a TTS model."""
+    """List available voices for a TTS model.
+
+    F-D05: gates on the same :func:`require_mlx_audio` probe that
+    ``/v1/audio/speech`` uses so callers can't get a 200 with a
+    voice list while the very next ``speech`` call 503s on the same
+    server. Pre-fix the voices route returned a static list without
+    touching ``mlx_audio`` at all, so it advertised TTS-capability
+    even when the engine wouldn't load.
+    """
+    # Probe FIRST, then import anything that depends on mlx_audio
+    # transitively. Pre-fix this ordering wasn't a problem because
+    # ``vllm_mlx.audio.tts`` doesn't import ``mlx_audio`` at module
+    # level — but pinning the order in the route handler means a
+    # future refactor that hoists an ``import mlx_audio`` to the top
+    # of ``audio/tts.py`` (e.g. for type hints) can't accidentally
+    # bypass the shared 503 envelope by failing at the route's import
+    # statement before the probe even runs. Codex r1 BLOCKING on
+    # PR #804. Codex r3 follow-up: probe the TTS lane SPECIFICALLY so
+    # a torn STT install doesn't 503 voice listing.
+    from ..audio.probe import require_mlx_audio_tts
+
+    require_mlx_audio_tts()
+
     from ..audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
 
     if "kokoro" in model.lower():
