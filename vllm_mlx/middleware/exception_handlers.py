@@ -203,6 +203,59 @@ def _generic_error_response() -> JSONResponse:
     )
 
 
+def _recursion_error_response() -> JSONResponse:
+    """The sanitized envelope used when a ``RecursionError`` reaches
+    the framework boundary (D-TOOL-RECUR / D-DEEP-JSON defense-in-depth).
+
+    The primary defense for both bugs is structural — an iterative
+    chat-template walk (see
+    :func:`vllm_mlx.utils.chat_template._walk_tools_iter`) plus a body-
+    depth guard middleware (see
+    :mod:`vllm_mlx.middleware.body_depth`) plus a per-tool-schema
+    depth validator (see :class:`vllm_mlx.api.models.ToolDefinition`).
+    None of those should let a ``RecursionError`` propagate. But:
+
+    * The body-depth gate path-scopes to JSON content types only,
+      so a future route that accepts JSON via a different content
+      type could bypass it.
+    * The per-tool-schema validator runs at request-model construction,
+      so a code path that builds a ``ChatCompletionRequest`` from a
+      programmatically-constructed dict (engine tests, internal
+      adapters) skips it.
+    * Pydantic / FastAPI / Starlette internals may add new recursive
+      paths in a future release that we haven't audited.
+
+    Surfacing a ``RecursionError`` as HTTP 500 with a stack trace
+    fragment (the pre-fix shape) is both a DoS signal AND an info-leak
+    — the pre-fix trace named ``_sanitize_tools_for_template._walk``
+    on every parser, so an attacker could identify the function and
+    the line. This handler returns the SAME shape as
+    :func:`_generic_error_response` (HTTP 500 ``Internal server
+    error``) so:
+
+    * No stack trace ever reaches the client (info-leak closed).
+    * We DON'T claim "request body too deep" when the cause might
+      actually be an unrelated recursion bug elsewhere in the server
+      (codex r4 BLOCKING — a misleading 400 on a server-side bug
+      would mask the real failure mode and the client would retry).
+      The user-facing message stays neutral so an SDK keying on
+      ``error.message == "Internal server error"`` handles it the
+      same as any other unhandled server-side fault.
+    * The body-depth gate middleware still emits its own
+      ``request_body_too_deep`` 400 from the depth-cap rejection
+      path — clients DO see that more-actionable error when the
+      cause was actually a deep body.
+
+    We log the trace at WARNING level so an operator can spot a new
+    recursion site we should put a structural fix on, regardless of
+    whether the cause was body-depth-related or somewhere else.
+    """
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"message": "Internal server error"}},
+    )
+
+
 def install_exception_handlers(app: FastAPI) -> None:
     """Register the rapid-mlx exception handlers on ``app``.
 
@@ -279,6 +332,29 @@ def install_exception_handlers(app: FastAPI) -> None:
         )
         return _validation_error_response(exc)
 
+    @app.exception_handler(RecursionError)
+    async def _recursion_handler(
+        request: Request,
+        exc: RecursionError,  # noqa: ARG001
+    ):
+        # D-TOOL-RECUR / D-DEEP-JSON defense-in-depth — see
+        # :func:`_recursion_error_response`. Log the trace at WARNING
+        # so an operator can spot the new recursion site and add a
+        # structural fix (the iterative walk + the depth guards are
+        # the primary defenses; this handler should be unreachable in
+        # production). Path + method only — no request-body bytes are
+        # logged, mirroring the H-17 round-3 sanitization rule.
+        logger.warning(
+            "RecursionError on %s %s — caught at framework boundary, "
+            "returning sanitized 500 (Internal server error). Add a "
+            "structural fix (iterative walk / depth guard) for the new "
+            "recursion site.",
+            request.method,
+            request.url.path,
+            exc_info=True,
+        )
+        return _recursion_error_response()
+
     @app.exception_handler(Exception)
     async def _generic_handler(request: Request, exc: Exception):
         # Re-route the specific subclasses in case a TaskGroup /
@@ -293,6 +369,19 @@ def install_exception_handlers(app: FastAPI) -> None:
             return _validation_error_response(exc)
         if isinstance(exc, StarletteHTTPException):
             return _http_error_response(exc)
+        if isinstance(exc, RecursionError):
+            # ``isinstance(RecursionError) before isinstance(Exception)``:
+            # the dedicated handler above SHOULD catch this first, but
+            # FastAPI's fallback chain occasionally lands here (same
+            # rationale as the other ``isinstance`` rerouting above).
+            logger.warning(
+                "RecursionError on %s %s (via generic handler) — "
+                "returning sanitized 500 (Internal server error).",
+                request.method,
+                request.url.path,
+                exc_info=True,
+            )
+            return _recursion_error_response()
         logger.error(
             "Unhandled exception on %s %s: %s",
             request.method,
