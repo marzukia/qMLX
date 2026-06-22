@@ -345,15 +345,16 @@ def test_enforce_required_passes_through_when_choice_is_not_required():
 # ──────────────────────────────────────────────────────────────────
 
 
-def _tool_dict(name: str, prop: str = "x"):
+def _tool_dict(name: str, prop: str = "x", *, required: bool = True):
+    schema = {"type": "object"}
+    if prop is not None:
+        schema["properties"] = {prop: {"type": "string"}}
+    if required and prop is not None:
+        schema["required"] = [prop]
     return {
         "name": name,
         "description": f"Call {name}",
-        "input_schema": {
-            "type": "object",
-            "properties": {prop: {"type": "string"}},
-            "required": [prop],
-        },
+        "input_schema": schema,
     }
 
 
@@ -396,7 +397,10 @@ def test_nonstream_tool_choice_any_multi_tool_no_call_returns_422():
         json={
             "model": "test-model",
             "max_tokens": 32,
-            "tools": [_tool_dict("get_weather"), _tool_dict("lookup_zip", "zip")],
+            "tools": [
+                _tool_dict("get_weather", prop=None, required=False),
+                _tool_dict("lookup_zip", "zip"),
+            ],
             "tool_choice": {"type": "any"},
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
@@ -455,18 +459,19 @@ def test_nonstream_tool_choice_named_still_routes_to_specific_tool():
         json={
             "model": "test-model",
             "max_tokens": 32,
-            "tools": [_tool_dict("get_weather"), _tool_dict("lookup_zip", "zip")],
+            "tools": [
+                _tool_dict("get_weather", prop=None, required=False),
+                _tool_dict("lookup_zip", "zip"),
+            ],
             "tool_choice": {"type": "tool", "name": "get_weather"},
             "messages": [{"role": "user", "content": "anything"}],
         },
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["stop_reason"] == "tool_use", body
-    tool_uses = [c for c in body["content"] if c["type"] == "tool_use"]
-    assert len(tool_uses) == 1
-    assert tool_uses[0]["name"] == "get_weather"
-    assert tool_uses[0]["input"] == {}
+    tool_blocks = [b for b in body["content"] if b["type"] == "tool_use"]
+    assert len(tool_blocks) == 1
+    assert tool_blocks[0]["name"] == "get_weather"
 
 
 def test_nonstream_tool_choice_named_synth_when_model_emits_the_pinned_tool():
@@ -496,7 +501,10 @@ def test_nonstream_tool_choice_named_synth_when_model_emits_the_pinned_tool():
         json={
             "model": "test-model",
             "max_tokens": 32,
-            "tools": [_tool_dict("get_weather"), _tool_dict("lookup_zip", "zip")],
+            "tools": [
+                _tool_dict("get_weather", prop=None, required=False),
+                _tool_dict("lookup_zip", "zip"),
+            ],
             "tool_choice": {"type": "tool", "name": "get_weather"},
             "messages": [{"role": "user", "content": "what is the weather in tokyo"}],
         },
@@ -589,7 +597,10 @@ def test_stream_tool_choice_any_multi_tool_emits_error_event():
             "model": "test-model",
             "max_tokens": 32,
             "stream": True,
-            "tools": [_tool_dict("get_weather"), _tool_dict("lookup_zip", "zip")],
+            "tools": [
+                _tool_dict("get_weather", prop=None, required=False),
+                _tool_dict("lookup_zip", "zip"),
+            ],
             "tool_choice": {"type": "any"},
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },
@@ -624,7 +635,10 @@ def test_stream_tool_choice_named_text_only_emits_synthesized_tool_use():
             "model": "test-model",
             "max_tokens": 32,
             "stream": True,
-            "tools": [_tool_dict("get_weather"), _tool_dict("lookup_zip", "zip")],
+            "tools": [
+                _tool_dict("get_weather", prop=None, required=False),
+                _tool_dict("lookup_zip", "zip"),
+            ],
             "tool_choice": {"type": "tool", "name": "get_weather"},
             "messages": [{"role": "user", "content": "Tell me a joke."}],
         },

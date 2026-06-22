@@ -118,10 +118,36 @@ class MLLMRequest:
     output_text: str = ""
     output_tokens: list[int] = field(default_factory=list)
     finish_reason: str | None = None
+    stop_tail: str = ""
+    stop_text: str = ""
+    stop_text_len: int = 0
 
     # Token counts
     num_prompt_tokens: int = 0
     num_output_tokens: int = 0
+
+
+def _find_stop_match_in_new_window(
+    text: str, new_text_start_len: int, stop_params: list[str]
+) -> tuple[int, str] | None:
+    """Find stops that overlap the newly searchable suffix of ``text``."""
+    if not stop_params:
+        return None
+    max_stop_len = max(len(s) for s in stop_params)
+    keep = max(0, max_stop_len - 1)
+    window_base = max(0, new_text_start_len - keep)
+    stop_window = text[window_base:]
+    match: tuple[int, str] | None = None
+    for stop_str in stop_params:
+        if not stop_str:
+            continue
+        search_from = max(0, new_text_start_len - window_base - len(stop_str) + 1)
+        local_idx = stop_window.find(stop_str, search_from)
+        if local_idx != -1:
+            global_idx = window_base + local_idx
+            if match is None or global_idx < match[0]:
+                match = (global_idx, stop_str)
+    return match
 
 
 @dataclass
@@ -693,25 +719,231 @@ class MLLMScheduler:
                 if resp_pt > 0:
                     request.num_prompt_tokens = resp_pt
 
-            # Append token to request
-            request.output_tokens.append(response.token)
+            token_is_control_stop_token = bool(
+                getattr(response, "token_is_stop_token", False)
+            )
+
+            # Append generated content tokens to request state. Backend
+            # EOS/control stop ids are scheduler control signals, not user
+            # output, so they must not appear in output_token_ids either.
+            if not token_is_control_stop_token:
+                request.output_tokens.append(response.token)
             request.num_output_tokens = len(request.output_tokens)
 
+            finish_reason = response.finish_reason
+
             # Decode the new token using streaming detokenizer (UTF-8 safe).
-            # Skip stop tokens — they are not content.
-            if response.finish_reason == "stop":
+            # Backend EOS/control stop tokens are not decoded. Backend
+            # responses that finish with normal text still detokenize so
+            # the rolling matcher can keep visible text before a user stop.
+            had_detok = request_id in self._detokenizer_pool
+            if not had_detok:
+                if hasattr(tokenizer, "detokenizer"):
+                    detok = tokenizer.detokenizer
+                else:
+                    detok = NaiveStreamingDetokenizer(tokenizer)
+                detok.reset()
+                self._detokenizer_pool[request_id] = detok
+            detok = self._detokenizer_pool[request_id]
+            stop_params = [s for s in request.stop if s] if request.stop else []
+            if token_is_control_stop_token:
                 new_text = ""
             else:
-                if request_id not in self._detokenizer_pool:
-                    if hasattr(tokenizer, "detokenizer"):
-                        detok = tokenizer.detokenizer
-                    else:
-                        detok = NaiveStreamingDetokenizer(tokenizer)
-                    detok.reset()
-                    self._detokenizer_pool[request_id] = detok
-                detok = self._detokenizer_pool[request_id]
                 detok.add_token(response.token)
                 new_text = detok.last_segment
+            detok_finalized = False
+            if finish_reason is not None and (
+                stop_params or token_is_control_stop_token
+            ):
+                baseline_prefix = (
+                    request.stop_text if request.stop_text else request.output_text
+                )
+                baseline_text = baseline_prefix + (
+                    new_text if isinstance(new_text, str) else ""
+                )
+                detok.finalize()
+                detok_finalized = True
+                finalized_text = detok.text
+                if isinstance(finalized_text, str) and finalized_text.startswith(
+                    baseline_text
+                ):
+                    new_text = finalized_text[len(baseline_text) :]
+                    if baseline_text:
+                        new_text = baseline_text[len(baseline_prefix) :] + new_text
+            if not isinstance(new_text, str):
+                # Unit-test mocks may not implement the streaming
+                # detokenizer contract. Production detokenizers
+                # return str; this fallback keeps legacy tests and
+                # defensive adapters on the same stop path.
+                new_text = (
+                    ""
+                    if token_is_control_stop_token
+                    else tokenizer.decode([response.token])
+                )
+
+            output_new_text = new_text
+            output_output_text = ""
+            output_finished = False
+            output_finish_reason: str | None = None
+            output_matched_stop: str | None = None
+
+            stop_trimmed = False
+            if (finish_reason != "stop" or new_text) and stop_params:
+                if (
+                    not had_detok
+                    and request.stop_text_len == 0
+                    and not request.stop_tail
+                    and len(request.output_tokens) > 1
+                ):
+                    # Direct scheduler tests and defensive adapters can
+                    # enter here with historical output_tokens but no
+                    # streaming detokenizer state. Seed from a one-time
+                    # full decode only for that no-detok legacy shape.
+                    # If a detokenizer already exists, empty new_text means
+                    # it is buffering partial bytes; offsets must wait for
+                    # the detokenizer to emit text.
+                    request.stop_text = tokenizer.decode(request.output_tokens[:-1])
+                    request.stop_text_len = len(request.stop_text)
+                    max_stop_len = max(len(s) for s in stop_params)
+                    keep = max(0, max_stop_len - 1)
+                    request.stop_tail = request.stop_text[-keep:] if keep else ""
+                    request.output_text = request.stop_text
+                    output_output_text = request.output_text
+                prev_text_len = request.stop_text_len
+                if stop_params and new_text:
+                    max_stop_len = max(len(s) for s in stop_params)
+                    keep = max(0, max_stop_len - 1)
+                    previous_seen_len = len(request.stop_text)
+                    streamed_so_far = request.stop_text + new_text
+                    match = _find_stop_match_in_new_window(
+                        streamed_so_far, previous_seen_len, stop_params
+                    )
+                    if match is not None:
+                        idx, stop_str = match
+                        finish_reason = "stop"
+                        output_finish_reason = finish_reason
+                        # H-03: pin WHICH user-supplied stop fired so
+                        # the Anthropic adapter can surface
+                        # ``stop_reason="stop_sequence"`` +
+                        # ``stop_sequence: <str>`` per the public spec.
+                        # Mirrors the text-scheduler companion change so
+                        # MLLM-backed ``/v1/messages`` traffic gets the
+                        # same surface as the text path.
+                        output_matched_stop = stop_str
+                        # Emit only the valid prefix before the stop marker
+                        # in new_text so streaming clients don't lose content.
+                        visible_text = streamed_so_far[:idx]
+                        output_new_text = visible_text[prev_text_len:]
+                        request.output_text = visible_text
+                        output_output_text = visible_text
+                        request.stop_text = streamed_so_far
+                        request.stop_text_len = len(streamed_so_far)
+                        request.stop_tail = ""
+                        stop_trimmed = True
+                    else:
+                        request.stop_text = streamed_so_far
+                        if finish_reason is not None:
+                            safe_upto = len(request.stop_text)
+                        else:
+                            safe_upto = max(0, len(request.stop_text) - keep)
+                        output_new_text = request.stop_text[
+                            request.stop_text_len : safe_upto
+                        ]
+                        request.stop_text_len = safe_upto
+                        request.stop_tail = (
+                            (
+                                ""
+                                if finish_reason is not None
+                                else request.stop_text[-keep:]
+                            )
+                            if keep
+                            else ""
+                        )
+                        request.output_text = request.stop_text[:safe_upto]
+                        output_output_text = request.output_text
+                elif stop_params:
+                    # ``new_text`` may be empty while the detokenizer is
+                    # holding an incomplete byte sequence. Preserve the
+                    # existing tail and wait for a real text segment.
+                    pass
+            else:
+                if finish_reason != "stop" or new_text:
+                    request.output_text += new_text
+                    output_output_text = request.output_text
+                else:
+                    output_new_text = ""
+                    output_output_text = request.output_text
+
+            # Check if finished
+            if finish_reason is not None:
+                if (
+                    not stop_trimmed
+                    and stop_params
+                    and request.stop_text
+                    and request.stop_text_len < len(request.stop_text)
+                ):
+                    match = _find_stop_match_in_new_window(
+                        request.stop_text, request.stop_text_len, stop_params
+                    )
+                    if match is not None:
+                        idx, stop_str = match
+                        finish_reason = "stop"
+                        output_finish_reason = finish_reason
+                        visible_text = request.stop_text[:idx]
+                        output_new_text = visible_text[
+                            request.stop_text_len : len(visible_text)
+                        ]
+                        request.output_text = visible_text
+                        output_output_text = visible_text
+                        request.stop_text_len = len(request.stop_text)
+                        request.stop_tail = ""
+                        output_matched_stop = stop_str
+                        stop_trimmed = True
+                if (
+                    not stop_trimmed
+                    and stop_params
+                    and request.stop_text
+                    and request.stop_text_len < len(request.stop_text)
+                ):
+                    held_text = request.stop_text[request.stop_text_len :]
+                    request.stop_text_len = len(request.stop_text)
+                    output_new_text += held_text
+                    request.output_text += held_text
+                    output_output_text = request.output_text
+                if finish_reason == "stop":
+                    request.status = RequestStatus.FINISHED_STOPPED
+                elif finish_reason == "length":
+                    request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+
+                output_finished = True
+                output_finish_reason = finish_reason
+                finished_ids.add(request_id)
+
+                # Use trimmed output if set by stop-string check, else
+                # finalize streaming detokenizer for full output.
+                # Use explicit flag instead of string truthiness — empty string
+                # is a valid trimmed result (stop at position 0).
+                if stop_trimmed or finish_reason == "stop":
+                    output_output_text = request.output_text
+                else:
+                    detok = self._detokenizer_pool.get(request_id)
+                    if detok is not None:
+                        if not detok_finalized:
+                            detok.finalize()
+                        output_output_text = detok.text
+                    else:
+                        output_output_text = tokenizer.decode(request.output_tokens)
+                    request.output_text = output_output_text
+                request.finish_reason = finish_reason
+                self._detokenizer_pool.pop(request_id, None)
+
+                self.total_completion_tokens += request.num_output_tokens
+                self.num_requests_processed += 1
+
+                logger.debug(
+                    f"Request {request_id} finished: {finish_reason}, "
+                    f"{request.num_output_tokens} tokens"
+                )
 
             # output_token_ids is a live reference (not a defensive copy):
             # consumers read it synchronously; the per-decode list() was O(n).
@@ -725,93 +957,23 @@ class MLLMScheduler:
             # text path's ``RequestOutput.logprobs`` field exactly so the
             # downstream ``_extract_streaming_token_logprobs`` extractor
             # works unmodified for both paths.
-            output = RequestOutput(
-                request_id=request_id,
-                new_token_ids=[response.token],
-                new_text=new_text,
-                output_token_ids=request.output_tokens,
-                prompt_tokens=request.num_prompt_tokens,
-                completion_tokens=request.num_output_tokens,
-                logprobs=getattr(response, "logprobs", None),
-            )
-
-            # Check text-based stop sequences against the full decoded
-            # output. ``tokenizer.decode(request.output_tokens)`` re-
-            # decodes the entire token list each step (O(T) per step) —
-            # equivalent to the text scheduler's IncrementalDecoder-
-            # backed surface, but built up from the cumulative token
-            # list. The MLLM streaming detokenizer
-            # (``NaiveStreamingDetokenizer``) only carries the
-            # current-segment slice in its ``.text`` property, so it
-            # is NOT equivalent to a fresh full decode — the stop
-            # check must use the full decode.
-            finish_reason = response.finish_reason
-            stop_trimmed = False
-            if finish_reason is None and request.stop:
-                decoded_so_far = tokenizer.decode(request.output_tokens)
-                for stop_str in request.stop:
-                    if stop_str and stop_str in decoded_so_far:
-                        finish_reason = "stop"
-                        # H-03: pin WHICH user-supplied stop fired so
-                        # the Anthropic adapter can surface
-                        # ``stop_reason="stop_sequence"`` +
-                        # ``stop_sequence: <str>`` per the public spec.
-                        # Mirrors the text-scheduler companion change so
-                        # MLLM-backed ``/v1/messages`` traffic gets the
-                        # same surface as the text path.
-                        output.matched_stop = stop_str
-                        # Trim output at stop string
-                        idx = decoded_so_far.index(stop_str)
-                        request.output_text = decoded_so_far[:idx]
-                        stop_trimmed = True
-                        # Emit only the valid prefix before the stop marker
-                        # in new_text so streaming clients don't lose content.
-                        # Compute what was already streamed vs the trimmed total.
-                        prev_text = tokenizer.decode(request.output_tokens[:-1])
-                        trimmed_total = decoded_so_far[:idx]
-                        if len(trimmed_total) > len(prev_text):
-                            output.new_text = trimmed_total[len(prev_text) :]
-                        else:
-                            output.new_text = ""
-                        break
-
-            # Check if finished
-            if finish_reason is not None:
-                if finish_reason == "stop":
-                    request.status = RequestStatus.FINISHED_STOPPED
-                elif finish_reason == "length":
-                    request.status = RequestStatus.FINISHED_LENGTH_CAPPED
-
-                output.finished = True
-                output.finish_reason = finish_reason
-                finished_ids.add(request_id)
-
-                # Use trimmed output if set by stop-string check, else
-                # finalize streaming detokenizer for full output.
-                # Use explicit flag instead of string truthiness — empty string
-                # is a valid trimmed result (stop at position 0).
-                if stop_trimmed:
-                    output.output_text = request.output_text
-                else:
-                    detok = self._detokenizer_pool.get(request_id)
-                    if detok is not None:
-                        detok.finalize()
-                        output.output_text = detok.text
-                    else:
-                        output.output_text = tokenizer.decode(request.output_tokens)
-                    request.output_text = output.output_text
-                request.finish_reason = finish_reason
-                self._detokenizer_pool.pop(request_id, None)
-
-                self.total_completion_tokens += request.num_output_tokens
-                self.num_requests_processed += 1
-
-                logger.debug(
-                    f"Request {request_id} finished: {finish_reason}, "
-                    f"{request.num_output_tokens} tokens"
+            outputs.append(
+                RequestOutput(
+                    request_id=request_id,
+                    new_token_ids=[]
+                    if token_is_control_stop_token
+                    else [response.token],
+                    new_text=output_new_text,
+                    output_token_ids=request.output_tokens,
+                    output_text=output_output_text,
+                    finished=output_finished,
+                    finish_reason=output_finish_reason,
+                    prompt_tokens=request.num_prompt_tokens,
+                    completion_tokens=request.num_output_tokens,
+                    logprobs=getattr(response, "logprobs", None),
+                    matched_stop=output_matched_stop,
                 )
-
-            outputs.append(output)
+            )
 
         return outputs, finished_ids
 

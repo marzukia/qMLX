@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Text completion endpoints — /v1/completions."""
 
+import inspect
 import json
 import logging
 import time
@@ -41,6 +42,31 @@ from ..service.helpers import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _engine_supports_completion_logprobs(engine) -> bool:
+    structural_support = getattr(engine, "tokenizer", None) is not None and callable(
+        getattr(engine, "stream_generate", None)
+    )
+    capability = getattr(engine, "supports_completion_logprobs", None)
+    if capability is not None:
+        if callable(capability):
+            try:
+                value = capability()
+            except Exception as exc:
+                logger.debug(
+                    "supports_completion_logprobs capability probe failed: %s",
+                    exc,
+                )
+                return False
+            if inspect.isawaitable(value):
+                close = getattr(value, "close", None)
+                if callable(close):
+                    close()
+                return False
+            return value if isinstance(value, bool) else False
+        return capability if isinstance(capability, bool) else False
+    return structural_support
 
 
 @router.post(
@@ -181,10 +207,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # disconnects after the first chunk instead of a controlled
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
-        _stream_generate = getattr(engine, "stream_generate", None)
-        if _want_logprobs and (
-            not callable(_stream_generate) or getattr(engine, "tokenizer", None) is None
-        ):
+        if _want_logprobs and not _engine_supports_completion_logprobs(engine):
             raise HTTPException(
                 status_code=501,
                 detail=(

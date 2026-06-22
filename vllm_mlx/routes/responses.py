@@ -19,7 +19,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -54,11 +54,13 @@ from ..api.utils import (
     StreamingThinkRouter,
     StreamingToolCallFilter,
     clean_output_text,
+    decode_inline_tool_call_arguments,
     extract_json_from_response,
     extract_multimodal_content,
     sanitize_output,
     strip_special_tokens,
     strip_thinking_tags,
+    validate_content_blocks_for_capabilities,
 )
 from ..config import get_config
 from ..engine import BaseEngine
@@ -346,7 +348,10 @@ async def create_response(request: Request):
         # global ``_pydantic_validation_handler`` (H-17) which routes
         # it through the sanitized 400 envelope — no more ``str(e)``
         # echo that leaked the model class name and pydantic version.
-        openai_request = responses_to_openai(responses_request)
+        try:
+            openai_request = responses_to_openai(responses_request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         # H-06: ``text.format`` with strict json_schema on /v1/responses
         # was suggestion-only — the route went straight to
@@ -476,26 +481,33 @@ async def create_response(request: Request):
                     },
                 )
 
+        try:
+            validate_content_blocks_for_capabilities(
+                openai_request.messages,
+                model_name=get_config().model_name or responses_request.model,
+                allow_image=getattr(engine, "is_mllm", False),
+                allow_video=getattr(engine, "is_mllm", False),
+                allow_audio=False,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         # Context-length pre-check — same DoS gate the chat/completions/
         # anthropic routes enforce. Runs BEFORE the stream branch so
         # streaming clients can't bypass by setting ``stream: true``.
         try:
-            _ctx_messages, _, _ = extract_multimodal_content(
-                openai_request.messages,
-                preserve_native_format=engine.preserve_native_tool_format,
-            )
-        except Exception:
-            _ctx_messages = None
-        if _ctx_messages is not None:
-            enforce_context_length_for_messages(
-                engine,
-                _ctx_messages,
-                tools=openai_request.tools,
-                max_tokens=_resolve_max_tokens(
-                    openai_request.max_tokens,
-                    _resolve_enable_thinking(openai_request),
-                ),
-            )
+            _ctx_messages = _prepare_messages_for_context_check(engine, openai_request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        enforce_context_length_for_messages(
+            engine,
+            _ctx_messages,
+            tools=openai_request.tools,
+            max_tokens=_resolve_max_tokens(
+                openai_request.max_tokens,
+                _resolve_enable_thinking(openai_request),
+            ),
+        )
 
         if responses_request.stream:
             _admission_committed = True
@@ -534,6 +546,72 @@ async def create_response(request: Request):
 # ---------------------------------------------------------------------------
 
 
+def _prepare_messages_for_engine(
+    engine: BaseEngine, openai_request: ChatCompletionRequest
+) -> list[dict]:
+    if getattr(engine, "is_mllm", False):
+        messages = []
+        for msg in openai_request.messages:
+            messages.append(_message_to_engine_dict(msg))
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") in {
+                        "input_text",
+                        "output_text",
+                        "input_image",
+                        "input_audio",
+                    }:
+                        raise ValueError(
+                            "Responses content blocks must be normalized before "
+                            "engine preparation"
+                        )
+        if getattr(engine, "preserve_native_tool_format", False):
+            decode_inline_tool_call_arguments(messages)
+        return messages
+
+    messages, _images, _videos = extract_multimodal_content(
+        openai_request.messages,
+        preserve_native_format=getattr(engine, "preserve_native_tool_format", False),
+    )
+    return messages
+
+
+def _prepare_messages_for_context_check(
+    engine: BaseEngine, openai_request: ChatCompletionRequest
+) -> list[dict]:
+    if getattr(engine, "is_mllm", False):
+        messages, _images, _videos = extract_multimodal_content(
+            openai_request.messages,
+            preserve_native_format=False,
+        )
+        return messages
+    return _prepare_messages_for_engine(engine, openai_request)
+
+
+def _message_to_engine_dict(msg) -> dict:
+    if hasattr(msg, "model_dump"):
+        return msg.model_dump(exclude_none=True)
+    if isinstance(msg, Mapping):
+        raw = msg
+    else:
+        raw = {
+            key: getattr(msg, key, None)
+            for key in (
+                "role",
+                "content",
+                "tool_calls",
+                "tool_call_id",
+                "name",
+            )
+            if hasattr(msg, key)
+        }
+    return {k: v for k, v in raw.items() if v is not None}
+
+
 async def _non_stream(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
@@ -543,10 +621,7 @@ async def _non_stream(
     cfg = get_config()
     created_at = int(time.time())
 
-    messages, _images, _videos = extract_multimodal_content(
-        openai_request.messages,
-        preserve_native_format=engine.preserve_native_tool_format,
-    )
+    messages = _prepare_messages_for_engine(engine, openai_request)
 
     # r5-B C-10 / C-11: tool-coupled UI-TARS sysprompt injection. PR
     # #817 wired ``computer_20251022`` → ``computer`` tool translation
@@ -771,6 +846,10 @@ async def _non_stream(
             "Failed to process image" in err_msg
             or "Failed to process video" in err_msg
             or "exceeds the per-batch cap" in err_msg
+            or "content block" in err_msg
+            or "input_text." in err_msg
+            or "output_text." in err_msg
+            or "input_image." in err_msg
         ):
             raise HTTPException(status_code=400, detail=err_msg)
         raise
@@ -1198,10 +1277,7 @@ async def _stream_responses(
         },
     )
     try:
-        messages, _images, _videos = extract_multimodal_content(
-            openai_request.messages,
-            preserve_native_format=engine.preserve_native_tool_format,
-        )
+        messages = _prepare_messages_for_engine(engine, openai_request)
 
         # r5-B C-10 / C-11: tool-coupled UI-TARS sysprompt injection on
         # the streaming responses lane. Same gate as the non-stream
@@ -1239,6 +1315,7 @@ async def _stream_responses(
 
         accumulated_text = ""
         accumulated_raw = ""
+        accumulated_raw_parts: list[str] = []
         # D-STOP-THINK (PR #799): track the most-recently-surfaced
         # ``matched_stop`` so the post-loop finalize_streaming call
         # can distinguish a casual non-thinking answer (None — natural
@@ -1514,9 +1591,6 @@ async def _stream_responses(
             # route avoids this by parsing `output.text` (the full
             # non-streamed text) directly; the streaming path needs an
             # explicit raw accumulator.
-            if delta_text:
-                accumulated_raw += delta_text
-
             # D-STOP-THINK matched_stop accumulator (PR #799).
             _chunk_matched_stop = getattr(output, "matched_stop", None)
             if _chunk_matched_stop:
@@ -1554,6 +1628,8 @@ async def _stream_responses(
             # ``response.reasoning_text.delta`` we omit in v1).
             output_channel = getattr(output, "channel", None)
             if output_channel is not None:
+                if output_channel in ("content", "tool_call", "reasoning"):
+                    accumulated_raw_parts.append(delta_text)
                 if output_channel in ("content", "tool_call"):
                     content = strip_special_tokens(delta_text)
                     if content:
@@ -1579,18 +1655,15 @@ async def _stream_responses(
                 # ``reasoning`` and unknown channels are dropped for v1.
                 continue
 
+            accumulated_raw_parts.append(delta_text)
+
             if reasoning_parser:
-                # ``accumulated_raw`` already had the ORIGINAL
-                # ``delta_text`` appended above. Pass current/previous
-                # to the parser's streaming extractor. Note: ``previous_raw``
-                # here is computed from the buffer minus the ORIGINAL
-                # delta (round-9 fix — keep the shared buffer clean of
-                # synthetic markers).
-                previous_raw = (
-                    accumulated_raw[: -len(delta_text)]
-                    if delta_text
-                    else accumulated_raw
-                )
+                # Keep ``accumulated_raw`` to real model output only.
+                # ``previous_raw`` is the already-accepted prefix;
+                # ``parser_current`` may locally include a synthetic
+                # close marker for cap handling, but that marker never
+                # enters the shared raw buffer.
+                previous_raw = accumulated_raw
                 # Text-parser path: once the cap fires, splice ``</think>``
                 # in front of the next chunk so the parser flips to
                 # content. Idempotent — only fires once per request.
@@ -1622,7 +1695,13 @@ async def _stream_responses(
                     injected_this_chunk = True
                 else:
                     parser_delta_text = delta_text
-                    parser_current = accumulated_raw
+                    parser_current = previous_raw + delta_text
+                # Compatibility path: reasoning parsers still consume
+                # the legacy ``previous + delta == current`` API. This
+                # cumulative concat remains O(n^2) for active
+                # reasoning_parser streams; the list buffer above only
+                # fixes the no-reasoning hot path and final parse.
+                accumulated_raw = previous_raw + delta_text
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, parser_current, parser_delta_text
                 )
@@ -1768,6 +1847,9 @@ async def _stream_responses(
         # trailing bytes are promoted to ``response.output_text.delta``.
         # Idempotent via ``_reasoning_close_injected``.
         terminal_injection_attempted = False
+        if accumulated_raw_parts and not accumulated_raw:
+            accumulated_raw = "".join(accumulated_raw_parts)
+
         if (
             reasoning_parser is not None
             and _reasoning_cap_hit

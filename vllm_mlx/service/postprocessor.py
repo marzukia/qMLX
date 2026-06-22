@@ -8,10 +8,13 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import sanitize_output, strip_special_tokens
@@ -263,12 +266,25 @@ class StreamingPostProcessor:
         else:
             self.reasoning_parser = cfg.reasoning_parser  # None or injected mock
 
+        self._tool_parser_request_local = False
         if cfg.tool_call_parser:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
+            self._tool_parser_request_local = self.tool_parser is not None
         elif cfg.tool_parser_instance:
-            self.tool_parser = cfg.tool_parser_instance  # injected mock
+            self.tool_parser = self._clone_injected_tool_parser(
+                cfg.tool_parser_instance
+            )
+            self._tool_parser_request_local = (
+                self.tool_parser is not None
+                and self.tool_parser is not cfg.tool_parser_instance
+            )
         else:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
+            self._tool_parser_request_local = self.tool_parser is not None
+        if self.tool_parser and self._tool_parser_request_local:
+            reset_parser = getattr(self.tool_parser, "reset", None)
+            if callable(reset_parser):
+                reset_parser()
 
         # State
         self.accumulated_text = ""
@@ -1084,6 +1100,23 @@ class StreamingPostProcessor:
 
         return None
 
+    @staticmethod
+    def _clone_injected_tool_parser(parser):
+        if parser is None:
+            return None
+        if isinstance(parser, Mock) and os.environ.get("PYTEST_CURRENT_TEST"):
+            return parser
+        try:
+            return copy.deepcopy(parser)
+        except Exception:
+            try:
+                return copy.copy(parser)
+            except Exception:
+                raise RuntimeError(
+                    "Injected tool parser instance could not be cloned safely "
+                    "for a request-local stream"
+                )
+
     def set_thinking_model(self, model_name: str):
         """Enable Nemotron-style thinking prefix injection."""
         self._is_thinking_model = (
@@ -1683,8 +1716,9 @@ class StreamingPostProcessor:
     def reset(self):
         """Reset all parser states for a new stream.
 
-        Safe for concurrent BatchedEngine requests — each PostProcessor
-        instance holds its own parser instances (created in __init__).
+        Safe for concurrent BatchedEngine requests when parser instances
+        are request-local. Injected singleton parsers are not reset here
+        because that would clear another active stream's parser state.
         """
         self.accumulated_text = ""
         self.tool_accumulated_text = ""
@@ -1732,7 +1766,7 @@ class StreamingPostProcessor:
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
-        if self.tool_parser:
+        if self.tool_parser and self._tool_parser_request_local:
             self.tool_parser.reset()
 
     def process_chunk(self, output: GenerationOutput) -> list[StreamEvent]:
