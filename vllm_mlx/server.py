@@ -408,6 +408,49 @@ async def lifespan(app: FastAPI):
     if mcp_config:
         await init_mcp(mcp_config)
 
+    # F-K-CAPABILITIES-OMIT-AUDIO: run a deep audio-lane dry-run so
+    # the per-lane status surfaces on ``/v1/models`` capability tags
+    # BEFORE the first user request lands on a degraded backend. The
+    # existing shallow probe only checks ``mlx_audio`` importability;
+    # a model that loads but can't generate output (F-K-WHISPER-500
+    # shape) still passed the shallow probe and 500'd at first use.
+    #
+    # Off by default to keep cold-start fast for text-only deploys —
+    # turn on via ``RAPID_MLX_AUDIO_DEEP_PROBE=1`` when running an
+    # audio-serving build. The dry-run is non-fatal: any failure is
+    # caught inside ``deep_probe_audio_lane`` and recorded as
+    # ``degraded`` / ``missing``; the lifespan completes regardless
+    # so a torn audio backend doesn't block server boot.
+    #
+    # Codex r2 NIT #3: call ``deep_probe_audio_lane`` unconditionally
+    # (even when ``mlx_audio`` is missing) so ``/v1/models`` carries
+    # ``audio_lanes={"stt":"missing","tts":"missing"}`` on bare
+    # installs. The prior branch short-circuited on ``find_spec``
+    # and ``audio_lanes`` came back ``null``, hiding the "no audio
+    # extra installed" state from operators using the field for
+    # health. ``deep_probe_audio_lane`` already runs the shallow
+    # presence check internally and records the missing-extra
+    # status via the same code path the route's 503 envelope uses.
+    # Codex r3 NIT #2: lowercase the env value before comparing so
+    # ``RAPID_MLX_AUDIO_DEEP_PROBE=False`` (capital F) and ``NO``
+    # (uppercase) are treated as falsy, not truthy. Mirrors the
+    # convention used by every other ``RAPID_MLX_*`` boolean knob.
+    _audio_deep_probe = os.environ.get("RAPID_MLX_AUDIO_DEEP_PROBE", "").strip().lower()
+    if _audio_deep_probe and _audio_deep_probe not in ("0", "false", "no"):
+        try:
+            from .audio.probe import deep_probe_audio_lane as _deep_probe
+
+            logger.info("Running deep audio probe (STT + TTS dry-run)...")
+            _stt_status = _deep_probe("stt")
+            _tts_status = _deep_probe("tts")
+            logger.info(
+                "Audio lane status — stt=%s, tts=%s",
+                _stt_status.get("status"),
+                _tts_status.get("status"),
+            )
+        except Exception as _audio_err:  # noqa: BLE001
+            logger.warning("Deep audio probe failed (non-fatal): %s", _audio_err)
+
     # All slow startup work done. Flip the readiness flag so /health/ready
     # starts returning 200. Anything that races a request before this point
     # would otherwise hit a not-yet-warmed engine.
