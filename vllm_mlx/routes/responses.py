@@ -34,7 +34,13 @@ from ..api.response_format_metrics import (
     incr_strict_request,
     incr_strict_violation,
 )
-from ..api.responses_adapter import openai_to_responses, responses_to_openai
+from ..api.responses_adapter import (
+    openai_to_responses,
+    request_uses_computer_use,
+    responses_to_openai,
+    validate_responses_tool_choice,
+    validate_responses_tool_types,
+)
 from ..api.responses_models import ResponsesRequest
 from ..api.tool_calling import (
     check_schema_validity,
@@ -106,6 +112,130 @@ def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) 
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
 
+def _enforce_responses_tool_choice(
+    tool_calls: list | None,
+    responses_request: ResponsesRequest,
+    openai_request: ChatCompletionRequest,
+) -> list | None:
+    """Mirror of the chat-route post-parse forced-choice synthesis.
+
+    The chat route synthesises a stub tool_call when the model produces
+    text under ``tool_choice="required"`` (single-tool case) or under
+    the named-function form (target unambiguous). The /v1/responses
+    lane skipped this step, so Yuki F6 saw zero ``function_call`` items
+    even though the contract guarantees one.
+
+    Synthesis rules (parity with chat.py ~L1880):
+      * ``"required"`` + exactly one tool → synthesise a call to it
+      * ``"required"`` + multiple tools + no model call → 422 with the
+        same diagnostic chat.py uses (codex r1 BLOCKING #1 on PR #817).
+        Silently degrading to ``auto`` would let a multi-tool ``required``
+        request return zero tool_calls and break the contract this PR
+        claims to restore.
+      * ``{"type":"function","name":X}`` + X in submitted tools →
+        synthesise a call to X
+      * ``auto`` / ``none`` / unrecognised shapes → pass through.
+    """
+    from ..routes.chat import _synthesize_forced_tool_call
+
+    tc = responses_request.tool_choice
+    if tc is None or not openai_request.tools:
+        return tool_calls
+    # Codex r3 BLOCKING #1 (PR #817): for the named-function form,
+    # validate that EVERY model-produced tool_call targets the pinned
+    # name. A model that called a different tool (``ping`` when
+    # ``pong`` was pinned) violates the contract just as much as a
+    # text-only response — raise 422 with the same diagnostic
+    # chat.py uses (~L1969-L1978).
+    if tool_calls and isinstance(tc, dict) and tc.get("type") == "function":
+        _named_target = tc.get("name") or (tc.get("function") or {}).get("name")
+        if _named_target:
+            mismatched = [
+                tc_obj
+                for tc_obj in tool_calls
+                if (tc_obj.function.name or "") != _named_target
+            ]
+            if mismatched:
+                _names = [m.function.name for m in mismatched]
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": {
+                            "message": (
+                                f"tool_choice pinned function "
+                                f"{_named_target!r} but the model emitted "
+                                f"calls to {_names}. Local inference "
+                                "cannot decoder-enforce a specific "
+                                "function; retry with a more direct "
+                                "user message."
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "tool_choice_named_mismatch",
+                            "param": "tool_choice.name",
+                        }
+                    },
+                )
+    # Only coerce when the model surfaced NO calls — a real model
+    # response that called the right tool already satisfies the
+    # contract.
+    if tool_calls:
+        return tool_calls
+    if tc == "required":
+        if len(openai_request.tools) == 1:
+            name = openai_request.tools[0].function.get("name")
+            if name:
+                logger.info(
+                    "tool_choice='required' on /v1/responses produced no "
+                    "tool_calls; synthesising a call to the sole "
+                    "available tool %r to honour the OpenAI tool_call-"
+                    "guaranteed contract (Yuki F6).",
+                    name,
+                )
+                return [_synthesize_forced_tool_call(name)]
+        # Multi-tool ``required`` with no model call — local inference
+        # cannot guess which of N tools the user intended. Chat.py
+        # raises 422 in the same situation (~L1891-1902); mirror that
+        # so the Responses surface does not silently violate the
+        # tool_call-guaranteed contract.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "message": (
+                        'tool_choice="required" but the model returned a '
+                        "text response with no tool_calls. Local "
+                        "inference has no decoder-level constraint; the "
+                        "system-prompt enforcement was insufficient for "
+                        "this prompt. Retry with a more concrete user "
+                        "message or use tool_choice="
+                        '{"type":"function","name":...} to pin a '
+                        "specific tool."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "tool_choice_required_unfulfilled",
+                    "param": "tool_choice",
+                }
+            },
+        )
+    if isinstance(tc, dict) and tc.get("type") == "function":
+        target = tc.get("name") or (tc.get("function") or {}).get("name")
+        if not target:
+            return tool_calls
+        submitted = {
+            t.function.get("name") for t in openai_request.tools if t.type == "function"
+        }
+        if target in submitted:
+            logger.info(
+                "tool_choice pinned function %r on /v1/responses produced "
+                "no tool_calls; synthesising a call with empty arguments "
+                "to honour the OpenAI tool_call-guaranteed contract "
+                "(Yuki F6).",
+                target,
+            )
+            return [_synthesize_forced_tool_call(target)]
+    return tool_calls
+
+
 @router.post(
     "/v1/responses",
     dependencies=[
@@ -144,6 +274,22 @@ async def create_response(request: Request):
                 "full conversation history in the `input` field each turn."
             ),
         )
+
+    # Yuki F13 (0.8.5 dogfood): pre-engine tool-type allowlist. Anything
+    # outside ``SUPPORTED_RESPONSES_TOOL_TYPES`` 400s with a clear
+    # envelope BEFORE we admit a scheduler slot — pre-0.8.5 the route
+    # silently accepted ``web_search`` / ``computer_20251022`` /
+    # ``file_search`` and the client thought the tool was being invoked.
+    validate_responses_tool_types(responses_request.tools)
+    # Yuki F6 (0.8.5 dogfood): mirror the chat-completions tool_choice
+    # gate so ``required`` / named-function tool_choice REJECTS shapes
+    # that cannot be honoured (e.g. ``required`` with empty tools, named
+    # function not in tools). The post-parse synthesis path below
+    # COERCES a tool_call when the model didn't emit one — without it,
+    # the named-function form silently degraded to ``auto``.
+    validate_responses_tool_choice(
+        responses_request.tool_choice, responses_request.tools
+    )
 
     # Reuse the Claude-Code / Codex bypass from #557: ``claude-*``,
     # ``gpt-*`` model names pass through to the loaded engine instead of
@@ -632,6 +778,17 @@ async def _non_stream(
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(
         output.text, openai_request, structured_tool_calls=engine_tool_calls
     )
+
+    # Yuki F6 (0.8.5 dogfood): mirror the chat-route ``tool_choice``
+    # coercion. The local engine has no decoder-level FSM constraint, so
+    # ``required`` / named-function ``tool_choice`` rely on post-parse
+    # synthesis to honour the OpenAI ``tool_call guaranteed`` contract.
+    # Without this, both shapes silently degraded to ``auto`` and Yuki
+    # F6 saw zero tool_calls on the wire.
+    tool_calls = _enforce_responses_tool_choice(
+        tool_calls, responses_request, openai_request
+    )
+
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
         raw_text=output.raw_text or output.text,
         cleaned_text=cleaned_text,
@@ -716,6 +873,105 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+async def _emit_function_call_item(tc, output_index: int) -> AsyncIterator[str]:
+    """Stream the SSE event triplet for a single ``function_call`` item.
+
+    Sequence: ``response.output_item.added`` →
+    ``response.function_call_arguments.delta`` →
+    ``response.output_item.done``. Args are sent in a single delta
+    because the underlying engine doesn't surface per-token tool-call
+    streaming yet (Codex CLI concatenates either way).
+    """
+    fc_id = f"fc_{uuid.uuid4().hex[:24]}"
+    yield _sse(
+        "response.output_item.added",
+        {
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {
+                "type": "function_call",
+                "id": fc_id,
+                "call_id": tc.id,
+                "name": tc.function.name,
+                "arguments": "",
+                "status": "in_progress",
+            },
+        },
+    )
+    yield _sse(
+        "response.function_call_arguments.delta",
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": fc_id,
+            "output_index": output_index,
+            "delta": tc.function.arguments or "",
+        },
+    )
+    yield _sse(
+        "response.output_item.done",
+        {
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": {
+                "type": "function_call",
+                "id": fc_id,
+                "call_id": tc.id,
+                "name": tc.function.name,
+                "arguments": tc.function.arguments or "",
+                "status": "completed",
+            },
+        },
+    )
+
+
+async def _emit_computer_call_item(tc, output_index: int) -> AsyncIterator[str]:
+    """Stream the SSE event pair for one Computer-Use ``computer_call``
+    item (Ana C-06, 0.8.5 dogfood).
+
+    Sequence: ``response.output_item.added`` →
+    ``response.output_item.done``. There is no per-token args delta
+    event for ``computer_call`` in the OpenAI spec — the entire
+    ``action`` envelope ships in the ``done`` payload.
+    """
+    # Lazy import to avoid the route module circular-importing the
+    # adapter at module load time (the adapter imports types from
+    # ``responses_models`` which the route also imports).
+    from ..api.responses_adapter import _parse_computer_action
+
+    cu_id = f"cu_{uuid.uuid4().hex[:24]}"
+    action = _parse_computer_action(tc.function.arguments or "")
+    yield _sse(
+        "response.output_item.added",
+        {
+            "type": "response.output_item.added",
+            "output_index": output_index,
+            "item": {
+                "type": "computer_call",
+                "id": cu_id,
+                "call_id": tc.id,
+                "status": "in_progress",
+                "action": action,
+                "pending_safety_checks": [],
+            },
+        },
+    )
+    yield _sse(
+        "response.output_item.done",
+        {
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": {
+                "type": "computer_call",
+                "id": cu_id,
+                "call_id": tc.id,
+                "status": "completed",
+                "action": action,
+                "pending_safety_checks": [],
+            },
+        },
+    )
+
+
 async def _stream_responses(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
@@ -790,6 +1046,33 @@ async def _stream_responses(
         accumulated_raw = ""
         accumulated_structured_tool_calls: list[dict] = []
         tool_filter = StreamingToolCallFilter()
+
+        # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
+        # forces a tool_choice (``required`` or named-function), the
+        # message item MUST NOT be emitted if synthesis fires after
+        # generation — otherwise the client sees both an
+        # ``output_text`` message AND a synthesised tool_call, which
+        # violates the OpenAI Responses ``tool_call-guaranteed``
+        # contract. Solution: buffer text deltas in ``deferred_text``
+        # under forced-choice mode; at end-of-stream, decide to either
+        # flush them (model produced a real tool_call so synthesis won't
+        # fire) or drop them (synthesis will fire — message item is
+        # suppressed entirely). For non-forced choice, the legacy
+        # streaming path is preserved (lazy message-item open on first
+        # delta).
+        _forced_tc = responses_request.tool_choice
+        _forced_choice_active = (
+            openai_request.tools is not None
+            and openai_request.tools
+            and (
+                _forced_tc == "required"
+                or (
+                    isinstance(_forced_tc, dict)
+                    and _forced_tc.get("type") == "function"
+                )
+            )
+        )
+        deferred_text: list[str] = []
 
         _tokenizer = engine.tokenizer
         _chat_template = ""
@@ -877,39 +1160,82 @@ async def _stream_responses(
             _reasoning_cap_hit = True
             return text[:keep_chars], text[keep_chars:], True
 
-        async def _open_message_item() -> str:
-            """Emit response.output_item.added for the assistant message.
+        # Yuki F8 (0.8.5 dogfood): track whether the content_part has
+        # been opened so the streaming sequence emits
+        # ``response.content_part.added`` exactly once per message item
+        # (before the first text delta).
+        content_part_open = False
 
-            Returns the event string so callers can yield it; the bookkeeping
-            for ``message_open`` lives here so the open/close pair stays
-            symmetric.
+        async def _open_message_item() -> list[str]:
+            """Emit response.output_item.added + response.content_part.added.
+
+            Returns the event strings so callers can yield them in order.
+            The bookkeeping for ``message_open`` / ``content_part_open``
+            lives here so the open/close pair stays symmetric.
+
+            Yuki F8: the OpenAI Responses SSE spec puts
+            ``response.content_part.added`` between the message item-
+            added event and the first text delta. Pre-0.8.5 this event
+            was missing; clients gating UI state on it never saw the
+            ``output_text`` block open.
             """
-            nonlocal message_item_id, message_output_index, message_open
+            nonlocal \
+                message_item_id, \
+                message_output_index, \
+                message_open, \
+                content_part_open
             message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
             message_output_index = 0
             message_open = True
-            return _sse(
-                "response.output_item.added",
-                {
-                    "type": "response.output_item.added",
-                    "output_index": message_output_index,
-                    "item": {
-                        "type": "message",
-                        "id": message_item_id,
-                        "status": "in_progress",
-                        "role": "assistant",
-                        "content": [],
+            content_part_open = True
+            return [
+                _sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": message_output_index,
+                        "item": {
+                            "type": "message",
+                            "id": message_item_id,
+                            "status": "in_progress",
+                            "role": "assistant",
+                            "content": [],
+                        },
                     },
-                },
-            )
+                ),
+                _sse(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": message_item_id,
+                        "output_index": message_output_index,
+                        "content_index": 0,
+                        "part": {
+                            "type": "output_text",
+                            "text": "",
+                            "annotations": [],
+                        },
+                    },
+                ),
+            ]
 
         async def _emit_text_delta(delta: str) -> AsyncIterator[str]:
-            """Yield the message item-added event (lazily) + a text delta."""
+            """Yield the message item-added event (lazily) + a text delta.
+
+            Under forced-choice mode (Yuki F6 codex r1 BLOCKING #2), the
+            delta is BUFFERED in ``deferred_text`` instead of being
+            yielded — final flush decision happens after the engine
+            stream completes and we know whether synthesis is needed.
+            """
             nonlocal accumulated_text
             if not delta:
                 return
+            if _forced_choice_active:
+                deferred_text.append(delta)
+                return
             if not message_open:
-                yield await _open_message_item()
+                for ev in await _open_message_item():
+                    yield ev
             accumulated_text += delta
             yield _sse(
                 "response.output_text.delta",
@@ -919,6 +1245,44 @@ async def _stream_responses(
                     "output_index": message_output_index,
                     "content_index": 0,
                     "delta": delta,
+                },
+            )
+
+        async def _flush_deferred_text_if_no_synthesis(
+            will_synthesise: bool,
+        ) -> AsyncIterator[str]:
+            """Forced-choice deferred-text resolution (codex r1 BLOCKING #2).
+
+            Called after the model finished and we know whether
+            ``_enforce_responses_tool_choice`` will synthesise. If
+            synthesis WILL fire, the deferred text is dropped (and the
+            message item never opens — no spurious assistant content
+            ships before the tool_call). If synthesis won't fire (the
+            model returned a real tool_call, or no forced choice was
+            set), the buffered deltas are emitted as a single
+            ``output_text.delta`` so the client still sees the
+            assistant's actual text content.
+            """
+            nonlocal accumulated_text
+            if will_synthesise or not deferred_text:
+                deferred_text.clear()
+                return
+            joined = "".join(deferred_text)
+            deferred_text.clear()
+            if not joined:
+                return
+            if not message_open:
+                for ev in await _open_message_item():
+                    yield ev
+            accumulated_text += joined
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_item_id,
+                    "output_index": message_output_index,
+                    "content_index": 0,
+                    "delta": joined,
                 },
             )
 
@@ -1259,8 +1623,119 @@ async def _stream_responses(
                     async for ev in _emit_text_delta(content):
                         yield ev
 
+        # Parse tool_calls FIRST so the forced-choice deferred-text
+        # resolution (Yuki F6 codex r1 BLOCKING #2) can decide whether
+        # the message item should open at all.
+        # Pass `accumulated_raw` (pre-filter model output) not
+        # `accumulated_text` (post-filter user-visible text) — tool_filter
+        # rightly suppresses `<tool_call>...</tool_call>` XML from
+        # `accumulated_text`, but the post-loop parser needs that XML
+        # to extract structured tool_calls. Without this swap, the
+        # text-parser path returned zero tool_calls and Codex's agent
+        # loop silently terminated with no items emitted.
+        _, parsed_tool_calls = _parse_tool_calls_with_parser(
+            accumulated_raw,
+            openai_request,
+            structured_tool_calls=accumulated_structured_tool_calls or None,
+        )
+
+        # Yuki F6 (0.8.5 dogfood): mirror the non-stream synthesis so
+        # ``tool_choice="required"`` / named-function always produce a
+        # ``response.output_item.added`` event of type ``function_call``
+        # (or ``computer_call`` for Computer-Use), honouring the
+        # OpenAI ``tool_call guaranteed`` contract on the streaming
+        # surface too. Codex r2 BLOCKING (PR #817): the non-stream
+        # path raises 422 for multi-tool ``required`` with no model
+        # call, but we cannot raise mid-stream after SSE headers
+        # are out — emit a ``response.failed`` event with the same
+        # error envelope instead so the client sees a clean shutdown
+        # signal.
+        try:
+            tool_calls = _enforce_responses_tool_choice(
+                parsed_tool_calls, responses_request, openai_request
+            )
+        except HTTPException as forced_choice_err:
+            # Drop any deferred buffered text — the request failed
+            # under forced choice, the deferred prose has no
+            # legitimate destination on the wire.
+            deferred_text.clear()
+            err_detail = forced_choice_err.detail
+            if isinstance(err_detail, dict):
+                err_envelope = err_detail.get("error", {})
+                err_code = err_envelope.get("code", "tool_choice_unfulfilled")
+                err_msg = err_envelope.get(
+                    "message", "tool_choice could not be fulfilled"
+                )
+            else:
+                err_code = "tool_choice_unfulfilled"
+                err_msg = str(err_detail)
+            yield _sse(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": response_id,
+                        "status": "failed",
+                        "error": {
+                            "code": err_code,
+                            "message": err_msg,
+                        },
+                    },
+                },
+            )
+            # ``response.failed`` IS the terminal event for the
+            # OpenAI Responses SSE spec — there is no ``data: [DONE]``
+            # sentinel on this surface (see module docstring + the
+            # ``_sse`` helper docstring). Codex r2 reviewer flagged a
+            # missing ``[DONE]`` but that's chat-completions-only;
+            # Responses-API clients (Codex CLI, openai-python) detect
+            # stream end via the terminal event type, not a sentinel
+            # data line.
+            return
+        # Codex r1 BLOCKING #2 (PR #817): under forced choice the
+        # ``deferred_text`` buffer holds text deltas we held back. Flush
+        # them ONLY if synthesis won't fire — i.e. the model produced
+        # a real tool_call, so the assistant's prose is legitimate
+        # context. When synthesis WILL fire (model only emitted text),
+        # drop the deferred text so the client doesn't see both a
+        # message AND a synthesised tool_call.
+        _synthesis_fired = bool(tool_calls) and not parsed_tool_calls
+        async for ev in _flush_deferred_text_if_no_synthesis(_synthesis_fired):
+            yield ev
+
         # Close the message item if we ever opened it.
         if message_open:
+            # Yuki F8 (0.8.5 dogfood): emit ``response.output_text.done``
+            # AND ``response.content_part.done`` BEFORE the message item
+            # ``done`` event so clients gating UI on those events
+            # actually see them — pre-0.8.5 only the broader
+            # ``response.output_item.done`` fired.
+            if content_part_open:
+                yield _sse(
+                    "response.output_text.done",
+                    {
+                        "type": "response.output_text.done",
+                        "item_id": message_item_id,
+                        "output_index": message_output_index,
+                        "content_index": 0,
+                        "text": accumulated_text,
+                    },
+                )
+                yield _sse(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": message_item_id,
+                        "output_index": message_output_index,
+                        "content_index": 0,
+                        "part": {
+                            "type": "output_text",
+                            "text": accumulated_text,
+                            "annotations": [],
+                        },
+                    },
+                )
+                content_part_open = False
             yield _sse(
                 "response.output_item.done",
                 {
@@ -1282,67 +1757,20 @@ async def _stream_responses(
                 },
             )
 
-        # Emit function_call items for every tool call we saw.
-        # Pass `accumulated_raw` (pre-filter model output) not
-        # `accumulated_text` (post-filter user-visible text) — tool_filter
-        # rightly suppresses `<tool_call>...</tool_call>` XML from
-        # `accumulated_text`, but the post-loop parser needs that XML
-        # to extract structured tool_calls. Without this swap, the
-        # text-parser path returned zero tool_calls and Codex's agent
-        # loop silently terminated with no items emitted.
-        _, tool_calls = _parse_tool_calls_with_parser(
-            accumulated_raw,
-            openai_request,
-            structured_tool_calls=accumulated_structured_tool_calls or None,
-        )
+        # Ana C-06 (0.8.5 dogfood): when the request used Computer-Use,
+        # translate ``function.name == "computer"`` tool_calls into the
+        # ``computer_call`` envelope so SDK consumers walking
+        # ``output_item.type`` for ``computer_call`` find them.
+        uses_computer_use = request_uses_computer_use(responses_request)
 
         tool_output_index = (message_output_index + 1) if message_open else 0
         for tc in tool_calls or []:
-            fc_id = f"fc_{uuid.uuid4().hex[:24]}"
-            yield _sse(
-                "response.output_item.added",
-                {
-                    "type": "response.output_item.added",
-                    "output_index": tool_output_index,
-                    "item": {
-                        "type": "function_call",
-                        "id": fc_id,
-                        "call_id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": "",
-                        "status": "in_progress",
-                    },
-                },
-            )
-            # Codex CLI accepts the args as a single delta — we don't
-            # have token-by-token streaming for tool_call arguments in
-            # the underlying engine yet, so emit the whole JSON string
-            # at once. Codex concatenates these the same way regardless
-            # of chunk count.
-            yield _sse(
-                "response.function_call_arguments.delta",
-                {
-                    "type": "response.function_call_arguments.delta",
-                    "item_id": fc_id,
-                    "output_index": tool_output_index,
-                    "delta": tc.function.arguments or "",
-                },
-            )
-            yield _sse(
-                "response.output_item.done",
-                {
-                    "type": "response.output_item.done",
-                    "output_index": tool_output_index,
-                    "item": {
-                        "type": "function_call",
-                        "id": fc_id,
-                        "call_id": tc.id,
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments or "",
-                        "status": "completed",
-                    },
-                },
-            )
+            if uses_computer_use and (tc.function.name or "") == "computer":
+                async for ev in _emit_computer_call_item(tc, tool_output_index):
+                    yield ev
+            else:
+                async for ev in _emit_function_call_item(tc, tool_output_index):
+                    yield ev
             tool_output_index += 1
 
         # H-06 (codex r2): the streaming /v1/responses path is
