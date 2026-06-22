@@ -460,18 +460,13 @@ def test_nonstream_tool_choice_named_still_routes_to_specific_tool():
             "messages": [{"role": "user", "content": "anything"}],
         },
     )
-    # Named pin with parser-only model that returned text → 422 via
-    # ``_enforce_named_tool_choice_present``. Codex r8 NIT (PR #807):
-    # assert the SINGLE production behaviour (422 + diagnostic naming
-    # ``get_weather``) rather than accepting "either 422 or 200 with
-    # a non-empty tool_uses block" — the broader contract still holds
-    # at the route level, but a single test should pin the actual
-    # behaviour for this engine shape.
-    assert r.status_code == 422, r.text
+    assert r.status_code == 200, r.text
     body = r.json()
-    detail = body.get("detail") or body.get("error", {}).get("message", "")
-    assert "get_weather" in detail
-    assert "tool_choice" in detail
+    assert body["stop_reason"] == "tool_use", body
+    tool_uses = [c for c in body["content"] if c["type"] == "tool_use"]
+    assert len(tool_uses) == 1
+    assert tool_uses[0]["name"] == "get_weather"
+    assert tool_uses[0]["input"] == {}
 
 
 def test_nonstream_tool_choice_named_synth_when_model_emits_the_pinned_tool():
@@ -614,6 +609,43 @@ def test_stream_tool_choice_any_multi_tool_emits_error_event():
         and e.get("delta", {}).get("type") == "text_delta"
     ]
     assert "".join(text_deltas) == ""
+
+
+def test_stream_tool_choice_named_text_only_emits_synthesized_tool_use():
+    """Named ``tool_choice`` stream path synthesizes the pinned tool_use."""
+    engine = _ToolStreamingEngine(
+        ["I ", "cannot ", "help."],
+        engine_prompt_tokens=5,
+    )
+    client = _make_client(engine)
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "tools": [_tool_dict("get_weather"), _tool_dict("lookup_zip", "zip")],
+            "tool_choice": {"type": "tool", "name": "get_weather"},
+            "messages": [{"role": "user", "content": "Tell me a joke."}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    events = _parse_sse(r.text)
+    text_deltas = [
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    assert "".join(text_deltas) == ""
+    tool_blocks = [
+        e
+        for e in events
+        if e.get("type") == "content_block_start"
+        and e.get("content_block", {}).get("type") == "tool_use"
+    ]
+    assert len(tool_blocks) == 1
+    assert tool_blocks[0]["content_block"]["name"] == "get_weather"
 
 
 # ──────────────────────────────────────────────────────────────────
