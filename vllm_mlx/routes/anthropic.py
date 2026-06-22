@@ -214,14 +214,7 @@ def _filter_tool_calls_by_tool_choice(tool_calls, tool_choice) -> list:
 
 
 def _synthesize_pinned_tool_call(tool_name: str):
-    """Build a synthetic ``ToolCall`` for the pinned tool with empty
-    ``input``. F8 best-effort fallback when the model failed to comply
-    with ``tool_choice={"type":"tool","name":X}``.
-
-    Local import to avoid widening the routes/anthropic.py module-level
-    import surface — these models are pulled in lazily only on the
-    pinned-tool fallback path so the happy-path import time stays flat.
-    """
+    """Build a synthetic ``ToolCall`` for the pinned tool with empty input."""
     from ..api.models import FunctionCall, ToolCall
 
     return ToolCall(
@@ -237,49 +230,34 @@ def _enforce_named_tool_choice_present(
     *,
     original_call_count: int,
 ) -> tuple[list, bool]:
-    """Return ``(tool_calls, synthesized)``.
+    """Return ``(tool_calls, synthesized)`` for a named pin.
 
-    The first element is the (possibly synthesized) tool-call list:
-    unchanged when the named-tool contract is satisfied, or a list
-    containing a single synthesized best-effort ``tool_use`` for the
-    pinned tool with empty ``input={}`` when the model failed to
-    comply. The second element is an explicit boolean signal — True
-    iff this call synthesized a placeholder. Callers use the signal
-    to (a) skip JSON-schema validation on the synthesized empty
-    ``input`` (which would otherwise 400 on tools with ``required``
-    fields, codex r1 BLOCKING #1) and (b) drop the streaming
-    buffered-text replay (the model emitted forbidden text instead
-    of the pinned tool, codex r1 BLOCKING #2 — inferring from list
-    lengths can misclassify a legitimate single-call from a filtered
-    list).
+    Named ``tool_choice`` pins a specific tool. If the parser found a
+    call for that tool, the list passes through unchanged after
+    ``_filter_tool_calls_by_tool_choice`` has dropped any extras. If the
+    model returned text only, or emitted only calls to other tools, the
+    Anthropic route synthesizes a best-effort empty-input call to the
+    pinned tool. This mirrors Anthropic SDK expectations for forced named
+    tool flows: the local model cannot decoder-enforce the pin, but the
+    response still carries the tool the client explicitly asked to
+    dispatch.
 
-    F8 history: PR #763 round-1 added this as a 422 "could not enforce"
-    surface — honest about local inference's lack of decoder-level
-    constraints, but breaks Anthropic SDK callers that expect a 200
-    with the pinned tool_use block (the forced-named-tool flow is a
-    common agent pattern; ``anthropic`` SDK does not retry on 422).
-    Anthropic's real backend uses an FSM constraint to GUARANTEE a
-    ``tool_use`` for the pinned tool; we don't have that, but a
-    synthesized empty-input call gives clients SOMETHING shaped like
-    the pinned tool to dispatch — closer to spec than 422.
-
-    Mirrors chat.py's named-function path which 422s on the OpenAI
-    surface (strict spec) but the Anthropic spec is more forgiving;
-    see ``_filter_tool_calls_by_tool_choice`` for the same
-    surface-divergence rationale (H-05).
+    ``tool_choice="required"`` / Anthropic ``{"type":"any"}`` keeps the
+    separate single-tool synthesis path in
+    ``_enforce_required_tool_choice_present``; this helper owns only the
+    explicit named-tool shape.
 
     ``original_call_count`` is the size of ``tool_calls`` BEFORE the
     filter ran. A warning logs the disambiguation between "model
     returned text only" (count == 0) and "model called the wrong
     tool(s) and the filter emptied the list" (count > 0) so an
-    operator debugging unexpected best-effort fallbacks can see WHICH
-    case fired.
+    operator debugging named-tool enforcement can see WHICH case fired.
     """
     target = _named_tool_choice_target(tool_choice)
     if not target or tool_calls:
         return tool_calls, False
     # Log the disambiguation an operator needs to debug small-model
-    # compliance issues. The wire response shape is identical either way.
+    # compliance issues.
     if original_call_count == 0:
         logger.warning(
             "tool_choice pinned tool %r but the model returned a text "
@@ -890,15 +868,6 @@ async def create_anthropic_message(
             tool_calls = _filter_tool_calls_by_tool_choice(
                 tool_calls or [], openai_request.tool_choice
             )
-            # F8: ``_enforce_named_tool_choice_present`` now returns
-            # ``(tool_calls, synthesized)`` — best-effort synthesizes a
-            # placeholder ``tool_use`` (rather than raising 422) when
-            # the model failed to comply with a pinned ``tool_choice``.
-            # The explicit ``synthesized`` signal lets us skip
-            # schema validation on the synthesized empty ``input``
-            # (codex r1 BLOCKING #1: pinned tools with ``required``
-            # fields would otherwise 400 the best-effort path back
-            # into the symptom F8 was supposed to fix).
             tool_calls, synthesized_pinned_call = _enforce_named_tool_choice_present(
                 tool_calls,
                 openai_request.tool_choice,
@@ -927,13 +896,10 @@ async def create_anthropic_message(
         # propagated through ``/v1/messages`` as a 200 ``tool_use`` block
         # carrying schema-violating arguments.
         #
-        # F8 follow-up: synthesized best-effort calls have empty
-        # ``input={}`` which intentionally may not satisfy the
-        # pinned tool's schema (e.g. ``required:["city"]``). Skip
-        # the validator on those — failing them would re-instate
-        # the 422 path F8 is meant to retire. Schema-level "the
-        # synthesized input didn't satisfy `required`" complaints
-        # belong on the client's downstream dispatch path.
+        # Synthesized named-pin calls carry empty ``input={}`` by design.
+        # Do not validate that placeholder against a possibly-required
+        # schema; the downstream tool dispatcher owns missing argument
+        # handling for this best-effort Anthropic SDK compatibility path.
         if tool_calls and openai_request.tools and not synthesized_pinned_call:
             _validate_tool_call_params(tool_calls, openai_request.tools)
 
@@ -2622,26 +2588,12 @@ async def _stream_anthropic_messages(
     # earlier emission point or the dropped tool's content_block_start
     # will reach the wire before we know to suppress it.
     tool_choice_error: str | None = None
-    # F8: track whether we synthesized a best-effort pinned-tool call so
-    # the buffered-text-replay branch below can drop the forbidden text
-    # payload (the model wrote text instead of the pinned tool; replaying
-    # would violate the named ``tool_choice`` contract just like the
-    # pre-F8 422 path did). Explicit signal from the helper avoids the
-    # codex r1 BLOCKING #2 misclassification — a legitimate single-call
-    # surviving the filter would otherwise be mis-flagged as synthesis
-    # purely from list-length heuristics.
     synthesized_pinned_call = False
     original_call_count_stream = len(tool_calls or [])
     if openai_request.tool_choice:
         tool_calls = _filter_tool_calls_by_tool_choice(
             tool_calls or [], openai_request.tool_choice
         )
-        # F8: ``_enforce_named_tool_choice_present`` now returns
-        # ``(tool_calls, synthesized)`` — best-effort synthesizes a
-        # placeholder ``tool_use`` (rather than raising 422) when the
-        # model failed to comply with a pinned ``tool_choice``. The
-        # explicit ``synthesized`` signal is the source of truth for
-        # the buffered-text-drop branch below.
         tool_calls, synthesized_pinned_call = _enforce_named_tool_choice_present(
             tool_calls,
             openai_request.tool_choice,
@@ -2678,10 +2630,6 @@ async def _stream_anthropic_messages(
     # non-stream branch's 400 contract in spirit while staying within
     # the Anthropic streaming protocol.
     tool_validation_error: str | None = None
-    # F8 follow-up: skip the JSON-schema validator on synthesized
-    # best-effort calls — their empty ``input={}`` is intentionally
-    # placeholder and may not satisfy ``required`` fields. Same
-    # rationale as the non-stream branch (codex r1 BLOCKING #1).
     if tool_calls and openai_request.tools and not synthesized_pinned_call:
         try:
             _validate_tool_call_params(tool_calls, openai_request.tools)
@@ -2708,11 +2656,6 @@ async def _stream_anthropic_messages(
     # The buffer is unused when ``tool_choice`` is not a named pin —
     # in that case the chunk loop yielded directly and ``pre_filter_buffer``
     # is empty, so this block is a no-op on every non-pinned request.
-    # F8 follow-up: when synthesis fired the model emitted text instead
-    # of the pinned tool. Replaying that buffered text would put the
-    # forbidden text payload back on the wire (same family of contract
-    # violation the 422 path used to suppress); drop the buffer and let
-    # the synthesized tool_use below carry the entire content list.
     if synthesized_pinned_call:
         pre_filter_buffer.clear()
     if _buffer_for_pinned_tool and not (

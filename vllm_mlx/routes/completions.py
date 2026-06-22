@@ -181,9 +181,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # disconnects after the first chunk instead of a controlled
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
+        _stream_generate = getattr(engine, "stream_generate", None)
         if _want_logprobs and (
-            not hasattr(engine, "stream_generate")
-            or getattr(engine, "tokenizer", None) is None
+            not callable(_stream_generate) or getattr(engine, "tokenizer", None) is None
         ):
             raise HTTPException(
                 status_code=501,
