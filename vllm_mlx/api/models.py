@@ -288,6 +288,58 @@ def _validate_nonnegative_int(
     return v
 
 
+def _validate_positive_int(
+    v,
+    *,
+    max_value: int | None = None,
+    field_name: str = "value",
+):
+    """Integer with a strict ``>= 1`` lower bound (R7-M3 systemic gate).
+
+    Used by the generation-budget fields — ``max_tokens`` (chat /
+    completions / messages) and ``max_output_tokens`` (responses) — so
+    every OpenAI-compat surface 4xx's negative / zero / bool / float
+    wire forms at the schema layer instead of letting them slip
+    through to the route. Pre-R7-M3 the validator coverage was
+    asymmetric: the chat route's hand-rolled
+    ``max_tokens must be at least 1`` check was the ONLY gate, so
+    legacy ``/v1/completions``, Anthropic ``/v1/messages``, and
+    OpenAI ``/v1/responses`` silently accepted ``max_tokens=-5`` (HTTP
+    200 with one token / ``status="incomplete"``) — a silent-correctness
+    hazard the same shape as ``seed=-1``.
+
+    The validator's contract mirrors ``_validate_nonnegative_int``
+    (same bool / float-integer-coercion / NaN-inf handling) but with
+    a strict ``>= 1`` floor so ``max_tokens=0`` is rejected too —
+    pointing at the right OpenAI escape hatch (``stream=true`` with
+    no limit + finish_reason=stop is how clients ask for "unlimited
+    tokens"; ``max_tokens=0`` has no spec meaning and was previously
+    a silent no-token request).
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        raise ValueError(f"{field_name} must be an integer when set (got bool)")
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            raise ValueError(f"{field_name} must be a finite integer (not NaN or inf)")
+        if not v.is_integer():
+            raise ValueError(f"{field_name} must be an integer when set (got {v})")
+        v = int(v)
+    elif not isinstance(v, int):
+        raise ValueError(
+            f"{field_name} must be an integer when set (got {type(v).__name__})"
+        )
+    if v < 1:
+        raise ValueError(
+            f"{field_name} must be >= 1 when set (got {v}); omit the field to "
+            "use the server default."
+        )
+    if max_value is not None and v > max_value:
+        raise ValueError(f"{field_name} must be <= {max_value} (got {v})")
+    return v
+
+
 def _validate_logit_bias_finite(
     v: dict | None, *, field_name: str = "logit_bias"
 ) -> dict | None:
@@ -917,7 +969,13 @@ class ResponseFormatJsonSchema(BaseModel):
     name: str
     description: str | None = None
     schema_: dict = Field(alias="schema")  # JSON Schema specification
-    strict: bool | None = False
+    # R7-B codex MED follow-up: ``StrictBool`` so non-bool wire forms
+    # like ``"strict":"true"`` are rejected at parse time instead of
+    # being coerced or silently treated as falsey by downstream
+    # ``is_strict_json_schema``. Paired with the explicit dict-arm
+    # check in ``_validate_response_format_raw`` so the bare-dict
+    # union arm can't bypass either.
+    strict: StrictBool | None = False
 
     class Config:
         populate_by_name = True
@@ -987,6 +1045,21 @@ def _validate_response_format_raw(value):
         raise ValueError(
             "response_format.type must be 'text', 'json_object', or 'json_schema'"
         )
+    # R7-B codex MED follow-up: ``strict`` is a strict boolean on BOTH
+    # nesting positions. Pre-fix, ``{"type":"json_schema","strict":"true",
+    # "json_schema":{...}}`` and the nested form
+    # ``{"json_schema":{"strict":"true",...}}`` fell through the
+    # bare-dict union arm with no strict check — ``is_strict_json_schema``
+    # then treated the truthy string as falsey and the ``[guided]`` gate
+    # silently downgraded the request to unconstrained generation. The
+    # typed arm uses ``StrictBool`` so the same wire forms parse-fail
+    # there; mirror the same wire-form rejection on the dict arm so the
+    # ``ResponseFormat | dict`` union has no escape hatch.
+    if "strict" in value and not isinstance(value["strict"], bool):
+        raise ValueError(
+            "response_format.strict must be a boolean "
+            f"(got {type(value['strict']).__name__})"
+        )
     if rf_type == "json_schema":
         json_schema_field = value.get("json_schema")
         if not json_schema_field:
@@ -996,6 +1069,13 @@ def _validate_response_format_raw(value):
             )
         if not isinstance(json_schema_field, dict):
             raise ValueError("response_format.json_schema must be an object")
+        if "strict" in json_schema_field and not isinstance(
+            json_schema_field["strict"], bool
+        ):
+            raise ValueError(
+                "response_format.json_schema.strict must be a boolean "
+                f"(got {type(json_schema_field['strict']).__name__})"
+            )
         # Mirror the typed ``ResponseFormatJsonSchema.name: str``
         # required field on the dict arm — codex round-1 BLOCKING
         # follow-up. The bare-dict union arm would otherwise swallow
@@ -1052,6 +1132,28 @@ class ResponseFormat(BaseModel):
     # request model.
     type: Literal["text", "json_object", "json_schema"] = "text"
     json_schema: ResponseFormatJsonSchema | None = None
+    # R7-H5 (Vlad r7 — 0.8.8 sweep): the OpenAI Responses API uses a
+    # ``text.format = {"type":"json_schema","strict":true,"schema":{...},
+    # "name":"..."}`` shape where ``strict`` is a SIBLING of ``type``
+    # (not nested inside ``json_schema``). Clients writing against the
+    # Responses surface and then pointing at the legacy chat endpoint
+    # routinely keep the outer-level nesting — pre-R7 the unknown
+    # field was silently dropped by Pydantic, so the chat path saw
+    # a non-strict request, skipped the ``[guided]``-required gate,
+    # and HTTP-200'd with no constraint enforcement. Declaring the
+    # field here means BOTH nesting positions reach
+    # ``is_strict_json_schema`` and the centralized gate fires
+    # regardless of which nesting position the client used. The chat
+    # route's existing strict-mode handling sees the same boolean
+    # whichever wire form was sent. ``None`` is preserved as the
+    # absent default; the dict-arm validator mirrors this so an
+    # outer-level ``"strict":"true"`` (string) is rejected with a
+    # clean 422 too.
+    # R7-B codex MED follow-up: ``StrictBool`` rejects non-bool wire
+    # forms at parse time on the typed arm; the dict arm is closed by
+    # the explicit ``strict``-shape check in
+    # ``_validate_response_format_raw`` below.
+    strict: StrictBool | None = None
 
 
 # =============================================================================
@@ -1482,6 +1584,25 @@ class ChatCompletionRequest(BaseModel):
     def _validate_logit_bias(cls, v):
         return _validate_logit_bias_finite(v, field_name="logit_bias")
 
+    # R7-M3: shared ``>= 1`` gate on the generation-budget fields so the
+    # whole OpenAI-compat surface (chat / completions / messages /
+    # responses) rejects ``max_tokens <= 0`` at the schema layer instead
+    # of relying on the chat route's hand-rolled check. The chat route
+    # used to be the only path with a ``max_tokens < 1`` guard — Vlad's
+    # r7 sweep surfaced ``max_output_tokens=-5`` on /v1/responses,
+    # ``max_tokens=-5`` on /v1/completions and /v1/messages all
+    # returning 200. Schema-layer validator means the contract is
+    # uniform regardless of which route handler runs.
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def _validate_max_tokens(cls, v) -> int | None:
+        return _validate_positive_int(v, field_name="max_tokens")
+
+    @field_validator("max_completion_tokens", mode="before")
+    @classmethod
+    def _validate_max_completion_tokens(cls, v) -> int | None:
+        return _validate_positive_int(v, field_name="max_completion_tokens")
+
     @model_validator(mode="after")
     def _normalize_max_completion_tokens(self) -> "ChatCompletionRequest":
         if self.max_completion_tokens is not None:
@@ -1818,6 +1939,16 @@ class CompletionRequest(BaseModel):
         return _validate_nonnegative_int(
             v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
         )
+
+    # R7-M3: shared ``>= 1`` gate on ``max_tokens`` — mirror of the
+    # chat surface. Pre-R7-M3 the legacy completions surface silently
+    # accepted ``max_tokens=-5`` (HTTP 200 with a single token)
+    # because no route-level gate ran; the schema layer now closes
+    # the bypass for every OpenAI-compat surface.
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def _validate_max_tokens(cls, v) -> int | None:
+        return _validate_positive_int(v, field_name="max_tokens")
 
     # F-155: enforce ``n == 1`` at parse time, mirroring the chat
     # surface. The route already 400's ``n > 1``; the schema layer
