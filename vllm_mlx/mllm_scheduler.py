@@ -1073,14 +1073,149 @@ class MLLMScheduler:
             )
             self._owns_step_executor = True
         loop = asyncio.get_running_loop()
+        # The currently in-flight step ``concurrent.futures.Future``
+        # (None when the loop is between steps). Lets the ``finally``
+        # block wait on THIS specific future with a bounded timeout
+        # instead of issuing a blocking ``shutdown(wait=True)`` second
+        # join that no asyncio cancel can unblock (codex r3 BLOCKING #1).
+        self._inflight_step_cf: concurrent.futures.Future | None = None
 
         try:
             while self._running:
                 try:
                     if self.has_requests():
-                        output = await loop.run_in_executor(
-                            self._step_executor, self._step_no_queue
-                        )
+                        # MEMORY guideline (knowledge/gotchas.md):
+                        # "asyncio Future cancel does NOT stop executor
+                        # thread — use ``executor.submit`` +
+                        # ``cf.cancelled()`` gate, not ``run_in_executor``".
+                        #
+                        # The prior shape was
+                        # ``await loop.run_in_executor(self._step_executor,
+                        # self._step_no_queue)``. On loop cancellation
+                        # (``self._running`` flipped or task cancelled
+                        # during shutdown) the asyncio-side Future flipped
+                        # to CANCELLED immediately but the executor thread
+                        # kept running ``_step_no_queue`` against
+                        # ``BatchGenerator`` state that the shutdown path
+                        # then races to tear down — exactly the
+                        # "Aborting orphaned MLLM request" / mllm-step
+                        # zombie shape Ana flagged in the C-04 recon
+                        # (R3 in /tmp/dogfood-085/c04-recon.md).
+                        #
+                        # Mirror the proven pattern from
+                        # ``engine_core.py:855``: hold the underlying
+                        # ``concurrent.futures.Future`` directly, await it
+                        # via ``asyncio.wrap_future``, and gate any
+                        # post-cancel cleanup on ``cf.cancelled()`` so we
+                        # only ever consume an ``output`` that actually
+                        # came back from the executor thread.
+                        # Codex r8 BLOCKING #1: ``submit()`` itself can
+                        # raise synchronously if the executor was
+                        # already shut down (e.g. shutdown raced ahead
+                        # of this call). Guard the submit so
+                        # ``_inflight_step_cf`` is never left dangling
+                        # and the scheduler loop breaks cleanly instead
+                        # of retrying against a dead executor.
+                        try:
+                            cf = self._step_executor.submit(self._step_no_queue)
+                        except RuntimeError as _submit_exc:
+                            logger.warning(
+                                "MLLM scheduler executor rejected new work "
+                                "(%s); breaking step loop for clean shutdown",
+                                _submit_exc,
+                            )
+                            self._inflight_step_cf = None
+                            break
+                        # Stash so the ``finally`` block can wait on
+                        # THIS specific in-flight cf with a bounded
+                        # timeout instead of starting an
+                        # uncancellable ``shutdown(wait=True)`` second
+                        # join (codex r3 BLOCKING #1). The reference is
+                        # cleared on the success path below; the cancel
+                        # path preserves it for the outer
+                        # ``finally``-block drain; the non-cancel
+                        # ``Exception`` path is handled by the explicit
+                        # ``except Exception`` arm a few lines down
+                        # which clears it before re-raising (codex r6
+                        # BLOCKING #2).
+                        self._inflight_step_cf = cf
+                        try:
+                            output = await asyncio.wrap_future(cf, loop=loop)
+                        except asyncio.CancelledError:
+                            # The asyncio side is cancelled; the executor
+                            # may already be running (or completed).
+                            # ``asyncio.wrap_future`` will have called
+                            # ``cf.cancel()`` — succeeds only if the work
+                            # had not started yet. If the work DID start,
+                            # let it run to completion silently so it
+                            # doesn't race the shutdown teardown of
+                            # ``BatchGenerator``/``self._step_executor``.
+                            # We deliberately do NOT call
+                            # ``cf.result()`` here because the outer
+                            # ``finally`` block will wait on
+                            # ``self._inflight_step_cf`` with a
+                            # bounded timeout (codex r3 BLOCKING #1
+                            # follow-up) and then ``shutdown(wait=False,
+                            # cancel_futures=True)`` the executor. The
+                            # drain done-callback below logs any
+                            # executor-side exception under DEBUG.
+                            if not cf.cancelled():
+
+                                def _drain_step_result(_future: Any) -> None:
+                                    # Surface any executor-side
+                                    # exception at DEBUG so silent
+                                    # errors during shutdown still
+                                    # leave a trail without spamming
+                                    # the log on normal cancel.
+                                    #
+                                    # Codex r5 BLOCKING #1: catch
+                                    # ``Exception`` (not
+                                    # ``BaseException``). Letting
+                                    # ``KeyboardInterrupt`` /
+                                    # ``SystemExit`` / ``GeneratorExit``
+                                    # propagate is the correct
+                                    # behaviour during shutdown — the
+                                    # callback runs on the executor
+                                    # thread, where those exception
+                                    # types signal interpreter-level
+                                    # teardown that nothing in this
+                                    # path should be swallowing.
+                                    try:
+                                        _future.result()
+                                    except Exception as _exc:
+                                        logger.debug(
+                                            "MLLM step exception during"
+                                            " cancellation drain: %r",
+                                            _exc,
+                                        )
+
+                                cf.add_done_callback(_drain_step_result)
+                            raise
+                        except Exception:
+                            # Codex r6 BLOCKING #2: a non-cancel
+                            # ``Exception`` raised by ``_step_no_queue``
+                            # (executor-side) propagates through
+                            # ``wrap_future``. Clear ``_inflight_step_cf``
+                            # before re-raising so the outer
+                            # ``except Exception`` arm at the loop level
+                            # (which logs + retries) doesn't leave a
+                            # done()-but-still-recorded reference for
+                            # the eventual ``finally`` block to chase.
+                            # The cf is already done() at this point,
+                            # so the outer-finally drain would no-op
+                            # against it, but clearing here keeps the
+                            # contract clean: ``_inflight_step_cf`` is
+                            # non-None only when there's actually
+                            # outstanding executor work that the
+                            # shutdown path might need to drain.
+                            self._inflight_step_cf = None
+                            raise
+
+                        # Successful step → clear the inflight reference
+                        # so the ``finally`` block sees an empty slot
+                        # once the loop has exited the
+                        # ``has_requests()`` branch on this iteration.
+                        self._inflight_step_cf = None
 
                         # Distribute outputs to queues ON the event loop thread
                         # (asyncio.Queue is not thread-safe).
@@ -1099,10 +1234,127 @@ class MLLMScheduler:
                     logger.error(f"Error in MLLM process loop: {e}")
                     await asyncio.sleep(0.1)
         finally:
+            cancel_to_reraise: asyncio.CancelledError | None = None
             if self._step_executor is not None:
                 if getattr(self, "_owns_step_executor", True):
-                    self._step_executor.shutdown(wait=False)
+                    # Codex r1 BLOCKING #3 + codex r2/r3 BLOCKING follow-ups:
+                    # bound the teardown WITHOUT relying on
+                    # ``shutdown(wait=True)`` (an uncancellable blocking
+                    # join that no asyncio timeout can stop). Instead
+                    # wait on THIS step's specific ``cf`` via
+                    # ``asyncio.wrap_future`` with a bounded timeout,
+                    # then drop the executor reference with
+                    # ``shutdown(wait=False)`` regardless of outcome:
+                    #
+                    #   * Happy path — the in-flight step (if any)
+                    #     completes within ``_drain_secs``. ``cf``
+                    #     finishes, ``BatchGenerator``/``scheduler``
+                    #     state was mutated by the step EXACTLY ONCE,
+                    #     and the subsequent ``shutdown(wait=False)``
+                    #     only has the (empty) submit queue left to
+                    #     drain. The "Aborting orphaned MLLM request"
+                    #     race C-04 §3.R3 flagged is closed.
+                    #   * Wedged path — the in-flight step is stuck
+                    #     (Metal driver hang, etc.). The
+                    #     ``asyncio.wait_for`` times out after
+                    #     ``_drain_secs``, we log a WARNING, and the
+                    #     follow-on ``shutdown(wait=False,
+                    #     cancel_futures=True)`` releases the executor
+                    #     reference. The worker thread is left to its
+                    #     wedged state (we can't unwedge it from
+                    #     Python), but lifespan shutdown makes
+                    #     progress — exactly the bounded-shutdown
+                    #     guarantee codex r3 BLOCKING #1 demanded.
+                    #   * No in-flight step — the wait_for is a no-op
+                    #     against an already-resolved (or never-set)
+                    #     future.
+                    _drain_secs = 5.0
+                    inflight = self._inflight_step_cf
+                    self._inflight_step_cf = None
+                    # Codex r5 BLOCKING #2: split exception handling so
+                    # ``asyncio.CancelledError`` propagates after we
+                    # release the executor reference. A second-cancel
+                    # storm (caller invoked ``stop()`` mid-shutdown
+                    # and the lifespan task got cancelled again) MUST
+                    # surface back to the caller — swallowing it leaves
+                    # ``stop()`` blocked on the unfinished
+                    # ``_processing_task``. ``cancel_to_reraise`` is
+                    # declared at the top of the ``finally`` block so
+                    # the re-raise sits outside the
+                    # ``_owns_step_executor`` branch.
+                    if (
+                        inflight is not None
+                        and not inflight.done()
+                        and not inflight.cancelled()
+                    ):
+                        # Codex r8 BLOCKING #2: ``asyncio.wait_for``
+                        # cancels the awaitable on timeout, and
+                        # cancelling an ``asyncio.wrap_future``
+                        # propagates ``cancel()`` to the underlying
+                        # ``concurrent.futures.Future``. For a
+                        # step that's queued-but-not-started, that
+                        # cancel succeeds and discards the work —
+                        # violating the surrounding comment's
+                        # contract ("the step either finishes once
+                        # or is abandoned only when wedged"). The
+                        # observed silent-data-loss shape would be:
+                        # a final scheduled step is queued; lifespan
+                        # shutdown fires; the timeout cancels the
+                        # CF; the step never runs; an inflight
+                        # generation completes with truncated
+                        # output because its kv-fetch never
+                        # happened. ``asyncio.shield`` prevents the
+                        # timeout's cancellation from propagating
+                        # to the inner ``wrap_future`` — the
+                        # awaitable is cancelled at the wait_for
+                        # boundary but the wrapped CF is left
+                        # alone. The shutdown still proceeds in
+                        # bounded time (drain returns or
+                        # TimeoutError fires), and the executor
+                        # is torn down with ``wait=False`` below
+                        # so the worker thread is released
+                        # regardless.
+                        wrapped = asyncio.wrap_future(inflight, loop=loop)
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(wrapped),
+                                timeout=_drain_secs,
+                            )
+                        except TimeoutError:
+                            # Wedged step — operator-visible WARNING.
+                            logger.warning(
+                                "MLLM step exceeded %.1fs drain budget"
+                                " during shutdown; abandoning the"
+                                " worker thread and proceeding with"
+                                " non-blocking executor teardown",
+                                _drain_secs,
+                            )
+                        except asyncio.CancelledError as exc:
+                            # Re-raise AFTER releasing the executor
+                            # reference below (the executor cleanup is
+                            # non-blocking, so we can do it on the
+                            # exit path without losing the cancel
+                            # signal to the caller).
+                            cancel_to_reraise = exc
+                        except Exception as exc:
+                            # Executor-side raise — log only; this
+                            # path is best-effort observability and
+                            # must not mask the real shutdown trigger.
+                            logger.debug("MLLM step in-flight drain ended with %r", exc)
+                    try:
+                        self._step_executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:  # pragma: no cover — defensive
+                        logger.debug(
+                            "MLLM step executor shutdown raised", exc_info=True
+                        )
                 self._step_executor = None
+            if cancel_to_reraise is not None:
+                # Surface the cancellation to whatever is awaiting
+                # ``_processing_task`` (typically
+                # ``MLLMScheduler.stop`` -> outer FastAPI lifespan).
+                # We've already cleaned up the executor reference, so
+                # the re-raise leaves no resource leak.
+                raise cancel_to_reraise
 
     async def add_request_async(
         self,
