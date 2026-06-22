@@ -41,7 +41,7 @@ from ..api.responses_adapter import (
     validate_responses_tool_choice,
     validate_responses_tool_types,
 )
-from ..api.responses_models import ResponsesRequest
+from ..api.responses_models import ResponsesRequest, ResponsesResponse, ResponsesUsage
 from ..api.tool_calling import (
     check_schema_validity,
     convert_tools_for_template,
@@ -759,6 +759,94 @@ async def _non_stream(
     if output is None:
         return Response(status_code=499)
 
+    # r6-A R6-C2: detect a degenerate engine output — no text, no
+    # reasoning, no tool_calls, zero output_tokens, AND
+    # ``finish_reason="length"`` — and surface it as a Responses
+    # ``status="failed"`` envelope with a populated ``error`` block
+    # instead of the silent ``200 + status="incomplete" + usage=0/0/0``
+    # shape pre-fix.
+    #
+    # Why this is needed: the engine reports ``finish_reason="length"``
+    # when the runtime aborts a request before it produced its first
+    # token (the scheduler's prefill-side ``max_tokens`` check fires the
+    # length stop). On a healthy "small budget" turn that's the right
+    # signal — the client did ask for a tiny budget. But when the
+    # underlying root cause is an engine wedge (e.g. ``metal::malloc``
+    # Resource-limit (499000) on the hybrid path for dense Qwen3.5, the
+    # R6-C1 sibling) the same wire shape is emitted, so SDK consumers
+    # cannot tell "you asked for 1 token" from "the GPU OOM'd before
+    # generating anything." Mapping the empty-and-zero-budget case to
+    # ``status="failed"`` + a structured ``error`` block keeps the OpenAI
+    # Responses spec contract (``error`` is the documented field for the
+    # failed state) and gives clients a clear distinction.
+    #
+    # Heuristic gate (codex r1 IMPORTANT — narrowed): the guard now
+    # ALSO requires ``finish_reason="length"``. The original predicate
+    # ("zero completion + no user-visible output channels") would have
+    # mis-classified legitimate immediate-stop / zero-budget /
+    # stop-sequence turns where the scheduler reports
+    # ``finish_reason="stop"`` (e.g. the very first sampled token was
+    # an EOS or matched a stop_sequence and was suppressed from
+    # ``output.text``). Restricting the gate to ``length`` keeps it
+    # focused on the runtime-abort signature the R6-C1 wedge produces:
+    #   - ``finish_reason="length"`` AND
+    #   - no assistant text (``output.text`` empty after strip)
+    #   - no reasoning text on the engine output
+    #   - no structured tool_calls surfaced by the engine
+    #   - ``completion_tokens == 0``
+    # Returning ``status="failed"`` here is the analogue of the
+    # streaming path's ``response.failed`` event (line ~1865) for
+    # non-streaming clients.
+    _has_text = bool((output.text or "").strip())
+    _has_reasoning = bool((getattr(output, "reasoning_text", "") or "").strip())
+    _has_tool_calls = bool(getattr(output, "tool_calls", None))
+    _zero_completion = (output.completion_tokens or 0) == 0
+    _engine_aborted_signature = getattr(output, "finish_reason", None) == "length"
+    if (
+        _engine_aborted_signature
+        and _zero_completion
+        and not (_has_text or _has_reasoning or _has_tool_calls)
+    ):
+        logger.warning(
+            "Responses: engine produced no output (no text/reasoning/tool_calls "
+            "and completion_tokens=0); surfacing as status=failed envelope "
+            "(finish_reason=%s)",
+            getattr(output, "finish_reason", None),
+        )
+        failed_payload = ResponsesResponse(
+            id=f"resp_{uuid.uuid4().hex[:24]}",
+            created_at=created_at,
+            model=cfg.model_name or responses_request.model,
+            status="failed",
+            output=[],
+            usage=ResponsesUsage(
+                input_tokens=output.prompt_tokens or 0,
+                output_tokens=0,
+                total_tokens=output.prompt_tokens or 0,
+            ),
+        )
+        # Spec field naming: ``error`` is OpenAI Responses' canonical
+        # failure block (``{code, message}`` — the same shape the
+        # streaming ``response.failed`` event emits). Build via
+        # ``model_dump`` + dict merge so the strict ResponsesResponse
+        # schema doesn't need a separate ``error`` field today (the
+        # streaming surface uses the same pattern).
+        payload = failed_payload.model_dump(exclude_none=True)
+        payload["error"] = {
+            "code": "engine_no_output",
+            "message": (
+                "The engine returned no usable output (no text, reasoning, "
+                "or tool_calls and zero completion tokens). This usually "
+                "indicates a runtime abort before generation produced its "
+                "first token (e.g. a Metal allocation failure). Inspect "
+                "the server logs for the underlying engine error."
+            ),
+        }
+        return Response(
+            content=json.dumps(payload),
+            media_type="application/json",
+        )
+
     elapsed = time.perf_counter() - start_time
     tokens_per_sec = output.completion_tokens / elapsed if elapsed > 0 else 0
     logger.info(
@@ -1047,6 +1135,32 @@ async def _stream_responses(
             },
         },
     )
+    # r6-A R6-H7: ``response.in_progress`` between ``response.created``
+    # and the first ``response.output_item.added`` is mandated by the
+    # OpenAI Responses SSE spec. The official ``openai-python`` SDK
+    # transitions internal state on it (the consumer sets
+    # ``Response.status="in_progress"`` here, separate from the initial
+    # "queued"-style ``created`` event), so skipping the event leaves
+    # the SDK's parser in a half-initialized state until the message
+    # item lands — which can cause SDK consumers to mis-thread the
+    # surface (Sasha R2 captured this on Codex CLI). Emit it
+    # immediately after ``response.created`` and before any text /
+    # tool-call events. The payload mirrors ``created`` because no
+    # generation state has changed yet, just the lifecycle marker.
+    yield _sse(
+        "response.in_progress",
+        {
+            "type": "response.in_progress",
+            "response": {
+                "id": response_id,
+                "object": "response",
+                "created_at": created_at,
+                "status": "in_progress",
+                "model": served_model,
+                "output": [],
+            },
+        },
+    )
     try:
         messages, _images, _videos = extract_multimodal_content(
             openai_request.messages,
@@ -1090,6 +1204,13 @@ async def _stream_responses(
         accumulated_text = ""
         accumulated_raw = ""
         accumulated_structured_tool_calls: list[dict] = []
+        # r6-A R6-C2 codex r1 IMPORTANT: track the last engine-reported
+        # ``finish_reason`` so the post-loop degenerate-output guard can
+        # narrow itself to the ``"length"`` abort signature instead of
+        # firing on every empty / zero-token stream (which would also
+        # cover legitimate immediate-stop / zero-budget /
+        # stop-sequence turns whose ``finish_reason`` is ``"stop"``).
+        last_finish_reason: str | None = None
         tool_filter = StreamingToolCallFilter()
 
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
@@ -1352,6 +1473,12 @@ async def _stream_responses(
                 completion_tokens = output.completion_tokens
             if hasattr(output, "cached_tokens") and output.cached_tokens:
                 cached_tokens = output.cached_tokens
+            # r6-A R6-C2: capture the most-recent ``finish_reason`` from
+            # the engine stream so the post-loop degenerate-output guard
+            # can narrow itself to the ``"length"`` abort signature.
+            _frx = getattr(output, "finish_reason", None)
+            if _frx is not None:
+                last_finish_reason = _frx
 
             engine_tool_calls = getattr(output, "tool_calls", None) or []
             if engine_tool_calls:
@@ -1825,6 +1952,71 @@ async def _stream_responses(
         # post-decode validation is needed in the stream loop;
         # belt-and-braces validation runs in the non-stream path
         # where the buffered output is available.
+
+        # r6-A R6-C2: streaming-path mirror of the non-stream
+        # degenerate-output guard. When the stream emits no user-visible
+        # content (no accumulated text, no tool_calls) AND the engine
+        # credited zero completion tokens AND the engine reported
+        # ``finish_reason="length"``, the underlying engine almost
+        # certainly aborted before producing its first token (e.g. a
+        # ``metal::malloc`` Resource-limit wedge — the R6-C1 sibling).
+        # Pre-fix, the path terminated with ``response.completed`` +
+        # ``status="completed"`` (or ``"incomplete"`` if finish_reason
+        # surfaced as "length") with zero usage, so SDK consumers
+        # walking the stream couldn't distinguish a genuine
+        # zero-budget reply from a runtime abort. Emit
+        # ``response.failed`` instead so the consumer sees the same
+        # clean shutdown signal the OpenAI cloud Responses API uses
+        # for errored streams (mirror of the spec ``response.failed``
+        # event the late-stream tool_choice-unfulfilled path already
+        # emits at line ~1718).
+        #
+        # Codex r1 IMPORTANT (narrowed): require
+        # ``last_finish_reason == "length"`` so the guard doesn't fire
+        # on legitimate immediate-stop / zero-budget / stop-sequence
+        # streams (those report ``"stop"``). Matches the non-stream
+        # guard's narrowing.
+        if (
+            last_finish_reason == "length"
+            and completion_tokens == 0
+            and not (accumulated_text or tool_calls)
+        ):
+            logger.warning(
+                "Responses (stream): engine produced no output "
+                "(accumulated_text empty, no tool_calls, completion_tokens=0); "
+                "surfacing as response.failed"
+            )
+            yield _sse(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": response_id,
+                        "object": "response",
+                        "created_at": created_at,
+                        "status": "failed",
+                        "model": served_model,
+                        "error": {
+                            "code": "engine_no_output",
+                            "message": (
+                                "The engine returned no usable output "
+                                "(no text or tool_calls and zero completion "
+                                "tokens). This usually indicates a runtime "
+                                "abort before generation produced its first "
+                                "token (e.g. a Metal allocation failure). "
+                                "Inspect the server logs for the underlying "
+                                "engine error."
+                            ),
+                        },
+                    },
+                },
+            )
+            elapsed = time.perf_counter() - start_time
+            logger.info(
+                f"Responses (stream, failed): prompt={prompt_tokens} + "
+                f"completion=0 tokens in {elapsed:.2f}s"
+            )
+            return
 
         # response.completed — terminal event. Codex treats a missing
         # one as a hard failure (it logs "stream closed before
