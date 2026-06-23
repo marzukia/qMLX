@@ -45,6 +45,28 @@ def _log_level_choice(value: str) -> str:
     return value.upper()
 
 
+def _auth_feature_str(argv_api_key: str | None) -> str | None:
+    """Banner-side renderer for the ``auth: on`` feature line.
+
+    Returns ``"auth: on"`` when the effective API key (argv or env)
+    is non-empty, else ``None`` so the banner omits the feature.
+
+    Lives at module scope (not inline in ``serve_command``) so the
+    banner gate is directly unit-testable without booting a model.
+    Routes through ``server._resolve_api_key`` — the same SSOT the
+    server-side enforcement reads — so a refactor of the env-var
+    policy cannot drift the banner from the actual auth state.
+    Pre-fix the gate was ``if args.api_key`` directly, which printed
+    ``auth: off`` for env-only sidecars even though
+    ``verify_api_key`` was enforcing (dogfood-v0.8.2 finding #3).
+    """
+    from vllm_mlx import server as _server
+
+    if _server._resolve_api_key(argv_api_key):
+        return "auth: on"
+    return None
+
+
 def _port_arg(value: str) -> int:
     """Argparse ``type`` callable: validate ``--port`` is in [1, 65535].
 
@@ -1176,8 +1198,11 @@ def serve_command(args):
     # Configure server security settings. ``RAPID_MLX_API_KEY`` env var
     # is the secret-friendly form ``rapid-mlx share`` uses to avoid
     # exposing the key in argv; inline ``--api-key`` overrides it for
-    # backwards-compat with existing scripts.
-    server._api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    # backwards-compat with existing scripts. ``_resolve_api_key`` is
+    # the single SSOT — both this entrypoint and the ``vllm_mlx.server``
+    # ``python -m`` entry call into it, so a future policy tweak (e.g.
+    # a deprecation warning when argv is used) lands in one place.
+    server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
 
     # Per-request body-size cap. Resolution order:
@@ -1421,8 +1446,15 @@ def serve_command(args):
         features.append(f"tools: {args.tool_call_parser}{bias_info}")
     if args.reasoning_parser:
         features.append(f"reasoning: {args.reasoning_parser}")
-    if args.api_key:
-        features.append("auth: on")
+    # Banner mirrors the effective auth state via ``_auth_feature_str``
+    # so the test can call the same function. Pre-fix the gate said
+    # ``if args.api_key`` directly — a sidecar that set env-only saw
+    # ``auth: off`` printed even though ``verify_api_key`` was
+    # enforcing. ``_auth_feature_str`` keeps the banner and the actual
+    # enforcement aligned and is directly unit-testable.
+    auth_feature = _auth_feature_str(args.api_key)
+    if auth_feature:
+        features.append(auth_feature)
     if args.rate_limit > 0:
         features.append(f"rate-limit: {args.rate_limit}/min")
     if args.cloud_model:
