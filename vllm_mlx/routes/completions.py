@@ -19,6 +19,7 @@ from ..api.models import (
     PromptTokensDetails,
     Usage,
 )
+from ..api.utils import extract_json_from_response
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
@@ -150,6 +151,129 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 "request returns the generated-token distributions)."
             ),
         )
+    # R10-H4 follow-up (codex r1 MED #4 / #5): ``response_format``
+    # (json_object / json_schema) cleanup strips markdown fences and
+    # the legacy "Just the JSON.\n…" preamble from the wire text. But
+    # ``logprobs`` on the same request is a per-generated-token cursor
+    # that's byte-aligned to the EMITTED text (we pin ``text =
+    # "".join(tokens_arr)`` post-decode so ``text_offset`` stays
+    # spec-correct). The two contracts are incompatible: a fence-stripped
+    # ``text`` no longer matches the per-token concatenation, so either
+    #   (a) ``text_offset`` mis-aligns against ``text`` (silent
+    #       corruption — the original codex finding),
+    #   (b) ``text`` is rebuilt from the raw tokens (undoing the strip —
+    #       what the pre-fix non-stream branch did), OR
+    #   (c) the streaming branch silently skips JSON cleanup when
+    #       logprobs is requested (the pre-fix streaming branch).
+    # None of those are spec-correct. Reject the combination with a 400
+    # so callers pick exactly one knob per request (mirrors how we
+    # already reject ``echo + logprobs`` above).
+    if request.response_format is not None and request.logprobs is not None:
+        rf_type = (
+            getattr(request.response_format, "type", None)
+            if not isinstance(request.response_format, dict)
+            else request.response_format.get("type")
+        )
+        if rf_type in ("json_object", "json_schema"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format=json_object is not supported "
+                            "with logprobs on /v1/completions: the fence/"
+                            "preamble strip rewrites the wire text, which "
+                            "would mis-align text_offset against the per-"
+                            "token cursor. Send response_format and "
+                            "logprobs in separate requests."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_combination",
+                        "param": "response_format",
+                    }
+                },
+            )
+    # R10-J round-3 (codex r3 MED #4): ``response_format=json_object``
+    # / ``json_schema`` combined with ``echo=true`` is a contradiction.
+    # The finalize-time fence-strip only runs when ``not request.echo``
+    # (lines L491 / L693) — by design, since the prompt prefix is NOT
+    # JSON and stripping fences out of it would corrupt the echoed
+    # text. But that means the request is accepted as "yes, JSON
+    # cleanup will run" and then silently returns prompt-prefixed
+    # fenced text, breaking the structured-output contract callers
+    # explicitly opted into. Reject the combination with a 400 so
+    # they pick exactly one knob per request (same pattern as the
+    # response_format + logprobs reject below).
+    if request.response_format is not None and request.echo:
+        rf_type = (
+            getattr(request.response_format, "type", None)
+            if not isinstance(request.response_format, dict)
+            else request.response_format.get("type")
+        )
+        if rf_type in ("json_object", "json_schema"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format is not supported with "
+                            "echo=true on /v1/completions: echo returns "
+                            "the prompt prefix verbatim and JSON "
+                            "cleanup cannot run on prompt text. Send "
+                            "response_format and echo in separate "
+                            "requests."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_combination",
+                        "param": "response_format",
+                    }
+                },
+            )
+    # R10-J (codex r10-G/H r2 HIGH #1): ``response_format={"type":
+    # "json_schema"}`` on the legacy ``/v1/completions`` lane is NOT
+    # actually enforced. The route only post-strips fences via
+    # ``extract_json_from_response`` (R10-H4); it does NOT route through
+    # guided generation (``extract_json_schema_for_guided``) and does
+    # NOT validate the output against the schema. A caller setting
+    # ``json_schema.strict=true`` therefore gets HTTP 200 with
+    # schema-INVALID text — the silent ``strict=true`` violation class
+    # the chat lane already 400s on (see ``routes/chat.py`` r3
+    # BLOCKING #2 + ``is_strict_json_schema`` enforcement).
+    #
+    # Wiring guided generation through the legacy completions lane is
+    # a separate refactor (the lane never had FSM constraints; chat
+    # owns the strict path). The conservative, spec-correct fix is to
+    # reject ``json_schema`` here with a 400 that points callers at
+    # the chat lane. ``json_object`` keeps working — it has no schema
+    # to validate, the fence-strip is sufficient — so this is a
+    # surgical close of the strict-schema gap only.
+    if request.response_format is not None and request.logprobs is None:
+        rf_type = (
+            getattr(request.response_format, "type", None)
+            if not isinstance(request.response_format, dict)
+            else request.response_format.get("type")
+        )
+        if rf_type == "json_schema":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format=json_schema is not supported "
+                            "on the legacy /v1/completions lane: this "
+                            "route does not route through guided "
+                            "generation and cannot enforce strict=true "
+                            "schema validation. Use /v1/chat/completions "
+                            "for json_schema (it owns the strict path), "
+                            "or send response_format=json_object on "
+                            "/v1/completions if loose JSON is acceptable."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_response_format",
+                        "param": "response_format",
+                    }
+                },
+            )
     engine = get_engine(request.model)
 
     # Pre-flight admission gate (C4). Reservation is released by the
@@ -387,6 +511,28 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             if request.echo:
                 final_text = prompt + final_text
 
+            # R10-H4 (R9-H2 carry) — chat-lane parity for
+            # ``response_format=json_object`` / ``json_schema`` on the
+            # sync ``/v1/completions`` path. Pre-fix the field was
+            # silently dropped (PR #844 wired the streaming fence-strip
+            # only on /v1/chat/completions); vlad r10-R1 + bo r10-R1
+            # confirmed the leak with markdown ``` ```json `` fences in
+            # the ``text`` reply. The chat lane peels the wrapper via
+            # ``extract_json_from_response`` at finalize time; mirror
+            # that here BEFORE the legacy-logprobs alignment block so
+            # the ``text_offset`` cursor lines up against the wire-
+            # canonical (post-fence-strip) ``text`` field. Echo
+            # responses are passed through unchanged because the prompt
+            # prefix is NOT JSON.
+            if request.response_format and final_text and not request.echo:
+                rf_type = (
+                    getattr(request.response_format, "type", None)
+                    if not isinstance(request.response_format, dict)
+                    else request.response_format.get("type")
+                )
+                if rf_type in ("json_object", "json_schema"):
+                    final_text = extract_json_from_response(final_text)
+
             # Build the legacy logprobs payload per OpenAI spec: four
             # parallel arrays keyed positionally per generated token.
             # ``echo + logprobs`` is rejected upstream (see route
@@ -559,6 +705,37 @@ async def stream_completion(
     # down at the chunk-build site.
     _final_usage = None
 
+    # R10-H4 (R9-H2 carry) — chat-lane parity for json-mode streaming.
+    # Pre-fix the streaming path emitted raw tokens that decoded as
+    # ``Just the JSON.\nAnswer:\n{"answer":42}\n\n```json\n{"answer":42}\n``` ``
+    # joined on the wire (vlad r10-R1 + bo r10-R1). The chat lane runs
+    # a full state-machine fence-strip in ``StreamingPostProcessor``;
+    # the legacy completions surface uses a simpler model — buffer the
+    # text chunks AND run ``extract_json_from_response`` at finalize,
+    # emitting one consolidated content delta + the finish marker.
+    # Trade-off: clients lose per-token streaming granularity in
+    # json-mode (acceptable; structured-output clients don't pipeline
+    # partial JSON anyway), but they ALSO never see the markdown
+    # wrapper that the non-stream path strips. Echo / logprobs flows
+    # bypass this scrub: echo prepends the raw prompt (not JSON), and
+    # legacy logprobs needs per-chunk text alignment with the tokens
+    # array — both are incompatible with the post-hoc fence-strip.
+    # ``want_logprobs`` is left in the gate as defense-in-depth: the
+    # route-entry validator already 400s ``response_format + logprobs``,
+    # so this branch is unreachable on the wire. Keep it so a future
+    # refactor that loosens the upstream gate doesn't silently re-open
+    # the streaming bypass codex r1 MED #5 originally flagged.
+    _json_mode = False
+    if request.response_format and not request.echo and not want_logprobs:
+        rf_type = (
+            getattr(request.response_format, "type", None)
+            if not isinstance(request.response_format, dict)
+            else request.response_format.get("type")
+        )
+        _json_mode = rf_type in ("json_object", "json_schema")
+    _buffered_text = ""
+    _buffered_finish_reason: str | None = None
+
     async for output in engine.stream_generate(
         prompt=prompt,
         max_tokens=_resolve_max_tokens(request.max_tokens),
@@ -567,6 +744,13 @@ async def stream_completion(
         stop=request.stop,
         **extended_kwargs,
     ):
+        if _json_mode:
+            # Buffer the text and finish_reason; emit at stream end.
+            _buffered_text += output.new_text or ""
+            if output.finished:
+                _final_usage = get_usage(output)
+                _buffered_finish_reason = output.finish_reason
+            continue
         choice = {
             "index": 0,
             "text": output.new_text,
@@ -629,6 +813,33 @@ async def stream_completion(
         if output.finished:
             _final_usage = get_usage(output)
         yield f"data: {json.dumps(data)}\n\n"
+
+    # R10-H4: json-mode buffered emit. Run ``extract_json_from_response``
+    # on the assembled text (mirrors the non-stream sync path), then
+    # ship a single consolidated text delta followed by a finish
+    # marker. The chat lane's streaming state-machine variant is
+    # overkill here — legacy completions has no reasoning/tool channel
+    # and clients consuming json-mode don't expect partial-JSON
+    # streaming anyway.
+    if _json_mode:
+        cleaned = extract_json_from_response(_buffered_text) if _buffered_text else ""
+        # Emit content + finish in a single chunk for symmetry with
+        # the non-stream sync path; if the buffer is empty (model
+        # produced no output), still emit a finish-only chunk so the
+        # client sees the terminal marker.
+        final_choice = {
+            "index": 0,
+            "text": cleaned,
+            "finish_reason": _buffered_finish_reason or "stop",
+        }
+        final_data = {
+            "id": completion_id,
+            "object": "text_completion",
+            "created": created_ts,
+            "model": model_name,
+            "choices": [final_choice],
+        }
+        yield f"data: {json.dumps(final_data)}\n\n"
 
     # Dedicated trailing usage chunk (OpenAI spec — empty ``choices``,
     # populated ``usage``). Only emitted when the caller opted in via
