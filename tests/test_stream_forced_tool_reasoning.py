@@ -336,6 +336,119 @@ class TestForcedToolChoiceFilter:
         )
         assert len(out) == 1
 
+    def test_drops_continuation_with_finalized_non_object_arguments(self):
+        """r10-J round-3 — codex r3 HIGH #1.
+
+        Pre-fix the ``anchor_name is None`` branch passed every
+        continuation fragment through unconditionally. Some streaming
+        parsers admit a name-only anchor first and then send the
+        arguments in a follow-up continuation as a *finalized
+        non-object* root (e.g. ``"20230805"``, a bare date string).
+        The cap layer routed those into the admitted anchor,
+        delivering schema-violating ``arguments`` to clients despite
+        ``tool_choice="required"`` (or a forced named choice).
+
+        Post-fix: the same object-root gate the finalized-anchor branch
+        uses now fires on continuation fragments too. Partial-fragment
+        JSON (unbalanced braces) is still passed through — covered by
+        ``test_passes_argument_fragment_continuation`` above.
+        """
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        # Continuation delta with FULLY-FORMED non-object JSON. Pre-fix
+        # this passed through; post-fix it must be dropped.
+        out = pp._apply_forced_tool_choice_filter(
+            [{"index": 0, "function": {"arguments": '"20230805"'}}]
+        )
+        assert out == [], (
+            "Finalized non-object continuation arguments must be dropped "
+            "(codex r10-J r3 HIGH #1)."
+        )
+        assert pp._no_index_last_dropped is True
+
+    def test_passes_bare_text_continuation_for_merge_layer(self):
+        """r10-J round-5 trade-off (codex r5 HIGH #1).
+
+        Round-3 wrongly dropped bare unquoted text continuations at
+        the streaming-gate layer. Round-5 narrowed the continuation
+        predicate to ONLY drop on confirmed JSON non-object roots —
+        bare prose ``Paris output output`` fails ``json.loads`` and
+        is therefore indistinguishable at this layer from a middle
+        fragment of a legitimate split JSON string. We must pass it
+        through so split-arg streams aren't truncated.
+
+        Safety net: the cap+merge layer assembles fragments back
+        into the full ``arguments`` string of the admitted anchor,
+        and the finalized-anchor gate runs at finalize time over
+        that assembled string. If the merged result is still bare
+        prose (no closing brace ever arrived), the finalize-side
+        ``_forced_tool_choice_arguments_violate_object_root`` (which
+        retains the strict balanced-but-broken classifier) drops
+        the full call before it ships to the client. Coverage of
+        that finalize-side drop lives in the cross-format fallback
+        tests under TestStreamForcedReasoningEndToEnd below.
+        """
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": "Paris output output"}}]
+        )
+        assert len(out) == 1
+        assert pp._no_index_last_dropped is False
+
+    def test_passes_closing_fragment_of_split_args(self):
+        """r10-J round-5 — codex r5 HIGH #1 regression guard.
+
+        Streaming parsers commonly split JSON arguments across
+        deltas: first ``{"city":"Pa``, then ``ris"}``. The opening
+        fragment has more ``{`` than ``}`` and the round-3 helper
+        passes it through (unbalanced = partial). The CLOSING
+        fragment has more ``}`` than ``{`` — the pre-round-5 helper
+        wrongly classified it as "balanced-but-broken garbage" and
+        dropped it, truncating an otherwise-valid forced or
+        required tool call.
+
+        Post-round-5: continuations use the narrower
+        ``_continuation_arguments_definitively_non_object`` predicate
+        which only drops on confirmed JSON-non-object roots. Both
+        halves of a split must pass through.
+        """
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        # Opening fragment — { > } — already-known-good.
+        out_open = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": '{"city":"Pa'}}]
+        )
+        assert len(out_open) == 1, "opening fragment wrongly dropped"
+        # Closing fragment — } > { — REGRESSION from round-3 if dropped.
+        out_close = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": 'ris"}'}}]
+        )
+        assert len(out_close) == 1, (
+            "closing fragment of split JSON args wrongly dropped — the "
+            "continuation predicate must not over-rotate balanced-but-"
+            "broken garbage onto legitimate split-JSON continuations "
+            "(codex r10-J r5 HIGH #1)."
+        )
+
+    def test_passes_middle_fragment_of_three_way_split(self):
+        """Defense-in-depth: a middle fragment like ``"PARI`` (no
+        braces at all, bare bytes mid-string) must also pass — the
+        cap+merge layer is what reassembles the full string."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": '"PARI'}}]
+        )
+        assert len(out) == 1
+
+    def test_drops_continuation_with_array_root_arguments(self):
+        """Array-root variant — ``[1,2,3]`` parses as JSON but the
+        spec requires an object. Continuation fragments with array
+        roots must be dropped just like finalized anchors with array
+        roots are (covered earlier in this class)."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": "[1,2,3]"}}]
+        )
+        assert out == []
+
     def test_no_op_when_no_forced_choice(self):
         """``auto`` mode — the filter MUST be a no-op so multi-call
         flows and other tools still work."""
@@ -346,6 +459,91 @@ class TestForcedToolChoiceFilter:
         ]
         out = pp._apply_forced_tool_choice_filter(calls)
         assert out == calls
+
+
+class TestRequiredModeFilter:
+    """r10-J round-4 — codex r4 HIGH #1.
+
+    Required-mode (``tool_choice="required"``) admits any tool but
+    every recovered call must still produce a JSON-object
+    ``arguments`` string. Pre-fix the streaming filter caught this
+    via ``_apply_forced_tool_choice_filter`` (object-root gate
+    bypasses ``forced_name is None``), but the finalize fallback
+    paths in ``postprocessor.py:3061+`` only applied the gate when
+    ``_forced_tool_choice_name()`` returned a named function — so
+    fallback-recovered ``arguments="20230805"`` reached the client
+    despite required semantics.
+
+    Round-4 added a ``_is_tool_choice_required()`` arm to BOTH the
+    ``extract_tool_calls`` recovery branch and the cross-format
+    fallback branch. These tests pin both with direct calls to
+    ``_apply_forced_tool_choice_filter`` (the streaming twin of the
+    finalize gate, sharing the same object-root helper) — full
+    finalize-path coverage is exercised by the broader integration
+    suite.
+    """
+
+    @staticmethod
+    def _required_request():
+        return {
+            "tool_choice": "required",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {"type": "object"},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "parameters": {"type": "object"},
+                    },
+                },
+            ],
+        }
+
+    def test_required_mode_helper_detects_required(self):
+        pp = StreamingPostProcessor(_make_cfg(), request=self._required_request())
+        assert pp._is_tool_choice_required() is True
+
+    def test_required_mode_helper_skips_auto(self):
+        pp = StreamingPostProcessor(_make_cfg(), request=_auto_request())
+        assert pp._is_tool_choice_required() is False
+
+    def test_required_mode_drops_primitive_arguments_via_streaming_gate(self):
+        """The streaming gate (``_apply_forced_tool_choice_filter``)
+        already drops primitive-args calls under required mode — this
+        is the contract the finalize fallback now mirrors. Pins that
+        the gate engaged via the object-root check is intact regardless
+        of whether the call carries a name (required allows ANY name).
+        """
+        pp = StreamingPostProcessor(_make_cfg(), request=self._required_request())
+        out = pp._apply_forced_tool_choice_filter(
+            [
+                # Required mode, bare-string args — drop.
+                {"function": {"name": "search", "arguments": '"20230805"'}},
+                # Required mode, object args — keep.
+                {"function": {"name": "search", "arguments": '{"q":"x"}'}},
+            ]
+        )
+        assert len(out) == 1
+        assert out[0]["function"]["arguments"] == '{"q":"x"}'
+
+    def test_required_mode_continuation_finalized_non_object_dropped(self):
+        """Continuation fragment with FINALIZED non-object root under
+        required mode — round-3 already extended the
+        anchor_name=None branch to drop these. Pin under required-mode
+        request shape (codex r4 specifically called out required as the
+        forced_name-None case)."""
+        pp = StreamingPostProcessor(_make_cfg(), request=self._required_request())
+        out = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": '"20230805"'}}]
+        )
+        assert out == []
+        assert pp._no_index_last_dropped is True
 
     def test_passes_anchor_with_no_arguments_yet(self):
         """First chunk often carries just ``name`` + ``id`` with empty
@@ -486,6 +684,61 @@ class TestStreamForcedReasoningEndToEnd:
             for tc in (ev.tool_calls or [])
         ]
         assert len(all_calls) == 1, f"finalize leaked a scratch call: {all_calls!r}"
+        fn = all_calls[0].get("function") or {}
+        parsed = json.loads(fn["arguments"])
+        assert isinstance(parsed, dict)
+        assert parsed.get("city") == "Paris"
+
+    def test_finalize_extract_drops_primitive_args_under_required_mode(self):
+        """r10-J round-4 finalize-path coverage (codex r6 LOW #6).
+
+        Required-mode twin of
+        ``test_finalize_extract_drops_same_name_primitive_args`` above.
+        Pre-round-4 the finalize ``extract_tool_calls`` branch only
+        applied the object-root gate when ``_forced_tool_choice_name``
+        was set. For ``tool_choice="required"`` the forced name is
+        None and the gate was disabled, so fallback-recovered calls
+        with primitive args reached the client.
+
+        Pin that after round-4 the required-mode arm of the
+        finalize ``extract_tool_calls`` branch drops the scratch
+        call and keeps only the real one.
+        """
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        required_request = {
+            "tool_choice": "required",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    },
+                }
+            ],
+        }
+        pp = StreamingPostProcessor(cfg, request=required_request)
+        pp.reset()
+        # Buffer carries BOTH the scratch primitive-args call AND the
+        # real object-args call — mirrors the forced-name case.
+        pp.tool_accumulated_text = (
+            '<tool_call>\n{"name": "get_weather", "arguments": 1234567890}\n</tool_call>\n'
+            '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
+        )
+        events = pp.finalize()
+        all_calls = [
+            tc
+            for ev in events
+            if ev.type == "tool_call"
+            for tc in (ev.tool_calls or [])
+        ]
+        assert len(all_calls) == 1, (
+            f"required-mode finalize leaked a scratch call: {all_calls!r}"
+        )
         fn = all_calls[0].get("function") or {}
         parsed = json.loads(fn["arguments"])
         assert isinstance(parsed, dict)
