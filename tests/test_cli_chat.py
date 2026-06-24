@@ -1076,11 +1076,15 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
         def kill(self):
             self._terminated = True
 
-    def _fake_spawn(model, log_path, served_name=None, *, register_in=None):
+    def _fake_spawn(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
         proc = _FakeProc(model)
         spawned.append(proc)
         if register_in is not None:
             register_in.append(proc)
+        if log_handle is not None:
+            log_handle.release()
         return proc, f"http://127.0.0.1:{port}"
 
     wait_calls = {"n": 0}
@@ -1736,7 +1740,9 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
     # --- Case 1: empty log → unlinked on swap ---
     call_n = {"n": 0}
 
-    def _spawn_empty(model, log_path, served_name=None, *, register_in=None):
+    def _spawn_empty(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
         # First spawn: backed by empty_log (the one that should be
         # unlinked when swapped out). Second spawn: a noop replacement.
         call_n["n"] += 1
@@ -1748,6 +1754,8 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
             p = _FakeProc(tmp)
         if register_in is not None:
             register_in.append(p)
+        if log_handle is not None:
+            log_handle.release()
         return p, f"http://127.0.0.1:{port_e}"
 
     monkeypatch.setattr(cli, "_spawn_chat_server", _spawn_empty)
@@ -1769,7 +1777,9 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
     # --- Case 2: full log → preserved on swap ---
     call_n2 = {"n": 0}
 
-    def _spawn_full(model, log_path, served_name=None, *, register_in=None):
+    def _spawn_full(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
         call_n2["n"] += 1
         if call_n2["n"] == 1:
             p = _FakeProc(full_log)
@@ -1779,6 +1789,8 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
             p = _FakeProc(tmp)
         if register_in is not None:
             register_in.append(p)
+        if log_handle is not None:
+            log_handle.release()
         return p, f"http://127.0.0.1:{port_f}"
 
     monkeypatch.setattr(cli, "_spawn_chat_server", _spawn_full)
@@ -1914,10 +1926,18 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
 
     class _FakePopen:
         def __init__(
-            self, cmd, *, stdout=None, stderr=None, start_new_session=False, env=None
+            self,
+            cmd,
+            *,
+            stdout=None,
+            stderr=None,
+            start_new_session=False,
+            env=None,
+            preexec_fn=None,
         ):
             captured["env"] = env
             captured["cmd"] = cmd
+            captured["preexec_fn"] = preexec_fn
 
         def poll(self):
             return None
@@ -2257,3 +2277,224 @@ def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
         cli.main()
     err = capsys.readouterr().err
     assert "--no-thi" in err or "unrecognized" in err.lower()
+
+
+def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tmp_path):
+    """Codex rounds 1 + 5 + pr_validate r2 — the
+    register/attribute-set/release handoff AND the ``Popen()`` call
+    itself must run with SIGTERM/SIGINT BLOCKED (not ignored).
+
+    Codex round-1 BLOCKING #1: a signal landing between
+    ``_active_procs.append`` and the caller's ``handle.release()``
+    would let ``_teardown_proc``'s keep-non-empty-log policy be undone
+    by the context manager's ``finally``.
+
+    Codex round-5 BLOCKING #1: the mask was installed AFTER ``Popen()``
+    returned. A signal landing between ``Popen()`` and the mask going
+    up would let ``_cleanup()`` walk an empty ``_active_procs`` and
+    ``sys.exit``, orphaning the just-spawned child.
+
+    Pr_validate round-2 BLOCKING: the prior fix used
+    ``signal.signal(SIG_IGN)``. Signal *disposition* is inherited by
+    forked children — so the spawned server inherited ``SIG_IGN`` and
+    refused to honour normal shutdown signals. The fix is
+    ``pthread_sigmask(SIG_BLOCK, ...)``, which only affects the
+    parent's thread mask and is reset to the default at ``exec``.
+
+    This test asserts (under fake socket/Popen + spy on
+    ``pthread_sigmask``):
+
+    1. SIGTERM and SIGINT are in the BLOCKED set BEFORE ``Popen()``
+       runs.
+    2. ``Popen()`` happens while the signals are blocked.
+    3. ``register_in.append`` happens while blocked.
+    4. ``handle.release()`` happens while blocked.
+    5. The original mask is restored after the critical section.
+    6. The installed signal HANDLER (disposition) is never changed —
+       so children inherit the parent's default, NOT ``SIG_IGN``.
+    """
+    import signal as _signal
+
+    from vllm_mlx._tempfile_safe import managed_tempfile_path
+
+    # Track every ``pthread_sigmask`` call. Each milestone reads the
+    # CURRENT blocked set so we can assert it includes SIGTERM+SIGINT.
+    sigmask_calls: list[tuple[int, set, set]] = []
+    real_pthread_sigmask = _signal.pthread_sigmask
+
+    def _spy_pthread_sigmask(how, mask):
+        # Capture the mask BEFORE applying.
+        prev = real_pthread_sigmask(how, mask)
+        sigmask_calls.append((how, set(mask), set(prev)))
+        return prev
+
+    # Also spy on signal.signal — for this test it MUST NOT change the
+    # SIGTERM/SIGINT disposition.
+    signal_disposition_changes: list[tuple[int, object]] = []
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        signal_disposition_changes.append((signum, handler))
+        return real_signal(signum, handler)
+
+    milestones: dict[str, set] = {}
+
+    def _current_blocked() -> set:
+        # ``SIG_BLOCK`` with an empty set queries the current mask
+        # without changing it.
+        return set(real_pthread_sigmask(_signal.SIG_BLOCK, set()))
+
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54322)
+
+    captured_preexec: dict = {}
+
+    class _FakePopen:
+        def __init__(
+            self,
+            cmd,
+            *,
+            stdout=None,
+            stderr=None,
+            start_new_session=False,
+            env=None,
+            preexec_fn=None,
+        ):
+            milestones["popen"] = _current_blocked()
+            captured_preexec["fn"] = preexec_fn
+
+        def poll(self):
+            return None
+
+    class _SpyList(list):
+        def append(self, item):
+            milestones["append"] = _current_blocked()
+            super().append(item)
+
+    from vllm_mlx._tempfile_safe import _TempfileHandle
+
+    class _SpyHandle(_TempfileHandle):
+        def release(self):
+            milestones["release"] = _current_blocked()
+            return super().release()
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    monkeypatch.setattr(_signal, "pthread_sigmask", _spy_pthread_sigmask)
+    monkeypatch.setattr(_signal, "signal", _spy_signal)
+
+    register_in: list = _SpyList()
+    with managed_tempfile_path(
+        prefix="rapid-mlx-chat-test-", suffix=".log", dir=str(tmp_path)
+    ) as real_handle:
+        handle = _SpyHandle(real_handle.path)
+        assert real_handle.released is False
+        proc, _base_url = cli._spawn_chat_server(
+            "qwen3.5-4b-4bit",
+            handle.path,
+            register_in=register_in,
+            log_handle=handle,
+        )
+        assert handle.released is True, (
+            "handoff race: handle was not released inside the "
+            "spawn's signal-blocked critical section"
+        )
+        assert proc in register_in
+        assert getattr(proc, "_rapid_mlx_log_path", None) == handle.path
+        # Clean up the real handle too so the surrounding context
+        # exits cleanly.
+        real_handle.release()
+        import os as _os
+
+        try:
+            _os.unlink(real_handle.path)
+        except OSError:
+            pass
+
+    # Each milestone MUST have had both signals in the blocked set.
+    for name in ("popen", "append", "release"):
+        assert name in milestones, f"milestone {name!r} never ran"
+        blocked = milestones[name]
+        assert _signal.SIGTERM in blocked, (
+            f"{name}: SIGTERM not blocked; blocked={blocked}"
+        )
+        assert _signal.SIGINT in blocked, (
+            f"{name}: SIGINT not blocked; blocked={blocked}"
+        )
+
+    # The mask must have been restored — the LAST sigmask call should
+    # be a ``SIG_SETMASK`` to the previous mask. The previous mask did
+    # NOT include SIGTERM/SIGINT (the test process didn't block them),
+    # so SIGTERM/SIGINT are NOT in the post-critical-section blocked
+    # set.
+    final_blocked = _current_blocked()
+    assert _signal.SIGTERM not in final_blocked, (
+        f"SIGTERM still blocked after spawn returned; blocked={final_blocked}"
+    )
+    assert _signal.SIGINT not in final_blocked, (
+        f"SIGINT still blocked after spawn returned; blocked={final_blocked}"
+    )
+
+    # Pr_validate round-2 BLOCKING: the disposition for SIGTERM/SIGINT
+    # MUST NOT have been touched. If we set SIG_IGN, the just-spawned
+    # child would inherit it. ``signal.signal`` is allowed to be called
+    # for OTHER signums (e.g. by setup hooks elsewhere); we only care
+    # that SIGTERM and SIGINT were never installed as SIG_IGN by the
+    # spawn helper itself.
+    sig_ign_changes = [
+        (s, h)
+        for s, h in signal_disposition_changes
+        if s in (_signal.SIGTERM, _signal.SIGINT) and h is _signal.SIG_IGN
+    ]
+    assert not sig_ign_changes, (
+        "Pr_validate round-2 BLOCKING regression: spawn used "
+        "signal.signal(SIG_IGN) for SIGTERM/SIGINT — child server "
+        "would inherit the ignored disposition and refuse normal "
+        f"shutdown. changes={sig_ign_changes}"
+    )
+
+    # Pr_validate round-3 BLOCKING: a preexec_fn MUST be passed to
+    # Popen() AND it must, when called, unblock SIGTERM and SIGINT.
+    # Without it the child inherits the blocked mask and refuses to
+    # honour normal shutdown signals.
+    preexec_fn = captured_preexec.get("fn")
+    assert preexec_fn is not None, (
+        "Pr_validate round-3 BLOCKING regression: spawn did not pass "
+        "preexec_fn to Popen() — the child will inherit the blocked "
+        "signal mask and ignore SIGTERM/SIGINT."
+    )
+    # Simulate the child's post-fork pre-exec moment: block SIGTERM
+    # ourselves (as the spawn does in the parent), then call the
+    # preexec_fn and observe that the signals are unblocked.
+    saved_mask = real_pthread_sigmask(
+        _signal.SIG_BLOCK, {_signal.SIGTERM, _signal.SIGINT}
+    )
+    try:
+        # ``preexec_fn`` runs in the child after fork. Calling it here
+        # simulates what it would do to the child's mask.
+        preexec_fn()
+        # After preexec_fn, SIGTERM and SIGINT MUST NOT be in the
+        # blocked set.
+        after = set(real_pthread_sigmask(_signal.SIG_BLOCK, set()))
+        assert _signal.SIGTERM not in after, (
+            f"preexec_fn did not unblock SIGTERM; mask after={after}"
+        )
+        assert _signal.SIGINT not in after, (
+            f"preexec_fn did not unblock SIGINT; mask after={after}"
+        )
+    finally:
+        # Restore the simulated parent state.
+        real_pthread_sigmask(_signal.SIG_SETMASK, saved_mask)
