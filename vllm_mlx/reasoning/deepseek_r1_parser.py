@@ -120,10 +120,26 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         # Check if any tags are in the current text
         has_tags = self.start_token in current_text or self.end_token in current_text
 
-        # No tags seen yet and past threshold → treat as content
+        # No tags seen yet and past threshold → treat as content.
+        # Codex round-4 BLOCKING finding #1 + round-5 finding #1:
+        # the under-threshold phase may have opened the tool_call
+        # buffer OR withheld a partial ``<tool_call>`` opener in
+        # ``_reasoning_carry`` when an opener straddled the
+        # threshold boundary. Both must be reattached to the
+        # threshold-crossing content delta so no buffered bytes
+        # are stranded and a split opener reassembles correctly.
         if not has_tags and not self._saw_any_tag:
             if len(current_text) >= self.NO_TAG_CONTENT_THRESHOLD:
-                return DeltaMessage(content=delta_text)
+                prefix_parts: list[str] = []
+                if self._reasoning_carry:
+                    prefix_parts.append(self._reasoning_carry)
+                    self._reasoning_carry = ""
+                if self._in_tool_call and self._tool_call_buffer:
+                    prefix_parts.append(self._tool_call_buffer)
+                    self._tool_call_buffer = ""
+                    self._in_tool_call = False
+                merged_content = "".join(prefix_parts) + delta_text
+                return DeltaMessage(content=merged_content)
             # Under threshold: delegate to base (defaults to reasoning
             # for early implicit mode, will be corrected by finalize)
 

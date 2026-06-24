@@ -256,16 +256,69 @@ def finalize_streaming_compat(
             if msg is None:
                 return flush
             # Merge: subclass content + flushed tool_call; subclass
-            # reasoning preserved (the flush is a content-only emit).
+            # reasoning preserved (the flush is a content-only emit
+            # for the tool-call buffer plus an optional reasoning-only
+            # emit for an unresolved ``_reasoning_carry``).
+            #
+            # Dedup guard (codex round-3 BLOCKING): the subclass
+            # ``finalize_streaming`` re-derives its emission from
+            # ``accumulated_text`` and has no knowledge of the
+            # streaming filter's buffered state. For Qwen3 at natural
+            # EOS the override returns ``DeltaMessage(content=cleaned)``
+            # where ``cleaned`` already includes the buffered
+            # ``<tool_call>`` bytes; at ``finish_reason="length"`` it
+            # returns ``DeltaMessage(reasoning=cleaned)`` with the
+            # buffered bytes routed to reasoning. Appending
+            # ``flush.content`` blindly would duplicate the tool_call
+            # block (natural EOS) or leak it into BOTH channels
+            # (length truncation). Strip the exact buffered span from
+            # ``msg.content``/``msg.reasoning`` before merging — the
+            # flush owns the wire emission of the tool-call buffer.
+            subclass_content = msg.content
+            subclass_reasoning = msg.reasoning
+            if flush.content:
+                # The flush content is the buffered tool-call XML/JSON
+                # block — ALWAYS the trailing in-progress call (the
+                # only unclosed one at stream end). Use ``rfind`` and
+                # only strip when the match is at the END of the
+                # subclass output (modulo trailing whitespace). An
+                # earlier completed call may share the same prefix
+                # (e.g. two ``<tool_call>\n{"name": "f"…`` blocks);
+                # a first-occurrence ``replace`` could corrupt that
+                # earlier block instead of removing the trailing
+                # buffered duplicate — codex round-4 finding #7.
+                def _strip_trailing(buf: str, span: str) -> str | None:
+                    idx = buf.rfind(span)
+                    if idx < 0:
+                        return buf or None
+                    # Trailing modulo whitespace: any chars after the
+                    # match must be only whitespace.
+                    if buf[idx + len(span) :].strip() != "":
+                        return buf or None
+                    stripped = buf[:idx] + buf[idx + len(span) :]
+                    return stripped or None
+
+                if subclass_content:
+                    subclass_content = _strip_trailing(subclass_content, flush.content)
+                if subclass_reasoning:
+                    subclass_reasoning = _strip_trailing(
+                        subclass_reasoning, flush.content
+                    )
             merged_content_parts: list[str] = []
-            if msg.content:
-                merged_content_parts.append(msg.content)
+            if subclass_content:
+                merged_content_parts.append(subclass_content)
             if flush.content:
                 merged_content_parts.append(flush.content)
             merged_content = "".join(merged_content_parts) or None
+            merged_reasoning_parts: list[str] = []
+            if subclass_reasoning:
+                merged_reasoning_parts.append(subclass_reasoning)
+            if flush.reasoning:
+                merged_reasoning_parts.append(flush.reasoning)
+            merged_reasoning = "".join(merged_reasoning_parts) or None
             return DeltaMessage(
                 role=msg.role,
-                reasoning=msg.reasoning,
+                reasoning=merged_reasoning,
                 content=merged_content,
             )
     return msg
