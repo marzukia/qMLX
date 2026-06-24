@@ -36,14 +36,22 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .._test_env import is_dep_declaration_file
 from ..base import Step, StepResult
 from ..context import Context
 
 # Files that gain code-execution capability when modified — install
-# hooks, CI config, anything that runs unattended.
+# hooks, CI config, anything that runs unattended. ``pyproject.toml``
+# and the ``requirements*.txt`` family are NOT listed here directly;
+# they're matched via ``_test_env.is_dep_declaration_file`` (shared
+# truth source — codex r2 BLOCKING was that diverging lists let
+# ``requirements-test.txt`` through this step but not the
+# ``test_env_check`` gate). The combined ``_is_hook_file`` matcher
+# below is what the SupplyChainStep uses. External-author PRs
+# touching any of these get [BLOCKING] BEFORE any downstream
+# auto-installing step runs — see threat-model section of
+# ``scripts/pr_validate/README.md``.
 HOOK_PATHS = (
-    "setup.py",
-    "setup.cfg",
     "conftest.py",  # runs on every `pytest`
     "tests/conftest.py",
     ".github/workflows/",
@@ -53,7 +61,24 @@ HOOK_PATHS = (
     "homebrew-rapid-mlx/",
 )
 
-# Files that declare project deps. Any addition gets pip-audited.
+
+def _is_hook_file(path: str) -> bool:
+    """Combined matcher: dep-declaration files (shared with
+    ``_test_env.is_dep_declaration_file``) PLUS the explicit
+    ``HOOK_PATHS`` set. Centralized so we never again have two lists
+    that drift apart."""
+    if is_dep_declaration_file(path):
+        return True
+    return any(path == p or path.startswith(p) for p in HOOK_PATHS)
+
+
+# Backwards-compatibility alias — the dep-declaration matcher now
+# lives in ``_test_env.is_dep_declaration_file`` (shared with
+# ``test_env_check``); kept as a constant here so existing call
+# sites keep working until they're migrated to the matcher. New
+# code should call ``is_dep_declaration_file(path)`` directly so
+# the ``requirements*.txt`` prefix coverage is picked up
+# automatically.
 DEP_DECLARATION_FILES = (
     "pyproject.toml",
     "requirements.txt",
@@ -120,11 +145,10 @@ class SupplyChainStep(Step):
         # 1. Hook-file modifications get an automatic flag — not a
         # FAIL on its own (legitimate workflow updates exist), but
         # surfaced loudly so the human knows to read carefully.
-        hook_files = [
-            f
-            for f in ctx.files_changed
-            if any(f == p or f.startswith(p) for p in HOOK_PATHS)
-        ]
+        # ``_is_hook_file`` unifies HOOK_PATHS with the dep-
+        # declaration matcher from ``_test_env`` so the two lists
+        # can't drift (codex r2 BLOCKING).
+        hook_files = [f for f in ctx.files_changed if _is_hook_file(f)]
         if hook_files:
             # Even an "innocent-looking" hook change is worth surfacing.
             # External-author + hook change = strong reason to read.
@@ -259,8 +283,13 @@ def _extract_added_deps(diff: str, files_changed: list[str]) -> list[str]:
     """Naive but cautious: find lines in dep-declaration files that
     look like `name = "version"` or `name>=ver` and weren't there
     before. We don't try to parse pyproject.toml fully — too many
-    formats. Just regex the additions."""
-    if not any(f in DEP_DECLARATION_FILES for f in files_changed):
+    formats. Just regex the additions.
+
+    Uses ``is_dep_declaration_file`` so every ``requirements*.txt``
+    variant gets pip-audited, not just the three legacy names —
+    codex r2 BLOCKING was that ``requirements-test.txt`` slipped
+    through the previous exact-match list."""
+    if not any(is_dep_declaration_file(f) for f in files_changed):
         return []
 
     deps: list[str] = []
@@ -268,7 +297,7 @@ def _extract_added_deps(diff: str, files_changed: list[str]) -> list[str]:
     for line in diff.splitlines():
         if line.startswith("+++ b/"):
             path = line[6:]
-            in_dep_file = path in DEP_DECLARATION_FILES
+            in_dep_file = is_dep_declaration_file(path)
             continue
         if not in_dep_file or not line.startswith("+"):
             continue
