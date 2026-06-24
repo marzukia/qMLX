@@ -18,6 +18,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from .constants import REASONING_CUTOFF_SENTINEL
 from .models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -489,8 +490,26 @@ def openai_to_responses(
             # the wider check (``downstream_output_seen`` covers
             # text OR tool_calls) — this brings the non-stream
             # surface into parity.
+            #
+            # Issue #858 → PR #860 followup: the chat-route helper
+            # ``_apply_reasoning_cutoff_notice`` is called BEFORE this
+            # adapter on the non-stream path; when the env default
+            # restored the sentinel, ``message.content`` carried the
+            # literal ``REASONING_CUTOFF_SENTINEL`` text on every
+            # mid-think length cutoff. That sentinel is a UX fallback
+            # for clients that only render output_text — it is NOT
+            # "real downstream output" from the model, so it must not
+            # flip ``reasoning_item_status`` from ``incomplete`` to
+            # ``completed``. Strip the sentinel before the empty check
+            # so the non-stream surface matches the streaming surface's
+            # ``reasoning_block_closed`` predicate (which never sees
+            # the sentinel because streaming injects it as a terminal
+            # delta, never as the parser's content channel).
+            content_for_downstream_check = (choice.message.content or "").strip()
+            if content_for_downstream_check == REASONING_CUTOFF_SENTINEL:
+                content_for_downstream_check = ""
             downstream_output_seen = bool(
-                (choice.message.content or "").strip() or choice.message.tool_calls
+                content_for_downstream_check or choice.message.tool_calls
             )
             reasoning_item_status = (
                 "incomplete"
