@@ -2142,6 +2142,22 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
+        # R12-M2 (codex round-1 P2 follow-up to Mira r12 R-1/R-2):
+        # honour ``enable_thinking`` on the guided path. Pre-fix this
+        # call hard-coded ``enable_thinking=None``, which silently
+        # discarded the route-level auto-disable on strict json_schema
+        # AND any explicit ``chat_template_kwargs={"enable_thinking":
+        # false}`` the client passed. On Qwen3 / DeepSeek-R1 thinking
+        # models the template then pre-injected ``<think>`` and the
+        # model burned the entire ``max_tokens`` budget inside
+        # ``<think>`` before reaching the guided JSON grammar — the
+        # exact half-broken state Mira r12 R-2 documented, just shifted
+        # from the fallback path to the [guided]-installed path.
+        # Pull the kwarg out of ``**kwargs`` BEFORE the prompt render
+        # so the upstream caller's choice (None / True / False) flows
+        # into ``shared_apply_chat_template`` identically to the
+        # non-guided ``chat()`` path.
+        enable_thinking = kwargs.pop("enable_thinking", None)
         # Build prompt from messages. Route through the central
         # ``shared_apply_chat_template`` wrapper so the role-marker
         # sanitisation runs on user/tool message content here too —
@@ -2153,7 +2169,7 @@ class BatchedEngine(BaseEngine):
             tokenizer,
             messages,
             tools=None,
-            enable_thinking=None,
+            enable_thinking=enable_thinking,
             model_name=getattr(self, "_model_name", "") or "",
         )
 
@@ -2208,6 +2224,21 @@ class BatchedEngine(BaseEngine):
             logger.warning(
                 "Guided generation failed, falling back to regular generation"
             )
+            # R12-M2 (codex round-2 P2): re-inject enable_thinking
+            # into the fallback kwargs. We popped it out above so the
+            # guided prompt render could consume it explicitly; the
+            # fallback ``self.chat(...)`` runs its own prompt render
+            # (via ``_apply_chat_template``) and reads
+            # ``enable_thinking`` off ``**kwargs`` (batched.py L1439).
+            # Without this re-injection an explicit
+            # ``enable_thinking=False`` (or the R12-M2 route-level
+            # auto-disable on strict json_schema) would be lost on
+            # the fallback path, reverting to the template default.
+            # Non-strict json_schema callers leave ``raise_on_failure``
+            # at its default ``False`` so this is a reachable code
+            # path, not a defense-in-depth nit.
+            if enable_thinking is not None:
+                kwargs["enable_thinking"] = enable_thinking
             return await self.chat(messages=messages, max_tokens=max_tokens, **kwargs)
 
         # Tokenize for completion count
