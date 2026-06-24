@@ -62,6 +62,14 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
     ``(promoted_block, trailing_prose)`` where ``trailing_prose``
     begins with the prose line (and is empty when the entire body
     is tool-call-shaped).
+
+    JSON-aware (codex round-4 finding #8): once an unmatched ``{``
+    opens a JSON body, track brace depth and DO NOT treat
+    pretty-printed JSON content lines (e.g. ``"name": "get_weather",``)
+    as prose even when they contain none of ``<``, ``{``, ``}``.
+    Only after the brace depth returns to zero — i.e. the JSON object
+    has closed — can a subsequent bare-text line be classified as
+    trailing prose.
     """
     # Strip the ``<tool_call>`` opener for inspection — the opener
     # itself must always go into the promoted block.
@@ -75,6 +83,7 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
     promoted_lines: list[str] = []
     trailing_lines: list[str] = []
     boundary_hit = False
+    json_depth = 0  # net {…} depth across processed lines
     for line in lines:
         if boundary_hit:
             trailing_lines.append(line)
@@ -85,7 +94,17 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
             promoted_lines.append(line)
             continue
         if "<" in stripped or "{" in stripped or "}" in stripped:
-            # XML/JSON-ish — still inside the tool_call body.
+            # XML/JSON-ish — still inside the tool_call body. Update
+            # net brace depth using a string-aware scan so braces
+            # inside JSON string literals (e.g. ``"pattern": "}}"``)
+            # don't close the body prematurely — codex round-5
+            # finding #4.
+            json_depth += _net_brace_delta_outside_strings(stripped)
+            promoted_lines.append(line)
+            continue
+        if json_depth > 0:
+            # Pretty-printed JSON value line inside an open ``{…}`` —
+            # NOT prose. Keep it in the promoted block.
             promoted_lines.append(line)
             continue
         # Pure prose line — boundary.
@@ -96,6 +115,40 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
     if trailing_prose:
         trailing_prose = "\n" + trailing_prose
     return promoted_block, trailing_prose
+
+
+def _net_brace_delta_outside_strings(text: str) -> int:
+    """Net ``{ vs }`` delta in ``text``, ignoring chars inside JSON
+    string literals.
+
+    Tracks a tiny string-state machine: characters inside a
+    double-quoted JSON string are skipped (including escaped quotes
+    via ``\\"``). Only braces outside strings count toward the depth.
+    This prevents string contents like ``"pattern": "}}"`` from
+    artificially closing the JSON body — codex round-5 finding #4.
+    """
+    delta = 0
+    in_string = False
+    escape = False
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            delta += 1
+        elif ch == "}":
+            delta -= 1
+    return delta
 
 
 def _partial_tool_call_open_suffix(text: str) -> int:
@@ -1325,8 +1378,16 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # streaming wire shape matches the non-streaming wire shape
         # exactly. This is upstream's ``_transition_to_content``
         # catch-all in spirit, recast in our wrapper.
+        #
+        # The shortcut is ONLY safe when no prior chunk left a partial
+        # ``<tool_call>`` opener carry — otherwise delegating to the
+        # non-streaming promoter would see only ``r_in`` and silently
+        # drop ``self._reasoning_carry``. When a carry exists, fall
+        # through to the per-channel state machine so
+        # ``_absorb_reasoning_chunk`` re-prepends the carry first.
         if (
             not self._in_tool_call
+            and not self._reasoning_carry
             and r_in
             and c_in is not None
             and _TOOL_CALL_START in r_in
@@ -1438,7 +1499,39 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 else:
                     out_reasoning.append(remaining)
                 return
-            # Emit prefix as reasoning, start buffering from opener.
+            # Structural guard — parity with non-streaming
+            # ``_TOOL_CALL_UNCLOSED_RE`` (``<tool_call>\s*[\{<]``).
+            # A real tool_call body starts with ``{`` (JSON) or ``<``
+            # (XML opener) after the tag and optional whitespace.
+            # A prose mention like ``use <tool_call> to invoke ...``
+            # has no structural opener after the tag and must NOT be
+            # promoted — otherwise the prose tail leaks into the
+            # content channel via the buffer.
+            after_start = start_idx + len(_TOOL_CALL_START)
+            probe = remaining[after_start:]
+            # Skip whitespace looking for the first non-ws byte.
+            j = 0
+            while j < len(probe) and probe[j] in (" ", "\t", "\n", "\r"):
+                j += 1
+            if j == len(probe):
+                # All whitespace (or empty) after the opener — the
+                # discriminating byte hasn't arrived yet. Emit the
+                # prefix as reasoning and carry the tag + trailing
+                # whitespace so the next chunk reveals whether this
+                # is a real tool_call or a prose mention.
+                if start_idx > 0:
+                    out_reasoning.append(remaining[:start_idx])
+                self._reasoning_carry = remaining[start_idx:]
+                return
+            if probe[j] not in ("{", "<"):
+                # Prose mention — emit up to AND INCLUDING the bare
+                # ``<tool_call>`` tag as reasoning and keep scanning
+                # ``remaining`` past the opener for another candidate.
+                out_reasoning.append(remaining[:after_start])
+                remaining = remaining[after_start:]
+                continue
+            # Real tool_call: emit prefix as reasoning, start buffering
+            # from the opener.
             if start_idx > 0:
                 out_reasoning.append(remaining[:start_idx])
             self._in_tool_call = True
