@@ -78,6 +78,77 @@ REQUIRED_TEST_PACKAGES: tuple[tuple[str, str, str], ...] = (
 # update this constant too (and the unit test that pins it).
 TEST_EXTRAS_NAME = "test"
 
+# Files whose modification by an external PR makes the auto-install
+# path UNSAFE — installing from the PR's working tree would let the
+# attacker's build hook / fake package source run inside the
+# validator venv. Detection is conservative: if ANY of these paths
+# show up in ``ctx.files_changed`` we refuse to auto-install and
+# require the operator to either install manually (after reading the
+# diff) or re-run with the dep-file change rolled back. See
+# scripts/pr_validate/README.md "Threat model".
+#
+# Two parts: exact-path matches and a prefix-glob list. The prefix
+# list catches every ``requirements*.txt`` variant a contributor
+# might invent (``requirements-test.txt``, ``requirements-prod.txt``,
+# etc.) without us having to enumerate them — codex r2 BLOCKING was
+# that ``requirements-test.txt`` slipped through.
+DEP_DECLARATION_FILES_DENYLIST: tuple[str, ...] = (
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+)
+
+# Filename prefixes whose ``.txt`` (or no-extension) variants at the
+# repo root all count as dep-declaration files. Kept here so the
+# supply-chain step can import the same source of truth via
+# ``is_dep_declaration_file()`` — see ``steps/supply_chain.py``
+# ``HOOK_PATHS`` for the install-hook matcher that also uses this.
+DEP_DECLARATION_FILE_PREFIXES: tuple[str, ...] = (
+    "requirements",  # requirements.txt, requirements-dev.txt, requirements-test.txt, …
+)
+
+
+def is_dep_declaration_file(path: str) -> bool:
+    """Return True iff ``path`` (a repo-relative file name) is a
+    dep-declaration file that an external PR must NOT be allowed to
+    influence the validator's install from.
+
+    Exact match against ``DEP_DECLARATION_FILES_DENYLIST`` OR
+    starts-with match against ``DEP_DECLARATION_FILE_PREFIXES`` for
+    repo-root ``.txt`` files. Subdirectory files (e.g.
+    ``vendor/requirements.txt``) are intentionally NOT matched —
+    they don't drive pr_validate's ``pip install '.[test]'``.
+
+    Public so the supply-chain step can share the matcher.
+    """
+    if path in DEP_DECLARATION_FILES_DENYLIST:
+        return True
+    # Only match the repo root — subdirectory files don't drive the
+    # validator's recovery install. Strip path separators to test.
+    if "/" in path:
+        return False
+    for prefix in DEP_DECLARATION_FILE_PREFIXES:
+        if path.startswith(prefix) and (path.endswith(".txt") or path == prefix):
+            return True
+    return False
+
+
+# Hardcoded, version-pinned set of pytest plugins pr_validate needs
+# IN ITS OWN venv to run ``targeted_tests`` / ``full_unit`` reliably.
+# Installed from PyPI directly (not from the PR's working tree) so a
+# malicious PR that ships a typo-squat or replaces ``pytest-asyncio``
+# in pyproject.toml CANNOT subvert the validator's runtime. Keep this
+# list tiny and pinned to a narrow range: the goal is "validator
+# always boots", not "validator can run every test in every PR".
+#
+# Versions chosen to track the project's ``[test]`` extras at the
+# time of pinning (#275). A bump here is a deliberate operator
+# decision; pr_validate refuses to silently follow a PR's lead.
+TRUSTED_TEST_PINS: tuple[str, ...] = (
+    "pytest>=7.0.0,<9",
+    "pytest-asyncio>=0.21.0,<1",
+)
+
 
 @dataclass(frozen=True)
 class TestEnvStatus:
@@ -198,6 +269,64 @@ def auto_install_disabled() -> bool:
         "yes",
         "on",
     )
+
+
+def pr_touches_dep_files(files_changed: list[str]) -> list[str]:
+    """Return the subset of ``files_changed`` that ``is_dep_declaration_file``
+    flags.
+
+    Returning the (possibly empty) list rather than a bool lets the
+    caller surface the exact filenames in the warning the operator
+    sees — "skipped because the PR touches pyproject.toml" is much
+    more actionable than just "skipped". An empty list means the
+    auto-install path is safe to take.
+
+    Matching delegates to ``is_dep_declaration_file`` so the supply-
+    chain step and this guard share a single source of truth. Catches
+    every repo-root ``requirements*.txt`` variant — codex r2
+    BLOCKING was an under-enumeration here.
+    """
+    return [f for f in files_changed if is_dep_declaration_file(f)]
+
+
+def install_trusted_pins(python: str | None = None) -> tuple[bool, str]:
+    """Install ``TRUSTED_TEST_PINS`` from PyPI into ``python``.
+
+    Bypasses the PR's pyproject.toml entirely — the pin list is
+    hardcoded above and version-bounded so a malicious PR cannot
+    influence what gets installed into the validator venv. Used as
+    the recovery path when ``pr_touches_dep_files`` reports the PR
+    has modified dep-declaration files (in which case
+    ``install_test_extras`` is unsafe).
+
+    Returns ``(ok, log)`` mirroring ``install_test_extras``. ``--no-deps``
+    is intentionally NOT passed — pytest-asyncio needs its own
+    transitive deps and those come from PyPI too, not the PR.
+
+    ``--isolated`` blocks the user's pip.conf from injecting a
+    malicious index URL via ``--extra-index-url``; combined with the
+    pinned versions this gives the validator a stable install path.
+    """
+    interp = python or sys.executable
+    cmd = [
+        interp,
+        "-m",
+        "pip",
+        "install",
+        "--quiet",
+        "--isolated",
+        "--disable-pip-version-check",
+        *TRUSTED_TEST_PINS,
+    ]
+    proc = subprocess.run(  # noqa: S603
+        cmd,
+        capture_output=True,
+        text=True,
+    )
+    log = (proc.stdout or "") + (proc.stderr or "")
+    if len(log) > 2048:
+        log = log[:1024] + "\n…[truncated]…\n" + log[-1024:]
+    return proc.returncode == 0, log
 
 
 def install_test_extras(repo_root: Path, python: str | None = None) -> tuple[bool, str]:
