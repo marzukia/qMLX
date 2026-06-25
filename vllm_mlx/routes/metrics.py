@@ -171,6 +171,95 @@ def _coerce_number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
+    """Emit the R15 #300 ``rapid_mlx_kv_cache_dtype`` gauge.
+
+    Three series — ``dtype="bf16"`` / ``"int8"`` / ``"int4"`` — exactly
+    one of which is 1, the others 0. Lets a dashboard wire a single
+    alert / panel against ``rapid_mlx_kv_cache_dtype{dtype="int4"} ==
+    1`` without parsing string-valued samples (which Prometheus does
+    not support natively).
+
+    The dtype is read from ``cfg.engine.scheduler_config.kv_cache_dtype``
+    when the engine is up, otherwise from ``cfg.kv_cache_dtype`` if the
+    server stashed it pre-load, otherwise defaults to ``"bf16"`` (the
+    only value that's a no-op everywhere — never silently report
+    int4 when we're not actually quantized).
+    """
+    # codex r1 BLOCKING #2: only fall back to the pre-load stash when
+    # the engine has NOT yet stamped its scheduler_config. The earlier
+    # ``dtype == "bf16"`` guard let a stale stash override a live
+    # engine after a bf16 load — e.g. operator loads with
+    # ``--kv-cache-dtype int4`` against a sliding-window model, the
+    # safelist resolves to bf16, but the stash still says int4 from
+    # before the safelist ran. Distinguishing "engine reports a value"
+    # from "no engine value available" prevents that ghost report.
+    #
+    # codex r2 BLOCKING #2: ``SchedulerConfig.kv_cache_dtype`` now
+    # carries a default of ``"bf16"``, so a programmatic caller that
+    # only set the pre-existing legacy fields
+    # (``kv_cache_quantization=True`` + ``kv_cache_quantization_bits``)
+    # without touching ``kv_cache_dtype`` would have us report ``bf16``
+    # while int4 / int8 KV cache is actually live. When the dtype field
+    # is unmodified-default but legacy quantization is on, derive the
+    # effective dtype from the legacy bits — that's the only path that
+    # keeps the gauge honest for callers that pre-date the dtype field.
+    dtype: str | None = None
+    try:
+        engine = getattr(cfg, "engine", None)
+        if engine is not None:
+            sc = getattr(engine, "scheduler_config", None) or getattr(
+                engine, "_scheduler_config", None
+            )
+            if sc is not None:
+                live = getattr(sc, "kv_cache_dtype", None)
+                if live:
+                    dtype = live
+                # Legacy-caller cross-check: if the dtype field is at
+                # its default but the legacy quantization toggle is on,
+                # the legacy fields tell the truth.
+                if dtype in (None, "bf16") and getattr(
+                    sc, "kv_cache_quantization", False
+                ):
+                    bits = getattr(sc, "kv_cache_quantization_bits", None)
+                    if bits == 4:
+                        dtype = "int4"
+                    elif bits == 8:
+                        dtype = "int8"
+                    # Any other bits value is a misconfiguration the CLI
+                    # rejects (codex r2 BLOCKING #1) — leave dtype as the
+                    # honest bf16 default rather than guessing a label.
+        if dtype is None:
+            # Engine not loaded yet (or doesn't carry the field) — fall
+            # back to the pre-load stash so /metrics still reports the
+            # operator's resolved dtype during the load window.
+            stashed = getattr(cfg, "kv_cache_dtype", None)
+            if stashed:
+                dtype = stashed
+    except Exception:
+        dtype = None
+    # codex r3 BLOCKING: a typo / future dtype string / stale field
+    # value not in {"bf16","int8","int4"} would render every series at
+    # 0, violating this gauge's "exactly one is 1" contract and making
+    # dashboards read "no active dtype" — which is worse than wrong, it
+    # looks like the metric is broken. Validate against the known set
+    # and fall back to ``"bf16"`` (the only no-op value) for unknowns,
+    # so the contract holds for every input.
+    if dtype not in ("bf16", "int8", "int4"):
+        dtype = "bf16"
+
+    out: list[str] = [
+        "# HELP rapid_mlx_kv_cache_dtype Effective KV cache dtype "
+        "(R15 #300). One series per dtype label; the value is 1 for "
+        "the active dtype and 0 for the others.",
+        "# TYPE rapid_mlx_kv_cache_dtype gauge",
+    ]
+    for candidate in ("bf16", "int8", "int4"):
+        active = 1 if dtype == candidate else 0
+        out.append(f'rapid_mlx_kv_cache_dtype{{dtype="{candidate}"}} {active}')
+    return out
+
+
 def _render_response_format_counters() -> list[str]:
     """Render the H-06 strict-mode counters as Prometheus lines.
 
@@ -325,6 +414,16 @@ def _render_prometheus(cfg: Any) -> str:
             },
         )
     )
+
+    # R15 #300: KV cache dtype as a labeled gauge. Operators need to see
+    # the EFFECTIVE dtype the resolver picked (post-safelist + post-
+    # reasoning-pin), not just the requested flag value. Emitted as
+    # three series with value 0/1 so a Grafana panel can filter by
+    # ``dtype="int4"`` without parsing string-valued samples. Sourced
+    # straight off ``SchedulerConfig.kv_cache_dtype`` so this stays
+    # truthful even when the legacy ``--kv-cache-quantization`` flag
+    # was the actual driver.
+    lines.extend(_render_kv_cache_dtype_gauge(cfg))
 
     # H-06 response_format strict-mode counters — process-local state
     # that is independent of engine availability. Surface BEFORE the
