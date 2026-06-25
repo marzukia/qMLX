@@ -1,0 +1,423 @@
+# SPDX-License-Identifier: Apache-2.0
+"""rapid-mlx#254 — `/v1/responses` must accept the canonical OpenAI
+input shape `{role, content}` without an explicit `type: "message"`.
+
+Background
+----------
+OpenAI's Responses-API spec lets clients omit ``type`` on plain message
+items. The official ``openai-python`` SDK always normalizes the item to
+``type="message"`` before putting it on the wire, so SDK-mediated traffic
+never hit the bug. Raw REST consumers (curl, fetch, openai-go,
+openai-js's raw HTTP path) and anyone copy-pasting from the OpenAI docs
+sent ``{"role":"user","content":"hi"}`` and got::
+
+    400  input.0.type: Field required
+
+because rapid-mlx's ``ResponsesInputItem`` declared ``type: str`` with no
+default. Fix: ``mode="before"`` model_validator on
+``ResponsesInputItem`` defaults ``type`` to ``"message"`` when absent
+and ``role`` is present (the message-shape marker). Other variants
+(function_call / function_call_output / reasoning) still require an
+explicit ``type`` — the closed-set discriminator the downstream adapter
+relies on stays load-bearing for those.
+
+Contract pinned by this file
+----------------------------
+1. ``{role,content}`` (no ``type``)              → 200, parses as message
+2. ``{type:"message",role,content}`` (explicit) → 200, parses as message
+3. ``{type:"function_call", call_id, name, ...}`` (other variant)
+                                                 → 200, parses as function_call
+4. ``{role}`` only, no ``content``               → 400 (content gate
+   downstream — we loosen the *type* default, not the *content*
+   requirement).
+"""
+
+from __future__ import annotations
+
+import sys
+import types
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+# ---------------------------------------------------------------------------
+# Lightweight engine shim — mirrors tests/test_responses_param_validation.py
+# so the test suite does not need to spin a real MLX engine.
+# ---------------------------------------------------------------------------
+
+
+class _Tokenizer:
+    chat_template = ""
+
+    def encode(self, text: str) -> list[int]:
+        return list(range(len(text)))
+
+
+class _BaseEngine:
+    pass
+
+
+@dataclass
+class _GenerationOutput:
+    text: str
+    raw_text: str = ""
+    tokens: list[int] = field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    finish_reason: str | None = "stop"
+    new_text: str = ""
+    finished: bool = True
+    logprobs: Any = None
+    channel: str | None = None
+    tool_calls: list | None = None
+    reasoning_text: str = ""
+
+
+class _Engine:
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.calls: list[SimpleNamespace] = []
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        self.calls.append(SimpleNamespace(messages=messages, kwargs=kwargs))
+        return _GenerationOutput(
+            text="ok",
+            prompt_tokens=1,
+            completion_tokens=1,
+            finish_reason="stop",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="ok",
+            new_text="ok",
+            prompt_tokens=1,
+            completion_tokens=1,
+            finish_reason="stop",
+        )
+
+
+_IMPORTED = (
+    "vllm_mlx.config",
+    "vllm_mlx.config.server_config",
+    "vllm_mlx.engine",
+    "vllm_mlx.engine.base",
+    "vllm_mlx.middleware.auth",
+    "vllm_mlx.service.helpers",
+    "vllm_mlx.routes.responses",
+)
+_PARENT_ATTRS = (
+    ("vllm_mlx", "config"),
+    ("vllm_mlx", "engine"),
+    ("vllm_mlx.config", "server_config"),
+    ("vllm_mlx.engine", "base"),
+    ("vllm_mlx.middleware", "auth"),
+    ("vllm_mlx.service", "helpers"),
+    ("vllm_mlx.routes", "responses"),
+)
+_MISSING = object()
+
+
+def _install_lightweight_engine_modules(monkeypatch):
+    engine_pkg = types.ModuleType("vllm_mlx.engine")
+    engine_pkg.BaseEngine = _BaseEngine
+    engine_pkg.GenerationOutput = _GenerationOutput
+
+    base_mod = types.ModuleType("vllm_mlx.engine.base")
+    base_mod.BaseEngine = _BaseEngine
+    base_mod.GenerationOutput = _GenerationOutput
+
+    monkeypatch.setitem(sys.modules, "vllm_mlx.engine", engine_pkg)
+    monkeypatch.setitem(sys.modules, "vllm_mlx.engine.base", base_mod)
+
+
+@pytest.fixture
+def responses_client(monkeypatch):
+    previous_modules = {n: sys.modules.get(n, _MISSING) for n in _IMPORTED}
+    previous_attrs = {}
+    for module_name, attr in _PARENT_ATTRS:
+        module = sys.modules.get(module_name)
+        previous_attrs[(module_name, attr)] = (
+            getattr(module, attr, _MISSING) if module is not None else _MISSING
+        )
+
+    _install_lightweight_engine_modules(monkeypatch)
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.middleware.auth import rate_limiter
+    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+    from vllm_mlx.routes.responses import router
+
+    cfg = reset_config()
+    cfg.api_key = "test-secret"
+    cfg.engine = _Engine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(router)
+    yield SimpleNamespace(client=TestClient(app), engine=cfg.engine)
+
+    reset_config()
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    for name, previous in previous_modules.items():
+        if previous is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+
+    for (module_name, attr), previous in previous_attrs.items():
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if previous is _MISSING:
+            if hasattr(module, attr):
+                delattr(module, attr)
+        else:
+            setattr(module, attr, previous)
+
+
+HEADERS = {"Authorization": "Bearer test-secret"}
+
+
+# =============================================================================
+# Pydantic-layer unit tests — no route, just the schema contract
+# =============================================================================
+
+
+class TestResponsesInputItemTypeDefault:
+    """Direct ``ResponsesInputItem`` tests — proves the model_validator
+    runs at the right layer regardless of whether the route is wired up.
+    Independent of FastAPI / TestClient so a route-level regression
+    cannot mask a Pydantic-level regression."""
+
+    def test_message_shape_without_type_defaults_to_message(self):
+        from vllm_mlx.api.responses_models import ResponsesRequest
+
+        req = ResponsesRequest(
+            model="test-model",
+            input=[{"role": "user", "content": "hi"}],
+        )
+        assert isinstance(req.input, list)
+        assert req.input[0].type == "message"
+        assert req.input[0].role == "user"
+        assert req.input[0].content == "hi"
+
+    def test_explicit_type_message_unchanged(self):
+        from vllm_mlx.api.responses_models import ResponsesRequest
+
+        req = ResponsesRequest(
+            model="test-model",
+            input=[{"type": "message", "role": "user", "content": "hi"}],
+        )
+        assert req.input[0].type == "message"
+
+    def test_function_call_variant_with_explicit_type_parses(self):
+        """Sanity: a well-formed ``function_call`` item (explicit
+        ``type``) still parses through its own branch — proves the
+        loosening did not steal the function_call shape."""
+        from vllm_mlx.api.responses_models import ResponsesRequest
+
+        req = ResponsesRequest(
+            model="test-model",
+            input=[
+                {
+                    "type": "function_call",
+                    "call_id": "call_abc",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                }
+            ],
+        )
+        assert req.input[0].type == "function_call"
+        assert req.input[0].call_id == "call_abc"
+
+    def test_function_call_shape_without_type_still_rejected(self):
+        """Codex r1 NIT — pin the "other variants still require explicit
+        type" half of the contract. A function_call-shaped payload
+        (``call_id`` + ``name`` + ``arguments``) with no ``type`` and no
+        ``role`` MUST 400; we do NOT silently fold it into the message
+        branch. Only the message-shape branch (``role`` present) gets a
+        type default."""
+        from pydantic import ValidationError
+
+        from vllm_mlx.api.responses_models import ResponsesRequest
+
+        with pytest.raises(ValidationError):
+            ResponsesRequest(
+                model="test-model",
+                input=[
+                    {
+                        "call_id": "call_abc",
+                        "name": "get_weather",
+                        "arguments": "{}",
+                    }
+                ],
+            )
+
+    def test_item_with_no_type_and_no_role_still_rejected(self):
+        """An empty ``{}`` item has no role marker — we do NOT silently
+        treat it as a message; the discriminator gate still fires."""
+        from pydantic import ValidationError
+
+        from vllm_mlx.api.responses_models import ResponsesRequest
+
+        with pytest.raises(ValidationError):
+            ResponsesRequest(model="test-model", input=[{}])
+
+
+# =============================================================================
+# Route-level integration — proves the wire contract end-to-end
+# =============================================================================
+
+# The route module transitively imports ``mlx`` (via the engine layer
+# the route ultimately calls into). The Pydantic-layer tests above don't
+# need it, but importing ``vllm_mlx.routes.responses`` does — and the
+# Linux test-matrix CI runners don't ship ``mlx``. Skip the route-level
+# class cleanly on those hosts so pr_validate's targeted-tests step (and
+# any other env without mlx) doesn't see a spurious ImportError. The
+# Pydantic-layer tests above already pin the load-bearing contract; the
+# route-level class is end-to-end belt-and-suspenders that runs on
+# Apple Silicon CI + dev machines where mlx is present.
+_HAS_MLX = True
+try:
+    import mlx  # noqa: F401
+except ImportError:
+    _HAS_MLX = False
+
+
+@pytest.mark.skipif(
+    not _HAS_MLX,
+    reason="vllm_mlx.routes.responses transitively imports mlx; route-level "
+    "test coverage runs on Apple Silicon CI + dev machines (Pydantic-layer "
+    "unit tests above already pin the schema contract everywhere).",
+)
+class TestResponsesRouteInputTypeDefault:
+    def test_canonical_openai_shape_without_type_returns_200(self, responses_client):
+        """The bug report payload: copy-pasted-from-OpenAI-docs curl
+        with ``{role, content}`` and no ``type``. Pre-fix → 400, post-fix
+        → 200."""
+        client = responses_client.client
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [{"role": "user", "content": "hi"}],
+            },
+            headers=HEADERS,
+        )
+        assert resp.status_code == 200, resp.text
+        engine = responses_client.engine
+        assert len(engine.calls) == 1, "engine should have been invoked once"
+        # Adapter should have produced a normal user message. The engine
+        # receives the messages as dicts (the OpenAI chat-completions wire
+        # shape) — assert on dict keys rather than object attributes so a
+        # future refactor that swaps the dataclass shape can't mask a
+        # contract regression.
+        messages = engine.calls[0].messages
+        assert messages[-1]["role"] == "user"
+
+    def test_explicit_message_type_still_returns_200(self, responses_client):
+        client = responses_client.client
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [{"type": "message", "role": "user", "content": "hi"}],
+            },
+            headers=HEADERS,
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_function_call_variant_still_routes_via_discriminator(
+        self, responses_client
+    ):
+        """A real function_call item (with explicit ``type``) must still
+        flow through ``_function_call_to_chat`` — proves the loosening
+        is scoped to the message-shape branch only."""
+        client = responses_client.client
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [
+                    {"role": "user", "content": "use the tool please"},
+                    {
+                        "type": "function_call",
+                        "call_id": "call_abc",
+                        "name": "get_weather",
+                        "arguments": "{}",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_abc",
+                        "output": "sunny",
+                    },
+                ],
+            },
+            headers=HEADERS,
+        )
+        assert resp.status_code == 200, resp.text
+        engine = responses_client.engine
+        messages = engine.calls[0].messages
+        # The discriminator must still treat the function_call /
+        # function_call_output items distinctly from the message item.
+        # We don't pin the exact downstream wire shape (the chat-template
+        # path may emit a raw ``tool_calls`` array OR a synthesised text
+        # transcript depending on the engine's
+        # ``preserve_native_tool_format`` flag), so we assert by
+        # *content* survival rather than schema:
+        #   1. the leading user turn ("use the tool please") survives,
+        #   2. the function_call ITSELF survives (codex r2 BLOCKING):
+        #      both ``call_abc`` (call_id) and ``get_weather`` (name)
+        #      must appear somewhere in the message stream — without
+        #      this, the test would still pass if production silently
+        #      dropped the function_call item and only kept the
+        #      function_call_output,
+        #   3. the function_call_output payload ("sunny") also survives.
+        # Together those three pin the per-variant routing: a regression
+        # that folds the explicit-type function_call into the message
+        # branch would lose ``get_weather`` and ``call_abc``.
+        assert any(
+            "use the tool please" in (m.get("content") or "") for m in messages
+        ), f"leading user message lost during conversion: {messages}"
+        joined = " ".join((m.get("content") or "") for m in messages)
+        assert "get_weather" in joined, (
+            f"function_call name was not propagated to the engine: {messages}"
+        )
+        assert "call_abc" in joined, (
+            f"function_call call_id was not propagated to the engine: {messages}"
+        )
+        assert "sunny" in joined, (
+            f"function_call_output payload not propagated: {messages}"
+        )
+
+    def test_role_only_no_content_still_400(self, responses_client):
+        """We loosen the ``type`` default, NOT the content requirement.
+        ``{"role":"user"}`` (no content) must still 400 — the content
+        gate fires at the adapter layer with a clear ``message content
+        is required`` error."""
+        client = responses_client.client
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": [{"role": "user"}],
+            },
+            headers=HEADERS,
+        )
+        assert resp.status_code == 400, resp.text
