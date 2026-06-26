@@ -373,6 +373,15 @@ class StreamingPostProcessor:
         # Both fields are no-ops when ``tools_requested`` is False.
         self._tool_prose_buffer: str = ""
         self._tool_prose_active: bool = False
+        # #447 round-3 (PR #948): 1-chunk hold-forward buffer for
+        # ambiguous routing heads (``<`` or ``<t`` — strict prefix of
+        # BOTH ``<think>`` AND ``<tool_call>``). Populated by
+        # ``process_chunk`` when ``enable_thinking is False`` and the
+        # head can't yet be disambiguated; prepended to the next chunk
+        # so the merged head routes unambiguously. Cleared by every
+        # successful flush + by ``reset()``. No-op when reasoning is
+        # disabled or thinking is on by default.
+        self._ambiguous_prefix_held: str = ""
         # Monotonic counter for structured tool-call indices across the
         # whole response. Each TOOL_CALL channel ``GenerationOutput`` may
         # carry a single structured call; if multiple chunks fire
@@ -1472,8 +1481,71 @@ class StreamingPostProcessor:
         # arrived yet. Route this chunk through the reasoning parser
         # so a split-SSE tag doesn't pre-leak as content. Don't latch
         # — we'll re-evaluate next chunk once more bytes arrive.
+        #
+        # #447 (2026-06-26): suppress the tentative re-route when a
+        # tool-call envelope is already in flight (the tool parser is
+        # mid-block accumulating an unclosed ``<tool_call>`` body).
+        # Reproduction: ``enable_thinking=False`` + ``tool_choice="auto"``
+        # on hermes + Qwen3 streams the Nemotron-shape envelope
+        # ``<tool_call>\n<function=NAME>\n<parameter=K>V</parameter>\n
+        # </function>\n</tool_call>``. After the opening ``<tool_call>``
+        # chunk lands in the tool parser, the standalone ``<`` of the
+        # inner ``<function=`` tag matches the split-prefix branch (``<``
+        # is a strict prefix of ``<think>``), gets re-routed to the
+        # reasoning lane, and is held back by the reasoning parser's
+        # partial-tag withhold. The byte is then NEVER fed to the tool
+        # parser's ``tool_accumulated_text``, so the assembled body
+        # reads ``<tool_call>\nfunction=...\n<parameter=...`` — the
+        # outer ``<function=`` opener is corrupted, the Nemotron regex
+        # fails to match, and the whole envelope is suppressed as an
+        # in-flight tool block until end-of-stream finishes with a
+        # bare ``finish_reason="stop"`` and zero tool_calls. The
+        # tool-parser path has its own held-back machinery for partial
+        # sentinels (``hermes._safe_content_prefix``) so deferring
+        # routing here is safe — the ``<`` lands in the tool parser,
+        # is held until enough bytes arrive to commit, and the
+        # downstream tool-envelope detection completes normally.
         if head and self._THINK_OPEN_TOKEN.startswith(head):
+            if self._tool_envelope_in_flight():
+                return False
             return True
+        return False
+
+    # Common ``<tool_call>``-style envelope openers shared across the
+    # text-parser families (hermes / qwen3_xml / glm47 / minimax / nemotron).
+    # Used by ``_tool_envelope_in_flight`` to detect that the tool parser
+    # is mid-accumulation so the split-prefix ``<think>`` rescue
+    # (``_should_route_through_reasoning``) does not eat the next ``<``
+    # byte into the reasoning lane (#447).
+    _TOOL_ENVELOPE_OPENERS: tuple[tuple[str, str], ...] = (
+        ("<tool_call>", "</tool_call>"),
+        ("<minimax:tool_call>", "</minimax:tool_call>"),
+    )
+
+    def _tool_envelope_in_flight(self) -> bool:
+        """Return True iff the tool parser is mid-block on an unclosed
+        ``<tool_call>``-style envelope.
+
+        Consulted by the ``_should_route_through_reasoning`` split-prefix
+        branch to decide whether a bare ``<`` (ambiguous between the
+        start of ``<think>`` and the start of an inner Nemotron-shape
+        ``<function=...>`` / ``<parameter=...>`` tag) should be allowed
+        to re-route into the reasoning lane. The default-true behaviour
+        is correct for plain prose; the false override here only fires
+        once the tool parser has already accepted an unclosed envelope
+        opener and the next ``<`` is overwhelmingly an inner tag (see
+        comment at the call site for the failure mode).
+
+        Cheap O(envelope_count) scan over ``tool_accumulated_text``;
+        ``_TOOL_ENVELOPE_OPENERS`` keeps the openers/closers paired so
+        a future wire format can be added in one place.
+        """
+        buf = self.tool_accumulated_text
+        if not buf:
+            return False
+        for opener, closer in self._TOOL_ENVELOPE_OPENERS:
+            if buf.count(opener) > buf.count(closer):
+                return True
         return False
 
     def _consume_reasoning_budget(self, reasoning_text: str) -> tuple[str, str]:
@@ -2214,6 +2286,10 @@ class StreamingPostProcessor:
         # doesn't ship the prior turn's buffered preamble bytes.
         self._tool_prose_buffer = ""
         self._tool_prose_active = False
+        # #447 round-3 (PR #948): clear the ambiguous-prefix hold-buffer
+        # so a re-used processor doesn't prepend the prior turn's held
+        # ``<`` / ``<t`` into the new stream's first delta.
+        self._ambiguous_prefix_held = ""
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
@@ -2287,6 +2363,36 @@ class StreamingPostProcessor:
         if not delta_text:
             # Handle finish-only chunks
             if output.finished:
+                # #447 round-4 NIT (PR #948): if a stream emitted an
+                # ambiguous head (``<`` / ``<t``) on a non-finished
+                # chunk and then an EMPTY finish-only chunk, the held
+                # byte was previously dropped because this early
+                # ``not delta_text`` branch ran before the hold-replay
+                # logic in the main path. Without a disambiguating
+                # second chunk we can't resolve to reasoning or tool
+                # routing — flush the held bytes as plain content on
+                # the FINISH event itself so the wire still receives
+                # the model's literal tail. ``_make_finish_event``
+                # supports an optional ``content`` payload; merging
+                # here keeps the terminal chunk count unchanged.
+                if self._ambiguous_prefix_held:
+                    flush = self._ambiguous_prefix_held
+                    self._ambiguous_prefix_held = ""
+                    finish_event = self._make_finish_event(output)
+                    # Prepend the held bytes to whatever content the
+                    # finish event already carries (usually empty) so
+                    # downstream finalize() merges keep working.
+                    existing = finish_event.content or ""
+                    finish_event = StreamEvent(
+                        type=finish_event.type,
+                        content=flush + existing,
+                        reasoning=finish_event.reasoning,
+                        tool_calls=finish_event.tool_calls,
+                        finish_reason=finish_event.finish_reason,
+                        tool_calls_detected=finish_event.tool_calls_detected,
+                        metadata=finish_event.metadata,
+                    )
+                    return [finish_event]
                 return [self._make_finish_event(output)]
             return []
 
@@ -2330,6 +2436,48 @@ class StreamingPostProcessor:
             if hasattr(output, "text"):
                 output.text = tail
             delta_text = tail
+
+        # #447 round-3 MAJOR (PR #948): ambiguous-prefix hold-forward.
+        # When ``enable_thinking is False`` AND a delta head reduces to
+        # ``<`` or ``<t`` (strict prefix of BOTH ``<think>`` AND
+        # ``<tool_call>``/``<minimax:tool_call>``), neither routing
+        # choice is safe — eager routing to reasoning leaks the outer
+        # opener when the next chunk completes ``<tool_call>`` (codex
+        # r2 reproducer), and eager routing to the standard path leaks
+        # ``<think>`` into ``delta.content`` when the next chunk
+        # completes ``<think>`` (codex r3 reproducer).
+        #
+        # Hold the ambiguous prefix for exactly one chunk, prepend it
+        # to the next delta, and re-evaluate. When the next chunk
+        # arrives, the merged head is unambiguous in one direction:
+        # ``<th...`` only matches ``<think>`` (reasoning lane);
+        # ``<to...`` / ``<m...`` only matches a tool envelope (standard
+        # lane). On the rare terminal-only chunk that carries the
+        # ambiguous head (``output.finished`` True), flush the buffer
+        # through the standard path so the wire envelope still closes.
+        # Skipped entirely when ``enable_thinking is not False`` —
+        # the default-route policy at the top of
+        # ``_should_route_through_reasoning`` already locks reasoning.
+        if self._ambiguous_prefix_held:
+            delta_text = self._ambiguous_prefix_held + delta_text
+            self._ambiguous_prefix_held = ""
+            output.new_text = delta_text
+            if hasattr(output, "text"):
+                output.text = delta_text
+        if (
+            self.enable_thinking is False
+            and self.reasoning_parser is not None
+            and not output.finished
+        ):
+            _probe_head = (self.accumulated_text + delta_text).lstrip()
+            if _probe_head and self._THINK_OPEN_TOKEN.startswith(_probe_head):
+                # Head is a strict prefix of ``<think>``. If it is
+                # ALSO a strict prefix of any tool envelope opener,
+                # the routing choice is ambiguous — hold and wait.
+                for _opener, _ in self._TOOL_ENVELOPE_OPENERS:
+                    if _opener.startswith(_probe_head):
+                        self._ambiguous_prefix_held = delta_text
+                        return []
 
         # Step 1: Separate content from reasoning
         if output.channel is not None:
