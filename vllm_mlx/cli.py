@@ -1439,6 +1439,22 @@ def serve_command(args):
     import os
     import sys
 
+    # Parent-PID watchdog (rapid-desktop issue #449): if the supervisor
+    # passed its own PID via ``--watchdog-ppid`` or
+    # ``$RAPID_MLX_WATCHDOG_PPID``, spawn a daemon thread that polls
+    # ``os.getppid()`` every 2 s. When the parent dies (re-parented to
+    # launchd / init), the watchdog sends SIGTERM to ourselves so the
+    # FastAPI lifespan can flush + release the model — falling back to
+    # SIGKILL after a 5 s grace. Installed at the top of serve_command
+    # so it covers BOTH the text-LM path and the audio-mode fork below,
+    # AND so it arms before the (potentially multi-minute) model
+    # download — an operator who kills the desktop mid-download still
+    # gets a clean reap on the sidecar. No-op when no supervisor PID
+    # was passed (default).
+    from ._parent_watchdog import install_parent_watchdog, resolve_expected_ppid
+
+    install_parent_watchdog(resolve_expected_ppid(getattr(args, "watchdog_ppid", None)))
+
     _arg_max_tokens = getattr(args, "max_tokens", None)
     _max_tokens_is_explicit = _arg_max_tokens is not None
     effective_max_tokens = _arg_max_tokens if _arg_max_tokens is not None else 32768
@@ -3894,6 +3910,24 @@ def _spawn_chat_server(
     # see a stdin pipe and re-evaluate against a potentially-stale cache.
     child_env = os.environ.copy()
     child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
+    # Parent-PID watchdog (rapid-desktop #449 sibling fix). The
+    # SIGTERM-handler + atexit pair installed below cannot fire under
+    # SIGKILL of the chat REPL — the spawned ``serve`` would otherwise
+    # outlive ``rapid-mlx chat`` and keep the model + port locked. The
+    # watchdog inside the child polls ``os.getppid()`` every 2 s and
+    # self-terminates the moment the live PPID stops matching this
+    # stamp.
+    #
+    # Direct assignment (NOT setdefault). Codex r2 MAJOR: if the chat
+    # REPL itself was launched under a supervisor that already exported
+    # ``RAPID_MLX_WATCHDOG_PPID=<grandparent_pid>``, ``setdefault``
+    # would carry the grandparent's PID into the child env. The
+    # watchdog would then compare ``os.getppid()`` (= chat REPL's PID,
+    # the IMMEDIATE parent) against the grandparent PID, mismatch on
+    # first poll, and self-terminate the freshly-booted server. The
+    # spawner owns the watchdog relationship for the spawn it just
+    # created — overwrite is correct.
+    child_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
     # Atomic critical section: block SIGTERM/SIGINT delivery around
     # the whole ``Popen()`` + register + attribute-set + ``release()``
     # sequence. We use ``pthread_sigmask(SIG_BLOCK, ...)`` so the
@@ -6482,6 +6516,26 @@ Examples:
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/embeddinggemma-300m-6bit). Requires the "
             "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+        ),
+    )
+    # Parent-PID watchdog (rapid-desktop issue #449). When set, the
+    # sidecar polls ``os.getppid()`` every 2 s and self-terminates if
+    # the parent dies (re-parent to launchd / init on macOS/Linux). The
+    # supervisor passes its own PID at spawn so a SIGKILL on the desktop
+    # cannot leave a 30 GB orphan holding the model + port. ``0`` /
+    # negative / unset disables. The ``RAPID_MLX_WATCHDOG_PPID`` env var
+    # is honoured as a fallback when the CLI flag is omitted; the flag
+    # wins when both are present.
+    serve_parser.add_argument(
+        "--watchdog-ppid",
+        type=int,
+        default=None,
+        metavar="PID",
+        help=(
+            "Self-terminate when the parent with this PID dies (defeats "
+            "orphan-sidecar after SIGKILL on the supervisor). Honors "
+            "$RAPID_MLX_WATCHDOG_PPID as a fallback. Set to 0 / unset to "
+            "disable."
         ),
     )
     # PFlash long-prompt prefill compression (#287). Off by default; see
