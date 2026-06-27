@@ -61,6 +61,7 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "dflash_draft_model",
         "recommended_sampling",
         "pflash_tier",
+        "turboquant_tier",
     }
 )
 

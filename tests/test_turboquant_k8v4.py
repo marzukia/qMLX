@@ -568,3 +568,82 @@ class TestMetrics:
         record_turboquant_skip("typo-reason")
         body = "\n".join(_render_turboquant_metrics(SimpleNamespace(engine=None)))
         assert 'rapid_mlx_turboquant_skipped_total{reason="other"} 1' in body
+
+
+# Per-alias K8V4 default-on resolver + codec dtype preservation (task #332).
+
+
+class TestResolveTurboquantModeDefault:
+    @staticmethod
+    def _args(turboquant=None, quantization=False):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            kv_cache_turboquant=turboquant,
+            kv_cache_quantization=quantization,
+        )
+
+    def test_verified_alias_flips_to_k8v4(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from vllm_mlx import turboquant as tq_mod
+
+        def _stub_detect(_name: str):
+            return SimpleNamespace(turboquant_tier="k8v4_verified")
+
+        monkeypatch.setattr(
+            "vllm_mlx.model_auto_config.detect_model_config", _stub_detect
+        )
+
+        assert (
+            tq_mod.resolve_turboquant_mode_default(
+                self._args(), model_name="qwen3.5-35b-8bit"
+            )
+            == "k8v4"
+        )
+
+    def test_explicit_v4_overrides_default(self):
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        assert (
+            resolve_turboquant_mode_default(
+                self._args(turboquant="v4"), model_name="qwen3.5-35b-8bit"
+            )
+            == "v4"
+        )
+
+    def test_legacy_quantization_suppresses_autoflip(self):
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        assert (
+            resolve_turboquant_mode_default(
+                self._args(quantization=True),
+                model_name="qwen3.5-35b-8bit",
+            )
+            is None
+        )
+
+    def test_unknown_tier_preserves_today_behaviour(self):
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        assert (
+            resolve_turboquant_mode_default(self._args(), model_name="qwen3.5-4b-4bit")
+            is None
+        )
+
+
+def test_codec_preserves_input_dtype():
+    """Round-trip bf16 K + V through TurboQuantKVCache must return bf16."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.turboquant import TurboQuantConfig, TurboQuantKVCache
+
+    seq, head_dim = 64, 128
+    keys = mx.random.normal(shape=(1, 4, seq, head_dim)).astype(mx.bfloat16)
+    values = mx.random.normal(shape=(1, 4, seq, head_dim)).astype(mx.bfloat16)
+    src = SimpleNamespace(keys=keys, values=values, offset=seq)
+
+    cfg = TurboQuantConfig(mode="k8v4", bits=4)
+    out = TurboQuantKVCache.from_kv_cache(src, cfg).to_kv_cache()
+    assert out.keys.dtype == mx.bfloat16
+    assert out.values.dtype == mx.bfloat16

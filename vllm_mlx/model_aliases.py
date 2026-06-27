@@ -65,6 +65,11 @@ VALID_SUFFIX_TIERS: frozenset[str] = frozenset({"unknown", "neutral", "good", "a
 #                 defaults PFlash to ``always`` unless the user overrides
 VALID_PFLASH_TIERS: frozenset[str] = frozenset({"unknown", "verified"})
 
+# Canonical enum for ``turboquant_tier``. ``"k8v4_verified"`` flips the
+# no-flag default to ``--kv-cache-turboquant k8v4`` on that alias only;
+# explicit CLI still wins. Mirrors ``pflash_tier`` in shape.
+VALID_TURBOQUANT_TIERS: frozenset[str] = frozenset({"unknown", "k8v4_verified"})
+
 
 # Canonical name for the DFlash speculative-decoding drafter kind. Kept
 # as a module constant so eligibility checks, CLI flag handlers, and
@@ -203,6 +208,8 @@ class AliasProfile:
     # ``modality`` — inserting a field higher silently routes existing
     # positional kwargs into the wrong slot.
     pflash_tier: str = "unknown"
+    # TurboQuant K8V4 default-on tier. See ``VALID_TURBOQUANT_TIERS``.
+    turboquant_tier: str = "unknown"
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -253,6 +260,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "dflash_draft_model",
             "recommended_sampling",
             "pflash_tier",
+            "turboquant_tier",
             # Deprecated v0.7.2 PR #555 diffusion knobs — kept in the
             # allowed set so they construct an ``AliasProfile`` with
             # the deprecated no-op fields populated. Warning is emitted
@@ -338,6 +346,15 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         raise ValueError(
             f"alias {alias!r}: pflash_tier={pflash_tier!r} not in "
             f"{sorted(VALID_PFLASH_TIERS)}"
+        )
+
+    turboquant_tier = value.get("turboquant_tier", "unknown")
+    if not isinstance(turboquant_tier, str):
+        raise ValueError(f"alias {alias!r}: turboquant_tier must be a string")
+    if turboquant_tier not in VALID_TURBOQUANT_TIERS:
+        raise ValueError(
+            f"alias {alias!r}: turboquant_tier={turboquant_tier!r} not in "
+            f"{sorted(VALID_TURBOQUANT_TIERS)}"
         )
 
     # Strict bool coercion — bare ``bool(...)`` treats the string
@@ -477,6 +494,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         diffusion_fixed_steps=value.get("diffusion_fixed_steps", 8),
         diffusion_sc_every=value.get("diffusion_sc_every", 1),
         pflash_tier=pflash_tier,
+        turboquant_tier=turboquant_tier,
     )
 
 
