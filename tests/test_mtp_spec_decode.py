@@ -32,6 +32,58 @@ import pytest
 mx = pytest.importorskip("mlx.core")
 
 
+@pytest.fixture(autouse=True)
+def _reset_mtp_module_state():
+    """Reset the MTP module-level singletons AND the MLX default stream
+    between tests.
+
+    Three pieces of cross-test state leak in the full pytest sweep and
+    surface as the 7-failure transient cluster (PASS in isolation):
+
+    * ``vllm_mlx.spec_decode.mtp.cache_patch._patched`` — sticky install
+      gate; ``_unpatch_for_tests()`` clears it.
+    * ``vllm_mlx.spec_decode.mtp.accept_counter._global_counter`` —
+      monotonic counter singleton (monotonicity is a public contract);
+      ``reset_global_counter_for_tests()`` is the explicit hatch.
+    * **MLX active default stream** — an earlier test in the sweep that
+      calls ``mx.new_stream(...)`` (or its ``__enter__``-based context)
+      can leave the active default stream pointing at a now-dead stream
+      ID. The MTP generator does ``mx.eval(toks)`` at line 420 of
+      ``generator.py``, which evaluates against the active stream; if
+      that stream is gone, ``RuntimeError: There is no Stream(gpu, N)
+      in current thread`` fires. Resetting via
+      ``mx.set_default_stream(mx.default_stream(mx.default_device()))``
+      pins the active stream to the canonical default and unblocks
+      ``mx.eval``. (Memory: ``new_stream`` is thread-bound; the safe
+      executor pattern is ``default_stream``.)
+    """
+    import mlx.core as mx
+
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+
+    _unpatch_for_tests()
+    reset_global_counter_for_tests()
+    # Allocate a FRESH stream in the *current* (pytest main) thread and
+    # pin it as the active default. Some preceding sweep test
+    # (mllm-batch-generator etc.) creates an ``mx.new_stream`` in a
+    # worker thread and leaves the active default pointing at it.
+    # That stream exists in the worker thread, NOT the main thread, so
+    # MTP's ``mx.eval(toks)`` at generator.py:420 crashes with
+    # ``RuntimeError: There is no Stream(gpu, N) in current thread``.
+    # Allocating from this thread guarantees the active default is
+    # bound to a stream that THIS thread can see. (Memory:
+    # ``mx.new_stream`` is thread-bound — that's the bug we're routing
+    # around at the test layer.)
+    mx.set_default_stream(mx.new_stream(mx.default_device()))
+    yield
+    _unpatch_for_tests()
+    reset_global_counter_for_tests()
+    mx.set_default_stream(mx.new_stream(mx.default_device()))
+
+
 # ---------------------------------------------------------------------------
 # 1. Architecture detection
 # ---------------------------------------------------------------------------
