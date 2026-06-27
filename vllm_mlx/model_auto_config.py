@@ -98,6 +98,9 @@ class ModelConfig:
     # CLI ``--pflash`` still wins. See VALID_PFLASH_TIERS for the enum.
     pflash_tier: str = "unknown"
 
+    # Mirrors ``AliasProfile.turboquant_tier``; see VALID_TURBOQUANT_TIERS.
+    turboquant_tier: str = "unknown"
+
     # DFlash block-diffusion speculative decoding eligibility (#264, 0.9.0
     # operator-shipped via ``--enable-dflash`` for ``qwen3.5-27b-8bit``).
     # Mirrors ``AliasProfile.supports_dflash`` so ``rapid-mlx info`` can
@@ -618,7 +621,8 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             f"is_hybrid={profile.is_hybrid}, "
             f"supports_spec_decode={profile.supports_spec_decode}, "
             f"suffix_tier={profile.suffix_decoding_tier}, "
-            f"pflash_tier={profile.pflash_tier}",
+            f"pflash_tier={profile.pflash_tier}, "
+            f"turboquant_tier={profile.turboquant_tier}",
         )
         # AliasProfile stores the bench dict as a sorted tuple (frozen
         # dataclasses must avoid mutable shared state). Materialize a
@@ -641,6 +645,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             suffix_decoding_tier=profile.suffix_decoding_tier,
             suffix_bench_speedup=speedup,
             pflash_tier=profile.pflash_tier,
+            turboquant_tier=profile.turboquant_tier,
             supports_dflash=profile.supports_dflash,
         )
 

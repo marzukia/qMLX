@@ -2165,6 +2165,14 @@ def serve_command(args):
     if getattr(args, "specprefill", False):
         print("\n  ⚠ --specprefill is deprecated and has no effect.\n")
 
+    # Resolve per-alias TurboQuant default before the mutual-exclusion
+    # check below — operator-explicit values still win.
+    from .turboquant import resolve_turboquant_mode_default
+
+    args.kv_cache_turboquant = resolve_turboquant_mode_default(
+        args, model_name=args.model
+    )
+
     # Mutual exclusion: turboquant (any mode) vs standard quantization.
     # The argparse layer normalizes the flag to either ``None`` (off),
     # ``"v4"``, or ``"k8v4"``. Anything truthy means TurboQuant is on.

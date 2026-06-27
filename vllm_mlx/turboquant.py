@@ -56,6 +56,34 @@ logger = logging.getLogger(__name__)
 TURBOQUANT_MODES: tuple[str, ...] = ("v4", "k8v4")
 DEFAULT_TURBOQUANT_MODE = "v4"
 
+
+def resolve_turboquant_mode_default(args: Any, *, model_name: str) -> str | None:
+    """Resolve ``args.kv_cache_turboquant`` when the operator passed no flag.
+
+    Returns ``args.kv_cache_turboquant`` unchanged when set; ``None``
+    when the legacy ``--kv-cache-quantization`` is pinned (mutually
+    exclusive); else ``"k8v4"`` when the alias profile carries
+    ``turboquant_tier == "k8v4_verified"``; else ``None``.
+    """
+    if getattr(args, "kv_cache_turboquant", None) is not None:
+        return args.kv_cache_turboquant
+    if getattr(args, "kv_cache_quantization", False):
+        return None
+    try:
+        from .model_auto_config import detect_model_config
+    except ImportError:
+        return None
+    cfg = detect_model_config(model_name)
+    if cfg is not None and cfg.turboquant_tier == "k8v4_verified":
+        logger.info(
+            "TurboQuant default: alias %r is turboquant_tier=k8v4_verified "
+            "— engine defaults to --kv-cache-turboquant k8v4.",
+            model_name,
+        )
+        return "k8v4"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -702,15 +730,18 @@ class TurboQuantKVCache:
         keys_compressed: (
             tuple[mx.array | None, mx.array | None, mx.array | None] | None
         ) = None,
+        original_dtype: mx.Dtype | None = None,
     ):
         self.keys = keys
         self.values_compressed = values_compressed  # (indices, scales, zeros)
-        # ``keys_compressed`` is populated only in K8V4 mode; in V4 mode
-        # it stays ``None`` and ``keys`` carries the FP16 K tensor.
         self.keys_compressed = keys_compressed
         self.offset = offset
         self.config = config
         self.head_dim = head_dim
+        # Round-trip target dtype: codec internals always emit fp16, but
+        # bf16 models pay a ~46% decode-throughput tax if the cache is
+        # handed back as fp16. ``None`` preserves the legacy fp16 contract.
+        self.original_dtype = original_dtype
 
     @property
     def mode(self) -> str:
@@ -733,6 +764,11 @@ class TurboQuantKVCache:
                 head_dim=0,
                 keys_compressed=None,
             )
+
+        # Snapshot the model's native KV dtype so the round-trip casts
+        # back at to_kv_cache; falls back to values' dtype on the K8V4
+        # path where ``out_keys`` is dropped below.
+        original_dtype = keys.dtype if keys is not None else values.dtype
 
         # Get actual data up to offset
         if offset < keys.shape[-2]:
@@ -769,6 +805,7 @@ class TurboQuantKVCache:
             config=config,
             head_dim=head_dim,
             keys_compressed=keys_compressed,
+            original_dtype=original_dtype,
         )
 
     def to_kv_cache(self):
@@ -803,6 +840,15 @@ class TurboQuantKVCache:
             )
         else:
             keys = self.keys
+
+        # Cast back to the model's native KV dtype. Codec emits fp16; a
+        # bf16 model otherwise pays ~46% on decode throughput (see PR
+        # #952 dtype A/B). ``None`` keeps the legacy fp16 contract.
+        if self.original_dtype is not None:
+            if keys is not None and keys.dtype != self.original_dtype:
+                keys = keys.astype(self.original_dtype)
+            if values.dtype != self.original_dtype:
+                values = values.astype(self.original_dtype)
 
         kv.keys = keys
         kv.values = values
