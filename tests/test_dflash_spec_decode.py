@@ -1173,7 +1173,38 @@ def test_bench_script_dry_run_executes_cleanly():
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    # The plan JSON must declare the two conditions and a block size.
+    # The plan JSON must declare the two conditions and a block size
+    # field. The key is ``block_size_override`` since #343 — the bench
+    # now delegates the per-run block-size policy to mlx-vlm's adaptive
+    # scaler (it's a CEILING, not a fixed value) and only sends the CLI
+    # override through when set.
     assert '"conditions"' in proc.stdout
     assert '"dflash"' in proc.stdout
-    assert '"block_size"' in proc.stdout
+    assert '"block_size_override"' in proc.stdout
+
+
+def test_bench_script_rejects_duplicate_prompt_indices():
+    """``--prompt-indices 0,0,1`` must fail loudly.
+
+    Pooling the same prompt twice silently over-weights it in the
+    summary speedup. The operator likely meant to type two different
+    indices; surface the typo as a clean argparse-style error rather
+    than producing misleading benchmark numbers.
+    """
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "bench/bench_spec_decode_dflash.py",
+            "--dry-run",
+            "--prompt-indices",
+            "0,0,1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode != 0
+    assert "duplicate" in proc.stderr.lower() or "duplicate" in proc.stdout.lower()
