@@ -901,3 +901,236 @@ class TurboQuantKVCache:
             if arr is not None:
                 total += arr.nbytes
         return total
+
+    # -----------------------------------------------------------------
+    # Disk persistence — mlx_lm.save_prompt_cache contract (#198 BUG B)
+    # -----------------------------------------------------------------
+    # Upstream ``save_prompt_cache`` walks ``[c.state for c in cache]``
+    # and ``[c.meta_state for c in cache]``; ``load_prompt_cache`` calls
+    # ``globals()[c].from_state(state, meta_state)`` against the upstream
+    # module. Without these properties the radix shutdown flush aborts
+    # mid-walk with ``'TurboQuantKVCache' object has no attribute 'state'``
+    # and ZERO entries land on disk — every K8V4 server restart pays a
+    # full re-prefill cost on shared system prompts (see
+    # ``cfg3-radix-k8v4-server.log`` reproducer, surfaced 2026-06-27).
+    #
+    # State shape: dict of mx.arrays — ``tree_flatten`` over a list of
+    # these produces flat ``i.<name>`` keys for safetensors. Empty
+    # caches (``keys is None`` AND ``keys_compressed is None``) emit an
+    # empty dict, matching ``_BaseCache.state``'s "no state" sentinel.
+    #
+    # Meta_state shape: tuple of strings — same convention as
+    # ``QuantizedKVCache.meta_state``. The tuple captures the scalars
+    # that ``state`` can't (``offset``, ``head_dim``, codec config,
+    # ``original_dtype``). Codec config is rebuilt by re-validating
+    # through ``TurboQuantConfig.__post_init__`` so a malformed snapshot
+    # (mismatched bits / mode combo) is rejected at load rather than
+    # silently producing garbled keys at decode.
+
+    @property
+    def state(self):
+        """Serializable arrays — see class-level "Disk persistence" note."""
+        if self.keys is None and self.keys_compressed is None:
+            return {}
+        out: dict[str, mx.array] = {}
+        if self.keys is not None:
+            out["keys"] = self.keys
+        indices, scales, zeros = self.values_compressed
+        if indices is not None:
+            out["v_indices"] = indices
+            out["v_scales"] = scales
+            out["v_zeros"] = zeros
+        if self.keys_compressed is not None:
+            k_packed, k_norms, k_scales = self.keys_compressed
+            if k_packed is not None:
+                out["k_packed"] = k_packed
+                out["k_norms"] = k_norms
+                out["k_scales"] = k_scales
+        return out
+
+    @state.setter
+    def state(self, v):
+        # ``from_state`` runs the setter before ``__init__`` so we must
+        # initialize every attribute the codec touches. Empty marker →
+        # empty cache. ``tree_unflatten([])`` returns ``[]`` (NOT ``{}``)
+        # for a state that was saved as ``{}``, so both empty dict and
+        # empty list are legitimate empty markers — but any OTHER
+        # non-dict value is a malformed snapshot. Codex PR #955 round 1
+        # BLOCKING #2 caught that ``not v`` alone would accept e.g.
+        # ``None`` / ``0`` / ``""`` and silently round-trip as empty.
+        if isinstance(v, (dict, list)) and len(v) == 0:
+            self.keys = None
+            self.values_compressed = (None, None, None)
+            self.keys_compressed = None
+            return
+        if not isinstance(v, dict):
+            raise TypeError(
+                f"TurboQuantKVCache.state must be a dict (got {type(v).__name__}); "
+                "snapshot may have been written by a future codec"
+            )
+        # V side: TurboQuant ALWAYS compresses V (no V-bypass mode), so
+        # a non-empty state must carry all three v_* fields together.
+        # Round 1 BLOCKING #1: silently setting ``values_compressed`` to
+        # ``(None, None, None)`` when one or two v_* fields are missing
+        # would defer the failure to the next ``to_kv_cache()`` decode
+        # (raises deep inside the codec). Failing at the setter routes
+        # it through MemoryAwarePrefixCache's ``corrupt_skipped`` path
+        # so the drop is visible at /metrics.
+        v_present = {k for k in ("v_indices", "v_scales", "v_zeros") if k in v}
+        if v_present and v_present != {"v_indices", "v_scales", "v_zeros"}:
+            raise ValueError(
+                "TurboQuantKVCache.state has partial v_* fields "
+                f"({sorted(v_present)}); all three of v_indices/v_scales/"
+                "v_zeros must be present together — snapshot is corrupt"
+            )
+        # K8 side: same all-or-nothing rule. K8 mode encodes all three
+        # k_* together; partial presence means the snapshot was either
+        # truncated or written by a codec we don't recognize.
+        k_present = {k for k in ("k_packed", "k_norms", "k_scales") if k in v}
+        if k_present and k_present != {"k_packed", "k_norms", "k_scales"}:
+            raise ValueError(
+                "TurboQuantKVCache.state has partial k_* fields "
+                f"({sorted(k_present)}); all three of k_packed/k_norms/"
+                "k_scales must be present together — snapshot is corrupt"
+            )
+        self.keys = v.get("keys")
+        if v_present:
+            self.values_compressed = (
+                v["v_indices"],
+                v["v_scales"],
+                v["v_zeros"],
+            )
+        else:
+            # No V at all is only legal when the cache is also
+            # K-side-empty AND keys-empty — i.e. degenerate but
+            # well-formed. If we got here with no v_* but a populated K
+            # or fp16 keys, that's still corrupt: V is the one thing
+            # TurboQuant always emits.
+            if self.keys is not None or k_present:
+                raise ValueError(
+                    "TurboQuantKVCache.state has K or fp16 keys but no V "
+                    "compression — TurboQuant always emits V; snapshot is corrupt"
+                )
+            self.values_compressed = (None, None, None)
+        if k_present:
+            self.keys_compressed = (
+                v["k_packed"],
+                v["k_norms"],
+                v["k_scales"],
+            )
+        else:
+            self.keys_compressed = None
+
+    @property
+    def meta_state(self):
+        """Scalar codec config — see class-level "Disk persistence" note."""
+        # Empty marker for never-populated caches. Mirrors the empty
+        # ``state`` so an empty snapshot is symmetric on both axes.
+        if self.keys is None and self.keys_compressed is None and self.offset == 0:
+            return ()
+        # Empty string sentinel for ``original_dtype is None`` so the
+        # round-trip is unambiguous — ``"float16"`` etc. round-trip via
+        # ``getattr(mx, name)``.
+        if self.original_dtype is None:
+            dtype_name = ""
+        else:
+            # ``str(mx.float16)`` is ``"mlx.core.float16"``; the last
+            # dotted component is the attribute name on ``mx``.
+            dtype_name = str(self.original_dtype).rsplit(".", 1)[-1]
+        return (
+            str(self.offset),
+            str(self.head_dim),
+            str(self.config.bits),
+            str(self.config.group_size),
+            str(self.config.rotation_seed),
+            self.config.mode,
+            dtype_name,
+        )
+
+    @meta_state.setter
+    def meta_state(self, v):
+        # Empty marker → empty-cache shape, matching the empty branch
+        # in :meth:`state.setter`. Codex PR #955 round 1 BLOCKING #3:
+        # only ``()`` / ``[]`` count as the empty marker — any other
+        # falsy value (``None`` / ``""`` / ``0``) is a malformed
+        # snapshot that must not silently load with default config.
+        if isinstance(v, (tuple, list)) and len(v) == 0:
+            self.offset = 0
+            self.head_dim = 0
+            self.config = TurboQuantConfig()
+            self.original_dtype = None
+            return
+        if not isinstance(v, (tuple, list)):
+            raise TypeError(
+                f"TurboQuantKVCache.meta_state must be a tuple/list "
+                f"(got {type(v).__name__}); snapshot is corrupt"
+            )
+        # ``v`` is whatever ``tree_unflatten`` produced — a list for our
+        # tuple-of-strings save shape. A 7-element shape is the only
+        # one this codec writes; any other length is from a future
+        # writer we don't speak.
+        if len(v) != 7:
+            raise ValueError(
+                f"TurboQuantKVCache.meta_state expects 7 elements, got {len(v)}; "
+                "snapshot may have been written by a future codec"
+            )
+        self.offset = int(v[0])
+        self.head_dim = int(v[1])
+        # ``TurboQuantConfig.__post_init__`` re-runs here, rejecting
+        # invalid combos (e.g. ``mode='k8v4'`` with ``bits != 4``). A
+        # snapshot whose meta has been tampered with surfaces as a
+        # ``ValueError`` at load — exactly the same signal a CLI
+        # validation error would raise. The persistence layer wraps
+        # the load in try/except and bumps ``corrupt_skipped``, so a
+        # single tampered entry is dropped without taking the whole
+        # boot down.
+        self.config = TurboQuantConfig(
+            bits=int(v[2]),
+            group_size=int(v[3]),
+            rotation_seed=int(v[4]),
+            mode=v[5],
+        )
+        dtype_name = v[6]
+        if dtype_name:
+            try:
+                self.original_dtype = getattr(mx, dtype_name)
+            except AttributeError as e:
+                raise ValueError(
+                    f"TurboQuantKVCache.meta_state references unknown dtype "
+                    f"{dtype_name!r}"
+                ) from e
+        else:
+            self.original_dtype = None
+
+    @classmethod
+    def from_state(cls, state, meta_state):
+        """Mirror :meth:`mlx_lm.models.cache._BaseCache.from_state`.
+
+        Used by ``mlx_lm.models.cache.load_prompt_cache`` after
+        :func:`_register_in_mlx_lm_cache_globals` makes this class
+        discoverable in the upstream module's ``globals()``.
+        """
+        obj = cls.__new__(cls)
+        obj.state = state
+        obj.meta_state = meta_state
+        return obj
+
+
+# Make TurboQuantKVCache discoverable by ``mlx_lm.models.cache.load_prompt_cache``.
+# Upstream resolves cache classes via ``globals()[name].from_state(...)`` in its
+# own module — third-party cache types are invisible by default, so an entry
+# persisted under K8V4 (or V4) would otherwise raise ``KeyError`` at the next
+# boot. We inject the class once at import time (idempotent via
+# ``__dict__.setdefault``) so the radix-cache shutdown-flush → restart-restore
+# round-trip works without monkey-patching at every call site. The injection
+# is conditional on the import succeeding because ``mlx_lm`` is optional in
+# slim builds; absent it, persistence is already a no-op upstream.
+def _register_in_mlx_lm_cache_globals() -> None:
+    try:
+        from mlx_lm.models import cache as _upstream
+    except ImportError:
+        return
+    _upstream.__dict__.setdefault("TurboQuantKVCache", TurboQuantKVCache)
+
+
+_register_in_mlx_lm_cache_globals()
