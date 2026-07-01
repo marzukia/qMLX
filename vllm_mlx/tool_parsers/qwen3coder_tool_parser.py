@@ -5,11 +5,20 @@ Qwen3-Coder XML tool call parser for rapid-mlx.
 Ported from vLLM upstream (vllm/tool_parsers/qwen3coder_tool_parser.py).
 
 Format:
-  <tool_call>
-  <function=NAME>
+  <tool_call>                           <- optional wrapper (framing only)
+  <function=NAME>                       <- REQUIRED, defines the tool call
   <parameter=KEY>VALUE</parameter>
-  </function>
-  </tool_call>
+  </function>                           <- REQUIRED
+  </tool_call>                          <- optional wrapper (framing only)
+
+The ``<tool_call>...</tool_call>`` wrapper is OPTIONAL framing. What
+structurally defines a tool call is the ``<function=NAME>...</function>``
+XML block — so the streaming state machine anchors on ``<function=``
+throughout and treats the wrapper as a prefix to strip from content
+(issue #978). Anchoring on the wrapper would leak whole tool calls as
+raw content when a fine-tune's tokenizer omits the wrapper as a special
+token but the model still emits well-formed ``<function=...>`` bodies
+(observed with ``Shiftedx/qwopus3.6-35b-a3b-coder-mxfp4-mlx``).
 
 Similar to Seed-OSS but without the seed: namespace prefix.
 """
@@ -304,6 +313,145 @@ class Qwen3CoderToolParser(ToolParser):
                 tools_called=False, tool_calls=[], content=model_output
             )
 
+    # --- streaming helpers -----------------------------------------------
+    #
+    # The streaming state machine is anchored on the ``<function=`` /
+    # ``</function>`` pair, NOT on the optional ``<tool_call>`` wrapper.
+    # These helpers make that decoupling explicit so the wrapper token
+    # only appears in the content-before strip logic (where it must, to
+    # avoid emitting wrapper framing as user-visible content).
+
+    def _first_opener_pos(self, text: str) -> int:
+        """Position of the earliest tool-call framing character in ``text``.
+
+        A tool call may be introduced by either the ``<tool_call>`` wrapper
+        or the bare ``<function=`` prefix; both must be stripped from any
+        content emitted before the call. Returns ``len(text)`` when no
+        opener is present so callers can use it as an unconditional slice
+        endpoint.
+        """
+        tc = text.find(self.tool_call_start_token)
+        fn = text.find(self.tool_call_prefix)
+        if tc == -1 and fn == -1:
+            return len(text)
+        if tc == -1:
+            return fn
+        if fn == -1:
+            return tc
+        return min(tc, fn)
+
+    def _has_new_opener(self, delta_text: str, delta_token_ids: Sequence[int]) -> bool:
+        """True when this delta introduces the first-ever tool-call opener.
+
+        Accepts the wrapper token via string OR token-id (tokenizers that
+        expose ``<tool_call>`` as a special token), and the bare
+        ``<function=`` prefix via string. The two openers are equivalent
+        as far as the state machine is concerned — either triggers the
+        transition out of content-only mode.
+        """
+        if (
+            self.tool_call_start_token_id is not None
+            and self.tool_call_start_token_id in delta_token_ids
+        ):
+            return True
+        return (
+            self.tool_call_start_token in delta_text
+            or self.tool_call_prefix in delta_text
+        )
+
+    def _top_level_function_close(self, text: str, start: int) -> int:
+        """Return the position of the top-level ``</function>`` that closes
+        the tool opened at ``start`` — i.e. the first ``</function>`` after
+        ``start`` that is NOT inside a ``<parameter=…>…</parameter>`` value.
+
+        Returns ``-1`` when the tool hasn't closed yet in the buffer. A
+        ``</function>`` embedded in a user's ``code`` parameter (XML
+        code samples are the canonical example) MUST NOT be treated as
+        the tool boundary; otherwise streaming truncates mid-argument
+        (codex review on #978).
+        """
+        prefix_len = len(self.tool_call_prefix)
+        param_open_len = len(self.parameter_prefix)
+        param_close_len = len(self.parameter_end_token)
+        j = start + prefix_len
+        n = len(text)
+        while j < n:
+            next_param = text.find(self.parameter_prefix, j)
+            next_close = text.find(self.function_end_token, j)
+            if next_close == -1:
+                return -1
+            if next_param != -1 and next_param < next_close:
+                header_end = text.find(">", next_param + param_open_len)
+                if header_end == -1:
+                    return -1
+                pclose = text.find(self.parameter_end_token, header_end + 1)
+                if pclose == -1:
+                    return -1
+                j = pclose + param_close_len
+                continue
+            return next_close
+        return -1
+
+    def _top_level_function_close_count(
+        self, text: str, top_level_starts: list[int]
+    ) -> int:
+        """Count ``</function>`` tokens that structurally close a top-level
+        ``<function=…>`` opener from ``top_level_starts``.
+
+        Uses ``_top_level_function_close`` per start so a ``</function>``
+        inside a ``<parameter=…>…</parameter>`` value (e.g. a user's
+        ``code`` argument containing XML) never counts as a tool close.
+        """
+        return sum(
+            1
+            for start in top_level_starts
+            if self._top_level_function_close(text, start) != -1
+        )
+
+    def _function_start_positions(self, text: str) -> list[int]:
+        """Positions of TOP-LEVEL ``<function=`` openers in ``text``.
+
+        Skips ``<function=`` substrings that appear inside a
+        ``<parameter=…>…</parameter>`` value — those are user data (e.g.
+        a ``code`` parameter containing XML), not structural tool-call
+        boundaries. Function tags don't nest in Qwen3-Coder XML, so a
+        top-level scan alternates between (a) looking for the next
+        function opener while skipping parameter-value spans and (b)
+        recording found openers. Both the tool-index slicing AND the
+        "any more tools?" counter rely on this — using a naive
+        ``str.count(...)`` for either would let a bogus in-value
+        ``<function=…>`` corrupt streaming state (codex review on #978).
+
+        Incomplete parameter tails (opener without matching
+        ``</parameter>``) terminate the scan: everything after an
+        unclosed value is potentially user data, so we conservatively
+        refuse to promote further ``<function=`` occurrences until the
+        value closes.
+        """
+        positions: list[int] = []
+        i = 0
+        n = len(text)
+        prefix_len = len(self.tool_call_prefix)
+        param_open_len = len(self.parameter_prefix)
+        param_close_len = len(self.parameter_end_token)
+        while i < n:
+            next_func = text.find(self.tool_call_prefix, i)
+            next_param = text.find(self.parameter_prefix, i)
+            if next_func == -1:
+                return positions
+            if next_param != -1 and next_param < next_func:
+                header_end = text.find(">", next_param + param_open_len)
+                if header_end == -1:
+                    return positions
+                close_pos = text.find(self.parameter_end_token, header_end + 1)
+                if close_pos == -1:
+                    return positions
+                i = close_pos + param_close_len
+                continue
+            positions.append(next_func)
+            i = next_func + prefix_len
+        return positions
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -326,9 +474,20 @@ class Qwen3CoderToolParser(ToolParser):
         delta_token_ids = delta_token_ids or []
         self.accumulated_text = current_text
 
-        # Check if we need to advance to next tool
+        # Check if we need to advance to next tool. The tool boundary is
+        # ``</function>`` — that is the invariant close, whether or not
+        # a wrapping ``</tool_call>`` follows. Both the close-count and
+        # the "any more tools?" check must ignore ``<function=`` /
+        # ``</function>`` substrings inside parameter values — a
+        # ``code`` parameter carrying XML code would otherwise trip the
+        # advance loop into targeting a bogus next block (codex review
+        # on #978).
         if self.json_closed and not self.in_function:
-            tool_ends = current_text.count(self.tool_call_end_token)
+            top_level_starts = self._function_start_positions(current_text)
+            tool_count = len(top_level_starts)
+            tool_ends = self._top_level_function_close_count(
+                current_text, top_level_starts
+            )
             if tool_ends > self.current_tool_index:
                 self.current_tool_index += 1
                 self.header_sent = False
@@ -336,59 +495,55 @@ class Qwen3CoderToolParser(ToolParser):
                 self.json_started = False
                 self.json_closed = False
                 self.accumulated_params = {}
-                if self.current_tool_index >= current_text.count(
-                    self.tool_call_start_token
-                ):
+                if self.current_tool_index >= tool_count:
                     self.is_tool_call_started = False
                 return None
 
-        # Handle content before tool calls
+        # Handle content before tool calls. Either opener (wrapper or bare
+        # ``<function=``) transitions us out of content-only mode; the
+        # content-before-strip position is whichever opener appears first
+        # in ``delta_text`` so wrapper framing never leaks to the client.
         if not self.is_tool_call_started:
-            if (
-                self.tool_call_start_token_id is not None
-                and self.tool_call_start_token_id in delta_token_ids
-            ) or self.tool_call_start_token in delta_text:
+            if self._has_new_opener(delta_text, delta_token_ids):
                 self.is_tool_call_started = True
-                if self.tool_call_start_token in delta_text:
-                    content_before = delta_text[
-                        : delta_text.index(self.tool_call_start_token)
-                    ]
-                    if content_before:
-                        return {"content": content_before}
+                opener_pos = self._first_opener_pos(delta_text)
+                content_before = (
+                    delta_text[:opener_pos] if opener_pos < len(delta_text) else ""
+                )
+                if content_before:
+                    return {"content": content_before}
                 # Fall through to header parsing below instead of returning
                 # None — the function header may already be in current_text.
             else:
-                if (
-                    current_text.rstrip().endswith(self.tool_call_end_token)
-                    and delta_text.strip() == ""
+                # Suppress the trailing-wrapper-close whitespace event so
+                # a stream that ends with just ``</tool_call>\n`` doesn't
+                # emit an empty tail. ``</function>`` is the actual tool
+                # close; ``</tool_call>`` may follow as optional framing.
+                trailing = current_text.rstrip()
+                if delta_text.strip() == "" and (
+                    trailing.endswith(self.tool_call_end_token)
+                    or trailing.endswith(self.function_end_token)
                 ):
                     return None
                 return {"content": delta_text}
 
-        # Find current tool call portion
-        tool_starts_count = current_text.count(self.tool_call_start_token)
-        if self.current_tool_index >= tool_starts_count:
+        # Find current tool call portion. Slice from the current
+        # ``<function=`` opener to the matching top-level ``</function>``
+        # close — this is the wrapper-agnostic tool-call block. Both
+        # ends use the parameter-aware scanners so a user-visible
+        # ``<function=…>`` OR ``</function>`` embedded in a parameter
+        # value can't corrupt the slice.
+        function_starts = self._function_start_positions(current_text)
+        if self.current_tool_index >= len(function_starts):
             return None
 
-        tool_start_positions: list[int] = []
-        idx = 0
-        while True:
-            idx = current_text.find(self.tool_call_start_token, idx)
-            if idx == -1:
-                break
-            tool_start_positions.append(idx)
-            idx += len(self.tool_call_start_token)
-
-        if self.current_tool_index >= len(tool_start_positions):
-            return None
-
-        tool_start_idx = tool_start_positions[self.current_tool_index]
-        tool_end_idx = current_text.find(self.tool_call_end_token, tool_start_idx)
-        if tool_end_idx == -1:
+        tool_start_idx = function_starts[self.current_tool_index]
+        func_close_idx = self._top_level_function_close(current_text, tool_start_idx)
+        if func_close_idx == -1:
             tool_text = current_text[tool_start_idx:]
         else:
             tool_text = current_text[
-                tool_start_idx : tool_end_idx + len(self.tool_call_end_token)
+                tool_start_idx : func_close_idx + len(self.function_end_token)
             ]
 
         # Parse function header
