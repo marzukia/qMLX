@@ -62,6 +62,16 @@ async def list_mcp_servers() -> MCPServersResponse:
     return MCPServersResponse(servers=servers)
 
 
+@router.get("/v1/mcp/status", dependencies=[Depends(verify_api_key)])
+async def get_mcp_status() -> MCPServersResponse:
+    """Backward-compatible alias for ``/v1/mcp/servers``.
+
+    The MCP tools guide documents ``/v1/mcp/status`` as the status endpoint,
+    so this route prevents 404s for users following the docs.
+    """
+    return await list_mcp_servers()
+
+
 @router.post("/v1/mcp/execute", dependencies=[Depends(verify_api_key)])
 async def execute_mcp_tool(request: MCPExecuteRequest) -> MCPExecuteResponse:
     """Execute an MCP tool."""

@@ -1187,6 +1187,65 @@ class TestMCPRoutes:
             assert r.status_code == 200
             assert r.json()["servers"] == []
 
+    def _make_server_status(self):
+        server_status = MagicMock()
+        server_status.name = "test_server"
+        server_status.state.value = "connected"
+        server_status.transport.value = "stdio"
+        server_status.tools_count = 3
+        server_status.error = None
+        return server_status
+
+    def test_status_alias_parity_no_mcp(self):
+        """/v1/mcp/status returns the same JSON as /v1/mcp/servers."""
+        with (
+            patch.object(get_config(), "mcp_manager", None),
+            patch.object(get_config(), "api_key", None),
+        ):
+            app = self._make_app()
+            client = TestClient(app)
+            servers_resp = client.get("/v1/mcp/servers")
+            status_resp = client.get("/v1/mcp/status")
+            assert servers_resp.status_code == status_resp.status_code == 200
+            assert servers_resp.json() == status_resp.json()
+
+    def test_status_alias_parity_with_mcp(self):
+        """/v1/mcp/status mirrors /v1/mcp/servers when MCP is configured."""
+        mcp = MagicMock()
+        mcp.get_server_status.return_value = [self._make_server_status()]
+
+        with (
+            patch.object(get_config(), "mcp_manager", mcp),
+            patch.object(get_config(), "api_key", None),
+        ):
+            app = self._make_app()
+            client = TestClient(app)
+            servers_resp = client.get("/v1/mcp/servers")
+            status_resp = client.get("/v1/mcp/status")
+            assert servers_resp.status_code == status_resp.status_code == 200
+            assert servers_resp.json() == status_resp.json()
+            data = status_resp.json()
+            assert data["servers"][0]["name"] == "test_server"
+            assert data["servers"][0]["tools_count"] == 3
+
+    def test_status_alias_auth_parity(self):
+        """/v1/mcp/status and /v1/mcp/servers share the same auth dependency."""
+        with (
+            patch.object(get_config(), "mcp_manager", None),
+            patch.object(get_config(), "api_key", "secret-key"),
+        ):
+            app = self._make_app()
+            client = TestClient(app)
+            servers_resp = client.get("/v1/mcp/servers")
+            status_resp = client.get("/v1/mcp/status")
+            assert servers_resp.status_code == status_resp.status_code == 401
+
+            headers = {"Authorization": "Bearer secret-key"}
+            servers_resp = client.get("/v1/mcp/servers", headers=headers)
+            status_resp = client.get("/v1/mcp/status", headers=headers)
+            assert servers_resp.status_code == status_resp.status_code == 200
+            assert servers_resp.json() == status_resp.json()
+
     def test_execute_no_mcp(self):
         """Execute tool returns 503 when MCP not configured."""
         with (

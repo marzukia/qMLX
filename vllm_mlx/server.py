@@ -1555,6 +1555,11 @@ async def init_mcp(config_path: str):
 
         logger.info(f"MCP initialized with {len(_mcp_manager.get_all_tools())} tools")
 
+        # Sync the newly-created manager/executor into the ServerConfig
+        # singleton so MCP routes see them. Keeping this inside init_mcp()
+        # means every code path that initializes MCP also publishes it to cfg.
+        _sync_config()
+
     except ImportError:
         logger.error("MCP SDK not installed. Install with: pip install mcp")
         raise
