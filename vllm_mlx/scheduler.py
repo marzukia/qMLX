@@ -4201,8 +4201,47 @@ class Scheduler:
                 request.remaining_tokens is not None
                 and len(request.remaining_tokens) == 0
             ):
-                # Exact cache match - pass only last token for generation kickoff
+                # Exact cache match — pass only the last token for
+                # generation kickoff. The saved cache captured state at
+                # offset=N (all N prompt tokens processed).
+                # ``PromptProcessingBatch.generate([last_token])`` then
+                # calls ``GenerationBatch.__init__(inputs=last_token)``
+                # which invokes ``_step()``. That step forwards the last
+                # token through the model with ``cache=prompt_cache``,
+                # writing K/V at position N and advancing offset to N+1.
+                # The result: the last prompt token appears at TWO cache
+                # positions (N-1 from the saved cache, N from the re-fed
+                # step), the sampling query is emitted at position N+1
+                # (with a shifted RoPE), and the softmax denominator
+                # includes an extra spurious K/V. That drifts the first
+                # output token vs. the fresh-prefill baseline (which
+                # samples at position N with cache offset=N-1 → N).
+                #
+                # Fix: trim the cache offset by 1 before the batch
+                # generator picks it up. The last prompt token's K/V is
+                # discarded from cache; ``_step()``'s forward then
+                # overwrites position N-1 in-place, ending at offset=N.
+                # Position and softmax denominator now match the fresh
+                # path exactly, restoring byte-equal output between a
+                # cold prompt and a warm-cache repeat.
                 tokens_to_process = request.prompt_token_ids[-1:]
+                if request.prompt_cache is not None:
+                    try:
+                        from mlx_lm.models.cache import (
+                            can_trim_prompt_cache,
+                            trim_prompt_cache,
+                        )
+
+                        if can_trim_prompt_cache(request.prompt_cache):
+                            trim_prompt_cache(request.prompt_cache, 1)
+                    except Exception as _trim_exc:  # noqa: BLE001
+                        logger.debug(
+                            "[cache_fetch] exact-hit trim(1) failed for "
+                            "request=%s: %s (continuing without trim; "
+                            "output may drift from fresh baseline)",
+                            request.request_id[:12],
+                            _trim_exc,
+                        )
             elif request.remaining_tokens:
                 tokens_to_process = request.remaining_tokens
             else:
