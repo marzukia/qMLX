@@ -715,18 +715,8 @@ class BatchedEngine(BaseEngine):
             tokenizer_config=tokenizer_config,
         ).result()
 
-        # Validate legacy Qwen3-Next MTP support if enabled. Only meaningful
-        # when the model was loaded from a checkpoint that carries a baked-in
-        # MTP head (``model-mtp.safetensors`` + Qwen3-Next arch). For the
-        # ``--spec-decode mtp`` external-assistant path (Gemma 4, Qwen3.5),
-        # ``dispatch_mtp_inject`` runs downstream and attaches ``model.mtp``
-        # at that point — so a pre-dispatch legacy validate is guaranteed to
-        # fail on those model families and emits a misleading warning right
-        # before dispatch actually succeeds. Skip the legacy validate when
-        # the new-arch dispatcher will run instead (Phase 1 cleanup).
-        sc = self._scheduler_config
-        _new_arch_mtp = sc is not None and getattr(sc, "spec_decode", "none") == "mtp"
-        if sc is not None and sc.enable_mtp and not _new_arch_mtp:
+        # Validate MTP support if enabled
+        if self._scheduler_config and self._scheduler_config.enable_mtp:
             from ..patches.qwen3_next_mtp import validate_mtp_support
 
             if validate_mtp_support(self._model):
