@@ -131,9 +131,109 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
 
     Non-dict entries and entries without a ``type`` field are
     untouched; the validation pass owns the rejection envelope.
+
+    Codex 0.137 compat: Codex groups its function tools under one or
+    more ``{"type":"namespace","name":...,"tools":[{type:function,...}]}``
+    entries (e.g. the ``multi_agent_v1`` group) and also submits hosted
+    tools (``web_search``) the local engine cannot execute. Flatten each
+    namespace into its contained function tools and drop the hosted tools
+    we can't serve, so the allowlist gate in
+    :func:`validate_responses_tool_types` accepts the request instead of
+    400-ing on ``type:"namespace"``.
+
+    F13 trade-off: the drop-hosted step is gated on the ORIGINAL request
+    containing a ``namespace`` entry — Codex's fingerprint. A direct-user
+    request with EITHER ``[{"type":"web_search"}]`` (hosted-only, Yuki
+    F13's canonical shape) OR ``[{"type":"function",...},{"type":
+    "web_search"}]`` (function + genuinely-requested hosted) does NOT
+    trigger drop-hosted, so validate 400s and the caller learns the
+    hosted tool won't run. This preserves F13's "don't silently accept
+    a tool that will never run" contract for direct-user shapes. Codex
+    CLI's real request always carries at least one ``namespace`` group
+    (``multi_agent_v1``), so the fingerprint reliably identifies its
+    ambient hosted noise.
+
+    Namespace shape gating: a ``namespace`` entry is flattened into its
+    function children ONLY when ``tools`` is a NON-EMPTY LIST and EVERY
+    child is a dict whose canonical ``type`` is ``function``. Empty /
+    non-list / mixed-child / non-function-child shapes are left in
+    place so the allowlist gate returns a controlled 400 instead of
+    silently collapsing to an empty tools array. This avoids three
+    edge holes: (a) ``{"type":"namespace","tools":[]}`` + hosted →
+    tools=[] after normalize (silent zero-tool 200), (b)
+    ``{"type":"namespace","tools":["bad-string"]}`` → non-dict children
+    silently discarded instead of surfacing the bad shape, and (c)
+    ``{"type":"namespace","tools":[{"type":"web_search"}]}`` → hosted
+    child flattens out and then the codex-fingerprint drop-hosted step
+    removes it too, so the invalid request becomes an empty success.
+    Codex's real ``multi_agent_v1`` group only ever contains function
+    tools, so this stricter contract matches its actual wire format.
     """
     if not tools:
         return
+    # Hosted tool types the local engine cannot run; Codex includes some
+    # of these by default. Drop them rather than 400 the whole request —
+    # BUT only when the original request carries a ``namespace`` entry
+    # (Codex's fingerprint — see F13 trade-off in the docstring).
+    _drop_hosted = {
+        "web_search",
+        "web_search_preview",
+        "file_search",
+        "code_interpreter",
+        "image_generation",
+    }
+
+    # Detect Codex fingerprint BEFORE flattening. The presence of a
+    # ``namespace`` entry (any shape) in the original request identifies
+    # Codex's ambient hosted-noise pattern — direct-user requests never
+    # contain ``namespace`` because it's not a public tool type in the
+    # OpenAI Responses spec, only in Codex's internal wire format.
+    codex_fingerprint = any(
+        isinstance(t, dict) and t.get("type") == "namespace" for t in tools
+    )
+
+    # Pass 1 — flatten namespaces. Preserve malformed / empty / mixed-
+    # child shapes so validate can 400 them instead of silently
+    # discarding. Only flatten a namespace when EVERY child is a dict
+    # with canonical ``type == "function"`` — otherwise a hosted-typed
+    # child would silently flow through the drop-hosted step below and
+    # collapse the tools list.
+    flattened: list = []
+    for t in tools:
+        if isinstance(t, dict) and t.get("type") == "namespace":
+            sub_tools = t.get("tools")
+            if (
+                isinstance(sub_tools, list)
+                and sub_tools
+                and all(
+                    isinstance(sub, dict)
+                    and _canonicalize_tool_type(sub.get("type")) == "function"
+                    for sub in sub_tools
+                )
+            ):
+                flattened.extend(sub_tools)
+                continue
+            # Malformed / empty / non-function-child namespace → leave
+            # for validate.
+            flattened.append(t)
+            continue
+        flattened.append(t)
+
+    # Pass 2 — drop hosted noise ONLY when the request is Codex-shaped.
+    # A direct-user request with ``[function, web_search]`` or
+    # ``[web_search]`` alone does NOT trigger drop-hosted, so validate
+    # still 400s and the caller learns their hosted tool won't run.
+    if codex_fingerprint:
+        flattened = [
+            t
+            for t in flattened
+            if not (
+                isinstance(t, dict)
+                and _canonicalize_tool_type(t.get("type")) in _drop_hosted
+            )
+        ]
+
+    tools[:] = flattened
     for t in tools:
         if not isinstance(t, dict):
             continue
