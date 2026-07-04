@@ -28,6 +28,442 @@ from .base import BaseEngine, GenerationOutput
 logger = logging.getLogger(__name__)
 
 
+def _resolve_hf_model_type(model_name: str) -> str | None:
+    """Best-effort read of ``config.json::model_type`` for ``model_name``.
+
+    ``model_name`` is whatever the operator passed to the CLI — an alias
+    (``gemma4-12b-4bit``), an HF repo id
+    (``mlx-community/gemma-4-12B-it-4bit``), or a local path. We resolve
+    aliases first, then look at the HF cache. Never raises: on any
+    failure (offline, missing config, malformed JSON, alias lookup blows
+    up) we return ``None`` so the caller can skip the MTP inject step
+    with a clear log rather than crashing engine boot.
+    """
+    import json as _json
+    import os as _os
+
+    hf_path: str | None = model_name
+    # Alias resolution — a contributor-curated ``gemma4-12b-4bit`` alias
+    # resolves to ``mlx-community/gemma-4-12B-it-4bit`` for the cache
+    # lookup below.
+    try:
+        from ..model_aliases import resolve_profile
+
+        profile = resolve_profile(model_name)
+        if profile is not None:
+            hf_path = getattr(profile, "hf_path", None) or model_name
+    except Exception:
+        # Alias resolution must never block engine boot — the raw
+        # model_name still works if it's already an HF repo id or path.
+        pass
+
+    # Local path — read config.json directly.
+    if hf_path and _os.path.isdir(hf_path):
+        cfg_path = _os.path.join(hf_path, "config.json")
+        if _os.path.isfile(cfg_path):
+            try:
+                with open(cfg_path) as fh:
+                    cfg = _json.load(fh)
+                mt = cfg.get("model_type") if isinstance(cfg, dict) else None
+                if isinstance(mt, str):
+                    return mt
+            except Exception:
+                pass
+
+    # HF Hub — look at whatever ``huggingface_hub`` has already cached.
+    # Same pattern the CLI eligibility gate uses (``cli.py::
+    # _gather_kv_cache_dtype_inputs``) so a config that boots on the CLI
+    # will boot here.
+    try:
+        from huggingface_hub import try_to_load_from_cache as _cache_lookup
+
+        cached = _cache_lookup(repo_id=hf_path, filename="config.json")
+        if cached and _os.path.exists(cached):
+            with open(cached) as fh:
+                cfg = _json.load(fh)
+            mt = cfg.get("model_type") if isinstance(cfg, dict) else None
+            if isinstance(mt, str):
+                return mt
+    except Exception:
+        pass
+
+    return None
+
+
+# Return codes for :func:`_run_dispatch_mtp_inject`. Fine-grained
+# because ``_start_llm`` needs to distinguish "operator config is bad
+# → abort boot" from "environment race (offline HF cache, missing
+# config on the executor thread even though the CLI just read it)
+# → warn and continue on plain decode."
+#
+# Codex round-D BLOCKER #1: prior revision collapsed all failure modes
+# into ``False`` and the caller then hard-raised on ``False``. That
+# turned a benign transient resolution failure — the CLI had already
+# vetted the config on the asyncio thread — into a boot abort in
+# offline environments that used to work under ``--spec-decode mtp``.
+# Splitting the return keeps the fail-loud contract for
+# operator-facing errors (family injector actively rejected) while
+# preserving the fail-soft contract for pipeline plumbing hiccups
+# (model_type couldn't be resolved on the executor).
+_DISPATCH_ATTACHED = "attached"
+_DISPATCH_UNRESOLVED = "unresolved"
+_DISPATCH_NO_INJECT = "no_inject"
+_DISPATCH_REJECTED = "rejected"
+
+
+def _run_dispatch_mtp_inject(
+    model: Any,
+    model_name: str,
+    mtp_sidecar: str | None,
+    *,
+    preferred_model_type: str | None = None,
+) -> str:
+    """MLX-step-worker entrypoint that runs ``dispatch_mtp_inject``.
+
+    Extracted so ``_start_llm`` can ``submit(...)`` it onto the model-
+    load executor cleanly. Never raises — the dispatcher's own
+    contract is ``never raises``, but we wrap the ``model_type``
+    resolution in the same fail-closed shape so an offline / missing-
+    config path degrades to a distinct return code instead of
+    aborting the engine.
+
+    Returns one of:
+
+    * :data:`_DISPATCH_ATTACHED` — family injector attached the MTP
+      contract to ``model`` (``mtp_forward`` / ``make_mtp_cache`` /
+      ``mtp``). Happy path.
+    * :data:`_DISPATCH_UNRESOLVED` — could not resolve
+      ``config.json::model_type`` for ``model_name`` (offline HF cache
+      race, missing local config, etc.). Soft-skip: the CLI already
+      accepted the flag with its own config lookup on the asyncio
+      thread, so the executor-thread lookup missing is almost always
+      transient plumbing — the caller should log and continue rather
+      than abort boot.
+    * :data:`_DISPATCH_NO_INJECT` — ``model_type`` resolved but no
+      family injector is registered. Soft-skip: same treatment as
+      unresolved; the CLI's eligibility gate should have already
+      rejected this case, so hitting here means a plumbing skew, not
+      an operator misuse.
+    * :data:`_DISPATCH_REJECTED` — the family injector was invoked and
+      returned ``False`` (missing sidecar, loader failure, weight
+      shape mismatch, etc.). Hard-fail: the operator explicitly asked
+      for ``--spec-decode mtp`` on a valid target and the injector
+      couldn't attach. Caller should abort boot rather than boot with
+      MTP silently disabled.
+
+    Never raises.
+    """
+    from ..spec_decode.mtp import dispatch_mtp_inject
+    from ..spec_decode.mtp.dispatch import _MTP_INJECT_DISPATCH
+
+    # Codex round-E blocker #2: prefer the CLI-resolved model_type
+    # when available. The CLI reads ``config.json`` on the asyncio
+    # thread before spawning the executor; passing that value down
+    # avoids a re-read on the executor thread that can race with the
+    # CLI's own IO under offline HF cache and produce a spurious
+    # ``_DISPATCH_UNRESOLVED`` even though the config was just read.
+    model_type = preferred_model_type or _resolve_hf_model_type(model_name)
+    if model_type is None:
+        logger.warning(
+            "[MTP-vendored] could not resolve model_type for %r; skipping "
+            "dispatch_mtp_inject. --spec-decode mtp will be a no-op on "
+            "this boot.",
+            model_name,
+        )
+        return _DISPATCH_UNRESOLVED
+
+    if model_type not in _MTP_INJECT_DISPATCH:
+        logger.warning(
+            "[MTP-vendored] model_type=%r has no registered MTP inject "
+            "(sidecar=%r); soft-skip. This is a plumbing skew between "
+            "the CLI eligibility gate and the dispatcher table — the "
+            "CLI should have already rejected this case.",
+            model_type,
+            mtp_sidecar,
+        )
+        return _DISPATCH_NO_INJECT
+
+    ok = dispatch_mtp_inject(
+        model,
+        model_type,
+        mtp_sidecar=mtp_sidecar,
+    )
+    if ok:
+        logger.info(
+            "[MTP-vendored] dispatch_mtp_inject succeeded for model_type=%r sidecar=%r",
+            model_type,
+            mtp_sidecar,
+        )
+        return _DISPATCH_ATTACHED
+
+    logger.warning(
+        "[MTP-vendored] dispatch_mtp_inject returned False for "
+        "model_type=%r sidecar=%r; family injector rejected. "
+        "--spec-decode mtp will be a hard-fail at boot.",
+        model_type,
+        mtp_sidecar,
+    )
+    return _DISPATCH_REJECTED
+
+
+# Codex round-G BLOCKING #3: hard cap on the executor-side MTP
+# dispatch call. Sidecar loads that touch HF Hub / large safetensor
+# reads can wedge on a slow network or a stuck DNS lookup; without a
+# timeout, ``rapid-mlx serve --spec-decode mtp --mtp-sidecar
+# <hf-repo>`` boot can block indefinitely. Default 600s covers slow
+# 4-16GB assistant downloads on a typical residential connection; an
+# ops override lives at ``RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC`` for
+# corp networks with mandatory proxies. Set to ``0`` to opt out of
+# the timeout (matches pre-round-G behaviour — not recommended).
+_MTP_DISPATCH_TIMEOUT_SEC_DEFAULT = 600.0
+
+
+def _get_mtp_dispatch_timeout_sec() -> float | None:
+    """Return the bounded timeout for ``_run_dispatch_mtp_inject``.
+
+    Reads ``RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC`` env var; falls back
+    to :data:`_MTP_DISPATCH_TIMEOUT_SEC_DEFAULT` (600s). Returning
+    ``None`` disables the timeout (an explicit ``0`` in the env,
+    for ops that want to preserve pre-round-G behaviour on locked-
+    down corp networks). Any parse failure logs a warning and uses
+    the default — never raises.
+    """
+    import os as _os
+
+    raw = _os.environ.get("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC")
+    if raw is None:
+        return _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT
+    try:
+        parsed = float(raw)
+    except ValueError:
+        logger.warning(
+            "[MTP-vendored] could not parse "
+            "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=%r as a float; "
+            "using default %.0fs.",
+            raw,
+            _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT,
+        )
+        return _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT
+    if parsed <= 0.0:
+        # Explicit opt-out (0 or negative). Log INFO so ops-audit
+        # trails know the boot ran without the safety net.
+        logger.info(
+            "[MTP-vendored] RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=%r "
+            "disables the executor-side dispatch timeout.",
+            raw,
+        )
+        return None
+    return parsed
+
+
+def _log_mtp_dispatch_timeout(timeout_sec: float) -> None:
+    """Emit the operator-facing CRITICAL log line for an MTP dispatch
+    timeout.
+
+    Codex round-L BLOCKING #1 replaced the earlier ``os._exit(1)``
+    hammer with a plain ``RuntimeError`` that :func:`_apply_mtp_
+    dispatch` raises up to the caller. Rationale from the round-L
+    reviewer:
+
+    * The prior implementation killed the entire Python process —
+      hostile to embedded callers, pytest sessions, and process
+      supervisors that expect the interpreter to unwind cleanly
+      (library code should never call ``os._exit``).
+    * The startup path already surfaces the ``RuntimeError`` to
+      the CLI, which exits the process normally. Bin/cli wrapping
+      already handles unhandled exceptions with a nonzero exit
+      status.
+    * Orphan-mutation risk on the shared mlx-step executor is a
+      known tradeoff, explicitly accepted: the CLI's normal exit
+      still tears down the interpreter (worker thread dies with
+      it), and embedded / library callers own the tradeoff of
+      keeping the interpreter alive past the abort.
+
+    Extracted so :func:`_apply_mtp_dispatch` and tests can share
+    the exact operator-facing wording.
+    """
+    logger.critical(
+        "[MTP-vendored] dispatch timed out after %.0fs — the mlx-step "
+        "worker may still be mutating model in place. Raising "
+        "RuntimeError to abort startup. In embedded callers the "
+        "shared executor is left intact; the orphan mutation risk "
+        "is scoped to the caller's choice to keep the process "
+        "alive past this abort. Bump the timeout via "
+        "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=<seconds> or set it "
+        "to 0 to opt out of the safety net.",
+        timeout_sec,
+    )
+
+
+def _decide_mtp_dispatch_action(
+    dispatch_result: str,
+    *,
+    cli_vetted_model_type: str | None,
+) -> tuple[str, str | None]:
+    """Production-side predicate for the ``_start_llm`` MTP dispatch gate.
+
+    Codex round-F NIT: the test suite's replay of the gate was
+    reimplementing the predicate instead of exercising a real helper,
+    so the tests could pass while the boot path silently drifted.
+    Extract the branch decision into a single side-effect-free helper
+    that both ``_start_llm`` and the tests call directly.
+
+    Args:
+      dispatch_result: One of the ``_DISPATCH_*`` sentinels returned
+        by :func:`_run_dispatch_mtp_inject`.
+      cli_vetted_model_type: Value of
+        ``SchedulerConfig.mtp_model_type``. When non-None, the CLI
+        already read ``config.json`` on the asyncio thread and vetted
+        the model_type; codex round-E blocker #2 requires the gate to
+        hard-fail on ANY non-attached result in that case. When None
+        (bench-harness / direct-SchedulerConfig caller), the round-D
+        lenient behaviour applies: only ``_DISPATCH_REJECTED`` hard-
+        fails.
+
+    Returns:
+      ``("attached", None)`` on the happy path.
+      ``("continue", None)`` when the caller should proceed on plain
+        autoregressive decode without emitting an error.
+      ``("raise", <error message>)`` when the caller should raise
+        ``RuntimeError`` with the returned message. The message
+        already includes the operator-facing context (dispatch
+        result, CLI-vetted model_type, etc.).
+
+    Pure function — no logging, no exceptions. The caller decides
+    whether to log the "continue" case, so the same helper can serve
+    both production and unit tests without side-effect entanglement.
+    """
+    if dispatch_result == _DISPATCH_ATTACHED:
+        return ("attached", None)
+
+    if dispatch_result == _DISPATCH_REJECTED:
+        return (
+            "raise",
+            "--spec-decode mtp was set but the family MTP "
+            "injector rejected the model. See preceding "
+            "warnings for the specific failure (typical "
+            "causes: missing --mtp-sidecar for a Gemma 4 "
+            "target, sidecar path unreachable, or assistant "
+            "checkpoint model_type mismatch). Refusing to "
+            "boot with MTP silently disabled — pass "
+            "--spec-decode none to continue without MTP.",
+        )
+
+    _cli_vetted = cli_vetted_model_type is not None
+    if _cli_vetted:
+        return (
+            "raise",
+            f"--spec-decode mtp was set and the CLI vetted "
+            f"model_type={cli_vetted_model_type!r}, but the engine "
+            f"could not attach the MTP protocol "
+            f"(dispatch_result={dispatch_result!r}). This "
+            "indicates a plumbing skew between the CLI "
+            "eligibility gate and the engine's dispatch "
+            "table — not an environment race. Refusing to "
+            "boot with MTP silently disabled — pass "
+            "--spec-decode none to continue without MTP, "
+            "or file an issue with the model_type + engine "
+            "version.",
+        )
+
+    return ("continue", None)
+
+
+def _apply_mtp_dispatch(
+    *,
+    model: Any,
+    model_name: str,
+    scheduler_config: Any,
+    executor: Any,
+) -> str:
+    """Executor-side MTP dispatch step used by ``_start_llm``.
+
+    Extracted so tests can drive the full boot-time gate end-to-end
+    (codex round-G NIT #4 — an ``inspect.getsource()`` string check
+    is not a runtime test). Also carries the round-G BLOCKING #3
+    timeout: the executor-side dispatch runs under a bounded wait
+    so a stuck HF download / DNS / sidecar load never wedges
+    server startup.
+
+    Returns the dispatch result string; the caller can key logging
+    or metrics on it. Raises ``RuntimeError`` on hard-fail
+    (rejected, or CLI-vetted-but-not-attached, or timeout).
+
+    Assumes ``spec_decode == "mtp"`` — caller must gate.
+    """
+    import concurrent.futures as _cf
+
+    preferred_mt = getattr(scheduler_config, "mtp_model_type", None)
+    sidecar = getattr(scheduler_config, "mtp_sidecar", None)
+
+    future = executor.submit(
+        _run_dispatch_mtp_inject,
+        model,
+        model_name,
+        sidecar,
+        preferred_model_type=preferred_mt,
+    )
+    timeout = _get_mtp_dispatch_timeout_sec()
+    try:
+        # ``timeout=None`` matches the pre-round-G blocking wait;
+        # only used when the operator explicitly sets the env var
+        # to 0.
+        dispatch_result = future.result(timeout=timeout)
+    except _cf.TimeoutError as exc:
+        # Codex round-G BLOCKING #3: convert executor-side hang
+        # into a clean startup abort. Cancel the future so the
+        # worker doesn't keep running past shutdown (best-effort:
+        # ``future.cancel()`` is a no-op for a task that has
+        # already started running).
+        future.cancel()
+        # Codex round-L BLOCKING #1: replaced the earlier
+        # ``os._exit(1)`` process-exit hook with a plain
+        # ``RuntimeError``. Library code must never terminate the
+        # interpreter — it's hostile to embedded callers, pytest
+        # sessions, and process supervisors that expect a clean
+        # unwind. The CLI startup path already surfaces this
+        # ``RuntimeError`` to the operator (main() exits with a
+        # nonzero status), and embedded callers can now catch and
+        # recover if they need to. See :func:`_log_mtp_dispatch_
+        # timeout` for the accepted orphan-mutation tradeoff.
+        #
+        # Codex round-J BLOCKING #1 (still in force): do NOT call
+        # ``executor.shutdown(...)`` here — the same shared
+        # ``_model_load_executor`` continues to serve mlx-step
+        # ops after boot, so a shutdown would break every
+        # embedded caller that catches the RuntimeError and
+        # tries to continue. Leave the executor untouched.
+        _log_mtp_dispatch_timeout(timeout)
+        raise RuntimeError(
+            "--spec-decode mtp dispatch timed out after "
+            f"{timeout:.0f}s. Typical causes: HF Hub outage on the "
+            "sidecar path, corp proxy blocking huggingface.co, or "
+            "a very large assistant checkpoint on a slow link. "
+            "Bump the timeout with "
+            "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=<seconds>, or set "
+            "it to 0 to disable the timeout entirely. Refusing to "
+            "boot with an in-flight dispatch that could complete "
+            "after the server accepts requests."
+        ) from exc
+
+    action, err_msg = _decide_mtp_dispatch_action(
+        dispatch_result,
+        cli_vetted_model_type=preferred_mt,
+    )
+    if action == "raise":
+        raise RuntimeError(err_msg)
+    if action == "continue":
+        logger.info(
+            "[MTP-vendored] dispatch soft-skipped (result=%r); "
+            "continuing on plain autoregressive decode. The "
+            "scheduler MTP install gate will also skip. "
+            "(Non-CLI caller — no ``mtp_model_type`` set; a "
+            "CLI caller would have hard-failed here.)",
+            dispatch_result,
+        )
+    return dispatch_result
+
+
 def _normalize_tool_call_arguments_for_template(messages: list[dict]) -> list[dict]:
     """Normalize OpenAI tool-call replay for templates expecting mappings.
 
@@ -736,6 +1172,39 @@ class BatchedEngine(BaseEngine):
                     "[MTP] MTP validation failed — --enable-mtp will be ignored. "
                     "See warnings above for details."
                 )
+
+        # 0.9.13 PR-A: new-arch MTP inject dispatcher (Gemma 4 external
+        # assistant / Qwen3.5 baked-in MTP). Runs BEFORE the scheduler is
+        # built so ``_install_mtp_vendored`` in scheduler.py sees the
+        # ``mtp_forward`` / ``make_mtp_cache`` / ``mtp`` attributes it
+        # gates on. Kept on the model-load executor thread — the family
+        # injector (Gemma 4 in particular) materialises assistant weights
+        # via ``mlx_lm.load`` and mutates the target model in place, both
+        # of which touch MLX streams that only the mlx-step worker owns
+        # (#170). Running here on the asyncio thread would create a
+        # stray Stream(gpu, N) reference on first assistant forward.
+        #
+        # The CLI eligibility gate at ``cli.py:_gather_kv_cache_dtype_inputs``
+        # / ``detect_mtp_eligibility(...)`` already rejected non-eligible
+        # configs — this call is a strict subordinate of that decision.
+        # Dispatch is a no-op (returns False, logs INFO) for any
+        # ``model_type`` not in the dispatch table, so an operator who
+        # forgot the CLI gate still gets a clean skip rather than a
+        # traceback.
+        if _new_arch_mtp:
+            # Codex round-G NIT #4 + BLOCKING #3: entire dispatch
+            # gate now lives in :func:`_apply_mtp_dispatch` so tests
+            # can exercise it end-to-end (not just via a source
+            # string check) and the executor call carries a bounded
+            # timeout that converts a stuck HF/DNS load into a
+            # clean startup ``RuntimeError`` instead of an
+            # indefinite hang.
+            _apply_mtp_dispatch(
+                model=self._model,
+                model_name=self._model_name,
+                scheduler_config=sc,
+                executor=self._model_load_executor,
+            )
 
         # Set Metal memory limits on the SAME mlx-step worker that loaded
         # the model. Calling these from the asyncio loop thread would touch
