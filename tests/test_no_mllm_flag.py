@@ -166,6 +166,7 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # decode (registered pair); these just enable the implementation.
         "--enable-mtp",
         "--enable-dflash",
+        "--enable-ddtree",
         # Task #292: ``--enable-audio`` is a route-mounting UX knob, not a
         # binary auto-detection. The audio-mode boot path auto-mounts
         # ``/v1/audio/*`` from the registry hit; this flag is the
@@ -2553,6 +2554,29 @@ def test_dflash_branch_rejects_no_spec_decode():
         "no_spec_decode mutex check must come BEFORE run_dflash_server() "
         "call so the override actually rejects DFlash startup."
     )
+
+
+def test_ddtree_branch_rejects_no_spec_decode():
+    """--enable-ddtree + --no-spec-decode must be a mutex error."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.cli import _preflight_ddtree_or_exit
+
+    args = SimpleNamespace(
+        model="qwen3.5-9b-8bit",
+        _original_alias=None,
+        _speculative_config=None,
+        enable_ddtree=True,
+        enable_dflash=False,
+        spec_decode="none",
+        suffix_decoding=False,
+        enable_mtp=False,
+        no_spec_decode=True,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_ddtree_or_exit(args)
+    assert excinfo.value.code == 2
 
 
 def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
