@@ -338,7 +338,10 @@ line-length = 88
 [tool.ruff.format]
 # Vendored upstream files — keep formatting identical to the source PR
 # so future syncs produce a clean diff.
-exclude = ["vllm_mlx/models/deepseek_v4.py"]
+exclude = [
+    "vllm_mlx/models/deepseek_v4.py",
+    "vllm_mlx/models/gemma4_vendored/*.py",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
@@ -372,6 +375,11 @@ ignore = [
 # upstream syncs remain a clean diff. Drop this once mlx-lm 0.32+
 # ships native deepseek_v4 support and we delete the vendored copy.
 "vllm_mlx/models/deepseek_v4.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
+# Vendored from Blaizzy/mlx-vlm 0.6.3 for the Gemma 4 text-only
+# fresh-install regression fix (#1017, closes 0.10.0 dead-end). Keep
+# lint quiet on the copy so upstream diffs stay clean. Sync policy
+# and rationale in vllm_mlx/models/gemma4_vendored/__init__.py.
+"vllm_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]

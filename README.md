@@ -119,7 +119,7 @@ print(client.chat.completions.create(
 ).choices[0].message.content)
 ```
 
-> **Vision/multimodal models** (Gemma 4, Qwen-VL) need extras: `pip install 'rapid-mlx[vision]'`. Text-only install is ~460 MB; vision adds ~322 MB. See [Optional Extras](#optional-extras).
+> **Multimodal models** (Qwen-VL, image-input to Gemma 4, DiffusionGemma) need extras: `pip install 'rapid-mlx[vision]'`. Gemma 4 **text-only** (chat, tools, reasoning) works out of the box in the core install. Text-only install is ~460 MB; vision adds ~322 MB. See [Optional Extras](#optional-extras).
 
 > **"No matching distribution" from pip?** Your Python is too old. Run `python3 --version` — if it says 3.9, run `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
 
@@ -885,7 +885,7 @@ The base `pip install rapid-mlx` is ~460 MB and covers all text-only models. Vis
 
 | Extra | Install | Adds | What it unlocks |
 |---|---|---|---|
-| `vision` | `pip install 'rapid-mlx[vision]'` | ~322 MB | Gemma 4, Qwen-VL, DiffusionGemma, video understanding (mlx-vlm + opencv + torch) |
+| `vision` | `pip install 'rapid-mlx[vision]'` | ~322 MB | Qwen-VL, DiffusionGemma, video understanding, image-input for Gemma 4 (mlx-vlm + opencv + torch). Gemma 4 **text-only** ships in core via vendored classes — no [vision] needed for chat / tools / reasoning. |
 | `audio` | `pip install 'rapid-mlx[audio]'` | ~600 MB | 26 TTS/STT aliases (Kokoro, Chatterbox, VibeVoice, VoxCPM, Dia, Whisper, Parakeet) via `/v1/audio/speech` and `/v1/audio/transcriptions`; bundles Silero VAD for silence pre-trim (guards Whisper against silence hallucination) |
 | `embeddings` | `pip install 'rapid-mlx[embeddings]'` | ~50 MB | `/v1/embeddings` endpoint (mlx-embeddings) |
 | `chat` | `pip install 'rapid-mlx[chat]'` | ~150 MB | Built-in Gradio chat UI |
