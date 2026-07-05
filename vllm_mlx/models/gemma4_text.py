@@ -221,26 +221,34 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
     config = json.loads((p / "config.json").read_text())
     text_config = config.get("text_config", config)
 
-    # Build the language model from mlx-vlm. The Gemma 4 model class
-    # definitions only live in mlx-vlm; mlx-lm's native gemma4 path
-    # exists but misses the ``gemma4_unified`` model_type used by the
-    # QAT 8-bit and several upstream checkpoints. On a bare
-    # ``pip install rapid-mlx`` (no extras) or a default brew install
-    # mlx-vlm is absent — give the user an actionable, size-conscious
-    # error instead of a raw ModuleNotFoundError.
+    # Build the language model. As of 0.10.1 we vendor the Gemma 4 text
+    # classes (~50 KB, ~1200 lines) directly under
+    # `vllm_mlx/models/gemma4_vendored/` so a fresh `pip install rapid-mlx`
+    # boots Gemma 4 out of the box — no `[vision]` extra required.
+    # Previously we imported from `mlx_vlm.models.gemma4.*`, but that
+    # required either promoting mlx-vlm to a core dep (~+483 MB transitive
+    # bloat: opencv-python, pyarrow, pandas, scipy, mlx-audio — none of
+    # which text-only Gemma 4 inference touches) or making users know to
+    # `pip install --no-deps 'mlx-vlm>=0.6.1'` themselves. See
+    # `vllm_mlx/models/gemma4_vendored/__init__.py` for the sync policy.
+    #
+    # We still prefer upstream mlx-vlm when it's already importable
+    # (e.g. `[vision]` users): mlx-vlm may ship a bug fix or Gemma 4.1
+    # update before we sync the vendored copy. The vendored fallback
+    # keeps the fresh-install path working with zero extras.
     try:
         from mlx_vlm.models.gemma4.config import TextConfig
         from mlx_vlm.models.gemma4.language import LanguageModel
-    except ImportError as e:
-        raise ImportError(
-            "Gemma 4 models require the optional `mlx-vlm` dependency "
-            "for the model architecture classes.\n"
-            "Install just the Python classes (16 MB, recommended for "
-            "text-only use):\n"
-            "    pip install --no-deps 'mlx-vlm>=0.6.1'\n"
-            "Or the full vision/audio stack (~+450 MB):\n"
-            "    pip install 'rapid-mlx[vision]'"
-        ) from e
+    except ImportError:
+        from vllm_mlx.models.gemma4_vendored import (
+            config as _v_cfg,
+        )
+        from vllm_mlx.models.gemma4_vendored import (
+            language as _v_lang,
+        )
+
+        TextConfig = _v_cfg.TextConfig
+        LanguageModel = _v_lang.LanguageModel
 
     tc = TextConfig.from_dict(text_config)
     language_model = LanguageModel(tc)
