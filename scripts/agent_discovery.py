@@ -24,24 +24,41 @@ from datetime import datetime, timedelta
 import httpx
 
 # Agents we've already listed (skip these)
+#
+# Kept broad to prevent re-surfacing already-triaged repos on discovery
+# sweeps. Presence here does NOT imply Tier-1 support — that list is in
+# ``vllm_mlx/agents/profiles/`` (10 YAMLs as of 0.10.2). Kept here:
+# demoted / removed profiles (openclaude, goose, cline, continue) and
+# non-Tier-1 UIs (librechat, open-webui, cursor, copilot, claw-code).
 KNOWN_AGENTS = {
+    # Tier-1 agents (see README § Tier-1 Agent Backends)
+    "codex",
+    "codex-cli",
+    "claude-code",
+    "opencode",
+    "qwen-code",
+    "openhands",
+    "hermes-agent",
+    "hermes",
+    "aider",
+    "kilo-code",
+    "kilocode",
+    # Tier-1 frameworks
+    "langchain",
+    "langgraph",
+    "pydantic-ai",
+    "pydanticai",
+    "smolagents",
+    # UI / IDE / demoted / already-triaged
     "openclaude",
     "open-claude",
     "goose",
     "claw-code",
-    "claude-code",
-    "hermes-agent",
-    "hermes",
-    "aider",
     "cursor",
     "cline",
     "continue",
+    "continue-dev",
     "copilot",
-    "opencode",
-    "pydantic-ai",
-    "pydanticai",
-    "langchain",
-    "smolagents",
     "librechat",
     "open-webui",
     "openwebui",

@@ -1,0 +1,61 @@
+name: qwen-code
+display_name: "Qwen Code"
+repo: "QwenLM/qwen-code"
+stars: 25700
+
+# Qwen Code (https://github.com/QwenLM/qwen-code) is Alibaba's fork of
+# gemini-cli — a Node CLI coding agent tuned for Qwen3.x tool-calling.
+# It speaks the OpenAI-compatible /v1/chat/completions API via a
+# baseUrl config that maps 1:1 onto rapid-mlx's default endpoint. No
+# response transform needed — plain OpenAI wire.
+#
+# Config lives at ~/.qwen/settings.json (project-level ./qwen.json also
+# supported). Three env vars OR the settings.json block below — env
+# always wins.
+config:
+  type: json
+  path: "~/.qwen/settings.json"
+  template: |
+    {
+      "openaiCompatible": {
+        "baseUrl": "{base_url}",
+        "apiKey": "not-needed",
+        "model": "{model_id}"
+      }
+    }
+
+models:
+  # qwen-code was trained on Qwen3-Coder-* — those aliases plus Qwen3.6
+  # are the sweet spot. Non-Qwen models work at reduced quality.
+  recommended:
+    - "qwen3-coder-30b-4bit"
+    - "qwen3.6-35b-4bit"
+    - "qwen3.6-27b-4bit"
+    - "qwen3.5-9b-4bit"
+  parser_override: null  # auto-detect (qwen3_coder_xml for Coder, hermes for 3.5)
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  # qwen-code exposes shell + file + web + git tools — 12 tool slots
+  # plus a few bookkeeping calls. Cap at 15.
+  max_tools: 15
+
+testing:
+  binary: qwen
+  # qwen-code has a one-shot mode: `qwen -p "<prompt>"` runs without a
+  # REPL. Useful for CI smokes.
+  query_cmd: "qwen -p '{query}'"
+  query_timeout: 120
+  install_cmd: "npm install -g @qwenlm/qwen-code"
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false
+  reasoning: true  # respects `enable_thinking` chat_template_kwargs
+
+known_issues:
+  - "qwen-code hardcodes the OpenAI-compat `/v1` suffix — set `baseUrl` to `http://localhost:8000/v1` not the root URL."
+  - "Older releases (< 1.2) had an issue where `chat_template_kwargs` was stripped before send; upgrade if you see `<think>` traces leaking into `content` on Qwen3.6."
+  - "Alibaba banned Claude Code internally over alleged backdoor risks (2026-07-03) — qwen-code + rapid-mlx is the local, source-visible alternative."

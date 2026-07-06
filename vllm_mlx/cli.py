@@ -7493,7 +7493,7 @@ Examples:
             "'smoke' (boot + 1 prompt), "
             "'speed' (B=1 perf probe), "
             "'harness' (5 first-class agent harnesses: "
-            "codex/opencode/hermes/aider/langchain), "
+            "codex/opencode/qwen-code/hermes/aider), "
             "'all' (smoke → speed → harness sequentially, abort on smoke "
             "fail). Boots the model server exactly once per invocation."
         ),
@@ -7693,7 +7693,7 @@ Examples:
         "agent_name",
         nargs="?",
         default=None,
-        help="Agent name (e.g. hermes, goose, aider). Omit to list all.",
+        help="Agent name (e.g. codex, opencode, qwen-code, aider). Omit to list all.",
     )
     agents_parser.add_argument(
         "--setup",
