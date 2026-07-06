@@ -71,7 +71,7 @@ class AgentProfile:
     """Complete agent profile — everything needed to integrate an agent."""
 
     # Identity
-    name: str  # "hermes", "goose", "claude-code"
+    name: str  # "codex", "hermes", "qwen-code"
     display_name: str  # "Hermes Agent"
     repo: str | None = None  # "NousResearch/hermes-agent"
     stars: int | None = None  # for prioritization

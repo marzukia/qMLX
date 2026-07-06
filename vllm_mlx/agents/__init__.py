@@ -164,15 +164,20 @@ def get_profile(name: str) -> AgentProfile | None:
 
 
 def get_profile_or_generic(name: str) -> AgentProfile:
-    """Get an agent profile by name, falling back to 'generic'."""
+    """Get an agent profile by name, or a minimal OPENAI_BASE_URL fallback.
+
+    ``generic.yaml`` was removed in 0.10.2 — the Tier-1 profile set no
+    longer contains a "generic" placeholder that would rank into
+    ``list_profiles`` output. This helper still exists as a safety net
+    for future callers that want a "look-up or default" ergonomic; it
+    returns a hardcoded minimal env-var profile when the name is not
+    known.
+    """
     _ensure_loaded()
     profile = _PROFILES.get(name)
     if profile:
         return profile
-    generic = _PROFILES.get("generic")
-    if generic:
-        return generic
-    # Absolute fallback — return a minimal profile
+    # Hardcoded fallback — mirrors what the removed generic.yaml offered.
     return AgentProfile(
         name="generic",
         display_name="Generic Agent",

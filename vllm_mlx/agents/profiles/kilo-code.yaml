@@ -1,0 +1,60 @@
+name: kilo-code
+display_name: "Kilo Code"
+repo: "Kilo-Org/kilocode"
+stars: 25500
+
+# Kilo Code (https://github.com/Kilo-Org/kilocode) is a VS Code + JetBrains
+# + CLI coding agent forked from Cline. Fresh $8M seed (2025-12), weekly
+# releases, positioned as the active-maintenance successor to Continue.dev
+# (which went read-only 2026-06-19).
+#
+# Kilo speaks the OpenAI-compatible /v1/chat/completions API through the
+# "OpenAI Compatible" provider. Config lives in the VS Code settings JSON
+# (`kilo-code.apiProvider = "openai"` + baseUrl) or in Kilo's own settings
+# file when running as the standalone CLI.
+config:
+  type: json
+  path: "~/.config/kilo-code/settings.json"
+  template: |
+    {
+      "apiProvider": "openai",
+      "openAiBaseUrl": "{base_url}",
+      "openAiApiKey": "not-needed",
+      "openAiModelId": "{model_id}"
+    }
+
+models:
+  # Kilo tool-calls heavily (file read/write + shell + browser + MCP) —
+  # 9B is the practical floor; 30B+ works best for multi-turn refactors.
+  recommended:
+    - "qwen3-coder-30b-4bit"
+    - "qwen3.6-35b-4bit"
+    - "qwen3.5-9b-4bit"
+    - "gpt-oss-20b-mxfp4-q8"
+  parser_override: null
+
+streaming:
+  extra_tool_tags: []
+  suppress_patterns: []
+  # Kilo inherits Cline's tool surface — file / shell / browser /
+  # search / MCP. Cap at 25.
+  max_tools: 25
+
+testing:
+  binary: kilo
+  # Kilo CLI has a one-shot mode via `kilo run '<prompt>'` on 0.3.0+;
+  # older builds are interactive-only.
+  query_cmd: "kilo run '{query}'"
+  query_timeout: 180
+  install_cmd: "brew install kilo-org/kilo/kilo-code  # or: npm install -g kilo-code"
+
+capabilities:
+  function_calling: true
+  streaming: true
+  vision: false  # image-input planned; not shipped as of 0.3.x
+  reasoning: true
+
+known_issues:
+  - "Kilo Code is a Cline fork with independent maintenance — do not point Kilo at a Cline config; the schema drifted after the split."
+  - "First run may prompt for an Anthropic / OpenAI API key — choose the OpenAI Compatible provider and paste `not-needed` as the key."
+  - "Continue.dev users migrating in: Kilo's YAML config schema is stricter — quote all API base URLs."
