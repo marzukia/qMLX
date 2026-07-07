@@ -2759,6 +2759,17 @@ class Scheduler:
         # Detect if tokenizer is a processor (MLLM) and get the actual tokenizer
         self._actual_tokenizer = self._get_actual_tokenizer(tokenizer)
 
+        # #1049 — harmony family gate for channel-scoped user stops.
+        # When True, ``stop=[...]`` sequences match only inside the
+        # ``<|channel|>final<|message|>`` body of the decoded surface;
+        # the analysis channel (CoT) is stop-agnostic. Non-harmony
+        # models keep raw-stream stop matching unchanged. Computed
+        # once at scheduler init from the tokenizer identity so per-
+        # step cost is one boolean check on the hot decode loop.
+        from .reasoning.harmony_stop import is_harmony_family_tokenizer
+
+        self._is_harmony_family = is_harmony_family_tokenizer(self._actual_tokenizer)
+
         # Per-request streaming detokenizers for UTF-8-safe incremental decode
         self._detokenizer_pool: dict[str, Any] = {}
 
@@ -5474,49 +5485,74 @@ class Scheduler:
                     decoded_so_far = decoder.get_full_text()
                 else:
                     decoded_so_far = self._decode_tokens(request.output_token_ids)
-                for stop_str in stop_params:
-                    if stop_str and stop_str in decoded_so_far:
-                        finish_reason = "stop"
-                        # H-03: pin WHICH user-supplied stop fired so
-                        # the Anthropic adapter can surface
-                        # ``stop_reason="stop_sequence"`` +
-                        # ``stop_sequence: <str>`` per the public spec.
-                        # OpenAI's ``finish_reason="stop"`` bucket
-                        # already lumps EOS and stop-string together so
-                        # the OpenAI surface ignores this field.
-                        output.matched_stop = stop_str
-                        idx = decoded_so_far.index(stop_str)
-                        trimmed_total = decoded_so_far[:idx]
-                        request.output_text = trimmed_total
-                        stop_trimmed = True
-                        # Adjust new_text so streaming clients only see the
-                        # valid prefix, never the stop marker itself.
-                        # Pre-token streaming surface ≡ the decoder's
-                        # ``prev_text``  — what the client has seen so
-                        # far. Computing it as ``decoded_so_far -
-                        # new_text`` is fragile: when the incremental
-                        # decoder holds back a U+FFFD-incomplete
-                        # sequence ``new_text == ""`` but
-                        # ``decoded_so_far`` grew, so the subtraction
-                        # math reset to the wrong boundary and could
-                        # leak or drop text on multibyte streams
-                        # (codex r8 BLOCKING). Falling back to
-                        # ``decoded_so_far - new_text`` only when no
-                        # decoder is attached (text-only paths that
-                        # decode in bulk).
-                        if decoder is not None:
-                            prev_text = decoder.prev_text
-                        else:
-                            prev_text = (
-                                decoded_so_far[: -len(new_text)]
-                                if new_text
-                                else decoded_so_far
+                # #1049 — for harmony-format models the stop-string
+                # search must be scoped to the ``final`` channel body:
+                # analysis-channel CoT routinely mentions user-supplied
+                # stop markers while reasoning (agents like OpenHands
+                # CodeActAgent set ``stop=['</execute_ipython>', ...]``
+                # and the CoT names those markers verbatim), so a raw-
+                # stream match prematurely terminates the request
+                # before the final channel emits any content. Non-
+                # harmony models keep the raw-stream match unchanged.
+                # Non-harmony path preserves the pre-#1049 iteration-
+                # order semantics (first stop-string in ``stop_params``
+                # that appears anywhere in ``decoded_so_far`` wins) so
+                # this change is a strict superset for harmony models
+                # and a no-op for everyone else.
+                stop_match: tuple[str, int] | None = None
+                if self._is_harmony_family:
+                    from .reasoning.harmony_stop import find_stop_in_final_channel
+
+                    stop_match = find_stop_in_final_channel(decoded_so_far, stop_params)
+                else:
+                    for stop_str in stop_params:
+                        if stop_str and stop_str in decoded_so_far:
+                            stop_match = (
+                                stop_str,
+                                decoded_so_far.index(stop_str),
                             )
-                        if len(trimmed_total) > len(prev_text):
-                            output.new_text = trimmed_total[len(prev_text) :]
-                        else:
-                            output.new_text = ""
-                        break
+                            break
+                if stop_match is not None:
+                    stop_str, idx = stop_match
+                    finish_reason = "stop"
+                    # H-03: pin WHICH user-supplied stop fired so
+                    # the Anthropic adapter can surface
+                    # ``stop_reason="stop_sequence"`` +
+                    # ``stop_sequence: <str>`` per the public spec.
+                    # OpenAI's ``finish_reason="stop"`` bucket
+                    # already lumps EOS and stop-string together so
+                    # the OpenAI surface ignores this field.
+                    output.matched_stop = stop_str
+                    trimmed_total = decoded_so_far[:idx]
+                    request.output_text = trimmed_total
+                    stop_trimmed = True
+                    # Adjust new_text so streaming clients only see the
+                    # valid prefix, never the stop marker itself.
+                    # Pre-token streaming surface ≡ the decoder's
+                    # ``prev_text``  — what the client has seen so
+                    # far. Computing it as ``decoded_so_far -
+                    # new_text`` is fragile: when the incremental
+                    # decoder holds back a U+FFFD-incomplete
+                    # sequence ``new_text == ""`` but
+                    # ``decoded_so_far`` grew, so the subtraction
+                    # math reset to the wrong boundary and could
+                    # leak or drop text on multibyte streams
+                    # (codex r8 BLOCKING). Falling back to
+                    # ``decoded_so_far - new_text`` only when no
+                    # decoder is attached (text-only paths that
+                    # decode in bulk).
+                    if decoder is not None:
+                        prev_text = decoder.prev_text
+                    else:
+                        prev_text = (
+                            decoded_so_far[: -len(new_text)]
+                            if new_text
+                            else decoded_so_far
+                        )
+                    if len(trimmed_total) > len(prev_text):
+                        output.new_text = trimmed_total[len(prev_text) :]
+                    else:
+                        output.new_text = ""
 
             # Check if finished
             if finish_reason is not None:

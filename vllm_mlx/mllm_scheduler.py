@@ -250,6 +250,20 @@ class MLLMScheduler:
         # Get stop tokens from tokenizer
         self.stop_tokens = self._get_stop_tokens()
 
+        # #1049 — harmony family gate for channel-scoped user stops.
+        # See ``Scheduler.__init__`` for the full rationale. VLM
+        # harmony models are unusual today (gpt-oss is text-only) but
+        # the guardrail belongs on both scheduler paths in parity so a
+        # future harmony-VLM has the same protection.
+        from .reasoning.harmony_stop import is_harmony_family_tokenizer
+
+        _tok_for_gate = (
+            self.processor.tokenizer
+            if hasattr(self.processor, "tokenizer")
+            else self.processor
+        )
+        self._is_harmony_family = is_harmony_family_tokenizer(_tok_for_gate)
+
         # Batch generator (created lazily)
         self.batch_generator: MLLMBatchGenerator | None = None
 
@@ -317,6 +331,51 @@ class MLLMScheduler:
         # rationale. Observability only — abort semantics unchanged.
         self.num_requests_cancelled = 0
         self.num_requests_cancelled_via_disconnect = 0
+
+    def _match_user_stop(
+        self, text: str, new_text_start_len: int, stop_params: list[str]
+    ) -> tuple[int, str] | None:
+        """Rolling user-stop matcher with harmony channel scoping.
+
+        Non-harmony models: delegate to the module-level
+        ``_find_stop_match_in_new_window`` — same rolling-window shape
+        as before this method existed. Harmony (gpt-oss) models scope
+        the match to the ``<|channel|>final<|message|>`` body region
+        only; the analysis-channel CoT is stop-agnostic (#1049).
+
+        Returns ``(idx, stop_str)`` for the earliest matching stop, or
+        ``None`` if no stop is present in the searchable window. The
+        tuple shape matches the pre-#1049 ``_find_stop_match_in_new_window``
+        return so callers don't need to change.
+        """
+        if not self._is_harmony_family:
+            return _find_stop_match_in_new_window(text, new_text_start_len, stop_params)
+        from .reasoning.harmony_stop import find_harmony_final_span
+
+        span = find_harmony_final_span(text)
+        if span is None:
+            # Not yet in the final channel — user stops cannot fire.
+            return None
+        body_start, body_end = span
+        if body_start >= body_end:
+            return None
+        # Restrict the rolling matcher to the final-channel body. The
+        # ``new_text_start_len`` offset is anchored to the full ``text``
+        # buffer, so if the matcher's window would extend into the
+        # analysis-channel region we clamp it to ``body_start``. That
+        # keeps the rolling-window optimization (max_stop_len - 1 keep
+        # bytes) intact within the final-channel span while ensuring
+        # analysis-channel CoT can never trigger a match.
+        body_text = text[body_start:body_end]
+        body_new_start = max(0, new_text_start_len - body_start)
+        # Cap the new-start to the body length so the matcher's
+        # ``search_from`` computation stays inside ``body_text``.
+        body_new_start = min(body_new_start, len(body_text))
+        match = _find_stop_match_in_new_window(body_text, body_new_start, stop_params)
+        if match is None:
+            return None
+        local_idx, stop_str = match
+        return (body_start + local_idx, stop_str)
 
     def _get_stop_tokens(self) -> set[int]:
         """Get stop token IDs from tokenizer.
@@ -841,7 +900,7 @@ class MLLMScheduler:
                     keep = max(0, max_stop_len - 1)
                     previous_seen_len = len(request.stop_text)
                     streamed_so_far = request.stop_text + new_text
-                    match = _find_stop_match_in_new_window(
+                    match = self._match_user_stop(
                         streamed_so_far, previous_seen_len, stop_params
                     )
                     if match is not None:
@@ -908,7 +967,7 @@ class MLLMScheduler:
                     and request.stop_text
                     and request.stop_text_len < len(request.stop_text)
                 ):
-                    match = _find_stop_match_in_new_window(
+                    match = self._match_user_stop(
                         request.stop_text, request.stop_text_len, stop_params
                     )
                     if match is not None:

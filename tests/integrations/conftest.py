@@ -335,87 +335,23 @@ _DEEPSEEK_R1_XFAIL_REASON = (
 
 
 # --------------------------------------------------------------------------- #
-# Family-specific strict-xfail: gpt-oss + OpenHands
-# --------------------------------------------------------------------------- #
-#
-# Root-cause (G8, verified empirically 2026-07-07 with the 0.9.0 OpenHands
-# Docker harness in this PR): the CodeActAgent sets
-#
-#   stop=["</execute_ipython>", "</execute_bash>", "</execute_browse>"]
-#
-# on every /v1/chat/completions request. gpt-oss (harmony) produces its
-# response in two channels — an internal ``analysis`` channel (chain-of-
-# thought) and a visible ``final`` channel. rapid-mlx's harmony parser
-# applies user-supplied stop sequences against the raw token stream (both
-# channels), so the model's analysis-channel CoT — which routinely
-# mentions the ``</execute_ipython>`` string when reasoning about the
-# CodeAct action to take — triggers a premature stop BEFORE the model can
-# switch to the final channel. Result: ``content=""`` with
-# ``reasoning_content`` holding the full CoT, and CodeActAgent falls back
-# to an empty ``MessageAction`` and asks for user input (which fails
-# under ``python -m openhands.core.main -t`` headless mode).
-#
-# Reproducer (from inside the OpenHands 0.9.0 container):
-#
-#   >>> litellm.completion(
-#   ...   model="openai/gpt-oss-20b-mxfp4-q8",
-#   ...   api_base="http://host.docker.internal:PORT/v1",
-#   ...   max_tokens=8192, temperature=0.0,
-#   ...   stop=["</execute_ipython>","</execute_bash>","</execute_browse>"],
-#   ...   messages=[{"role":"system","content":"...<execute_ipython>..."},
-#   ...             {"role":"user","content":"Print hello world in ipython."}])
-#   choice.message.content == ""
-#   choice.message.reasoning_content ends with "</execute_ipython>"
-#
-# The SAME prompt without the ``stop=`` argument returns the correct
-# ``<execute_ipython>\nprint("hello world")\n</execute_ipython>`` in
-# ``content`` and clean CoT in ``reasoning_content``. So the failure is
-# NOT the CodeAct system prompt, NOT ``max_tokens`` (bumped to 8192), and
-# NOT LiteLLM routing — it's the harmony parser scoping user-supplied
-# stops incorrectly. Fix belongs in ``vllm_mlx/*harmony*.py`` (restrict
-# user-supplied stops to final-channel content) and is tracked in a
-# follow-up issue linked from the PR body.
-#
-# All THREE other Tier-1 family reps (qwen3.5-4b-4bit, gemma-4-31b-4bit,
-# deepseek-r1-32b-4bit) PASS the OpenHands harness empirically at boot —
-# this is a gpt-oss/harmony-specific parser bug, not a general OpenHands
-# regression, so we scope the xfail to exactly one cell and leave the
-# other three green.
-
-_GPTOSS_OPENHANDS_XFAIL_REASON = (
-    "gpt-oss (harmony) + OpenHands: CodeActAgent sets "
-    "stop=['</execute_ipython>', '</execute_bash>', '</execute_browse>']. "
-    "rapid-mlx's harmony parser applies user-supplied stops against the "
-    "raw token stream across BOTH channels, so the model's analysis-"
-    "channel CoT — which routinely mentions '</execute_ipython>' while "
-    "reasoning about the action — triggers a premature stop before the "
-    "final channel emits any content. Response: content='', "
-    "reasoning_content ends with '</execute_ipython>'. Root-caused "
-    "empirically inside the 0.9.0 OpenHands container (G8). Fix belongs "
-    "in vllm_mlx harmony parser (restrict user-supplied stops to final-"
-    "channel content) — tracked in follow-up issue. All THREE other "
-    "Tier-1 family reps pass the OpenHands harness."
-)
+# Note (2026-07-07): gpt-oss + OpenHands used to strict-xfail here with the
+# stop-sequence root cause from PR #1048 (analysis-channel CoT mentions
+# ``</execute_ipython>`` verbatim → premature stop). The fix landed in this
+# PR (channel-scoped user stops in the harmony scheduler path; see
+# ``vllm_mlx/reasoning/harmony_stop.py``), so the xfail is removed and
+# ``TestOpenHands[gptoss]`` now runs live like the other three Tier-1 reps.
+# Empirical PASS is documented in the PR body's family-by-family section
+# and pinned by ``tests/test_harmony_stop_final_channel_only.py`` at the
+# unit-level.
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Apply strict-xfail to the DeepSeek tool_call + gpt-oss/OpenHands cells."""
+    """Apply strict-xfail to the DeepSeek tool_call cells."""
     del config  # unused — items already carry the config context.
     for item in items:
-        # gpt-oss + OpenHands — rapid-mlx harmony stop-sequence scoping bug.
-        if (
-            "[gptoss]" in item.nodeid
-            and "test_agents_matrix.py::TestOpenHands" in item.nodeid
-        ):
-            item.add_marker(
-                pytest.mark.xfail(
-                    reason=_GPTOSS_OPENHANDS_XFAIL_REASON,
-                    strict=True,
-                )
-            )
-            continue
         # DeepSeek R1-Distill tool-call gap (block above).
         if "[deepseek]" not in item.nodeid:
             continue
