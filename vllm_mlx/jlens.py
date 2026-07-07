@@ -47,12 +47,90 @@ class UnsupportedArchitectureError(Exception):
     """Raised when a model's architecture is not (yet) J-lens compatible."""
 
 
+def _prefetch_via_mirror(model_path: str) -> bool:
+    """R2-first prefetch for HF-style repos; no-op otherwise.
+
+    Every other rapid-mlx command that materializes weights (``serve``,
+    ``chat``, ``pull``, ``bench``) routes the initial download through
+    :func:`vllm_mlx._mirror.download_with_mirror_fallback` so users get
+    the R2 mirror (edge-cached, resumable, no HF rate limits) with a
+    per-file HF fallback. ``jlens`` bypassed that pipeline in PR #1039
+    and went straight to ``mlx_lm.load`` → ``snapshot_download``, so a
+    first-time ``rapid-mlx jlens qwen3-1.7b "..."`` pulled every shard
+    from HuggingFace directly. This helper closes that gap while
+    preserving mlx_lm.load's own fallback:
+
+    * If ``model_path`` is a local directory / non-repo path / disabled
+      mirror, we no-op and mlx_lm.load handles it.
+    * If the mirror hydrates the HF cache (returns True), ``mlx_lm.load``
+      sees a warm cache and never hits HuggingFace.
+    * If the mirror returns False / raises (catalog outage, per-file
+      miss, mirror module unavailable), mlx_lm.load's own
+      ``snapshot_download`` completes the pull from HF. This is the
+      same graceful-degradation contract ``_ensure_model_downloaded``
+      relies on in cli.py.
+
+    Best-effort: any exception here is swallowed — the mirror is a UX
+    optimization, not a correctness dependency for ``jlens``.
+    """
+    if not _looks_like_hf_repo_id(model_path):
+        return False
+    if os.path.exists(model_path):
+        return False
+    try:
+        from ._mirror import download_with_mirror_fallback
+    except ImportError:
+        # Minimal-deps install without the mirror module — fall through
+        # to plain HF via mlx_lm.load.
+        return False
+    try:
+        return bool(download_with_mirror_fallback(model_path))
+    except Exception:
+        # Any unexpected mirror failure is treated as "let mlx_lm.load
+        # handle it via HF". Don't fail the whole jlens invocation over
+        # a mirror hiccup.
+        return False
+
+
+def _looks_like_hf_repo_id(model_path: str) -> bool:
+    """Return True if ``model_path`` is shaped like a HuggingFace ``owner/name``.
+
+    Codex nit on PR #1045: a bare ``"/" in model_path`` check treats
+    ``./missing/model``, ``/tmp/model``, ``foo/bar/baz``, and URLs like
+    ``https://hf.co/mlx-community/X`` as mirror-eligible. Each of those
+    would hit ``download_with_mirror_fallback`` → ``model_info`` (a real
+    HF API round-trip) before mlx_lm.load ever gets a chance to reject
+    them locally. Match HuggingFace's own repo-id shape here so garbage
+    inputs short-circuit.
+    """
+    if not model_path:
+        return False
+    if "://" in model_path:  # a URL
+        return False
+    if model_path.startswith(("/", ".", "~")):  # absolute / relative / home
+        return False
+    parts = model_path.split("/")
+    if len(parts) != 2:  # exactly one slash separating owner and name
+        return False
+    owner, name = parts
+    if not owner or not name:
+        return False
+    return True
+
+
 def _load_model(model_path: str):
     """Load an mlx_lm model, installing the MLX hardware-compat shim first."""
     # The shim must run before ``from mlx_lm import load`` (see cli.py / #404).
     from . import _mlx_compat
 
     _mlx_compat.install()
+
+    # Route HF-style repos through the R2 mirror before mlx_lm.load runs
+    # its own ``snapshot_download``. Warm caches (either from a prior
+    # ``pull`` or from a successful mirror pass here) are picked up by
+    # ``mlx_lm.load`` transparently.
+    _prefetch_via_mirror(model_path)
+
     from mlx_lm import load
 
     return load(model_path)
