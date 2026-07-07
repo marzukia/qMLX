@@ -64,7 +64,7 @@ for operator scope call in the PR body).
 | qwen-code | `/v1/chat/completions` | `TestQwenCode` (wire smoke via OpenAI SDK) | (matrix only) |
 | openhands | `/v1/chat/completions` | `TestOpenHands` (**wire smoke only** — does not exercise the real OpenHands binary / LiteLLM shim) | (Docker E2E deferred to 0.10.6 Phase 4) |
 | hermes-agent | `/v1/chat/completions` | `TestHermesAgent` (wire smoke via OpenAI SDK) | `test_hermes.py` (real 62-tool E2E) |
-| aider | `/v1/chat/completions` | `TestAider` (**wire smoke only** — does not exercise Aider's edit format or CLI) | `test_aider.sh` (real CLI edit-and-write) |
+| aider | shell subprocess → `/v1/chat/completions` | `TestAider` (**real bash-CLI harness** — drives aider one-shot with `--message`, asserts add.py corrected) | `test_aider.sh` (same harness, standalone) |
 | kilo-code | `/v1/chat/completions` | `TestKiloCode` (wire smoke via OpenAI SDK) | (matrix only) |
 | copilot | `/v1/chat/completions` | `TestCopilot` (**wire smoke only** — real CLI needs `gh auth login`, deferred) | (subprocess cell deferred) |
 | droid | `/v1/chat/completions` | `TestDroid` (**wire smoke only** — real CLI needs Factory session token, deferred) | (subprocess cell deferred) |
@@ -162,10 +162,17 @@ real tool-call routing (function name = `get_weather`, arg parses as
 JSON, `city == "Tokyo"`, no `<think>` leak, no `<|channel|>analysis`
 leak). PydanticAI + smolagents cells assert the tool implementation
 itself was invoked (closure counter check), not just that the model
-produced final text. OpenHands and Aider `XFAIL` structurally
-because their native wire is text-action / edit-and-write, not
-OpenAI function calling — real coverage lives in a Docker E2E
-harness / bash harness respectively.
+produced final text. OpenHands `XFAIL`s structurally because its
+native wire is a text-action format, not OpenAI function calling —
+real coverage lives in a Docker E2E harness. Aider now runs a real
+bash-CLI harness (drop-out of the previous structural XFAIL): the
+matrix cell shells out to `test_aider.sh`, which seeds a scratch
+`add.py` with `return a - b  # BUG`, drives `aider --message "Fix
+the bug ..."` one-shot against `/v1/chat/completions`, and asserts
+the file was rewritten to `return a + b`. Aider's own edit format
+(`SEARCH ... REPLACE ...` in plain text) does NOT require OpenAI
+tool_calls, so R1-Distill drives it successfully alongside the
+other three families.
 
 DeepSeek family Tier-1 rep was **swapped** from
 `deepseek-v4-flash-8bit` (~155 GB, single-node-infeasible on M3 Ultra
@@ -179,10 +186,21 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 
 | Family | Boot alias | Boot time | Wall time (14 cells) | Result |
 |---|---|---|---|---|
-| Qwen 3.6 | `qwen3.6-35b-8bit` (MoE, 3 B active) | ~15 s | 11.32 s | 12 PASS / 2 XFAIL |
-| Gemma 4 | `gemma-4-31b-4bit` (dense) | ~10 s | 17.45 s | 12 PASS / 2 XFAIL |
-| DeepSeek | `deepseek-r1-32b-4bit` (R1-distilled Qwen 32B, dense) | ~18 s | 191.29 s | 3 PASS / 11 XFAIL (9 arch-XFAIL R1-Distill tool-call gap, 2 pre-existing OpenHands/Aider) |
-| gpt-oss | `gpt-oss-120b-mxfp4-q8` (MoE) | ~15 s | 14.61 s | 12 PASS / 2 XFAIL |
+| Qwen 3.6 | `qwen3.6-35b-8bit` (MoE, 3 B active) | ~15 s | 11.32 s + ~3 s aider | 13 PASS / 1 XFAIL |
+| Gemma 4 | `gemma-4-31b-4bit` (dense) | ~10 s | 17.45 s + ~7 s aider | 13 PASS / 1 XFAIL |
+| DeepSeek | `deepseek-r1-32b-4bit` (R1-distilled Qwen 32B, dense) | ~18 s | 191.29 s + ~22 s aider | 4 PASS / 10 XFAIL (9 arch-XFAIL R1-Distill tool-call gap, 1 pre-existing OpenHands) |
+| gpt-oss | `gpt-oss-120b-mxfp4-q8` (MoE) | ~15 s | 14.61 s + ~3 s aider | 13 PASS / 1 XFAIL |
+
+> **Aider row added post-pilot 2026-07-07.** The pilot times above are the
+> 12-cell subset (aider was structural XFAIL). Re-running with the real
+> bash-CLI harness adds ~3–22 s per family (see `test_aider.sh` — aider
+> spawns a Python subprocess, boots LiteLLM, then does one
+> ``/v1/chat/completions`` round-trip; the DeepSeek row is the outlier
+> because R1-Distill emits a long ``<think>`` block before the
+> SEARCH/REPLACE edit). Family-by-family verification:
+> Qwen 3.5-4B-4bit (`qwen36` rep) 2.81 s, Gemma-4-31B-4bit 7.14 s,
+> DeepSeek R1-Distill-32B-4bit 22.26 s, gpt-oss-20B-MXFP4-Q8 3.15 s —
+> all four PASS with add.py rewritten to ``return a + b``.
 
 | Agent | Qwen 3.6 | Gemma 4 | DeepSeek | gpt-oss |
 |---|---|---|---|---|
@@ -192,7 +210,7 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 | qwen-code | ✅ | ✅ | XFAIL (arch) | ✅ |
 | openhands | XFAIL | XFAIL | XFAIL | XFAIL |
 | hermes-agent | ✅ | ✅ | XFAIL (arch) | ✅ |
-| aider | XFAIL | XFAIL | XFAIL | XFAIL |
+| aider | ✅ | ✅ | ✅ | ✅ |
 | kilo-code | ✅ | ✅ | XFAIL (arch) | ✅ |
 | copilot | ✅ | ✅ | XFAIL (arch) | ✅ |
 | droid | ✅ | ✅ | XFAIL (arch) | ✅ |
@@ -206,15 +224,16 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 | PydanticAI | ✅ | ✅ | XFAIL (arch) | ✅ |
 | smolagents | ✅ | ✅ | ✅ | ✅ |
 
-Legend: ✅ passing (real inference · real tool call · semantic assertion)
-· XFAIL = strict expected-fail with reason (Docker / shell harness required
-for OpenHands + Aider; **XFAIL (arch)** = R1-Distill architectural
-tool-emission gap, see next paragraph and issue #1041)
+Legend: ✅ passing (real inference · real tool call · semantic assertion;
+or for aider: real bash-CLI drive · real file rewrite)
+· XFAIL = strict expected-fail with reason (Docker harness required for
+OpenHands; **XFAIL (arch)** = R1-Distill architectural tool-emission gap,
+see next paragraph and issue #1041)
 
-**Totals across all 4 families**: 56 cells run → **39 PASS · 17 XFAIL · 0 FAIL**
-(15 XFAIL are structural expected-fails documented in `conftest.py` /
-`test_agents_matrix.py` docstrings; 2 additional XFAILs are Aider +
-OpenHands DeepSeek variants).
+**Totals across all 4 families**: 56 cells run → **43 PASS · 13 XFAIL · 0 FAIL**
+(9 XFAIL are the R1-Distill architectural tool-emission cells listed in
+`conftest.py::_DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS`; 4 XFAIL are OpenHands
+across all four families pending the 0.10.6 Phase 4 Docker E2E harness).
 
 **DeepSeek family — architectural tool-emission gap.** The 9 DeepSeek
 tool-call cells (7 agents + LangChain + PydanticAI) are marked
