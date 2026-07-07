@@ -53,12 +53,25 @@ Rationale for lightweight cells + heavy dedicated files:
 
 **Cells not exercised in this file — see the "🔲 pending" cells of the
 README matrix:** claude-code needs an installed ``anthropic`` package (in
-optional extras, not core); openhands needs Docker (E2E harness lives in
-``test_openhands.py``, deferred to 0.10.6 Phase 4 plumbing per 0.10-TODO
-line 246). Aider previously deferred to ``test_aider.sh`` for its
-edit-and-write flow; as of 0.10.3-window the matrix cell now shells out
-to that harness directly (see ``TestAider`` below) so the four Tier-1
-family cells run for real instead of xfail'ing structurally.
+optional extras, not core). Aider previously deferred to ``test_aider.sh``
+for its edit-and-write flow; as of 0.10.3-window the matrix cell now
+shells out to that harness directly (see ``TestAider`` below) so the four
+Tier-1 family cells run for real instead of xfail'ing structurally.
+OpenHands — previously a strict-xfail placeholder pending "Docker E2E
+harness required for OpenHands' text-action format" — has landed the
+same shape: ``TestOpenHands`` now shells out to ``test_openhands.sh``
+which drives the pinned OpenHands 0.9.0 app + runtime images against
+``rapid-mlx serve`` and asserts add.py corrected. Correctness gate is a **strict AST whitelist on ``add.py``'s return
+expression** (parses the file, requires the module top level to be a
+single ``def add`` optionally preceded by a docstring, the ``def add``
+itself to have no decorators / defaults / annotations, and the return
+to be one of ``a + b`` / ``b + a`` / ``sum([a, b])`` / ``sum((a, b))``
+after an optional function-level docstring, with the signature pinned
+to ``(a, b)``). Non-executing, so the LLM's output never touches the
+host process; strictly stronger than a runtime pair-sweep (no
+``a - b + k``, ``return CONST``, or ``if …: return 5`` cheat can
+satisfy the AST shape). Docker-daemon skip guard so non-Docker CI
+stays green.
 """
 
 from __future__ import annotations
@@ -370,39 +383,130 @@ class TestQwenCode:
         _run_openai_tool_smoke(rapid_mlx_server, family_alias, agent_label="qwen-code")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "OpenHands uses text-action format (openhands.yaml "
-        "capabilities.function_calling: false), NOT OpenAI-style function "
-        "calling — no OpenAI-shape tool_calls to parse. Real drive requires "
-        "the Docker E2E harness deferred to 0.10.6 Phase 4. Wire-only smoke "
-        "was previously here but was flagged as shape-only. Kept as a "
-        "structural xfail so the matrix stays symmetric and the intended "
-        "coverage gap is grep-visible in test output."
-    ),
-)
 class TestOpenHands:
-    """OpenHands — expected-fail placeholder for Docker E2E harness.
+    """OpenHands — real Docker E2E harness (``test_openhands.sh``).
 
-    OpenHands' native wire is a text-action format, not OpenAI function
-    calling. A tool-call assertion against ``/v1/chat/completions``
-    cannot faithfully represent what OpenHands actually drives. The
-    real coverage will land in the 0.10.6 Phase 4 Docker E2E harness;
-    this placeholder xfails strictly so the matrix cell count stays at
-    11 × 4 and the coverage gap can't be quietly forgotten.
+    OpenHands' native wire is a text-action format, NOT OpenAI function
+    calling — the CodeActAgent parses the model's plaintext reply,
+    extracts actions (``IPythonRunCellAction``, ``CmdRunAction``, edit
+    blocks), and applies file edits through its sandbox runtime.
+    So the correctness signal is **did OpenHands actually rewrite the
+    file the way we asked**, not **did tool_calls fire**.
+
+    The bash harness at ``tests/integrations/test_openhands.sh`` takes
+    ``--model <alias>`` + ``--base-url <url>``, seeds a scratch
+    ``add.py`` with ``return a - b  # BUG``, runs
+    ``docker run ... python -m openhands.core.main -t "Fix the bug ..."``
+    with pinned OpenHands 0.9.0 app + runtime images, then asserts
+    (a) the container exited 0 and (b) the file now contains
+    ``return a + b``. Full family-by-family empirical verification is
+    documented in the PR that un-xfailed this cell.
+
+    Skipped (not failed) when Docker isn't available so non-Docker CI
+    stays green; the real coverage is Apple-silicon local + Docker CI
+    only.
     """
+
+    _HARNESS_TIMEOUT_SECONDS = 600  # generous — OpenHands boots a sandbox
+
+    @staticmethod
+    def _docker_available() -> bool:
+        """Return True iff the Docker daemon is reachable.
+
+        ``docker info`` is the canonical daemon-alive probe (``docker
+        version`` returns client-side even when the socket is dead). We
+        cap the probe at 5 s so a hung / half-crashed daemon doesn't
+        turn every OpenHands cell into a 30-second hang.
+        """
+        docker_bin = shutil.which("docker")
+        if docker_bin is None:
+            return False
+        try:
+            result = subprocess.run(
+                [docker_bin, "info"],
+                capture_output=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return result.returncode == 0
 
     def test_smoke(
         self,
         rapid_mlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
-        pytest.fail(
-            f"openhands/{family_alias.family}: strict xfail — Docker E2E "
-            "harness required for OpenHands' text-action format; OpenAI "
-            "tool-call shape does not apply. See class docstring."
-        )
+        harness = Path(__file__).parent / "test_openhands.sh"
+        assert harness.exists(), f"openhands harness missing: {harness}"
+
+        # Docker daemon is a hard prerequisite for OpenHands' sandbox
+        # runtime (docker-in-docker sock passthrough). Skip cleanly on
+        # environments without Docker so non-Docker CI still passes;
+        # Apple-silicon local + Docker CI cover the real coverage.
+        if not self._docker_available():
+            pytest.skip(
+                "Docker daemon required for OpenHands E2E harness "
+                "(start Docker Desktop / dockerd — the harness runs "
+                "the pinned OpenHands app + sandbox runtime images)."
+            )
+
+        # Pass the FULL parsed base_url to the harness — the harness
+        # itself rewrites the host to ``host.docker.internal`` for the
+        # inside-container view, so a fixture pointed at a non-localhost
+        # host (CI shard on a remote-serve node) still tests the right
+        # server. ``--base-url`` is authoritative; ``--port`` is only
+        # kept for standalone local invocations.
+        base_url = rapid_mlx_server["base_url"]
+        model_id = rapid_mlx_server["model_id"]
+
+        env = os.environ.copy()
+
+        try:
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(harness),
+                    "--model",
+                    model_id,
+                    "--base-url",
+                    base_url,
+                    "--timeout",
+                    str(self._HARNESS_TIMEOUT_SECONDS),
+                ],
+                capture_output=True,
+                text=True,
+                # +60 s over the harness's internal ``timeout(1)`` so
+                # cleanup + docker rm -f can run without the pytest
+                # wall-timeout tripping first.
+                timeout=self._HARNESS_TIMEOUT_SECONDS + 60,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            pytest.fail(
+                f"openhands/{family_alias.family}: harness wall-timeout "
+                f"({self._HARNESS_TIMEOUT_SECONDS + 60}s) exceeded. "
+                # Codex #1048 round-8 nit: with ``text=True``,
+                # ``TimeoutExpired.stdout``/``.stderr`` are ``str | None``,
+                # so a bytes-literal ``or`` fallback would mix ``str`` and
+                # ``bytes`` in the tail slice. Use ``""`` and take the
+                # tail off a homogeneous ``str``.
+                f"stdout(tail)={(exc.stdout or '')[-800:]!r} "
+                f"stderr(tail)={(exc.stderr or '')[-800:]!r}"
+            )
+
+        # Assert exit 0 with the tail of stdout+stderr for diagnostics
+        # — the harness itself already prints BEFORE/AFTER add.py and
+        # the last 60 lines of the openhands log, so this is enough to
+        # root-cause any empirical failure without re-running.
+        if result.returncode != 0:
+            tail_out = result.stdout[-2000:] if result.stdout else ""
+            tail_err = result.stderr[-1000:] if result.stderr else ""
+            pytest.fail(
+                f"openhands/{family_alias.family}: harness exited "
+                f"{result.returncode} on model {model_id!r}\n"
+                f"--- stdout tail ---\n{tail_out}\n"
+                f"--- stderr tail ---\n{tail_err}"
+            )
 
 
 class TestHermesAgent:
@@ -524,8 +628,13 @@ class TestAider:
             pytest.fail(
                 f"aider/{family_alias.family}: harness wall-timeout "
                 f"({self._HARNESS_TIMEOUT_SECONDS + 30}s) exceeded. "
-                f"stdout(tail)={(exc.stdout or b'')[-800:]!r} "
-                f"stderr(tail)={(exc.stderr or b'')[-800:]!r}"
+                # Codex #1048 round-8 nit: with ``text=True``,
+                # ``TimeoutExpired.stdout``/``.stderr`` are ``str | None``,
+                # so a bytes-literal ``or`` fallback would mix ``str`` and
+                # ``bytes`` in the tail slice. Use ``""`` and take the
+                # tail off a homogeneous ``str``.
+                f"stdout(tail)={(exc.stdout or '')[-800:]!r} "
+                f"stderr(tail)={(exc.stderr or '')[-800:]!r}"
             )
 
         # Assert exit 0 with the tail of stdout+stderr for diagnostics
