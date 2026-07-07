@@ -3516,6 +3516,21 @@ def _run_submit_flow(
     _check_disk_space(hf_path, force=getattr(args, "force_disk_check", False))
     _check_memory_capacity(hf_path)
 
+    # Pre-fetch the model via the R2 mirror (with HF fallback) BEFORE the
+    # thread executor spins up. Without this, ``mlx_lm.load`` runs inside
+    # the executor and delegates to ``huggingface_hub.snapshot_download``
+    # directly, skipping the mirror entirely (bug: --submit diverged from
+    # ``serve``/``chat``/``pull``/``jlens`` which all prefetch via the
+    # mirror first). Running this in the main thread — before the executor
+    # is created — surfaces the mirror's per-file progress lines to the
+    # contributor's terminal; if we deferred to the executor, the tqdm
+    # bars from a warm cache-miss would race the ``Loading model …`` print
+    # below. ``_ensure_model_downloaded`` is a no-op on local paths and on
+    # fully-cached repos, and swallows mirror errors gracefully so
+    # ``mlx_lm.load`` still falls through to HF when the mirror is
+    # unreachable.
+    _ensure_model_downloaded(hf_path)
+
     # ``--sampled`` runs a SECOND submission (with sampling="sampled")
     # in addition to the always-on greedy run. The README contract is
     # "two rows when --sampled is set, one row otherwise" — a previous
@@ -3756,6 +3771,18 @@ def bench_command(args):
 
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
     _check_memory_capacity(args.model)
+
+    # Pre-fetch the model via the R2 mirror (with HF fallback) BEFORE the
+    # heavy bench boot. Without this, ``bench`` falls into ``mlx_lm.load``
+    # → ``huggingface_hub.snapshot_download`` directly and skips the
+    # mirror entirely, wasting the user's bandwidth and hitting HF rate
+    # limits (bug: bench diverged from ``serve``/``chat``/``pull``/``jlens``
+    # which all prefetch via the mirror first).
+    # ``_ensure_model_downloaded`` is a no-op on local paths and on
+    # fully-cached repos and swallows mirror errors gracefully (mlx_lm.load
+    # falls through to HF), so this is safe on the warm path and when
+    # the mirror is unreachable.
+    _ensure_model_downloaded(args.model)
 
     # Handle prefix cache flags
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
