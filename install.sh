@@ -1,6 +1,6 @@
 #!/bin/bash
 # Rapid-MLX installer — AI inference for Apple Silicon
-# Usage: curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
+# Usage: curl -fsSL https://rapidmlx.com/install.sh | bash
 #        curl ... | bash -s 0.4.3          # specific version
 #        curl ... | bash -s latest         # latest from GitHub (pre-release)
 set -euo pipefail
@@ -85,10 +85,10 @@ fi
 # ── 2. Detect RAM → recommend model ──────────────────────────────────────────
 
 RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
-if   [ "$RAM_GB" -ge 96 ]; then RECOMMENDED_MODEL="qwen3.5-122b-mxfp4"; RAM_TIER="96+ GB"
-elif [ "$RAM_GB" -ge 48 ]; then RECOMMENDED_MODEL="qwen3.5-35b-8bit";  RAM_TIER="48-95 GB"
-elif [ "$RAM_GB" -ge 24 ]; then RECOMMENDED_MODEL="qwen3.5-9b-4bit";   RAM_TIER="24-47 GB"
-else                            RECOMMENDED_MODEL="qwen3.5-4b-4bit";   RAM_TIER="8-23 GB"
+if   [ "$RAM_GB" -ge 96 ]; then RECOMMENDED_MODEL="gpt-oss-120b-mxfp4-q8"; RAM_TIER="96+ GB"
+elif [ "$RAM_GB" -ge 48 ]; then RECOMMENDED_MODEL="qwen3.6-35b-8bit";      RAM_TIER="48-95 GB"
+elif [ "$RAM_GB" -ge 24 ]; then RECOMMENDED_MODEL="gpt-oss-20b-mxfp4-q8";  RAM_TIER="24-47 GB"
+else                            RECOMMENDED_MODEL="qwen3.5-4b-4bit";       RAM_TIER="8-23 GB"
 fi
 
 dim "macOS $(sw_vers -productVersion) · Apple Silicon · ${RAM_GB} GB RAM"
@@ -245,8 +245,8 @@ echo "    rapid-mlx-chat                                    # built-in chat"
 echo "    OPENAI_BASE_URL=http://localhost:8000/v1 claude    # Claude Code"
 echo "    OPENAI_BASE_URL=http://localhost:8000/v1 aider     # Aider"
 echo ""
-dim "Upgrade:    curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash"
-dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"
+dim "Upgrade:    curl -fsSL https://rapidmlx.com/install.sh | bash"
+dim "Uninstall:  rm -rf ~/.rapid-mlx ~/.rapid-mlx-python ~/.local/bin/rapid-mlx* ~/.local/bin/vllm-mlx*"
 echo ""
 
 if [ "$NEED_PATH_HINT" = true ]; then
