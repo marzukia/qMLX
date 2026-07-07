@@ -7702,6 +7702,39 @@ Examples:
         help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (e.g. mlx-community/SmolLM3-3B-4bit)",
     ).completer = alias_completer
 
+    # Jlens command — read a model's internal "draft" with the Jacobian lens
+    jlens_parser = subparsers.add_parser(
+        "jlens",
+        help="Read a model's internal thoughts across layers (Jacobian lens)",
+    )
+    jlens_parser.add_argument(
+        "prompt",
+        help='Prompt to trace, e.g. "why is the sky blue"',
+    )
+    jlens_parser.add_argument(
+        "--model",
+        "-m",
+        default="qwen3-1.7b",
+        help="Model alias or HF repo to inspect (default: qwen3-1.7b)",
+    ).completer = alias_completer
+    jlens_parser.add_argument(
+        "--step",
+        type=int,
+        default=2,
+        help="Probe every Nth layer (default: 2; use 1 for full-resolution)",
+    )
+    jlens_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of the rendered view",
+    )
+    jlens_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Show full per-layer readouts and the answer's rank trajectory",
+    )
+
     # Agents command
     agents_parser = subparsers.add_parser(
         "agents", help="List, configure, and test agent integrations"
@@ -8044,7 +8077,15 @@ Examples:
 
         resolved = resolve_model(args.model)
         if resolved != args.model:
-            print(f"  Alias: {args.model} → {resolved}")
+            # Keep stdout pure JSON for machine-readable modes (jlens --json);
+            # the human-facing alias banner goes to stderr there.
+            _alias_stream = (
+                sys.stderr
+                if getattr(args, "command", None) == "jlens"
+                and getattr(args, "json", False)
+                else sys.stdout
+            )
+            print(f"  Alias: {args.model} → {resolved}", file=_alias_stream)
             args._original_alias = args.model
             args.model = resolved
         elif "/" not in args.model and not os.path.exists(args.model):
@@ -8130,7 +8171,7 @@ Examples:
     # NOT inherit the bypass. Codex round-2 BLOCKING #2.
     _chat_spawn_child = os.environ.pop("RAPID_MLX_CHAT_SPAWN", "") == "1"
 
-    _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench"}
+    _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench", "jlens"}
     if (
         getattr(args, "command", None) in _GATED_COMMANDS
         and hasattr(args, "model")
@@ -8206,6 +8247,10 @@ Examples:
         chat_command(args)
     elif args.command == "info":
         info_command(args)
+    elif args.command == "jlens":
+        from vllm_mlx.jlens import jlens_command
+
+        jlens_command(args)
     elif args.command == "agents":
         agents_command(args)
     elif args.command == "doctor":
