@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -155,15 +156,26 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
     )
 
 
+def _warn_legacy_config_helper(name: str) -> None:
+    warnings.warn(
+        f"{name}() is deprecated; build a SpeculativeConfig or pass "
+        "--speculative-config instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+
 def legacy_ddtree_config() -> SpeculativeConfig:
     """Return the compatibility config represented by ``--enable-ddtree``."""
 
+    _warn_legacy_config_helper("legacy_ddtree_config")
     return SpeculativeConfig(method="ddtree", raw={"method": "ddtree"})
 
 
 def legacy_dflash_config(model: str | None = None) -> SpeculativeConfig:
     """Return the compatibility config represented by DFlash legacy flags."""
 
+    _warn_legacy_config_helper("legacy_dflash_config")
     raw = {"method": "dflash"}
     drafter = _optional_string(model, "model")
     if drafter is not None:
@@ -179,6 +191,7 @@ def legacy_mtp_config(
 ) -> SpeculativeConfig:
     """Return the compatibility config represented by MTP legacy flags."""
 
+    _warn_legacy_config_helper("legacy_mtp_config")
     raw: dict[str, Any] = {"method": "mtp"}
     sidecar = _optional_string(model, "model")
     if sidecar is not None:
@@ -207,6 +220,7 @@ def legacy_suffix_config(
 ) -> SpeculativeConfig:
     """Return the compatibility config represented by ``--suffix-decoding``."""
 
+    _warn_legacy_config_helper("legacy_suffix_config")
     raw: dict[str, Any] = {"method": "suffix"}
     tokens = _positive_int(num_speculative_tokens, "num_speculative_tokens")
     if tokens is not None:
@@ -239,9 +253,8 @@ def require_migrated_speculative_config(config: SpeculativeConfig) -> None:
             f"unsupported speculative decoding method {config.method!r}"
         )
     if not plugin.config_enabled:
-        hint = f"; {plugin.legacy_hint}" if plugin.legacy_hint else ""
         raise SpeculativeConfigError(
-            f"--speculative-config method {plugin.method!r} is not wired yet{hint}."
+            f"--speculative-config method {plugin.method!r} is not wired yet."
         )
 
 

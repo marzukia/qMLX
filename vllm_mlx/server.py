@@ -1192,7 +1192,11 @@ def load_model(
             back-compat with external callers; if provided it is translated
             into ``scheduler_config.prefill_step_size`` and a DeprecationWarning
             is emitted. Will be removed in a future release.
-        mtp: Enable native MTP speculative decoding
+        mtp: DEPRECATED compatibility alias. ``mtp=True`` is translated to
+            ``scheduler_config.spec_decode == "mtp"`` so older
+            ``load_model(..., mtp=True)`` callers still opt into MTP while the
+            public runtime moves to ``--speculative-config`` /
+            ``SchedulerConfig(spec_decode="mtp")``.
         force_text: Keyword-only. Force loading as text-only LLM even when
             auto-detection would route as MLLM. Escape hatch for incomplete
             vision-tower checkpoints (#393) and text-only forks of multimodal
@@ -1211,6 +1215,66 @@ def load_model(
         max_tokens = 32768
     if max_tokens_is_explicit is None:
         max_tokens_is_explicit = max_tokens_was_supplied
+
+    if mtp:
+        import warnings
+
+        from .scheduler import SchedulerConfig
+
+        existing_spec_decode = (
+            getattr(scheduler_config, "spec_decode", "none")
+            if scheduler_config is not None
+            else "none"
+        )
+        if existing_spec_decode not in ("none", "mtp"):
+            raise ValueError(
+                "load_model(mtp=True) conflicts with "
+                f"scheduler_config.spec_decode={existing_spec_decode!r}; "
+                "pass only one speculative decoding method."
+            )
+        if scheduler_config is not None and getattr(
+            scheduler_config, "enable_suffix_decoding", False
+        ):
+            raise ValueError(
+                "load_model(mtp=True) conflicts with "
+                "scheduler_config.enable_suffix_decoding=True; pass only one "
+                "speculative decoding method."
+            )
+        if (
+            scheduler_config is not None
+            and (getattr(scheduler_config, "dflash_drafter_path", "") or "").strip()
+        ):
+            raise ValueError(
+                "load_model(mtp=True) conflicts with "
+                "scheduler_config.dflash_drafter_path; pass only one "
+                "speculative decoding method."
+            )
+        if scheduler_config is not None and getattr(
+            scheduler_config, "mtp_optimistic", False
+        ):
+            # Unified spec-decode interface (PR #1050): the vendored MTP
+            # installer does not honour ``mtp_optimistic``. Direct mutation
+            # of scheduler_config below would bypass ``__post_init__``, so
+            # enforce the same reject rule here to avoid silent drift.
+            raise ValueError(
+                "load_model(mtp=True) cannot be combined with "
+                "scheduler_config.mtp_optimistic=True — mtp_optimistic "
+                "is not supported under the unified spec-decode interface."
+            )
+        warnings.warn(
+            "load_model(mtp=True) is deprecated; pass "
+            "SchedulerConfig(spec_decode='mtp') instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if scheduler_config is None:
+            scheduler_config = SchedulerConfig(enable_mtp=True)
+        elif existing_spec_decode == "none":
+            scheduler_config.enable_mtp = True
+            scheduler_config.spec_decode = "mtp"
+            scheduler_config.mtp_max_k = max(
+                1, int(getattr(scheduler_config, "mtp_num_draft_tokens", 1))
+            )
 
     if prefill_step_size is not None:
         import warnings
@@ -1621,9 +1685,7 @@ def register_audio_routes_if_enabled() -> bool:
       :func:`vllm_mlx.cli._serve_audio_mode` always populates
       ``_model_name`` / ``_model_alias`` with a registry-known id), OR
     * The operator passed ``--enable-audio`` on a text-mode boot
-      (``_enable_audio_lane`` is True). This mirrors the
-      ``--enable-mtp`` / ``--enable-dflash`` precedent in
-      :mod:`vllm_mlx.cli`.
+      (``_enable_audio_lane`` is True).
 
     Returns True when the router was attached on this call, False
     otherwise. Idempotent: called from ``load_model`` (text path),

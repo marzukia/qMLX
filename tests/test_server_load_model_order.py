@@ -127,6 +127,91 @@ def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
     assert cfg.default_max_tokens_is_explicit is False
 
 
+def test_load_model_mtp_kwarg_translates_to_scheduler_config(monkeypatch):
+    from vllm_mlx import server
+
+    monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
+    monkeypatch.setattr(server, "_engine", None, raising=False)
+    monkeypatch.setattr(server, "_enable_auto_tool_choice", False, raising=False)
+    monkeypatch.setattr(server, "_tool_call_parser", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser_name", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser", None, raising=False)
+    monkeypatch.setattr(server, "_tool_parser_instance", None, raising=False)
+    monkeypatch.setattr(server, "_mcp_manager", None, raising=False)
+    monkeypatch.setattr(server, "_enable_tool_logits_bias", False, raising=False)
+    monkeypatch.setattr(server, "_model_alias", None, raising=False)
+
+    with pytest.warns(DeprecationWarning, match="load_model\\(mtp=True\\)"):
+        server.load_model("mlx-community/Qwen3.5-9B-4bit", mtp=True)
+
+    assert server._engine is not None
+    cfg = server._engine.kwargs["scheduler_config"]
+    assert cfg.spec_decode == "mtp"
+    assert cfg.enable_mtp is True
+
+
+def test_load_model_mtp_kwarg_rejects_conflicting_spec_decode():
+    from vllm_mlx import server
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    cfg = SchedulerConfig()
+    cfg.spec_decode = "suffix"
+
+    with pytest.raises(ValueError, match="mtp=True.*spec_decode='suffix'"):
+        server.load_model(
+            "mlx-community/Qwen3.5-9B-4bit",
+            scheduler_config=cfg,
+            mtp=True,
+        )
+
+
+def test_load_model_mtp_kwarg_rejects_conflicting_suffix_config():
+    from vllm_mlx import server
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="enable_suffix_decoding=True"):
+        server.load_model(
+            "mlx-community/Qwen3.5-9B-4bit",
+            scheduler_config=SchedulerConfig(enable_suffix_decoding=True),
+            mtp=True,
+        )
+
+
+def test_load_model_mtp_kwarg_rejects_conflicting_dflash_config():
+    from vllm_mlx import server
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="dflash_drafter_path"):
+        server.load_model(
+            "mlx-community/Qwen3.5-9B-4bit",
+            scheduler_config=SchedulerConfig(dflash_drafter_path="local/draft"),
+            mtp=True,
+        )
+
+
+def test_load_model_mtp_kwarg_rejects_legacy_optimistic_config():
+    """PR #1050 hard-reject: server.load_model(mtp=True) with a
+    scheduler_config carrying ``mtp_optimistic=True`` must fail because
+    the direct mutation of ``spec_decode='mtp'`` below would bypass
+    ``__post_init__`` and silently drop the flag under the vendored path."""
+    from vllm_mlx import server
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    # SchedulerConfig(mtp_optimistic=True) alone (spec_decode="none") is
+    # legal — the reject is triggered only once mtp=True elevates the
+    # config into the unified spec-decode interface path.
+    cfg = SchedulerConfig(mtp_optimistic=True)
+
+    with pytest.raises(
+        ValueError, match="mtp_optimistic.*not supported under the unified"
+    ):
+        server.load_model(
+            "mlx-community/Qwen3.5-9B-4bit",
+            scheduler_config=cfg,
+            mtp=True,
+        )
+
+
 def test_detect_native_tool_support_requires_synced_config(monkeypatch):
     """Contract test for the ordering invariant: detection short-circuits
     to False when cfg has not been synced yet, so callers MUST run

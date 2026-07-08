@@ -1005,22 +1005,22 @@ def _serve_help_stdout() -> str:
     return proc.stdout
 
 
-def test_cli_spec_decode_flag_advertises_dflash_choice():
-    """``--spec-decode {none,mtp,dflash}`` must appear in serve help."""
+def test_cli_speculative_config_advertises_dflash_method():
+    """DFlash is exposed through ``--speculative-config`` only."""
     text = _serve_help_stdout()
-    assert "--spec-decode" in text
+    assert "--speculative-config" in text
+    assert "--spec-decode" not in text
     assert "dflash" in text
-    assert "mtp" in text
 
 
-def test_cli_dflash_drafter_path_flag_present():
-    """``--dflash-drafter-path`` is parseable and documented."""
+def test_cli_dflash_drafter_path_flag_removed():
+    """The old ``--dflash-drafter-path`` flag is no longer documented."""
     text = _serve_help_stdout()
-    assert "--dflash-drafter-path" in text
+    assert "--dflash-drafter-path" not in text
 
 
-def test_cli_spec_decode_rejects_unknown_value():
-    """``--spec-decode eagle`` is rejected by argparse choices."""
+def test_cli_spec_decode_flag_is_hidden_but_recognized():
+    """The old ``--spec-decode`` alias is hidden, but parser-compatible."""
     import subprocess
     import sys
 
@@ -1039,7 +1039,8 @@ def test_cli_spec_decode_rejects_unknown_value():
         timeout=60,
     )
     assert proc.returncode != 0
-    assert "spec-decode" in proc.stderr or "spec_decode" in proc.stderr
+    assert "invalid choice" in proc.stderr
+    assert "--spec-decode" in proc.stderr
 
 
 def test_scheduler_config_default_dflash_drafter_path_is_empty():

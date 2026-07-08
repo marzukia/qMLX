@@ -590,16 +590,16 @@ def _serve_help_stdout() -> str:
     return proc.stdout
 
 
-def test_cli_spec_decode_flag_advertised_in_help():
-    """``--spec-decode`` remains only for none/dflash compatibility."""
+def test_cli_speculative_config_advertised_in_help():
+    """MTP is exposed through ``--speculative-config`` only."""
     text = _serve_help_stdout()
-    assert "--spec-decode" in text
-    assert "none,dflash" in text or "dflash,none" in text
-    assert "none,mtp" not in text and "mtp,none" not in text
+    assert "--speculative-config" in text
+    assert "--spec-decode" not in text
+    assert '"method":"mtp"' in text
 
 
-def test_cli_spec_decode_flag_rejects_unknown_value():
-    """``--spec-decode eagle`` is rejected by argparse choices."""
+def test_cli_spec_decode_flag_is_hidden_but_recognized():
+    """The old ``--spec-decode`` alias is hidden, but parser-compatible."""
     import subprocess
     import sys
 
@@ -618,11 +618,12 @@ def test_cli_spec_decode_flag_rejects_unknown_value():
         timeout=60,
     )
     assert proc.returncode != 0
-    assert "spec-decode" in proc.stderr or "spec_decode" in proc.stderr
+    assert "invalid choice" in proc.stderr
+    assert "--spec-decode" in proc.stderr
 
 
-def test_cli_spec_decode_mtp_legacy_choice_hidden_from_help():
-    """Deprecated ``--spec-decode mtp`` is accepted internally but hidden."""
+def test_cli_spec_decode_mtp_legacy_choice_absent_from_help():
+    """Deprecated ``--spec-decode mtp`` is absent, not merely hidden."""
     import subprocess
     import sys
 
@@ -639,11 +640,7 @@ def test_cli_spec_decode_mtp_legacy_choice_hidden_from_help():
         timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
-    spec_decode_line = next(
-        line for line in proc.stdout.splitlines() if "--spec-decode" in line
-    )
-    assert "{none,dflash}" in spec_decode_line
-    assert "{none,dflash,mtp}" not in spec_decode_line
+    assert "--spec-decode" not in proc.stdout
 
 
 def test_scheduler_config_default_spec_decode_is_none():
@@ -659,6 +656,110 @@ def test_scheduler_config_spec_decode_round_trip():
 
     cfg = SchedulerConfig(spec_decode="mtp")
     assert cfg.spec_decode == "mtp"
+
+
+def test_scheduler_config_spec_decode_suffix_translates_to_suffix_flag():
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    cfg = SchedulerConfig(spec_decode="suffix")
+
+    # PR #1050 codex R3: keep ``spec_decode`` as the canonical selector so
+    # callers reading the value observe what they passed in; also flip the
+    # legacy ``enable_suffix_decoding`` flag for downstream code that still
+    # reads it.
+    assert cfg.spec_decode == "suffix"
+    assert cfg.enable_suffix_decoding is True
+
+
+def test_scheduler_config_rejects_unknown_spec_decode():
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="spec_decode='typo'.*not supported"):
+        SchedulerConfig(spec_decode="typo")
+
+
+def test_scheduler_config_translates_deprecated_mtp_kwargs():
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.warns(DeprecationWarning, match="enable_mtp=True"):
+        cfg = SchedulerConfig(
+            enable_mtp=True,
+            mtp_num_draft_tokens=2,
+        )
+
+    assert cfg.spec_decode == "mtp"
+    assert cfg.enable_mtp is True
+    assert cfg.mtp_num_draft_tokens == 2
+    assert cfg.mtp_max_k == 2
+
+
+def test_scheduler_config_rejects_unsupported_migrated_mtp_optimistic():
+    """PR #1050 hard-reject: mtp_optimistic under unified interface."""
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"):
+        SchedulerConfig(spec_decode="mtp", mtp_optimistic=True)
+
+
+def test_scheduler_config_rejects_legacy_enable_mtp_with_optimistic():
+    """PR #1050 hard-reject: legacy ``enable_mtp=True`` path also rejects
+    ``mtp_optimistic=True`` because __post_init__ normalizes it to
+    ``spec_decode='mtp'`` and the vendored installer ignores optimistic.
+    """
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"):
+        SchedulerConfig(enable_mtp=True, mtp_optimistic=True)
+
+
+def test_scheduler_config_rejects_deprecated_mtp_with_other_spec_decode():
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="enable_mtp=True.*spec_decode='suffix'"):
+        SchedulerConfig(enable_mtp=True, spec_decode="suffix")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        (
+            {"enable_mtp": True, "enable_suffix_decoding": True},
+            "multiple speculative decoding methods.*mtp, suffix",
+        ),
+        (
+            {"enable_mtp": True, "dflash_drafter_path": "local/draft"},
+            "dflash_drafter_path=.*conflicts with spec_decode='mtp'",
+        ),
+    ],
+)
+def test_scheduler_config_rejects_deprecated_mtp_with_other_backends(kwargs, match):
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with (
+        pytest.warns(DeprecationWarning, match="enable_mtp=True"),
+        pytest.raises(ValueError, match=match),
+    ):
+        SchedulerConfig(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        (
+            {"spec_decode": "dflash", "enable_suffix_decoding": True},
+            "multiple speculative decoding methods.*dflash, suffix",
+        ),
+        (
+            {"enable_suffix_decoding": True, "dflash_drafter_path": "local/draft"},
+            "dflash_drafter_path=.*conflicts",
+        ),
+    ],
+)
+def test_scheduler_config_rejects_multiple_spec_decode_backends(kwargs, match):
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match=match):
+        SchedulerConfig(**kwargs)
 
 
 # ---------------------------------------------------------------------------
