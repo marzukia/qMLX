@@ -151,6 +151,13 @@ mtp = [
 embeddings = [
     "mlx-embeddings>=0.1.0",
 ]
+# HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py).
+# Off the hot path — only maintainers who seed models.rapidmlx.com need
+# this. Users NEVER install [mirror]; the client-side download path
+# (vllm_mlx/_mirror.py) uses stdlib urllib and does NOT depend on boto3.
+mirror = [
+    "boto3>=1.34.0",
+]
 # Gradio chat UI
 chat = [
     "gradio>=4.0.0",
