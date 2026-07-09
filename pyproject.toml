@@ -55,7 +55,20 @@ dependencies = [
     # time. 5.5.0-5.12.x import cleanly (a fresh resolve currently lands
     # 5.12.1). Drop the cap once mlx-lm registers real tokenizer classes.
     # Mirrors the rapid-desktop sidecar pin (PR #498).
-    "transformers>=5.0.0,<5.13",  # floor: mlx-lm 0.30.5+ requires transformers 5.0 (rc3 bug fixed in stable)
+    #
+    # HY3 vendor note (2026-07-09): the 0.11.0 Hy3 vendor drop
+    # (``vllm_mlx/models/hy_v3.py``) was validated end-to-end against
+    # ``transformers==5.7.0`` — that release is treated as the *canonical
+    # reference version* for the vendored model_type. The public floor
+    # stays at 5.0.0 so we don't force a downgrade / resolver conflict
+    # on users whose environments already sit at 5.8-5.12 for another
+    # dependency — the vendored HY3 tokenizer path in
+    # ``vllm_mlx/utils/tokenizer.py`` bypasses ``AutoTokenizer`` entirely
+    # (via ``_VENDORED_MODEL_TYPES``), so the transformers minor is not
+    # in the HY3 hot path. If a future transformers release above 5.7
+    # introduces an HY3-specific regression, we tighten the floor with a
+    # dedicated bump PR + Phase-0 re-audit rather than pinning here.
+    "transformers>=5.0.0,<5.13",
     "tokenizers>=0.19.0",
     "huggingface-hub>=0.23.0",
     "numpy>=1.24.0",
@@ -359,6 +372,7 @@ line-length = 88
 exclude = [
     "vllm_mlx/models/deepseek_v4.py",
     "vllm_mlx/models/gemma4_vendored/*.py",
+    "vllm_mlx/models/hy_v3.py",
 ]
 
 [tool.ruff.lint]
@@ -398,6 +412,12 @@ ignore = [
 # lint quiet on the copy so upstream diffs stay clean. Sync policy
 # and rationale in vllm_mlx/models/gemma4_vendored/__init__.py.
 "vllm_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
+# Vendored from ml-explore/mlx-lm PR #1211 (kernelpool, add-hy3-preview,
+# b7635e9c) for Tencent Hunyuan 3 (295B/21B active MoE) as part of the
+# 0.11.0 vendor drop. PR is open with zero maintainer reviews since
+# 2026-04-27. Keep lint quiet on the copy so upstream sync diffs stay
+# clean. Sync policy in vllm_mlx/models/hy_v3.py module docstring.
+"vllm_mlx/models/hy_v3.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]

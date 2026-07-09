@@ -572,6 +572,25 @@ def _resolve_model_path(model_name: str) -> Path | None:
         return None
 
 
+# codex round 3 [NIT #2]: model_types served by vllm_mlx.models.* shims.
+# transformers' AutoConfig / PreTrainedConfig won't recognize these, and
+# mlx-lm's load() internally uses AutoTokenizer (which routes through
+# AutoConfig). We must skip that path entirely for these models and use
+# the lower-level load_model() + direct tokenizer.json load instead.
+#
+# Initialized with the archs whose vendor modules ship inside vllm_mlx and
+# never need dynamic registration (``deepseek_v4`` is pure Python inside
+# ``vllm_mlx.models`` — if that import fails, the wheel is broken and the
+# earlier ``from ..models import deepseek_v4`` at every serve entry point
+# has already crashed). Conditionally registered archs like ``hy_v3`` are
+# added by ``_register_vendored_archs()`` only after their vendored module
+# successfully installs in ``sys.modules``, so a failure there does not
+# leave the arch advertised as vendored while the shim path silently
+# short-circuits (which would push users into an opaque later model-load
+# error instead of surfacing the actual registration failure).
+_VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
+
+
 def _register_vendored_archs() -> None:
     """Make vendored model architectures visible to mlx-lm's importlib lookup.
 
@@ -591,13 +610,57 @@ def _register_vendored_archs() -> None:
         except Exception as e:
             logger.debug(f"deepseek_v4 vendored module unavailable: {e}")
 
+    if "mlx_lm.models.hy_v3" not in sys.modules:
+        # If mlx-lm ever ships native ``hy_v3`` support (upstream PR #1211
+        # merges into 0.32+), defer to their copy so we don't shadow real
+        # upstream bug fixes with a stale vendor. ``find_spec`` returns
+        # ``None`` when the sub-module doesn't exist, which is the current
+        # state on mlx-lm 0.31.3 → we fall through to our vendored install.
+        import importlib.util as _importlib_util
 
-# model_types served by vllm_mlx.models.* shims. transformers' AutoConfig /
-# PreTrainedConfig won't recognize these, and mlx-lm's load() internally
-# uses AutoTokenizer (which routes through AutoConfig). We must skip that
-# path entirely for these models and use the lower-level load_model() +
-# direct tokenizer.json load instead.
-_VENDORED_MODEL_TYPES = {"deepseek_v4"}
+        _native_spec = None
+        try:
+            _native_spec = _importlib_util.find_spec("mlx_lm.models.hy_v3")
+        except (ImportError, ValueError):
+            _native_spec = None
+
+        if _native_spec is None:
+            try:
+                from ..models import hy_v3 as _hy_v3
+
+                # Tencent Hunyuan 3 (295B/21B active MoE) — vendored from
+                # ml-explore/mlx-lm PR #1211 (open, unreviewed since 2026-04-27).
+                # Auto-defers to native support once mlx-lm 0.32+ merges the
+                # upstream PR; delete this vendor block after that.
+                sys.modules.setdefault("mlx_lm.models.hy_v3", _hy_v3)
+            except Exception as e:
+                # codex round 3 [NIT #2]: log at WARNING (not DEBUG) so the
+                # actionable root cause surfaces the moment the vendor fails
+                # to register — otherwise the user sees only a confusing
+                # later model-load failure with no pointer at what actually
+                # went wrong. Membership in ``_VENDORED_MODEL_TYPES`` is
+                # only granted below on the success branch, so a failure
+                # here leaves downstream code on the AutoTokenizer path
+                # rather than the (broken) shim path.
+                logger.warning(
+                    "hy_v3 vendored module failed to register — "
+                    "mlx-community/Hy3-preview-4bit will not load until "
+                    "resolved: %s",
+                    e,
+                )
+            else:
+                # Success: promote to the vendored-arch set so the
+                # tokenizer fallback path (``_is_vendored_arch_model``)
+                # routes HY3 loads through the vendor shim instead of
+                # ``AutoTokenizer`` (which doesn't recognize the arch in
+                # transformers ≤ 5.12).
+                _VENDORED_MODEL_TYPES.add("hy_v3")
+        else:
+            # Native ``mlx_lm.models.hy_v3`` is available — use it and
+            # graduate ``hy_v3`` to the vendored set so the tokenizer
+            # fallback still bypasses AutoTokenizer (transformers ≤ 5.12
+            # still doesn't know the arch, native mlx-lm module or not).
+            _VENDORED_MODEL_TYPES.add("hy_v3")
 
 
 def _is_vendored_arch_model(model_name: str) -> bool:
