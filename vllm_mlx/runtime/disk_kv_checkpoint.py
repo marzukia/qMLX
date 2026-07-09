@@ -103,6 +103,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -162,6 +163,20 @@ MODELS_REQUIRING_FULL_CHECKPOINT: frozenset[str] = frozenset(
 # ``readdir`` cost scales with path length.
 _CHECKPOINT_EXT = ".safetensors"
 _METADATA_EXT = ".json"
+# Sidecar carrying the EXACT prompt token ids the checkpoint represents,
+# in the same magic/length/save_uuid/int32-LE format the in-process radix
+# uses on disk (``memory_cache._write_tokens_bin_v3``). Written next to the
+# safetensors body so a later restore can byte-verify the prefix before it
+# trusts the cache — a token blob that doesn't match the incoming prompt is
+# the difference between a hit and a silent-corruption reload.
+_TOKENS_EXT = ".tokens.bin"
+
+# Highest sidecar ``schema_version`` this build knows how to load. The
+# writer stamps ``schema_version=1``; :func:`load_checkpoint` refuses any
+# sidecar whose version is absent or greater than this so a checkpoint from
+# a newer, format-shifted build can never be mis-read as a current one
+# (reject-and-reprefill on any doubt — a wrong restore corrupts silently).
+_KNOWN_SCHEMA_VERSION = 1
 # Tmp file name shape: ``<basename>.tmp.safetensors``. The trailing
 # ``.safetensors`` is REQUIRED because ``mlx.core.save_safetensors``
 # silently auto-appends ``.safetensors`` when the path does not already
@@ -328,6 +343,18 @@ def metadata_path(root: str, req_hash: str, token_offset: int) -> str:
     needs to know "where did this loaded entry come from".
     """
     return os.path.join(root, req_hash, f"checkpoint-{token_offset}{_METADATA_EXT}")
+
+
+def tokens_path(root: str, req_hash: str, token_offset: int) -> str:
+    """Return the absolute tokens-blob path for one checkpoint.
+
+    Sits next to the ``.safetensors`` / ``.json`` pair and holds the exact
+    prompt token ids the snapshot covers (v3 magic + length + save_uuid +
+    int32-LE tokens). Present only when the writer was handed a
+    ``tokens_key``; an older checkpoint without one simply has no blob and
+    the loader treats it as "can't verify a prefix" (safe: re-prefill).
+    """
+    return os.path.join(root, req_hash, f"checkpoint-{token_offset}{_TOKENS_EXT}")
 
 
 def model_requires_full_checkpoint(
@@ -512,6 +539,34 @@ def write_checkpoint(
         tmp_path = dst_path.replace(_CHECKPOINT_EXT, _TMP_INFIX + _CHECKPOINT_EXT)
         meta_tmp = meta_path + _TMP_INFIX
 
+        # One ``save_uuid`` per write binds the three on-disk artifacts —
+        # the safetensors body (embedded metadata below), the JSON sidecar,
+        # and the tokens blob — into a single logical commit. A restore that
+        # finds a body / sidecar / tokens triple whose uuids disagree knows
+        # it stitched two different writes together and must re-prefill.
+        # The scheduler may pre-mint one (so it can index the same uuid
+        # elsewhere); otherwise we mint it here.
+        save_uuid = None
+        if extra_metadata:
+            candidate = extra_metadata.get("save_uuid")
+            if isinstance(candidate, str) and candidate:
+                save_uuid = candidate
+        if save_uuid is None:
+            save_uuid = uuid.uuid4().hex
+
+        # Exact prompt token ids this checkpoint covers, if the caller
+        # handed them over. Persisted in the tokens blob (canonical, uuid-
+        # bound) so a later restore can byte-verify the prefix. Kept
+        # backward-safe: absent tokens just means no blob gets written.
+        tokens_for_blob: list[int] | None = None
+        if extra_metadata:
+            raw_tokens = extra_metadata.get("tokens_key")
+            if isinstance(raw_tokens, (list, tuple)) and raw_tokens:
+                try:
+                    tokens_for_blob = [int(t) for t in raw_tokens]
+                except (TypeError, ValueError):
+                    tokens_for_blob = None
+
         # Build the safetensors metadata that ships INSIDE the file.
         # ``save_prompt_cache`` requires str→str — JSON-encode the
         # boolean / int fields so the round-trip is faithful.
@@ -519,6 +574,7 @@ def write_checkpoint(
             "token_offset": str(token_offset),
             "kv_dtype": kv_dtype,
             "requires_full_checkpoint": "true" if requires_full_checkpoint else "false",
+            "save_uuid": save_uuid,
         }
         if model_name:
             st_meta["model_name"] = str(model_name)
@@ -545,6 +601,43 @@ def write_checkpoint(
                 pass
             return None
 
+        # Tokens blob — the exact prompt token ids this checkpoint covers,
+        # in the radix's v3 wire format (magic + count + save_uuid + int32
+        # LE). Written AFTER the body but BEFORE the sidecar so the sidecar,
+        # the loader's source of truth, is the last thing to land. A write
+        # failure here is non-fatal: the body + sidecar stay valid, the blob
+        # is simply absent, and a later restore falls back to re-prefill
+        # rather than trusting an unverifiable cache.
+        tokens_persisted = False
+        tokens_count = 0
+        if tokens_for_blob is not None:
+            try:
+                from vllm_mlx.memory_cache import _write_tokens_bin_v3
+            except Exception as e:  # pragma: no cover — defensive
+                logger.debug(
+                    f"[disk_kv_checkpoint] tokens-blob writer unavailable: {e}"
+                )
+                _write_tokens_bin_v3 = None
+            if _write_tokens_bin_v3 is not None:
+                tok_path = tokens_path(root, req_hash, token_offset)
+                tok_tmp = tok_path + _TMP_INFIX
+                try:
+                    _write_tokens_bin_v3(tok_tmp, tokens_for_blob, save_uuid)
+                    _fsync_file(tok_tmp)
+                    os.replace(tok_tmp, tok_path)
+                    _fsync_dir(dst_dir)
+                    tokens_persisted = True
+                    tokens_count = len(tokens_for_blob)
+                except Exception as e:
+                    logger.warning(
+                        f"[disk_kv_checkpoint] tokens-blob write failed at "
+                        f"{tok_path!r}: {e}; checkpoint kept without token verify"
+                    )
+                    try:
+                        os.unlink(tok_tmp)
+                    except OSError:
+                        pass
+
         # Sidecar JSON — written AFTER the safetensors so a torn shutdown
         # can never leave a JSON pointing at a missing body.
         meta_payload: dict[str, Any] = {
@@ -555,6 +648,9 @@ def write_checkpoint(
             "model_name": model_name,
             "created_at": time.time(),
             "size_bytes": _safe_filesize(dst_path),
+            "save_uuid": save_uuid,
+            "has_tokens": tokens_persisted,
+            "tokens_count": tokens_count,
         }
         if extra_metadata:
             for k, v in extra_metadata.items():
@@ -733,6 +829,20 @@ def load_checkpoint(path: str) -> LoadedCheckpoint | None:
                     f"{meta_path_str!r}: {e}; falling back to embedded metadata"
                 )
 
+        # Schema guard — reject-and-reprefill on any doubt. A wrong restore
+        # corrupts output silently (no exception), so we refuse a checkpoint
+        # whose sidecar version we can't positively vouch for: a missing
+        # sidecar / absent version (can't tell what wrote it) or a version
+        # newer than this build knows (a later, format-shifted writer).
+        version = sidecar.get("schema_version") if sidecar else None
+        if not isinstance(version, int) or version > _KNOWN_SCHEMA_VERSION:
+            logger.warning(
+                f"[disk_kv_checkpoint] refusing checkpoint at {path!r}: "
+                f"sidecar schema_version={version!r} is absent or newer than "
+                f"supported ({_KNOWN_SCHEMA_VERSION}); will re-prefill"
+            )
+            return None
+
         # The embedded metadata is str→str; coerce safely.
         embedded = st_meta or {}
         token_offset = int(
@@ -789,13 +899,18 @@ def scan_checkpoints(root: str) -> list[tuple[str, float, int]]:
         # Both are stale on rescan and must be cleaned up.
         tmp_body_marker = _TMP_INFIX + _CHECKPOINT_EXT  # e.g. ".tmp.safetensors"
         tmp_json_marker = _METADATA_EXT + _TMP_INFIX  # e.g. ".json.tmp"
+        tmp_tokens_marker = _TOKENS_EXT + _TMP_INFIX  # e.g. ".tokens.bin.tmp"
         for entry in os.scandir(root):
             if not entry.is_dir(follow_symlinks=False):
                 continue
             try:
                 for child in os.scandir(entry.path):
                     name = child.name
-                    if name.endswith(tmp_body_marker) or name.endswith(tmp_json_marker):
+                    if (
+                        name.endswith(tmp_body_marker)
+                        or name.endswith(tmp_json_marker)
+                        or name.endswith(tmp_tokens_marker)
+                    ):
                         # Stale tmp from a torn write — best-effort cleanup.
                         try:
                             os.unlink(child.path)
@@ -857,6 +972,15 @@ def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, i
             sidecar = path.replace(_CHECKPOINT_EXT, _METADATA_EXT)
             try:
                 os.unlink(sidecar)
+            except OSError:
+                pass
+            # Drop the paired tokens blob too so eviction doesn't strand it
+            # (it's not counted in the byte total — scan only sums
+            # safetensors — but leaving it would keep the parent dir from
+            # being pruned and orphan a token list with no cache).
+            tok_blob = path.replace(_CHECKPOINT_EXT, _TOKENS_EXT)
+            try:
+                os.unlink(tok_blob)
             except OSError:
                 pass
             total -= size
@@ -1043,5 +1167,6 @@ __all__ = [
     "scan_checkpoints",
     "should_checkpoint",
     "temporary_root",
+    "tokens_path",
     "write_checkpoint",
 ]

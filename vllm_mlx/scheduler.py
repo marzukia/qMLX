@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -5324,6 +5325,29 @@ class Scheduler:
         if not cache:
             return
 
+        # Persist the EXACT token ids this checkpoint covers so a later
+        # restore can byte-verify the prefix instead of trusting a bare
+        # offset (a wrong restore corrupts output silently). We only do
+        # this when the incoming prompt is uncompressed and the assembled
+        # prompt+output sequence actually reaches the boundary the writer
+        # will snap to — otherwise the token↔offset identity is broken
+        # (PFlash compression, or a Request whose prompt_token_ids the
+        # scheduler doesn't hold) and we ship no tokens, which the writer
+        # treats as "unverifiable, re-prefill later". Backward-safe:
+        # extra_metadata stays None on any doubt.
+        extra_metadata: dict[str, Any] | None = None
+        boundary = (num_tokens // interval) * interval
+        pflash_meta = getattr(request, "pflash_metadata", None)
+        compressed = bool(pflash_meta and pflash_meta.get("compressed"))
+        if not compressed and boundary > 0:
+            prompt_ids = request.prompt_token_ids or []
+            full_seq = list(prompt_ids) + list(request.output_token_ids)
+            if len(full_seq) >= boundary:
+                extra_metadata = {
+                    "tokens_key": full_seq[:boundary],
+                    "save_uuid": uuid.uuid4().hex,
+                }
+
         new_offset, _path = _dkc.maybe_write_checkpoint(
             cache,
             root=_dkc.get_default_root(),
@@ -5334,6 +5358,7 @@ class Scheduler:
             kv_dtype=state.kv_dtype,
             requires_full_checkpoint=state.requires_full_checkpoint,
             model_name=state.model_name,
+            extra_metadata=extra_metadata,
         )
         state.last_checkpoint_at = new_offset
 
