@@ -241,6 +241,7 @@ class CheckpointStats:
 # series.
 RESTORE_REJECT_REASONS: tuple[str, ...] = (
     "offset_out_of_range",
+    "model_identity_mismatch",
     "kv_dtype_mismatch",
     "full_checkpoint_mismatch",
     "memory_headroom",
@@ -953,6 +954,22 @@ def load_checkpoint(path: str) -> LoadedCheckpoint | None:
                 str(embedded.get("requires_full_checkpoint", "false")).lower() == "true"
             )
         )
+
+        # save_uuid cross-check. The writer stamps ONE uuid into the body
+        # metadata, the sidecar, and the tokens blob to bind them as a single
+        # atomic write. The tokens<->sidecar binding is enforced by the radix
+        # reader; here we also refuse a body whose embedded uuid disagrees with
+        # the sidecar's, which would mean the safetensors body and its metadata
+        # came from different writes (a torn / mixed checkpoint). Fail closed.
+        body_uuid = embedded.get("save_uuid")
+        side_uuid = sidecar.get("save_uuid") if sidecar else None
+        if body_uuid and side_uuid and str(body_uuid) != str(side_uuid):
+            logger.warning(
+                f"[disk_kv_checkpoint] refusing checkpoint at {path!r}: "
+                f"save_uuid body={body_uuid!r} != sidecar={side_uuid!r} "
+                f"(mixed/torn write); will re-prefill"
+            )
+            return None
 
         with _STATS_LOCK:
             _STATS.loads += 1
