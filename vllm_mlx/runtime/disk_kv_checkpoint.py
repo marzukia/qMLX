@@ -225,6 +225,27 @@ class CheckpointStats:
     bytes: int = 0
     evictions: int = 0
     hook_errors: int = 0
+    # R15-P4 (task #303): per-reason restore-reject tally. Keyed by the
+    # reason strings in :data:`RESTORE_REJECT_REASONS`. A restore that fails
+    # ANY validation guard bumps exactly one reason here so operators can see
+    # WHY disk restore is falling back to prefill (dtype drift vs a full/
+    # partial mismatch vs a memory-headroom skip look identical in the loads
+    # counter, which never moved because the load was refused).
+    restore_rejects: dict[str, int] = field(default_factory=dict)
+
+
+# Known restore-reject reasons. Emitted at 0 by /metrics even before the first
+# rejection so a dashboard panel stays flat-line rather than "no data". Any
+# reason passed to :func:`record_restore_reject` that is not in this set is
+# still counted (under its own label) — the set only seeds the always-present
+# series.
+RESTORE_REJECT_REASONS: tuple[str, ...] = (
+    "offset_out_of_range",
+    "kv_dtype_mismatch",
+    "full_checkpoint_mismatch",
+    "memory_headroom",
+    "exception",
+)
 
 
 # Module-level stats (process-monotonic). Mutated under the lock below.
@@ -273,12 +294,18 @@ def get_stats() -> dict[str, int]:
     ``write_checkpoint`` from publishing a torn (writes, bytes) pair.
     """
     with _STATS_LOCK:
+        # Seed the known reasons at 0 so /metrics always emits every series,
+        # then overlay the live tallies. Copy so the caller can't mutate the
+        # module-level dict.
+        rejects = {reason: 0 for reason in RESTORE_REJECT_REASONS}
+        rejects.update(_STATS.restore_rejects)
         return {
             "writes": _STATS.writes,
             "loads": _STATS.loads,
             "bytes": _STATS.bytes,
             "evictions": _STATS.evictions,
             "hook_errors": _STATS.hook_errors,
+            "restore_rejects": rejects,
         }
 
 
@@ -295,6 +322,21 @@ def record_hook_error() -> None:
     """
     with _STATS_LOCK:
         _STATS.hook_errors += 1
+
+
+def record_restore_reject(reason: str) -> None:
+    """Bump the per-reason restore-reject tally under the stats lock.
+
+    R15-P4 (task #303). Called from the scheduler's ``_maybe_disk_restore``
+    every time a looked-up checkpoint fails a validation guard and the
+    request falls back to prefill. ``reason`` should be one of
+    :data:`RESTORE_REJECT_REASONS`, but an unknown reason is still counted
+    under its own label rather than dropped — a mislabelled reject is better
+    than a silent one.
+    """
+    key = str(reason) or "unknown"
+    with _STATS_LOCK:
+        _STATS.restore_rejects[key] = _STATS.restore_rejects.get(key, 0) + 1
 
 
 def reset_stats_for_tests() -> None:
@@ -1614,6 +1656,7 @@ __all__ = [
     "CheckpointStats",
     "DEFAULT_CHECKPOINT_INTERVAL",
     "DEFAULT_MAX_DISK_BYTES",
+    "RESTORE_REJECT_REASONS",
     "DiskCheckpointIndex",
     "LoadedCheckpoint",
     "MODELS_REQUIRING_FULL_CHECKPOINT",
@@ -1630,6 +1673,7 @@ __all__ = [
     "metadata_path",
     "model_requires_full_checkpoint",
     "record_hook_error",
+    "record_restore_reject",
     "request_hash",
     "reset_content_index_for_tests",
     "reset_stats_for_tests",

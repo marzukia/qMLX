@@ -1580,6 +1580,31 @@ def _render_prometheus(cfg: Any) -> str:
             int(_coerce_number(kv_ckpt_stats.get("hook_errors"))),
         )
     )
+    # R15-P4 (task #303): restore-reject tally, one sample per reason label.
+    # A disk-KV restore that fails ANY validation guard falls back to prefill
+    # and bumps exactly one reason here. Complements loads_total, which never
+    # moves on a refused restore, so a dtype drift / full-vs-partial mismatch /
+    # memory-headroom skip is visible instead of looking like "nothing loaded".
+    restore_rejects = kv_ckpt_stats.get("restore_rejects")
+    if not isinstance(restore_rejects, dict):
+        restore_rejects = {}
+    reject_help = (
+        "Cumulative disk-backed KV restore rejections by reason "
+        "(R15 #303). A looked-up checkpoint that fails a validation guard "
+        "(offset_out_of_range, kv_dtype_mismatch, full_checkpoint_mismatch, "
+        "memory_headroom, exception) falls back to prefill and bumps its "
+        "reason here. Distinct from loads_total, which only counts a "
+        "checkpoint that actually loaded."
+    )
+    lines.append("# HELP rapid_mlx_kv_checkpoint_restore_rejects_total " + reject_help)
+    lines.append("# TYPE rapid_mlx_kv_checkpoint_restore_rejects_total counter")
+    for reason in sorted(restore_rejects):
+        value = int(_coerce_number(restore_rejects.get(reason)))
+        label = _escape_label_value(str(reason))
+        lines.append(
+            f'rapid_mlx_kv_checkpoint_restore_rejects_total{{reason="{label}"}} '
+            f"{value}"
+        )
 
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"
