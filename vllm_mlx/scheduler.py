@@ -5256,6 +5256,13 @@ class Scheduler:
             (``lookup`` returns None when it fails).
         (d) full-vs-partial mode matches the running model; for this hybrid
             that means a FULL checkpoint is required (partial restore refused).
+        (e) memory headroom: the restored cache's estimated resident bytes,
+            added to current Metal active memory, stay under the admission
+            cap's ``metal_pressure_evict_fraction`` ceiling. Only enforced
+            when a Metal cap is resolved (cap>0); otherwise skipped.
+
+        Every reject bumps ``rapid_mlx_kv_checkpoint_restore_rejects_total``
+        with a ``reason`` label via ``disk_kv_checkpoint.record_restore_reject``.
         """
         try:
             if not getattr(self.config, "kv_disk_restore_enabled", False):
@@ -5295,6 +5302,7 @@ class Scheduler:
             # re-read the on-disk blob under the save_uuid binding; this is the
             # defensive floor in case the two ever drift.
             if offset <= 0 or len(prompt_ids) < offset:
+                _dkc.record_restore_reject("offset_out_of_range")
                 logger.info(
                     "[kv_restore] request=%s REJECT reason=offset_out_of_range "
                     "offset=%d prompt_len=%d; re-prefilling",
@@ -5307,6 +5315,7 @@ class Scheduler:
             # (b) kv dtype must match the current run's kv cache dtype.
             current_kv_dtype = getattr(self.config, "kv_cache_dtype", "bf16") or "bf16"
             if str(loaded.kv_dtype) != str(current_kv_dtype):
+                _dkc.record_restore_reject("kv_dtype_mismatch")
                 logger.info(
                     "[kv_restore] request=%s REJECT reason=kv_dtype_mismatch "
                     "checkpoint=%s run=%s; re-prefilling",
@@ -5323,6 +5332,7 @@ class Scheduler:
                 getattr(self, "_model_name", None)
             )
             if bool(loaded.requires_full_checkpoint) != bool(expected_full):
+                _dkc.record_restore_reject("full_checkpoint_mismatch")
                 logger.info(
                     "[kv_restore] request=%s REJECT reason=full_checkpoint_mismatch "
                     "checkpoint_full=%s run_requires_full=%s; re-prefilling",
@@ -5331,6 +5341,52 @@ class Scheduler:
                     expected_full,
                 )
                 return
+
+            # (e) MEMORY HEADROOM. A restored hybrid cache is 2-4 GB and lands
+            # resident next to the already-wired model weights. Injecting it
+            # blind can push Metal active past the operator's cap and OOM the
+            # box (the exact D-METAL-CAP failure mode). Reuse the admission
+            # gate's cap + active-memory probes: estimate the cache's resident
+            # bytes from the on-disk checkpoint size, and refuse the restore if
+            # active + estimate would cross the same
+            # ``metal_pressure_evict_fraction`` ceiling the eviction path uses.
+            # A refused restore just re-prefills, which streams the KV in
+            # incrementally under the normal admission cap. Conservative: only
+            # enforced when a Metal cap is actually resolved (cap>0); with no
+            # cap we cannot bound headroom, so we fall back to today's behavior
+            # of trusting the allocator (documented assumption).
+            cap_bytes = self._resolve_metal_cap_bytes()
+            if cap_bytes > 0:
+                est_bytes = 0
+                try:
+                    meta_size = loaded.metadata.get("size_bytes")
+                    if isinstance(meta_size, (int, float)) and meta_size > 0:
+                        est_bytes = int(meta_size)
+                    elif loaded.path and os.path.isfile(loaded.path):
+                        est_bytes = int(os.path.getsize(loaded.path))
+                except Exception:  # pragma: no cover — defensive
+                    est_bytes = 0
+                fraction = float(
+                    getattr(self.config, "metal_pressure_evict_fraction", 0.9) or 0.9
+                )
+                if not (0.0 < fraction <= 1.0):
+                    fraction = 0.9
+                ceiling = int(cap_bytes * fraction)
+                active = self._current_metal_active_bytes()
+                if est_bytes > 0 and active + est_bytes > ceiling:
+                    _dkc.record_restore_reject("memory_headroom")
+                    logger.info(
+                        "[kv_restore] request=%s REJECT reason=memory_headroom "
+                        "active=%.2fGB est_cache=%.2fGB ceiling=%.2fGB "
+                        "(cap=%.2fGB x %.2f); re-prefilling",
+                        rid,
+                        active / 1e9,
+                        est_bytes / 1e9,
+                        ceiling / 1e9,
+                        cap_bytes / 1e9,
+                        fraction,
+                    )
+                    return
 
             # All guards passed — install the persisted KV tail exactly like
             # the in-memory hit branch does (prompt_cache + cached_tokens +
@@ -5360,6 +5416,7 @@ class Scheduler:
                 from .runtime import disk_kv_checkpoint as _dkc_err
 
                 _dkc_err.record_hook_error()
+                _dkc_err.record_restore_reject("exception")
             except Exception:  # pragma: no cover — defensive of the defensive
                 pass
             logger.warning(

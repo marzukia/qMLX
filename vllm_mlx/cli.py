@@ -3055,6 +3055,9 @@ def serve_command(args):
         # hot-path call with ``should_checkpoint`` so the cost when off
         # is one int comparison.
         kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 256),
+        # R15-P4 (task #303): opt-in disk-KV restore-on-miss. Default False
+        # keeps _maybe_disk_restore a no-op so behavior is byte-identical.
+        kv_disk_restore_enabled=getattr(args, "enable_disk_kv_restore", False),
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
@@ -4061,6 +4064,10 @@ def bench_command(args):
             kv_disk_checkpoint_interval=getattr(
                 args, "kv_disk_checkpoint_interval", 256
             ),
+            # R15-P4 (task #303): opt-in disk-KV restore-on-miss. The bench
+            # parser has no --enable-disk-kv-restore flag, so getattr defaults
+            # to False here (restore stays off in bench runs).
+            kv_disk_restore_enabled=getattr(args, "enable_disk_kv_restore", False),
             # PFlash long-prompt compression (#287)
             pflash_config=bench_pflash_config,
         )
@@ -6849,6 +6856,23 @@ Examples:
             "reload (R15 #296, default 256). 0 disables. Pairs with the "
             "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES env var (default 20 GiB) "
             "for the oldest-first disk-cap eviction policy."
+        ),
+    )
+    # R15-P4 (task #303): opt-in restore-on-miss. OFF by default so behavior
+    # is byte-identical to today; when set, the scheduler may reload a
+    # verified KV prefix from ~/.cache/rapid-mlx/kv_checkpoints/ on a cache
+    # miss instead of prefilling it. Every candidate is byte-verified,
+    # dtype/schema/full-checkpoint gated, and memory-headroom checked before
+    # install — any doubt falls back to prefill.
+    serve_parser.add_argument(
+        "--enable-disk-kv-restore",
+        action="store_true",
+        help=(
+            "Reload a verified KV prefix from disk on a cache miss instead of "
+            "re-prefilling it (R15 #303, experimental, default OFF). Requires "
+            "checkpoints written by --kv-disk-checkpoint-interval. Restores are "
+            "byte-verified and dtype/schema/memory gated; any mismatch falls "
+            "back to prefill."
         ),
     )
     serve_parser.add_argument(
