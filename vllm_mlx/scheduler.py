@@ -5250,6 +5250,11 @@ class Scheduler:
             as the checkpoint offset. The content index's ``lookup`` already
             byte-verifies the on-disk tokens blob against these query tokens;
             we re-assert the length invariant here as belt-and-suspenders.
+        (a2) MODEL IDENTITY: the checkpoint's recorded ``model_name`` matches
+            the running model exactly. ``lookup`` keys on token content across
+            the shared checkpoint root, so without this a checkpoint from a
+            different (or re-quantized) model sharing a prompt prefix could be
+            restored and silently corrupt output. Fail closed on any unknown.
         (b) kv_dtype recorded in the checkpoint matches this run's kv dtype —
             a dtype switch between runs makes the stored KV bytes garbage.
         (c) schema_version acceptable — enforced inside ``load_checkpoint``
@@ -5309,6 +5314,27 @@ class Scheduler:
                     rid,
                     offset,
                     len(prompt_ids),
+                )
+                return
+
+            # (a2) MODEL IDENTITY. ``lookup`` matches purely on token content
+            # across the shared ~/.cache/rapid-mlx/kv_checkpoints/ root, so a
+            # checkpoint written by a DIFFERENT model (or a re-quantized build
+            # of this one) that happens to share a prompt prefix — e.g. a common
+            # system prompt — would otherwise be loaded into this model and
+            # silently corrupt output. Refuse unless the checkpoint's recorded
+            # ``model_name`` matches the running model exactly. Fail closed: if
+            # either side is unknown we cannot vouch for identity, so we reject.
+            run_model = getattr(self, "_model_name", None)
+            ckpt_model = (loaded.metadata or {}).get("model_name")
+            if not ckpt_model or not run_model or str(ckpt_model) != str(run_model):
+                _dkc.record_restore_reject("model_identity_mismatch")
+                logger.info(
+                    "[kv_restore] request=%s REJECT reason=model_identity_mismatch "
+                    "checkpoint=%r run=%r; re-prefilling",
+                    rid,
+                    ckpt_model,
+                    run_model,
                 )
                 return
 
