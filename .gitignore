@@ -146,3 +146,9 @@ TODO.md
 workflow.md
 CLAUDE.md
 0.*-TODO.md
+
+# qMLX disk KV checkpoints (local runtime artefacts, never commit)
+kv_checkpoints/
+
+# Ruff cache
+.ruff_cache/

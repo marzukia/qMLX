@@ -7,9 +7,10 @@ name = "rapid-mlx"
 version = "0.10.5"
 description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, 2-4x faster than Ollama."
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = {text = "MIT AND Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
+    {name = "Andryo Marzuki"},
     {name = "Rapid-MLX contributors"}
 ]
 keywords = ["llm", "mlx", "apple-silicon", "inference", "transformers"]
@@ -17,6 +18,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
@@ -325,9 +327,9 @@ audio = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/raullenchai/Rapid-MLX"
-Documentation = "https://github.com/raullenchai/Rapid-MLX#readme"
-Repository = "https://github.com/raullenchai/Rapid-MLX"
+Homepage = "https://github.com/marzukia/qMLX"
+Documentation = "https://github.com/marzukia/qMLX#readme"
+Repository = "https://github.com/marzukia/qMLX"
 
 [project.entry-points."vllm.platform_plugins"]
 mlx = "vllm_mlx.plugin:mlx_platform_plugin"
