@@ -5526,6 +5526,22 @@ class Scheduler:
             request.cached_tokens = offset
             request.remaining_tokens = list(prompt_ids[offset:])
             request.cache_hit_type = "disk"
+            # Touch-on-restore: bump the checkpoint's mtime to now so a
+            # frequently-restored prefix reads as recently-used. enforce_disk_cap
+            # evicts oldest-mtime first, so with this the eviction order becomes
+            # true LRU (least-recently-restored) instead of FIFO-by-creation,
+            # which would otherwise discard a hot deep prefix in favour of a
+            # fresh one that's never been reused. Best-effort: a failed touch
+            # must not break the restore.
+            try:
+                if loaded.path:
+                    os.utime(loaded.path, None)
+            except OSError as _touch_err:  # pragma: no cover — best-effort
+                logger.debug(
+                    "[kv_restore] touch-on-restore failed for %s: %r",
+                    loaded.path,
+                    _touch_err,
+                )
             logger.info(
                 "[kv_restore] request=%s HIT cached=%d remaining=%d dtype=%s "
                 "path=%s",
