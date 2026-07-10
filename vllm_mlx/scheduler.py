@@ -5350,6 +5350,46 @@ class Scheduler:
             loaded = _dkc.get_content_index().lookup(prompt_ids)
             if loaded is None:
                 # No verified prefix on disk — normal miss, prefill.
+                # Diagnostics (#7): for a DEEP miss, find the nearest
+                # checkpoint by longest-common-prefix and log the exact
+                # token where the incoming prompt diverged + a decoded
+                # before/after window. Turns 'why did the cache break' into
+                # one log line instead of a post-hoc decode racing eviction.
+                # Gated to deep prompts, best-effort, never breaks admission.
+                try:
+                    if len(prompt_ids) >= 2000 and os.environ.get(
+                        "RAPID_MLX_KV_RESTORE_DIVERGENCE_LOG", "1"
+                    ) not in ("0", "false", "False"):
+                        _nd = _dkc.get_content_index().nearest_divergence(
+                            prompt_ids
+                        )
+                        if _nd is not None:
+                            _off, _lcp, _key = _nd
+                            if 0 <= _lcp < len(prompt_ids):
+                                _W = 40
+                                _before = self._decode_tokens(
+                                    list(prompt_ids[max(0, _lcp - _W):_lcp])
+                                )
+                                _cached_next = self._decode_tokens(
+                                    list(_key[_lcp:_lcp + _W])
+                                )
+                                _incoming_next = self._decode_tokens(
+                                    list(prompt_ids[_lcp:_lcp + _W])
+                                )
+                                logger.info(
+                                    "[kv_restore_divergence] deep miss "
+                                    "query_len=%d nearest_off=%d "
+                                    "diverged_at=%d (shared %.1f%%) | "
+                                    "before=%r | cached_next=%r | "
+                                    "incoming_next=%r",
+                                    len(prompt_ids), _off, _lcp,
+                                    100.0 * _lcp / max(1, len(prompt_ids)),
+                                    _before, _cached_next, _incoming_next,
+                                )
+                except Exception as _div_err:  # pragma: no cover
+                    logger.debug(
+                        "[kv_restore_divergence] failed: %r", _div_err
+                    )
                 return
 
             offset = loaded.token_offset
