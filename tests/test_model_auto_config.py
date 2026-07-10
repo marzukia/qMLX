@@ -1518,3 +1518,45 @@ class TestResolutionLogOnce:
         messages = " | ".join(r.message for r in emits)
         assert "qwen3.5-9b-4bit" in messages
         assert "qwen3.5-4b-4bit" in messages
+
+
+class TestHy3AutoDetectBoundary:
+    """codex R11 BLOCKING #3: the Hy3 auto-detect regex must key on the
+    repo/alias BASENAME (final path segment), not an arbitrary parent /
+    namespace segment. A non-Hy3 model living under an org or local parent
+    directory named ``hy3`` must NOT be auto-wired to the Hy3 tool/reasoning
+    parsers."""
+
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mlx-community/Hy3-preview-4bit",  # canonical HF repo
+            "Hy3-preview-4bit",  # alias / basename
+            "hy3",  # bare family root
+            "org/hy3",  # repo literally named hy3 under an org
+            "hunyuan-3-preview",  # dash-separated family variant
+            "hy-v3-experimental",
+        ],
+    )
+    def test_hy3_basename_is_detected(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg.tool_call_parser == "hy_v3"
+        assert cfg.reasoning_parser == "hy_v3"
+
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "hy3/qwen-model",  # hy3 is the PARENT/org segment, not the model
+            "some/hy3/nested-qwen",  # hy3 is an intermediate path segment
+            "mymodelhy3embedded",  # incidental substring
+            "not-hunyuanx3-test",
+            "mlx-community/hunyuan5-preview",  # different family number
+        ],
+    )
+    def test_non_hy3_parent_or_substring_is_not_detected(self, model_path):
+        cfg = detect_model_config(model_path)
+        # ``detect_model_config`` returns ``None`` (no family match) or a config
+        # for a DIFFERENT family — either way it must NOT be the Hy3 parsers.
+        if cfg is not None:
+            assert cfg.tool_call_parser != "hy_v3"
+            assert cfg.reasoning_parser != "hy_v3"

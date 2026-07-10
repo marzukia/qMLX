@@ -88,12 +88,17 @@ def _register_builtin_parsers():
     from .glm4_parser import Glm4ReasoningParser
     from .gpt_oss_parser import GptOssReasoningParser
     from .harmony_parser import HarmonyReasoningParser
+    from .hy3_parser import Hy3ReasoningParser
     from .minimax_parser import MiniMaxReasoningParser
     from .qwen3_parser import Qwen3ReasoningParser
     from .ui_tars_parser import UiTarsReasoningParser
 
     register_parser("gemma4", Gemma4ReasoningParser)
     register_parser("qwen3", Qwen3ReasoningParser)
+    # ``hy_v3`` — Tencent Hunyuan 3 suffix-tolerant ``<think:opensource>``
+    # variant of qwen3. Aliased as ``hy3`` for CLI convenience.
+    register_parser("hy_v3", Hy3ReasoningParser)
+    register_parser("hy3", Hy3ReasoningParser)
     register_parser("deepseek_r1", DeepSeekR1ReasoningParser)
     # ``vibethinker`` — DeepSeek-R1 variant with a 1024-char no-tag
     # threshold (vs. 64) to accommodate VibeThinker's preamble-before-

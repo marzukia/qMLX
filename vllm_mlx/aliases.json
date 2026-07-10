@@ -1139,8 +1139,8 @@
   },
   "hy3-preview-4bit": {
     "hf_path": "mlx-community/Hy3-preview-4bit",
-    "tool_call_parser": null,
-    "reasoning_parser": null,
+    "tool_call_parser": "hy_v3",
+    "reasoning_parser": "hy_v3",
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": false,

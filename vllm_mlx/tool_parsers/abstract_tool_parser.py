@@ -89,6 +89,14 @@ class ExtractedToolCallInformation:
 #                           uses the inline ``<function=NAME>`` attribute form.
 #   ui_tars_action        — Action: verb(kwargs)  UI-TARS GUI-agent action
 #                           lines, normalized to ``computer`` tool_calls.
+#   hy3_native            — <tool_call:opensource>NAME<tool_sep:opensource>
+#                           {json}<end_of_tool_call:opensource>  Tencent
+#                           Hunyuan 3. Suffix-tolerant (``:opensource``
+#                           optional so future model revisions can drop /
+#                           swap the label). Includes a defensive
+#                           ``<tool_call>NAME</arg_value>`` malformed-close
+#                           fallback for 4-bit numerical noise on the
+#                           preview checkpoint.
 WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
     {
         "tool_call_json",
@@ -111,6 +119,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "deepseek_v31_native",
         "qwen3_coder_xml_named",
         "ui_tars_action",
+        "hy3_native",
     }
 )
 

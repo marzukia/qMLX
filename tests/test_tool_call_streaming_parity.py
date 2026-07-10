@@ -190,6 +190,20 @@ PARITY_FIXTURES: list = [
         ),
         [("read_file", {"path": "/etc/hostname"})],
     ),
+    # hy_v3 — canonical Tencent Hunyuan 3 wire format. Suffix-tolerant
+    # (``:opensource`` optional). Streaming path buffers until the close
+    # tag arrives on a delta; non-streaming path uses the same
+    # ``extract_tool_calls`` regex walk. Both must recover the tool call
+    # identically.
+    (
+        "hy_v3",
+        "hy3_native",
+        (
+            "<tool_call:opensource>read_file<tool_sep:opensource>"
+            '{"path":"/etc/hostname"}<end_of_tool_call:opensource>'
+        ),
+        [("read_file", {"path": "/etc/hostname"})],
+    ),
     # ui_tars — Computer-Use action line. Stream / non-stream paths both
     # MUST recover the canonical (name="computer", args={action, point})
     # tuple. The streaming finalize path runs the same _iter_actions
@@ -251,6 +265,7 @@ _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
     "qwen3": "alias of qwen",
     "qwen3_coder": "alias of hermes",
     "nous": "alias of hermes",
+    "hy3": "alias of hy_v3",
     "ui-tars": "alias of ui_tars (kebab-case spelling)",
     "uitars": "alias of ui_tars (no-separator spelling)",
     "auto": "router, not a wire-format parser",
