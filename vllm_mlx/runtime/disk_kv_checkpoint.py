@@ -822,17 +822,24 @@ def maybe_write_checkpoint(
         return last_checkpoint_at, None
 
     # Snap the new boundary to the largest multiple of ``interval`` that
-    # is still ``<= num_tokens``. Without snapping, a step that advances
-    # by N>interval (e.g. spec decode) would fire one checkpoint and
-    # then re-fire on the next step because ``last_checkpoint_at`` only
-    # bumped by interval, not by the actual gap.
+    # is still ``<= num_tokens``. This is the WATERMARK for write FREQUENCY
+    # only (so a step advancing by N>interval doesn't re-fire every step).
     new_boundary = (num_tokens // interval) * interval
+
+    # The recorded ``token_offset`` must equal the ACTUAL cache length, not
+    # the frequency boundary. The saved KV cache holds ``num_tokens`` of
+    # state; if we stamped ``new_boundary`` (< num_tokens) the restored cache
+    # would be longer than its claimed offset and ``_cache_offset_matches``
+    # would (correctly) reject it. Tie the offset to the persisted tokens so
+    # offset == len(tokens_key) == cache length stay consistent.
+    tokens_key = (extra_metadata or {}).get("tokens_key")
+    token_offset = len(tokens_key) if tokens_key else num_tokens
 
     path = write_checkpoint(
         cache,
         root=root,
         req_hash=req_hash,
-        token_offset=new_boundary,
+        token_offset=token_offset,
         kv_dtype=kv_dtype,
         requires_full_checkpoint=requires_full_checkpoint,
         model_name=model_name,

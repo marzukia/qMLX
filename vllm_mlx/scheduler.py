@@ -5586,15 +5586,19 @@ class Scheduler:
         # treats as "unverifiable, re-prefill later". Backward-safe:
         # extra_metadata stays None on any doubt.
         extra_metadata: dict[str, Any] | None = None
-        boundary = (num_tokens // interval) * interval
         pflash_meta = getattr(request, "pflash_metadata", None)
         compressed = bool(pflash_meta and pflash_meta.get("compressed"))
-        if not compressed and boundary > 0:
+        if not compressed and num_tokens > 0:
             prompt_ids = request.prompt_token_ids or []
             full_seq = list(prompt_ids) + list(request.output_token_ids)
-            if len(full_seq) >= boundary:
+            # Persist the exact tokens the cache covers (capped at the cache
+            # length). ``maybe_write_checkpoint`` derives ``token_offset`` from
+            # this length so offset == len(tokens) == cache length — the
+            # invariant ``_cache_offset_matches`` enforces on restore.
+            tokens_key = full_seq[:num_tokens]
+            if tokens_key:
                 extra_metadata = {
-                    "tokens_key": full_seq[:boundary],
+                    "tokens_key": tokens_key,
                     "save_uuid": uuid.uuid4().hex,
                 }
 
