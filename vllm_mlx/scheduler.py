@@ -14,6 +14,7 @@ The scheduler follows vLLM's design with:
 import logging
 import os
 import threading
+import uuid
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -191,6 +192,7 @@ class SchedulerConfig:
     # SchedulerConfig is enough — see
     # :mod:`vllm_mlx.runtime.disk_kv_checkpoint`.
     kv_disk_checkpoint_interval: int = 256
+    kv_disk_restore_enabled: bool = False
 
     # Paged cache settings (experimental - for memory efficiency)
     use_paged_cache: bool = (
@@ -2470,6 +2472,9 @@ class Scheduler:
                     config=cache_config,
                     radix_index=radix_idx,
                 )
+                # Persistent-tier mirror: every in-memory store also lands on
+                # disk (throttled), so disk restore covers what memory covers.
+                self.memory_aware_cache._disk_persist_cb = self._disk_persist_mirror
                 logger.info(
                     f"Memory-aware cache enabled: "
                     f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB, "
@@ -4421,6 +4426,16 @@ class Scheduler:
             request.cache_hit_type = "miss"
             request.remaining_tokens = request.prompt_token_ids
 
+        # Restore-on-miss from a disk KV checkpoint (R15-P3 #303). MUST run
+        # here — after the in-memory prefix-cache chain has settled the
+        # hit/miss decision and BEFORE the request is committed to tracking
+        # and scheduling, so a restored cache is attached to the Request the
+        # same way a memory hit would be. Off-by-default and reject-on-doubt;
+        # see ``_maybe_disk_restore``. ``pflash_compressed`` guards the
+        # positional-fiction case (a compressed prompt has no real prefix to
+        # restore).
+        self._maybe_disk_restore(request, pflash_compressed=pflash_compressed)
+
         # Add to tracking. D-M01-2X (0.8.2 dogfood, codex r10
         # BLOCKING follow-up): the cancellation dedupe ledgers
         # (``_cancelled_request_ids`` / ``_disconnect_abort_ids``)
@@ -5199,6 +5214,354 @@ class Scheduler:
             outputs.append(output)
 
         return outputs, finished_ids
+
+    def _disk_persist_mirror(self, tokens, cache) -> None:
+        """Persist an in-memory prefix-cache store to disk, synchronously.
+
+        Wired into MemoryAwarePrefixCache.store so disk coverage tracks memory
+        coverage (whole-snapshot writes keyed on the exact tokens; never trim,
+        hybrid recurrent layers can't rewind, issue #163). The write is
+        synchronous: store() fires at the prompt/message boundary, and only at
+        that instant does the cache state exactly match ``tokens``, so
+        serializing here captures the correct snapshot. Deferring it to a
+        background thread raced the advancing cache and captured offset+1, and a
+        cheap frozen snapshot of an mlx cache isn't available (deepcopy fails,
+        shallow-copy aliases the in-place-mutated buffers). The cost is that a
+        deep prompt's multi-GB save runs inline on the boundary callback; an
+        off-thread frozen-snapshot writer is the perf follow-up, correctness
+        first. Never raises into the store hot path.
+        """
+        try:
+            interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
+            if not interval or not tokens or cache is None:
+                return
+            if len(tokens) < 256:
+                # Cold-prefilling <256 tokens is instant; not worth a write.
+                return
+            # SYNCHRONOUS write. This runs from store() which fires at the
+            # prompt/message boundary — at that instant the cache state exactly
+            # matches ``tokens``, so serializing here captures the correct
+            # snapshot (no async cache-advance race, which corrupted the
+            # offset when the write was deferred). Perf: for deep prompts this
+            # is a multi-GB save; an off-thread FROZEN-snapshot writer is the
+            # optimization follow-up, but correctness first.
+            import array as _arr
+            import hashlib as _hl
+
+            from .runtime import disk_kv_checkpoint as _dkc
+
+            mname = getattr(self, "_model_name", None)
+            raw = _arr.array("i", (int(t) for t in tokens)).tobytes()
+            req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
+            _dkc.write_checkpoint(
+                cache,
+                root=_dkc.get_default_root(),
+                req_hash=req_hash,
+                token_offset=len(tokens),
+                kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
+                requires_full_checkpoint=_dkc.model_requires_full_checkpoint(mname),
+                model_name=mname,
+                extra_metadata={
+                    "tokens_key": list(tokens),
+                    "save_uuid": uuid.uuid4().hex,
+                },
+            )
+        except Exception as _e:  # pragma: no cover — mirror is best-effort
+            logger.debug("[disk_persist] write failed: %s", _e)
+
+    def _maybe_disk_restore(self, request: Request, *, pflash_compressed: bool) -> None:
+        """Restore a request's KV prefix from a disk checkpoint on a miss.
+
+        R15-P3 (task #303) — the restore half of disk KV checkpointing.
+        Called from :meth:`add_request` after the in-memory prefix-cache
+        lookup chain settles and before the request is tracked/scheduled, so
+        a restored cache rides on the Request exactly like a memory hit.
+
+        OFF by default (``config.kv_disk_restore_enabled``). A wrong restore
+        corrupts output silently and raises NOTHING, so the contract is
+        reject-and-reprefill on ANY doubt — every guard below returns without
+        touching the request (which then prefills normally), and the whole
+        method is wrapped so a disk fault can never break admission.
+
+        Gates (all required, else no-op):
+
+        - feature enabled;
+        - the prefix-cache chain reported a MISS and left no ``prompt_cache``
+          (never override a real memory hit);
+        - the prompt is not PFlash-compressed (a compressed sequence is a
+          positional fiction with no restorable prefix — see ``add_request``);
+        - ``prompt_token_ids`` is populated.
+
+        Validation contract on the looked-up checkpoint (all must hold):
+
+        (a) TRUE-PREFIX: the persisted tokens are an exact element-wise prefix
+            of the request's prompt tokens and the request is at least as long
+            as the checkpoint offset. The content index's ``lookup`` already
+            byte-verifies the on-disk tokens blob against these query tokens;
+            we re-assert the length invariant here as belt-and-suspenders.
+        (a2) MODEL IDENTITY: the checkpoint's recorded ``model_name`` matches
+            the running model exactly. ``lookup`` keys on token content across
+            the shared checkpoint root, so without this a checkpoint from a
+            different (or re-quantized) model sharing a prompt prefix could be
+            restored and silently corrupt output. Fail closed on any unknown.
+        (b) kv_dtype recorded in the checkpoint matches this run's kv dtype —
+            a dtype switch between runs makes the stored KV bytes garbage.
+        (c) schema_version acceptable — enforced inside ``load_checkpoint``
+            (``lookup`` returns None when it fails).
+        (d) full-vs-partial mode matches the running model; for this hybrid
+            that means a FULL checkpoint is required (partial restore refused).
+        (e) memory headroom: the restored cache's estimated resident bytes,
+            added to current Metal active memory, stay under the admission
+            cap's ``metal_pressure_evict_fraction`` ceiling. Only enforced
+            when a Metal cap is resolved (cap>0); otherwise skipped.
+
+        Every reject bumps ``rapid_mlx_kv_checkpoint_restore_rejects_total``
+        with a ``reason`` label via ``disk_kv_checkpoint.record_restore_reject``.
+        """
+        try:
+            if not getattr(self.config, "kv_disk_restore_enabled", False):
+                return
+            if pflash_compressed:
+                return
+            if request.cache_hit_type != "miss" or request.prompt_cache is not None:
+                return
+            prompt_ids = request.prompt_token_ids
+            if not prompt_ids:
+                return
+
+            from .runtime import disk_kv_checkpoint as _dkc
+
+            # One-time content-index build so checkpoints a previous process
+            # left on disk are restore candidates too. Gated behind the
+            # off-by-default flag and done once per scheduler lifetime.
+            if not getattr(self, "_disk_restore_index_built", False):
+                try:
+                    _n_indexed = _dkc.build_content_index(_dkc.get_default_root())
+                    logger.info(
+                        "[kv_restore] content-index built from disk: %d checkpoints indexed",
+                        _n_indexed,
+                    )
+                except Exception as _build_err:  # pragma: no cover — defensive
+                    logger.debug(
+                        "[kv_restore] content-index build failed: %r", _build_err
+                    )
+                self._disk_restore_index_built = True
+
+            loaded = _dkc.get_content_index().lookup(prompt_ids)
+            if loaded is None:
+                # No verified prefix on disk — normal miss, prefill.
+                return
+
+            offset = loaded.token_offset
+            rid = request.request_id[:12]
+
+            # (a) TRUE-PREFIX length invariant. ``lookup`` already verified the
+            # persisted tokens equal ``prompt_ids[:offset]`` byte-for-byte and
+            # re-read the on-disk blob under the save_uuid binding; this is the
+            # defensive floor in case the two ever drift.
+            if offset <= 0 or len(prompt_ids) < offset:
+                _dkc.record_restore_reject("offset_out_of_range")
+                logger.info(
+                    "[kv_restore] request=%s REJECT reason=offset_out_of_range "
+                    "offset=%d prompt_len=%d; re-prefilling",
+                    rid,
+                    offset,
+                    len(prompt_ids),
+                )
+                return
+
+            # (a2) MODEL IDENTITY. ``lookup`` matches purely on token content
+            # across the shared ~/.cache/rapid-mlx/kv_checkpoints/ root, so a
+            # checkpoint written by a DIFFERENT model (or a re-quantized build
+            # of this one) that happens to share a prompt prefix — e.g. a common
+            # system prompt — would otherwise be loaded into this model and
+            # silently corrupt output. Refuse unless the checkpoint's recorded
+            # ``model_name`` matches the running model exactly. Fail closed: if
+            # either side is unknown we cannot vouch for identity, so we reject.
+            run_model = getattr(self, "_model_name", None)
+            ckpt_model = (loaded.metadata or {}).get("model_name")
+            if not ckpt_model or not run_model or str(ckpt_model) != str(run_model):
+                _dkc.record_restore_reject("model_identity_mismatch")
+                logger.info(
+                    "[kv_restore] request=%s REJECT reason=model_identity_mismatch "
+                    "checkpoint=%r run=%r; re-prefilling",
+                    rid,
+                    ckpt_model,
+                    run_model,
+                )
+                return
+
+            # (b) kv dtype must match the current run's kv cache dtype.
+            current_kv_dtype = getattr(self.config, "kv_cache_dtype", "bf16") or "bf16"
+            if str(loaded.kv_dtype) != str(current_kv_dtype):
+                _dkc.record_restore_reject("kv_dtype_mismatch")
+                logger.info(
+                    "[kv_restore] request=%s REJECT reason=kv_dtype_mismatch "
+                    "checkpoint=%s run=%s; re-prefilling",
+                    rid,
+                    loaded.kv_dtype,
+                    current_kv_dtype,
+                )
+                return
+
+            # (d) full-vs-partial mode must match the running model. For the
+            # Qwen3.5 hybrid (and any MODELS_REQUIRING_FULL_CHECKPOINT member)
+            # this forces a full checkpoint; a partial restore is refused.
+            expected_full = _dkc.model_requires_full_checkpoint(
+                getattr(self, "_model_name", None)
+            )
+            if bool(loaded.requires_full_checkpoint) != bool(expected_full):
+                _dkc.record_restore_reject("full_checkpoint_mismatch")
+                logger.info(
+                    "[kv_restore] request=%s REJECT reason=full_checkpoint_mismatch "
+                    "checkpoint_full=%s run_requires_full=%s; re-prefilling",
+                    rid,
+                    loaded.requires_full_checkpoint,
+                    expected_full,
+                )
+                return
+
+            # (e) MEMORY HEADROOM. A restored hybrid cache is 2-4 GB and lands
+            # resident next to the already-wired model weights. Injecting it
+            # blind can push Metal active past the operator's cap and OOM the
+            # box (the exact D-METAL-CAP failure mode). Reuse the admission
+            # gate's cap + active-memory probes: estimate the cache's resident
+            # bytes from the on-disk checkpoint size, and refuse the restore if
+            # active + estimate would cross the same
+            # ``metal_pressure_evict_fraction`` ceiling the eviction path uses.
+            # A refused restore just re-prefills, which streams the KV in
+            # incrementally under the normal admission cap. Conservative: only
+            # enforced when a Metal cap is actually resolved (cap>0); with no
+            # cap we cannot bound headroom, so we fall back to today's behavior
+            # of trusting the allocator (documented assumption).
+            cap_bytes = self._resolve_metal_cap_bytes()
+            if cap_bytes > 0:
+                est_bytes = 0
+                try:
+                    meta_size = loaded.metadata.get("size_bytes")
+                    if isinstance(meta_size, (int, float)) and meta_size > 0:
+                        est_bytes = int(meta_size)
+                    elif loaded.path and os.path.isfile(loaded.path):
+                        est_bytes = int(os.path.getsize(loaded.path))
+                except Exception:  # pragma: no cover — defensive
+                    est_bytes = 0
+                # The on-disk size is the QUANTIZED footprint, but the restore
+                # runs the cache through _dequantize_cache first, so what lands
+                # resident is the bf16 expansion (int4 -> bf16 is ~4x), with a
+                # transient int4+bf16 peak (~5x) while mx.dequantize runs. Size
+                # the guard against that peak, or it clears a restore that then
+                # blows the Metal cap mid-dequant, the exact OOM this check
+                # exists to prevent. Recurrent layers pass through unexpanded,
+                # so this over-counts slightly on the hybrid cache, which is the
+                # safe direction.
+                _dt = str(getattr(loaded, "kv_dtype", "") or "").lower()
+                if _dt in ("int4", "q4", "4bit"):
+                    est_bytes = int(est_bytes * 5)
+                elif _dt in ("int8", "q8", "8bit"):
+                    est_bytes = int(est_bytes * 3)
+                fraction = float(
+                    getattr(self.config, "metal_pressure_evict_fraction", 0.9) or 0.9
+                )
+                if not (0.0 < fraction <= 1.0):
+                    fraction = 0.9
+                ceiling = int(cap_bytes * fraction)
+                active = self._current_metal_active_bytes()
+                if est_bytes > 0 and active + est_bytes > ceiling:
+                    _dkc.record_restore_reject("memory_headroom")
+                    logger.info(
+                        "[kv_restore] request=%s REJECT reason=memory_headroom "
+                        "active=%.2fGB est_cache=%.2fGB ceiling=%.2fGB "
+                        "(cap=%.2fGB x %.2f); re-prefilling",
+                        rid,
+                        active / 1e9,
+                        est_bytes / 1e9,
+                        ceiling / 1e9,
+                        cap_bytes / 1e9,
+                        fraction,
+                    )
+                    return
+
+            # All guards passed — install the persisted KV tail exactly like
+            # the in-memory hit branch does (prompt_cache + cached_tokens +
+            # remaining_tokens), and tag the hit source for /metrics.
+            #
+            # DEQUANTIZE first: this mlx-lm can't batch-prefill the remaining
+            # tokens on top of a restored int4 QuantizedKVCache history
+            # ("does not yet support batching with history"), which aborted
+            # generation on every restored request. Convert the quantized
+            # attention layers back to bf16 KVCache (recurrent layers pass
+            # through) so the tail prefill runs. Per-request cache dtype, so
+            # only restored requests pay the ~4x transient KV; the live cache
+            # stays int4.
+            restored_cache = loaded.cache
+            if str(loaded.kv_dtype or "").lower() not in ("bf16", "float16", "fp16"):
+                # Quantized on disk: must dequantize before install. If it
+                # fails, DO NOT install the quantized cache, the tail prefill
+                # would then hit "QuantizedKVCache does not yet support batching
+                # with history" and abort a request that re-prefills fine.
+                # Reject and fall back to prefill instead.
+                try:
+                    from .memory_cache import _dequantize_cache as _deq
+
+                    restored_cache = _deq(restored_cache)
+                except Exception as _deq_err:  # pragma: no cover — defensive
+                    _dkc.record_restore_reject("dequantize_failed")
+                    logger.warning(
+                        "[kv_restore] request=%s REJECT reason=dequantize_failed "
+                        "%r; re-prefilling",
+                        rid,
+                        _deq_err,
+                    )
+                    return
+            request.prompt_cache = restored_cache
+            request.cached_tokens = offset
+            request.remaining_tokens = list(prompt_ids[offset:])
+            request.cache_hit_type = "disk"
+            # Touch-on-restore: bump the checkpoint's mtime to now so a
+            # frequently-restored prefix reads as recently-used. enforce_disk_cap
+            # evicts oldest-mtime first, so with this the eviction order becomes
+            # true LRU (least-recently-restored) instead of FIFO-by-creation,
+            # which would otherwise discard a hot deep prefix in favour of a
+            # fresh one that's never been reused. Best-effort: a failed touch
+            # must not break the restore.
+            try:
+                if loaded.path:
+                    os.utime(loaded.path, None)
+            except OSError as _touch_err:  # pragma: no cover — best-effort
+                logger.debug(
+                    "[kv_restore] touch-on-restore failed for %s: %r",
+                    loaded.path,
+                    _touch_err,
+                )
+            logger.info(
+                "[kv_restore] request=%s HIT cached=%d remaining=%d dtype=%s "
+                "path=%s",
+                rid,
+                offset,
+                len(request.remaining_tokens),
+                loaded.kv_dtype,
+                loaded.path,
+            )
+        except Exception as _restore_err:  # pragma: no cover — defensive
+            # Never let a restore fault break admission. Fall back to prefill
+            # by leaving the request in its miss state; scrub any partial
+            # install so a half-set cache can't reach the scheduler.
+            request.prompt_cache = None
+            request.cached_tokens = 0
+            request.remaining_tokens = request.prompt_token_ids
+            request.cache_hit_type = "miss"
+            try:
+                from .runtime import disk_kv_checkpoint as _dkc_err
+
+                _dkc_err.record_hook_error()
+                _dkc_err.record_restore_reject("exception")
+            except Exception:  # pragma: no cover — defensive of the defensive
+                pass
+            logger.warning(
+                "[kv_restore] restore hook raised for %s: %r; re-prefilling",
+                request.request_id,
+                _restore_err,
+            )
 
     def _safe_disk_checkpoint(self, request: Request, response: Any) -> None:
         """Wrap ``_maybe_disk_checkpoint`` in a never-raise contract.
