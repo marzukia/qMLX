@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rapid-mlx"
-version = "0.10.5"
-description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, 2-4x faster than Ollama."
+name = "qmlx-serve"
+version = "0.11.0"
+description = "Disk KV restore for hybrid MoE models on Apple Silicon. A Qwen-specialised fork of Rapid-MLX that keeps a 122B model warm on a Mac."
 readme = "README.md"
 license = {text = "MIT AND Apache-2.0"}
 requires-python = ">=3.10"
@@ -15,7 +15,7 @@ authors = [
 ]
 keywords = ["llm", "mlx", "apple-silicon", "inference", "transformers"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -327,7 +327,7 @@ audio = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/marzukia/qMLX"
+Homepage = "https://qmlx.mrzk.io"
 Documentation = "https://github.com/marzukia/qMLX#readme"
 Repository = "https://github.com/marzukia/qMLX"
 
