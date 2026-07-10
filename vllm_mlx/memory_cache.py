@@ -1323,6 +1323,14 @@ class MemoryAwarePrefixCache:
         self._model_id = id(model)
         self._config = config or MemoryCacheConfig()
 
+        # Optional persistent-tier mirror. When the scheduler wires this,
+        # every successful store() also hands (tokens, cache) to the disk
+        # checkpoint layer, so disk restore covers exactly what the in-memory
+        # cache covers — including mid-prefill sub-prefix snapshots, the
+        # multi-boundary coverage a hybrid (non-trimmable recurrent) model
+        # needs. Signature: cb(tokens: list[int], cache: list) -> None.
+        self._disk_persist_cb = None
+
         # OrderedDict maintains insertion order for LRU
         # Key: tuple(tokens), Value: _CacheEntry
         self._entries: OrderedDict[tuple[int, ...], _CacheEntry] = OrderedDict()
@@ -1664,6 +1672,18 @@ class MemoryAwarePrefixCache:
                 "dropping to avoid leak (#1025/#1058)",
                 len(tokens),
             )
+            # Hybrid recurrent entries are dropped from the IN-MEMORY reuse
+            # cache (#1025/#1058 leak fix) but must still be MIRRORED to disk
+            # so restore-on-miss can page them back. The in-memory drop and
+            # the disk checkpoint are orthogonal concerns; without this the
+            # disk KV restore feature is dead for hybrid models (mirror never
+            # fires, content index stays empty).
+            _cb = self._disk_persist_cb
+            if _cb is not None:
+                try:
+                    _cb(list(tokens), cache)
+                except Exception as _e:  # pragma: no cover — mirror best-effort
+                    logger.debug(f"[disk_persist] hybrid mirror failed: {_e}")
             return False
 
         tokens_key = tuple(tokens)
@@ -1791,6 +1811,16 @@ class MemoryAwarePrefixCache:
             f"{entry.memory_bytes / _BYTES_PER_MB:.2f}MB, "
             f"total={self._current_memory / _BYTES_PER_MB:.1f}MB"
         )
+
+        # Persistent-tier mirror (lock already released). Best-effort: hand the
+        # just-stored (tokens, cache) to the disk layer so disk coverage tracks
+        # in-memory coverage exactly, sub-prefix snapshots included.
+        cb = self._disk_persist_cb
+        if cb is not None:
+            try:
+                cb(list(tokens), cache)
+            except Exception as _e:  # pragma: no cover — mirror is best-effort
+                logger.debug(f"[disk_persist] mirror failed: {_e}")
 
         return True
 
