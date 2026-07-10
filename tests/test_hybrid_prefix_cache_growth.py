@@ -1,16 +1,35 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression for issue #214 — prefix cache misses on every turn for hybrid
-attention models in growing multi-turn conversations.
+"""Hybrid (GatedDeltaNet / Mamba MoE) recurrent-state cache policy.
 
-Two external users (oldriverno1, michaelasper) confirmed: on hybrid models
-(GatedDeltaNet + Transformer, e.g. Qwen3.6-35B-A3B), each turn re-prefills
-the entire cumulative prompt, so TTFT grows linearly with conversation
-length. Dense models (Qwen3-Coder-30B-A3B) match ``mlx_lm.server`` within a
-few percent. The bug is hybrid-specific.
+History
+-------
+Issue #214 (oldriverno1, michaelasper) originally asked for hybrid multi-turn
+conversations to hit the prefix cache the way dense models do, so TTFT would
+not grow linearly with conversation length. We shipped that: stored
+``[P + R1]`` was reused as a strict prefix of turn-2's ``[P + R1 + M2]`` (no
+trim required — the RNN state at end-of-stored is exactly the state needed at
+start-of-M2-prefill).
 
-We isolate the cache-lookup layer (no model load) and assert the multi-turn
-growing pattern hits the prefix path on hybrid layouts the same way it does
-on dense.
+Issues #1025 / #1058 then showed the OTHER edge of the same behavior: those
+per-request recurrent-state (``ArraysCache``) entries are stored by reference
+and are NEVER a prefix of the *next* request across DIFFERENT conversations
+(each request's output differs → every key is a unique superset), so
+prefix-subset eviction never reclaims them. They only drop under the cache's
+own byte budget (independent of ``--gpu-memory-utilization``), so Metal
+``active`` ratchets up holding leaked recurrent state → D-METAL-CAP wedges /
+OOM.
+
+Resolution (direction 1, raullen 2026-07-09)
+--------------------------------------------
+Stop caching non-trimmable recurrent-state entries entirely. ``store`` now
+DROPS any cache that carries an ``ArraysCache`` / ``CacheList``-wrapping-one
+layer (``is_trimmable() == False``). This trades away the #214 within-
+conversation multi-turn speedup (hybrid turns re-prefill) to stop the
+cross-conversation leak. The tests below encode the NEW policy; the previous
+#214 "must hit" assertions are intentionally inverted.
+
+Dense (all-``KVCache``) models are unaffected — their state is trimmable and
+still cached/reused normally.
 """
 
 from unittest.mock import MagicMock
@@ -44,6 +63,9 @@ class TrimmableLayer:
     def is_trimmable(self) -> bool:
         return True
 
+    def trim(self, n: int) -> int:  # KVCache-like: defines trim
+        return n
+
 
 class NonTrimmableLayer:
     """Stands in for ArraysCache (DeltaNet/Mamba RNN state)."""
@@ -54,6 +76,10 @@ class NonTrimmableLayer:
 
     def is_trimmable(self) -> bool:
         return False
+
+
+def _dense_cache(n: int = 10):
+    return [TrimmableLayer() for _ in range(n)]
 
 
 def _hybrid_cache(n_trimmable: int = 10, n_non_trimmable: int = 30):
@@ -70,21 +96,19 @@ def cache():
 
 
 # ---------------------------------------------------------------------------
-# Baseline: dense (all-trimmable) growing conversation already hits.
+# Dense (all-trimmable) is unaffected — still stored and reused.
 # ---------------------------------------------------------------------------
 
 
 def test_dense_growing_conversation_hits_prefix(cache):
-    """Sanity: dense models hit the prefix path on growing conversations."""
-    prompt = list(range(1000, 1100))  # turn 1 prompt
-    response_1 = [9001, 9002]  # model output
-    new_msg = list(range(2000, 2050))  # turn 2 user message
+    """Dense models still hit the prefix path on growing conversations."""
+    prompt = list(range(1000, 1100))
+    response_1 = [9001, 9002]
+    new_msg = list(range(2000, 2050))
 
-    # Turn 1: prompt-snapshot store, then full prompt+output store
-    cache.store(prompt, _hybrid_cache(n_trimmable=10, n_non_trimmable=0))
-    cache.store(prompt + response_1, _hybrid_cache(n_trimmable=10, n_non_trimmable=0))
+    assert cache.store(prompt, _dense_cache()) is True
+    assert cache.store(prompt + response_1, _dense_cache()) is True
 
-    # Turn 2 request = strict superset of [P + R1]
     turn_2 = prompt + response_1 + new_msg
     result, remaining = cache.fetch(turn_2)
 
@@ -93,18 +117,50 @@ def test_dense_growing_conversation_hits_prefix(cache):
 
 
 # ---------------------------------------------------------------------------
-# The bug: hybrid (mixed trimmable + non-trimmable) growing conversation.
+# #1025 / #1058: hybrid recurrent-state entries are DROPPED at store time.
 # ---------------------------------------------------------------------------
 
 
-def test_hybrid_growing_conversation_hits_prefix(cache):
-    """Issue #214: hybrid model multi-turn conversation must hit prefix path.
+def test_hybrid_store_is_dropped(cache):
+    """A cache with any non-trimmable layer must NOT be stored (leak fix)."""
+    prompt = list(range(1000, 1100))
 
-    Stored ``[P + R1]`` is a strict prefix of turn 2's ``[P + R1 + M2]``.
-    No trimming required — the RNN state at end-of-stored is exactly the
-    state needed at start-of-M2-prefill. The non-trimmability of DeltaNet
-    layers is irrelevant on this path.
+    stored = cache.store(prompt, _hybrid_cache())
+
+    assert stored is False, "Hybrid recurrent-state entry must be dropped, not stored"
+    assert tuple(prompt) not in cache._entries, (
+        "Non-trimmable entry leaked into _entries — this is the #1025/#1058 leak"
+    )
+    assert cache.get_stats()["non_trimmable_skips"] == 1
+
+
+def test_hybrid_multiturn_does_not_leak(cache):
+    """A multi-turn hybrid conversation leaves NO entries in the cache.
+
+    Every turn stores a longer ``[P + ... ]`` superset; before the fix each
+    one lingered forever (never a prefix of a *different* conversation's next
+    key). After the fix none are retained → ``_entries`` stays empty and
+    ``_current_memory`` returns to 0.
     """
+    prompt = list(range(1000, 1100))
+    r1, r2 = [9001, 9002], [9003, 9004]
+    m2, m3 = list(range(2000, 2050)), list(range(3000, 3030))
+
+    cache.store(prompt, _hybrid_cache())
+    cache.store(prompt + r1, _hybrid_cache())
+    cache.store(prompt + r1 + m2 + r2, _hybrid_cache())
+    cache.store(prompt + r1 + m2 + r2 + m3, _hybrid_cache())
+
+    assert len(cache._entries) == 0, (
+        f"Hybrid conversation left {len(cache._entries)} lingering entries — "
+        "this is the recurrent-state leak (#1025/#1058)"
+    )
+    assert cache._current_memory == 0
+    assert cache.get_stats()["non_trimmable_skips"] == 4
+
+
+def test_hybrid_fetch_always_misses(cache):
+    """With hybrid stores dropped, every hybrid fetch is a clean miss."""
     prompt = list(range(1000, 1100))
     response_1 = [9001, 9002]
     new_msg = list(range(2000, 2050))
@@ -115,71 +171,112 @@ def test_hybrid_growing_conversation_hits_prefix(cache):
     turn_2 = prompt + response_1 + new_msg
     result, remaining = cache.fetch(turn_2)
 
-    assert result is not None, (
-        "Hybrid growing conversation MISSED prefix cache — this is issue #214. "
-        "Stored [P + R1] is a strict prefix of request [P + R1 + M2]; no "
-        "trim is required, so non-trimmable RNN layers should not block."
-    )
-    # Should pick the longer of the two stored prefixes.
-    assert remaining == new_msg, (
-        f"Expected remaining = M2 ({len(new_msg)} tokens, picking [P+R1]); "
-        f"got {len(remaining)} tokens"
-    )
-
-
-def test_hybrid_only_prompt_stored_still_hits(cache):
-    """Even when only ``[P]`` is stored (no full prompt+output entry yet)."""
-    prompt = list(range(1000, 1100))
-    response_1 = [9001, 9002]
-    new_msg = list(range(2000, 2050))
-
-    cache.store(prompt, _hybrid_cache())
-
-    turn_2 = prompt + response_1 + new_msg
-    result, remaining = cache.fetch(turn_2)
-
-    assert result is not None, "Stored [P] must hit as prefix of [P + R1 + M2]"
-    assert remaining == response_1 + new_msg
-
-
-def test_hybrid_three_turn_growth(cache):
-    """Three-turn conversation: each turn picks the longest stored prefix."""
-    prompt = list(range(1000, 1100))
-    r1, r2 = [9001, 9002], [9003, 9004]
-    m2, m3 = list(range(2000, 2050)), list(range(3000, 3030))
-
-    # Turn 1: store [P] and [P + R1]
-    cache.store(prompt, _hybrid_cache())
-    cache.store(prompt + r1, _hybrid_cache())
-
-    # Turn 2 fetch
-    turn_2 = prompt + r1 + m2
-    res, rem = cache.fetch(turn_2)
-    assert res is not None
-    assert rem == m2, "Turn 2 should pick [P + R1] (longest prefix)"
-
-    # Turn 2 finishes: store [P + R1 + M2 + R2]
-    cache.store(prompt + r1 + m2 + r2, _hybrid_cache())
-
-    # Turn 3 fetch
-    turn_3 = prompt + r1 + m2 + r2 + m3
-    res, rem = cache.fetch(turn_3)
-    assert res is not None
-    assert rem == m3, "Turn 3 should pick [P + R1 + M2 + R2] (longest prefix)"
+    assert result is None, "Hybrid entries are never stored → fetch must miss"
+    assert remaining == turn_2
 
 
 # ---------------------------------------------------------------------------
-# Guards: the fix must not loosen non-trim safety in cases that DO need trim.
+# Granularity: partial hybrid (even ONE non-trimmable layer) drops the entry.
+# ---------------------------------------------------------------------------
+
+
+def test_single_non_trimmable_layer_drops_entry(cache):
+    """One non-trimmable layer among many trimmable ones drops the whole entry.
+
+    A half-populated entry (trimmable layers only) can't reconstruct a hybrid
+    model, so we skip the whole entry rather than store a useless subset.
+    """
+    prompt = list(range(1000, 1100))
+    mostly_dense = _dense_cache(n=39) + [NonTrimmableLayer()]
+
+    assert cache.store(prompt, mostly_dense) is False
+    assert tuple(prompt) not in cache._entries
+
+
+def test_dict_form_arrayscache_dropped(cache):
+    """Block-aware (dict-form) extracted states are gated on class_name too."""
+    prompt = list(range(1000, 1100))
+    dict_cache = [
+        {"class_name": "KVCache", "state": (1, 2), "meta_state": ("0",)},
+        {"class_name": "ArraysCache", "state": (3, 4), "meta_state": ("0",)},
+    ]
+
+    assert cache.store(prompt, dict_cache) is False
+    assert tuple(prompt) not in cache._entries
+
+
+def test_dict_form_all_kvcache_stored(cache):
+    """A dict-form entry with only KVCache layers is still stored."""
+    prompt = list(range(1000, 1100))
+    dict_cache = [
+        {"class_name": "KVCache", "state": (1, 2), "meta_state": ("0",)},
+        {"class_name": "KVCache", "state": (3, 4), "meta_state": ("0",)},
+    ]
+
+    assert cache.store(prompt, dict_cache) is True
+    assert tuple(prompt) in cache._entries
+
+
+@pytest.mark.parametrize(
+    "kv_class",
+    ["RotatingKVCache", "ChunkedKVCache", "ConcatenateKVCache", "QuantizedKVCache"],
+)
+def test_dict_form_trimmable_kv_variants_still_stored(cache, kv_class):
+    """Dict-form sliding-window / other trimmable KV classes must NOT be dropped.
+
+    Regression for codex #1075 finding: an allowlist of only KVCache would
+    wrongly classify RotatingKVCache & friends as non-trimmable and drop the
+    entry, regressing prefix reuse for dense / sliding-window models. The
+    denylist keeps them cacheable.
+    """
+    prompt = list(range(1000, 1100))
+    dict_cache = [
+        {"class_name": kv_class, "state": (1, 2), "meta_state": ("0",)},
+        {"class_name": kv_class, "state": (3, 4), "meta_state": ("0",)},
+    ]
+
+    assert cache.store(prompt, dict_cache) is True, (
+        f"{kv_class} is trimmable and must remain cacheable"
+    )
+    assert tuple(prompt) in cache._entries
+
+
+def test_dict_form_mamba_variant_dropped(cache):
+    """Vendor-suffixed recurrent class names are caught by substring match."""
+    prompt = list(range(1000, 1100))
+    dict_cache = [
+        {"class_name": "KVCache", "state": (1, 2), "meta_state": ("0",)},
+        {
+            "class_name": "GatedDeltaNetArraysCache",
+            "state": (3, 4),
+            "meta_state": ("0",),
+        },
+    ]
+
+    assert cache.store(prompt, dict_cache) is False
+    assert tuple(prompt) not in cache._entries
+
+
+# ---------------------------------------------------------------------------
+# Guards preserved from the #214 era: trim-required matches still MISS. These
+# now also never even reach fetch (store dropped them), but the fetch-side
+# non-trimmable guard stays as defense-in-depth for any legacy on-disk entry.
 # ---------------------------------------------------------------------------
 
 
 def test_hybrid_supersequence_still_skipped(cache):
-    """Stored ``[P + extra]`` longer than request ``[P]`` still cannot hit on
-    hybrid. Trimming would be required to roll the RNN state back to ``[P]``,
-    which is not safe — must MISS.
+    """Even if a hybrid entry existed, a trim-required supersequence match must
+    skip. We inject directly into ``_entries`` to bypass the store gate and
+    exercise the fetch-side guard (legacy on-disk entry defense-in-depth).
     """
+    from vllm_mlx.memory_cache import _CacheEntry
+
     long_stored = list(range(1000, 1200))
-    cache.store(long_stored, _hybrid_cache())
+    entry = _CacheEntry.create(long_stored, _hybrid_cache())
+    cache._entries[tuple(long_stored)] = entry
+    import bisect
+
+    bisect.insort(cache._sorted_keys, tuple(long_stored))
 
     short_request = list(range(1000, 1100))
     result, remaining = cache.fetch(short_request)
@@ -188,18 +285,3 @@ def test_hybrid_supersequence_still_skipped(cache):
         "Trim-required match on non-trimmable hybrid layers must still skip"
     )
     assert remaining == short_request
-
-
-def test_hybrid_lcp_with_divergence_still_skipped(cache):
-    """Stored and request share a prefix then diverge mid-sequence. LCP would
-    require trimming the stored state back to the divergence point — not
-    safe on non-trimmable layers, must MISS.
-    """
-    stored = list(range(1000, 1100)) + [5000, 5001, 5002]
-    cache.store(stored, _hybrid_cache())
-
-    request = list(range(1000, 1100)) + [6000, 6001, 6002]
-    result, remaining = cache.fetch(request)
-
-    assert result is None
-    assert remaining == request

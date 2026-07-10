@@ -1216,6 +1216,25 @@ def _render_prometheus(cfg: Any) -> str:
                     "reaches cache_dir."
                 ),
             ),
+            (
+                # #1025 / #1058: hybrid GatedDeltaNet / Mamba MoE
+                # recurrent-state entries dropped at store time. These
+                # carry a non-trimmable ArraysCache layer that the fetch
+                # path can never reuse (it refuses supersequence trims on
+                # non-trimmable layers) but that store would otherwise
+                # retain forever — the source of the Metal ``active``
+                # leak. A steadily-climbing rate on a hybrid model is the
+                # EXPECTED, healthy signal that the leak fix is engaged.
+                "non_trimmable_skips",
+                "rapid_mlx_prefix_cache_non_trimmable_skips_total",
+                (
+                    "Prefix-cache store calls dropped because the cache "
+                    "carried a non-trimmable recurrent-state layer "
+                    "(hybrid GatedDeltaNet / Mamba MoE). Expected to climb "
+                    "on hybrid models — it is the observable signal that "
+                    "the #1025/#1058 recurrent-state leak fix is active."
+                ),
+            ),
         ):
             raw = int(_coerce_number(cache_stats.get(raw_key)))
             monotonic = _cache_counter_accumulator.advance(metric_name, raw)

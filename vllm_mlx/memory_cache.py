@@ -880,6 +880,14 @@ class CacheStats:
     # ``cache.clear()`` / ``reset_stats``, same contract as
     # ``load_skipped``.
     save_drift_drops: int = 0
+    # #1025 / #1058: cumulative count of ``store`` calls dropped because the
+    # cache carried a non-trimmable recurrent-state layer (hybrid GatedDeltaNet
+    # / Mamba MoE). These entries are unreusable by the fetch path anyway;
+    # dropping them at store time is what stops the Metal ``active`` leak.
+    # Surfaced so operators can see hybrid traffic is being (correctly) skipped
+    # rather than silently leaking. Cumulative, same carry-over contract as
+    # ``load_skipped``.
+    non_trimmable_skips: int = 0
 
     @property
     def hit_rate(self) -> float:
@@ -924,6 +932,12 @@ class CacheStats:
             # ``rapid_mlx_prefix_cache_save_drift_drops_total``
             # Prometheus counter. Cumulative same as ``load_skipped``.
             "save_drift_drops": int(self.save_drift_drops),
+            # #1025 / #1058: cumulative count of hybrid recurrent-state
+            # entries skipped at store time — drives the
+            # ``rapid_mlx_prefix_cache_non_trimmable_skips_total`` counter and
+            # is the observable signal that the GatedDeltaNet leak fix is
+            # active for a given model.
+            "non_trimmable_skips": int(self.non_trimmable_skips),
         }
 
 
@@ -1012,6 +1026,99 @@ def _needs_kv_trim(layer: Any) -> bool:
     if shape is None or len(shape) < 3:
         return False
     return 0 < offset < shape[2]
+
+
+# ---------------------------------------------------------------------------
+# Non-trimmable (recurrent-state) layer gate — issues #1025 / #1058
+# ---------------------------------------------------------------------------
+# Hybrid GatedDeltaNet / Mamba MoE models (Qwen3.6, Qwen3-Coder-Next, ...)
+# emit per-request RECURRENT state layers — ``ArraysCache`` (conv_state /
+# recurrent_state), NOT keys/values. Unlike ``KVCache`` these layers:
+#   * cannot be trimmed back to a prefix (``_trim_to_offset`` /
+#     ``_quantize_cache`` pass them through UNCHANGED, so ``store`` keeps the
+#     full array by reference), and
+#   * are never a prefix of the next request's key (each request's output
+#     differs → every key is a unique superset), so prefix-subset eviction
+#     NEVER reclaims them.
+# The net effect: the recurrent state accumulates in ``_entries`` and only
+# drops under the cache's own byte budget (``max_memory_percent × RAM``),
+# which is set INDEPENDENTLY of ``--gpu-memory-utilization``. Metal ``active``
+# ratchets up holding leaked recurrent state while ``reserved KV`` stays ~0,
+# wedging the D-METAL-CAP admission gate / eventually OOM-crashing.
+#
+# The fetch path already refuses to reuse these entries (supersequence match
+# is skipped when any layer ``not is_trimmable()`` — see ``fetch`` above) AND
+# the paged path gates them out via ``prefix_cache._SEQ_AXIS_KV_CLASSES``. A
+# hybrid entry that fetch will never reuse but store retains forever is pure
+# leak: so we DROP it at store time (whole entry — see below).
+#
+# For the dict-form extracted cache (block-aware path, where layers are
+# ``{"class_name": ...}`` dicts, not live objects) we cannot call
+# ``is_trimmable()``, so we match ``class_name`` against a DENYLIST of the
+# known recurrent-state cache classes. A denylist (not an allowlist of KV
+# classes) is deliberate: it keeps the dict path consistent with the
+# conservative object-path default — an UNKNOWN or new trimmable KV class
+# (``RotatingKVCache`` / ``ChunkedKVCache`` / ``ConcatenateKVCache`` / a future
+# addition) stays cacheable (status quo) instead of being wrongly dropped and
+# regressing prefix reuse for dense / sliding-window models. Only classes that
+# are affirmatively recurrent-state (``ArraysCache`` and Mamba-style aliases)
+# are dropped. Names are matched leniently (substring) so vendor-suffixed
+# variants (``MambaCache`` etc.) are also caught.
+_RECURRENT_STATE_CACHE_CLASSES = frozenset({"ArraysCache", "MambaCache"})
+
+
+def _class_name_is_recurrent(class_name: str) -> bool:
+    """True if ``class_name`` names a known recurrent-state (non-trimmable) cache."""
+    if class_name in _RECURRENT_STATE_CACHE_CLASSES:
+        return True
+    # Lenient substring match for vendor/variant names (e.g. "MambaCache2",
+    # "GatedDeltaNetArraysCache"). "KVCache" etc. never contain these tokens.
+    return any(marker in class_name for marker in _RECURRENT_STATE_CACHE_CLASSES)
+
+
+def _layer_is_non_trimmable(layer: Any) -> bool:
+    """Return True ONLY for layers that AFFIRMATIVELY declare non-trimmability.
+
+    This is deliberately conservative: a layer is treated as a recurrent-state
+    leak source (and dropped from the reuse cache) only when we can positively
+    identify it as such. When in doubt we keep the status-quo behaviour (store
+    it) rather than risk newly dropping a legitimate KVCache entry.
+
+    Two cache-layer forms reach ``store``:
+      * live mlx-lm cache objects (standard ``memory_aware_cache`` path) —
+        classified via the ``is_trimmable()`` idiom already used on the fetch
+        side. ``ArraysCache.is_trimmable()`` returns ``False``; a ``CacheList``
+        wrapping one also returns ``False``; every KV-class
+        (``KVCache`` / ``RotatingKVCache`` / ``QuantizedKVCache`` / ...) returns
+        ``True``. A layer with NO ``is_trimmable`` method is NOT classified as
+        non-trimmable here — modern mlx-lm (0.29+) gives every cache class the
+        method, so its absence means a test double / unknown shape, which we
+        leave cacheable rather than guess from the absence of ``trim``.
+      * dict-form extracted states (block-aware path) — matched on
+        ``class_name`` against the recurrent-state DENYLIST (unknown/new KV
+        classes stay cacheable).
+    """
+    if layer is None:
+        return False
+    if isinstance(layer, dict):
+        class_name = layer.get("class_name")
+        if not class_name:
+            return False
+        return _class_name_is_recurrent(class_name)
+    is_trimmable = getattr(layer, "is_trimmable", None)
+    if callable(is_trimmable):
+        try:
+            return not bool(is_trimmable())
+        except Exception:  # pragma: no cover — defensive
+            return False
+    # No ``is_trimmable`` method → cannot positively classify. Default to
+    # cacheable (status quo) so we never newly drop a legitimate KV entry.
+    return False
+
+
+def _cache_has_non_trimmable(cache: list[Any]) -> bool:
+    """True if ANY layer is a non-trimmable recurrent-state layer."""
+    return any(_layer_is_non_trimmable(layer) for layer in cache)
 
 
 def _trim_to_offset(cache: list[Any]) -> list[Any]:
@@ -1534,6 +1641,31 @@ class MemoryAwarePrefixCache:
         if not tokens or not cache:
             return False
 
+        # Reuse-cache gate for hybrid recurrent-state models (#1025 / #1058).
+        #
+        # If ANY layer is a non-trimmable recurrent-state cache (ArraysCache /
+        # CacheList-wrapping-one, from GatedDeltaNet / Mamba MoE models), DROP
+        # the whole entry rather than store it. Granularity = whole entry, not
+        # per-layer, because:
+        #   * reconstruction needs ALL layers (a half-populated entry with only
+        #     the KVCache layers cannot resume a hybrid model — mlx-lm rebuilds
+        #     the full cache list or nothing), and
+        #   * the fetch path already refuses to reuse an entry once any layer
+        #     is non-trimmable (supersequence match is skipped), so storing the
+        #     trimmable subset would only cost memory for zero reuse.
+        # Result: the per-request recurrent state has NO lingering reference in
+        # ``_entries`` and is reclaimed by ``mx.clear_cache()`` / GC once the
+        # request object drops its own reference in ``_cleanup_finished``.
+        if _cache_has_non_trimmable(cache):
+            self._stats.non_trimmable_skips += 1
+            logger.debug(
+                "[cache_store] skipped hybrid recurrent-state entry "
+                "(%d tokens): non-trimmable layer present, not reusable — "
+                "dropping to avoid leak (#1025/#1058)",
+                len(tokens),
+            )
+            return False
+
         tokens_key = tuple(tokens)
 
         # Fast path: already cached — bump LRU and skip expensive trim/quantize.
@@ -1754,10 +1886,12 @@ class MemoryAwarePrefixCache:
             self._current_memory = 0
             carried_load_skipped = self._stats.load_skipped
             carried_save_drift_drops = self._stats.save_drift_drops
+            carried_non_trimmable_skips = self._stats.non_trimmable_skips
             self._stats = CacheStats(
                 max_memory_bytes=self._max_memory,
                 load_skipped=carried_load_skipped,
                 save_drift_drops=carried_save_drift_drops,
+                non_trimmable_skips=carried_non_trimmable_skips,
             )
         logger.debug("Cache cleared")
 
@@ -1786,6 +1920,9 @@ class MemoryAwarePrefixCache:
 
         R12-T1: ``save_drift_drops`` likewise must carry across so its
         backing Prometheus counter never regresses.
+
+        #1025/#1058: ``non_trimmable_skips`` carries across for the same
+        monotonic-counter reason.
         """
         self._stats = CacheStats(
             max_memory_bytes=self._max_memory,
@@ -1793,6 +1930,7 @@ class MemoryAwarePrefixCache:
             entry_count=len(self._entries),
             load_skipped=self._stats.load_skipped,
             save_drift_drops=self._stats.save_drift_drops,
+            non_trimmable_skips=self._stats.non_trimmable_skips,
         )
 
     @property

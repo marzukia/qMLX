@@ -157,7 +157,11 @@ class _FakeCacheLayer:
         self.offset = n
 
     def is_trimmable(self) -> bool:
-        return False
+        # KV-shaped fixture: represents a trimmable KVCache being evicted by
+        # memory pressure (the path these tests exercise). Real KVCache
+        # reports is_trimmable() == True; a False here would make the
+        # #1025/#1058 store gate drop the entry before eviction can run.
+        return True
 
 
 def _make_cache_entry(byte_size: int):
