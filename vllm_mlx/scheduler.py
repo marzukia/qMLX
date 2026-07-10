@@ -3048,6 +3048,42 @@ class Scheduler:
                     f"store_time={_dt:.3f}s"
                 )
 
+            # Disk-KV checkpoint at the PROMPT boundary, under the SAME key the
+            # in-memory cache just used (prompt_token_ids) and the same
+            # prompt-length cache. This is what makes disk restore align with
+            # continuations: a future turn's prompt_token_ids prefix-matches
+            # this exactly like the in-memory hit does. The generation-time
+            # writer keyed on prompt+output, whose emitted reasoning/think
+            # tokens don't reappear in re-tokenized history, so it never
+            # matched. Offset == len(prompt_tokens) == cache length keeps
+            # _cache_offset_matches happy.
+            interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
+            if interval and extracted_cache is not None:
+                try:
+                    from .runtime import disk_kv_checkpoint as _dkc
+
+                    _mname = getattr(self, "_model_name", None)
+                    _dkc.write_checkpoint(
+                        extracted_cache,
+                        root=_dkc.get_default_root(),
+                        req_hash=_dkc.request_hash(request_id, model_name=_mname),
+                        token_offset=len(prompt_tokens),
+                        kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16")
+                        or "bf16",
+                        requires_full_checkpoint=_dkc.model_requires_full_checkpoint(
+                            _mname
+                        ),
+                        model_name=_mname,
+                        extra_metadata={
+                            "tokens_key": prompt_tokens,
+                            "save_uuid": uuid.uuid4().hex,
+                        },
+                    )
+                except Exception as _e:  # pragma: no cover — best-effort
+                    logger.debug(
+                        "[disk_kv] prompt-boundary checkpoint failed: %s", _e
+                    )
+
         return _prompt_cache_save
 
     def _snapshot_promoted_prompts(self, prompt_responses) -> None:
