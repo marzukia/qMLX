@@ -195,6 +195,12 @@ class Request:
     # Metadata
     finish_reason: str | None = None
     first_token_time: float | None = None  # Time when first output token was generated
+    # Issue #10: wall-clock (``time.time()``) stamp of the LAST output
+    # token, set at request finish. Same clock as ``first_token_time`` /
+    # ``arrival_time`` so the pure-decode window ``t_last_token -
+    # first_token_time`` is coherent. Used for the decode-throughput
+    # histogram; ``None`` until the request finishes.
+    t_last_token: float | None = None
     cache_hit_type: str | None = (
         None  # Type of cache hit: exact/prefix/supersequence/lcp/miss
     )

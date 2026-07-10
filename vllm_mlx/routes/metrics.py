@@ -966,6 +966,163 @@ def _reset_turboquant_state_for_tests() -> None:
     _fused_kernel_status_cache = None
 
 
+def _render_histogram(
+    name: str,
+    help_text: str,
+    hist: dict[str, Any] | None,
+) -> list[str]:
+    """Render a fixed-bucket histogram (``_bucket``/``_sum``/``_count``).
+
+    ``hist`` is the snapshot produced by
+    ``honest_metrics.FixedBucketHistogram.snapshot`` — ``{"buckets":
+    [(le_str, cum_count), ..., ("+Inf", count)], "sum": float, "count":
+    int}``. A missing / malformed snapshot renders an all-zero histogram
+    with just the ``+Inf`` bucket so the series is always present (a
+    dashboard panel reads a flat zero rather than flipping to "no data").
+    """
+    out = [
+        f"# HELP {name} {help_text}",
+        f"# TYPE {name} histogram",
+    ]
+    buckets: list[tuple[str, int]] = []
+    total = 0
+    total_sum = 0.0
+    if isinstance(hist, dict):
+        raw_buckets = hist.get("buckets")
+        if isinstance(raw_buckets, list):
+            buckets = raw_buckets
+        total = int(_coerce_number(hist.get("count")))
+        total_sum = _coerce_number(hist.get("sum"))
+    if not buckets:
+        buckets = [("+Inf", total)]
+    for le, cum in buckets:
+        out.append(f'{name}_bucket{{le="{_escape_label_value(str(le))}"}} {int(cum)}')
+    out.append(f"{name}_sum {total_sum}")
+    out.append(f"{name}_count {total}")
+    return out
+
+
+def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
+    """Render the issue #10 / #2 honest reuse + latency series.
+
+    Reads the ``honest_metrics`` snapshot folded into ``scheduler.get_stats()``.
+    The token-reuse counters (offered / computed / reused / prefill-kind)
+    go through the sticky accumulator so they can never decrease across a
+    scrape even if a future reset path touches them; the prefix-match
+    counter and the two histograms are rendered directly (the scheduler
+    never resets them). Every series is emitted even when the snapshot is
+    absent so dashboards stay flat-line rather than "no data".
+    """
+    hm = stats.get("honest_metrics")
+    if not isinstance(hm, dict):
+        hm = {}
+    out: list[str] = []
+
+    offered = int(_coerce_number(hm.get("prompt_tokens_offered")))
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_prompt_tokens_offered_total",
+            "counter",
+            (
+                "Cumulative prompt tokens OFFERED across admitted requests "
+                "(Sigma num_prompt_tokens). Honest sibling of "
+                "rapid_mlx_prompt_tokens_total, counted exactly once per "
+                "scheduled request at batch-install time."
+            ),
+            _cache_counter_accumulator.advance(
+                "rapid_mlx_prompt_tokens_offered_total", offered
+            ),
+        )
+    )
+    computed = int(_coerce_number(hm.get("prompt_tokens_computed")))
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_prompt_tokens_computed_total",
+            "counter",
+            (
+                "Cumulative prompt tokens the model actually forwarded "
+                "through prefill (Sigma num_prompt_tokens - cached_tokens). "
+                "offered - computed is the KV that was reused."
+            ),
+            _cache_counter_accumulator.advance(
+                "rapid_mlx_prompt_tokens_computed_total", computed
+            ),
+        )
+    )
+
+    reused = hm.get("prompt_tokens_reused")
+    if not isinstance(reused, dict):
+        reused = {}
+    out.append(
+        "# HELP rapid_mlx_prompt_tokens_reused_total Cumulative prompt "
+        "tokens served from an actually-installed KV cache, split by the "
+        "source the KV came from. The first token-level view of disk "
+        "restores (source=disk)."
+    )
+    out.append("# TYPE rapid_mlx_prompt_tokens_reused_total counter")
+    for source in ("memory", "disk"):
+        raw = int(_coerce_number(reused.get(source)))
+        monotonic = _cache_counter_accumulator.advance(
+            f"rapid_mlx_prompt_tokens_reused_total|{source}", raw
+        )
+        out.append(
+            f'rapid_mlx_prompt_tokens_reused_total{{source="{source}"}} {monotonic}'
+        )
+
+    prefill_kind = hm.get("prefill_kind")
+    if not isinstance(prefill_kind, dict):
+        prefill_kind = {}
+    out.append(
+        "# HELP rapid_mlx_prefill_kind_total Admitted requests by prefill "
+        "kind: cold (no cache), extend (partial prefix reused + tail "
+        "re-prefilled), exact (whole prompt reused)."
+    )
+    out.append("# TYPE rapid_mlx_prefill_kind_total counter")
+    for kind in ("cold", "extend", "exact"):
+        raw = int(_coerce_number(prefill_kind.get(kind)))
+        monotonic = _cache_counter_accumulator.advance(
+            f"rapid_mlx_prefill_kind_total|{kind}", raw
+        )
+        out.append(f'rapid_mlx_prefill_kind_total{{kind="{kind}"}} {monotonic}')
+
+    match = hm.get("prefix_cache_match")
+    if not isinstance(match, dict):
+        match = {}
+    out.append(
+        "# HELP rapid_mlx_prefix_cache_match_total In-memory prefix-cache "
+        "lookups by match type (issue #2). Sourced from the cache's "
+        "_last_match_type at fetch time."
+    )
+    out.append("# TYPE rapid_mlx_prefix_cache_match_total counter")
+    for match_type in ("exact", "prefix", "supersequence", "lcp", "miss"):
+        raw = int(_coerce_number(match.get(match_type)))
+        out.append(f'rapid_mlx_prefix_cache_match_total{{type="{match_type}"}} {raw}')
+
+    out.extend(
+        _render_histogram(
+            "rapid_mlx_ttft_seconds",
+            (
+                "Time to first token in seconds (first_token_time - "
+                "arrival_time). Fixed-bucket histogram."
+            ),
+            hm.get("ttft_seconds"),
+        )
+    )
+    out.extend(
+        _render_histogram(
+            "rapid_mlx_decode_tokens_per_second",
+            (
+                "Pure decode throughput: (num_output_tokens - 1) / "
+                "(t_last_token - first_token_time), outputs of >=2 tokens "
+                "only. Excludes prompt tokens and time-to-first-token by "
+                "construction. Fixed-bucket histogram."
+            ),
+            hm.get("decode_tokens_per_second"),
+        )
+    )
+    return out
+
+
 def _render_prometheus(cfg: Any) -> str:
     """Render the full /metrics body for a snapshot of cfg.engine state."""
     lines: list[str] = []
@@ -1599,6 +1756,55 @@ def _render_prometheus(cfg: Any) -> str:
             int(_coerce_number(kv_ckpt_stats.get("hook_errors"))),
         )
     )
+
+    # ---- R15-P4 disk-KV restore-reject reasons (issue #10) -------------
+    # ``disk_kv_checkpoint.get_stats()`` already tracks a per-reason tally
+    # of restores that were looked up but refused a validation guard and
+    # fell back to prefill — but it was never rendered. Surface it here so
+    # operators can see WHY disk restore is falling back (dtype drift vs a
+    # partial mismatch vs a memory-headroom skip all look identical in the
+    # loads counter, which never moved because the load was refused). The
+    # sub-dict already seeds every canonical reason at 0, so the series
+    # stay flat-line rather than "no data"; render whatever keys are
+    # present (an unknown reason is still counted under its own label).
+    raw_rejects = kv_ckpt_stats.get("restore_rejects")
+    if not isinstance(raw_rejects, dict):
+        raw_rejects = {}
+    # Seed the canonical reason set at 0 so the series ALWAYS has samples
+    # (a family with a HELP/TYPE header but no samples fails a strict
+    # prometheus_client parse and reads as "no data" on dashboards). The
+    # disk-KV module already seeds these when its stats flow through, but
+    # the engine may not carry a kv_checkpoint block at all — seed here
+    # too. Fall back to a local copy of the reason set if the module
+    # import is unavailable (partial install / mid-upgrade).
+    try:
+        from ..runtime.disk_kv_checkpoint import RESTORE_REJECT_REASONS
+    except Exception:
+        RESTORE_REJECT_REASONS = (
+            "offset_out_of_range",
+            "model_identity_mismatch",
+            "kv_dtype_mismatch",
+            "full_checkpoint_mismatch",
+            "memory_headroom",
+            "exception",
+        )
+    restore_rejects = {reason: 0 for reason in RESTORE_REJECT_REASONS}
+    restore_rejects.update(raw_rejects)
+    lines.append(
+        "# HELP rapid_mlx_kv_restore_reject_total Disk-KV checkpoint "
+        "restores looked up but refused a validation guard (and re-"
+        "prefilled instead), by reason (R15-P4 / issue #10)."
+    )
+    lines.append("# TYPE rapid_mlx_kv_restore_reject_total counter")
+    for reason in sorted(restore_rejects):
+        count = int(_coerce_number(restore_rejects.get(reason)))
+        lines.append(
+            f"rapid_mlx_kv_restore_reject_total{{reason="
+            f'"{_escape_label_value(str(reason))}"}} {count}'
+        )
+
+    # ---- Issues #10 / #2 honest reuse + latency series -----------------
+    lines.extend(_render_honest_metrics(stats))
 
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"
