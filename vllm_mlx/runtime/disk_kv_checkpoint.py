@@ -128,6 +128,26 @@ DEFAULT_CHECKPOINT_INTERVAL = 256
 DEFAULT_MAX_DISK_BYTES = 20 * 1024 * 1024 * 1024
 _DISK_CAP_ENV = "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES"
 
+# Low-water mark for cap eviction. When the total crosses ``max_bytes`` (high
+# water), enforce_disk_cap drains down to ``max_bytes * _DISK_CAP_LOW_WATER``
+# instead of stopping at the cap, so writes don't thrash a single-item eviction
+# at the boundary every time. 0.80 = clear to 80%. Env-overridable.
+_DISK_CAP_LOW_WATER_ENV = "RAPID_MLX_KV_CHECKPOINT_LOW_WATER"
+
+
+def _resolve_low_water() -> float:
+    raw = os.environ.get(_DISK_CAP_LOW_WATER_ENV)
+    if raw is None:
+        return 0.80
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.80
+    return v if (math.isfinite(v) and 0.0 < v <= 1.0) else 0.80
+
+
+_DISK_CAP_LOW_WATER = _resolve_low_water()
+
 # Models that require a FULL cache-state snapshot at each boundary — i.e. the
 # attention cache cannot be reconstructed from a position offset alone:
 #
@@ -1064,8 +1084,22 @@ def scan_checkpoints(root: str) -> list[tuple[str, float, int]]:
         return out
 
 
-def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, int]:
-    """Evict oldest checkpoints until the on-disk total fits in ``max_bytes``.
+def enforce_disk_cap(
+    root: str,
+    *,
+    max_bytes: int | None = None,
+    low_water_fraction: float = _DISK_CAP_LOW_WATER,
+) -> tuple[int, int]:
+    """Evict oldest checkpoints when the on-disk total exceeds ``max_bytes``.
+
+    Uses a high/low-water scheme: eviction TRIGGERS at ``max_bytes`` (the cap)
+    but, once triggered, evicts all the way down to ``max_bytes *
+    low_water_fraction`` (default 80%) rather than stopping the instant the
+    total slips back under the cap. Evicting only to the cap means every
+    subsequent write sits right at the boundary and re-triggers a single-item
+    eviction, thrashing: a hot checkpoint written and then immediately reclaimed.
+    Clearing to the low-water mark amortises eviction over many writes and keeps
+    a working set of recent checkpoints alive between reclaims.
 
     Returns ``(num_evicted, bytes_remaining)`` for the caller's log line.
     ``max_bytes`` defaults to :func:`resolve_max_disk_bytes`; pass ``0``
@@ -1082,6 +1116,16 @@ def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, i
         max_bytes = resolve_max_disk_bytes()
     max_bytes = max(0, int(max_bytes))
 
+    # Clamp the low-water fraction to a sane (0, 1] and derive the target the
+    # eviction loop drains down to. A fraction of 1.0 collapses back to
+    # evict-to-cap (no hysteresis); anything <=0 or non-finite is nonsense and
+    # falls back to the default.
+    if not (isinstance(low_water_fraction, (int, float))
+            and math.isfinite(low_water_fraction)
+            and 0.0 < low_water_fraction <= 1.0):
+        low_water_fraction = _DISK_CAP_LOW_WATER
+    low_water = int(max_bytes * low_water_fraction)
+
     with _DISK_LOCK:
         entries = scan_checkpoints(root)
         total = sum(size for _, _, size in entries)
@@ -1092,7 +1136,7 @@ def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, i
 
         evicted = 0
         for path, _mtime, size in entries:
-            if total <= max_bytes:
+            if total <= low_water:
                 break
             try:
                 os.unlink(path)
