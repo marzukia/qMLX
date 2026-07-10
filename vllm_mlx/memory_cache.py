@@ -1205,6 +1205,57 @@ def _dequantize_cache(cache: list[Any]) -> list[Any]:
     return result
 
 
+def _dequantize_cache_streaming(cache: list[Any]) -> list[Any]:
+    """Streaming int4->bf16 dequant: same result as ``_dequantize_cache`` but
+    layer-by-layer, with a per-layer ``mx.eval`` and an immediate drop of the
+    int4 source, to bound the transient memory peak.
+
+    ``_dequantize_cache`` builds every bf16 layer while still holding every
+    int4 layer. ``mx.dequantize`` is lazy, so each bf16 node pins its int4
+    inputs until the graph is evaluated, and the true transient peak is
+    int4(1x) + bf16(4x) = ~5x. Here each bf16 layer is materialized with
+    ``mx.eval`` (so it no longer references the int4 tensors) and its int4
+    source slot is nulled (``cache[i] = None``) before the next layer is
+    built, so the peak is bounded to the ~4x bf16 steady state plus a single
+    int4 layer.
+
+    This MUTATES ``cache`` (nulls each consumed int4 slot). That is the point
+    and it is safe on the restore path: ``_maybe_disk_restore`` loads a fresh
+    cache from disk per lookup and nothing else shares it. The returned list is
+    numerically identical to ``_dequantize_cache``'s output for the same input,
+    just materialized eagerly with the int4 inputs freed. Non-attention /
+    already-bf16 / ``None`` layers pass through unchanged, exactly as in
+    ``_dequantize_cache``.
+    """
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache, QuantizedKVCache
+
+    result: list[Any] = []
+    for i, layer in enumerate(cache):
+        if layer is None:
+            result.append(layer)
+            continue
+        if isinstance(layer, QuantizedKVCache) and layer.keys is not None:
+            kv = KVCache()
+            kv.keys = mx.dequantize(
+                *layer.keys, group_size=layer.group_size, bits=layer.bits
+            )
+            kv.values = mx.dequantize(
+                *layer.values, group_size=layer.group_size, bits=layer.bits
+            )
+            kv.offset = layer.offset
+            # Force materialization so the bf16 tensors stop referencing the
+            # int4 inputs, then drop the int4 layer before building the next
+            # one. This is what bounds the transient to ~4x + one int4 layer
+            # instead of the ~5x simultaneous int4+bf16 peak.
+            mx.eval(kv.keys, kv.values)
+            cache[i] = None
+            result.append(kv)
+        else:
+            result.append(layer)
+    return result
+
+
 def _turboquant_compress_cache(
     cache: list[Any],
     bits: int | None,

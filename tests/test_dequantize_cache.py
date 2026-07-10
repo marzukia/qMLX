@@ -102,3 +102,81 @@ def test_mixed_hybrid_cache_only_touches_quantized_layers():
 
     assert out[0] is recurrent  # recurrent layer untouched
     assert isinstance(out[1], KVCache) and not isinstance(out[1], QuantizedKVCache)
+
+
+# --- Streaming variant (fix/restore-headroom-streaming-dequant) ---------------
+# ``_dequantize_cache_streaming`` is the restore-install-path dequant. It must
+# produce a cache numerically IDENTICAL to ``_dequantize_cache`` (same values,
+# just materialized eagerly), but frees each int4 layer as it goes by nulling
+# the input slot (``cache[i] = None``), so the transient peak is ~4x + one
+# layer instead of the ~5x simultaneous int4+bf16 peak. That freeing is what
+# lets the headroom guard drop its multiplier 5x -> 4x.
+
+from vllm_mlx.memory_cache import _dequantize_cache_streaming  # noqa: E402
+
+
+def _mixed_fixture():
+    """A couple of QuantizedKVCache layers + a None + a plain KVCache."""
+    q0, _, _ = _quantized_layer(num_tokens=8, group_size=64)
+    q1, _, _ = _quantized_layer(num_tokens=13, group_size=64)
+    plain = KVCache()
+    plain.update_and_fetch(mx.zeros((1, 1, 4, 8)), mx.ones((1, 1, 4, 8)))
+    return [q0, None, q1, plain]
+
+
+def test_streaming_matches_dequantize_cache_numerically():
+    # Two independent-but-equal input lists: one for the reference, one for the
+    # streaming (mutating) variant. Same quantized tensors in both.
+    ref_in = _mixed_fixture()
+    stream_in = _mixed_fixture()
+
+    ref = _dequantize_cache(ref_in)
+    out = _dequantize_cache_streaming(stream_in)
+
+    assert len(out) == len(ref) == 4
+    # None slot passes through.
+    assert out[1] is None
+    # Quantized layers: identical values (bit-exact, same dequantize op).
+    for i in (0, 2):
+        assert isinstance(out[i], KVCache) and not isinstance(out[i], QuantizedKVCache)
+        assert out[i].offset == ref[i].offset
+        assert mx.array_equal(out[i].keys, ref[i].keys).item()
+        assert mx.array_equal(out[i].values, ref[i].values).item()
+    # Plain KVCache passes through by identity.
+    assert out[3] is stream_in[3]
+
+
+def test_streaming_frees_int4_input_slots():
+    stream_in = _mixed_fixture()
+    _dequantize_cache_streaming(stream_in)
+
+    # Consumed int4 layers nulled; None stays None; plain layer untouched.
+    assert stream_in[0] is None
+    assert stream_in[1] is None
+    assert stream_in[2] is None
+    assert isinstance(stream_in[3], KVCache)
+
+
+def test_streaming_offset_preserved():
+    q, _, _ = _quantized_layer(num_tokens=21)
+    out = _dequantize_cache_streaming([q])[0]
+    assert out.offset == 21
+
+
+def test_streaming_non_quantized_and_none_pass_through():
+    class _FakeRecurrent:
+        pass
+
+    recurrent = _FakeRecurrent()
+    plain = KVCache()
+    plain.update_and_fetch(mx.zeros((1, 1, 4, 8)), mx.zeros((1, 1, 4, 8)))
+
+    cache = [recurrent, None, plain]
+    out = _dequantize_cache_streaming(cache)
+
+    assert out[0] is recurrent
+    assert out[1] is None
+    assert out[2] is plain
+    # Non-int4 slots are NOT nulled (only consumed int4 layers are freed).
+    assert cache[0] is recurrent
+    assert cache[2] is plain
