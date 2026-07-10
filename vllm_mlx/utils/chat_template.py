@@ -831,6 +831,49 @@ def _inject_tools_into_messages(messages: list[dict], tools: list[dict]) -> list
     return msgs
 
 
+# Hy3 detection — case-insensitive family-boundary match against the
+# alias name, HF path, or local directory. Covers ``hy3-preview-4bit``,
+# ``mlx-community/Hy3-preview-4bit``, ``Hunyuan-3-Preview``,
+# ``hunyuan3``, ``hy-v3-experimental`` and any future ``Hy3-*`` or
+# ``Hunyuan-3-*`` re-upload without a per-repo allowlist.
+#
+# Codex round-3 NIT (PR #1070 finding #4): earlier form used unanchored
+# ``hunyuan.?3`` which happily matched substrings inside unrelated
+# names / paths (``not-hunyuanx3-test``, any local path containing
+# that character sequence). Tightening to family separators plus
+# start / end of string is precise enough for HF repo paths and CLI
+# alias forms while rejecting incidental substrings.
+#
+# codex R13 BLOCKING: the TRAILING class must NOT include ``/`` (mirrors the
+# same fix in ``model_auto_config.py`` R11) — else a non-Hy3 repo under an HF
+# org / local parent directory named ``hy3`` (``hy3/qwen-model``,
+# ``some/hy3/nested-qwen``) had ``reasoning_effort="low"`` injected because the
+# ``hy3`` PARENT segment matched. The family root must sit in the FINAL path
+# segment (the repo/alias name): a LEADING separator (``/`` ``_`` ``.`` ``-``)
+# may precede the root, but the root must be followed by end-of-string OR an
+# in-segment continuation (``_`` ``.`` ``-``), never a ``/`` path boundary.
+# Still matches ``mlx-community/Hy3-preview-4bit``, bare ``hy3``, ``org/hy3``,
+# ``Hunyuan-3-Preview``.
+_HY3_MODEL_NAME_RE = re.compile(
+    r"(?:^|[/_.\-])(?:hy3|hy-v3|hunyuan[-_]?3)(?:$|[_.\-])",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_hy3(model_name: str) -> bool:
+    """Return True when the model name is Tencent Hunyuan 3 / Hy3.
+
+    Used to gate the ``reasoning_effort='low'`` chat-template default
+    injection (fixes upstream PR #1211 comment 4927711484 factual-recall
+    regression). Kept as a narrowly-scoped helper so the eventual PR-3
+    (which may add explicit request-side ``reasoning_effort`` plumbing)
+    doesn't have to duplicate the pattern.
+    """
+    if not model_name:
+        return False
+    return bool(_HY3_MODEL_NAME_RE.search(model_name))
+
+
 def apply_chat_template(
     template_applicator,
     messages: list[dict],
@@ -941,16 +984,75 @@ def apply_chat_template(
     if tools:
         template_kwargs["tools"] = tools
 
+    # Hy3 chat_template.jinja defaults ``reasoning_effort=no_think`` which
+    # empirically returns "France" instead of "Paris" on factual-recall
+    # questions (upstream PR #1211 comment 4927711484, 2026-07-09 spike).
+    # Override the default to ``low`` for Hy3 so out-of-the-box requests
+    # produce correct answers without the client having to learn the
+    # template kwarg. Fires ONLY when:
+    #   * model_name signals Hy3 (separator-bounded, case-insensitive family
+    #     match via `_HY3_MODEL_NAME_RE` — not a loose substring)
+    #   * ``enable_thinking`` is not False (a client that explicitly
+    #     disabled thinking wants no_think — respect that intent)
+    # NOTE (codex R12 NIT): there is presently NO request-side
+    # ``reasoning_effort`` plumb-through — the value is template-only, and this
+    # override is the sole injection point. ``setdefault`` (not direct
+    # assignment) is deliberate future-proofing: IF a later revision plumbs a
+    # graded effort (``medium`` / ``high``) through and pre-populates
+    # ``template_kwargs["reasoning_effort"]`` upstream of this call, the
+    # explicit value survives instead of being silently overwritten. Until that
+    # plumb-through exists, ``setdefault`` behaves identically to assignment
+    # here (the key is never pre-populated). Non-Hy3 models never see the kwarg,
+    # so no risk of TypeError on other templates.
+    if _looks_like_hy3(model_name) and enable_thinking is not False:
+        template_kwargs.setdefault("reasoning_effort", "low")
+
     try:
         return template_applicator.apply_chat_template(messages, **template_kwargs)
     except TypeError as e:
-        # Step 1: retry without enable_thinking (many templates don't support it)
+        # Step 1: retry without enable_thinking (many templates don't support it).
+        # Codex round-1 NIT fix (PR #1070 finding #4): keep
+        # ``reasoning_effort`` on this first retry so a Hy3 checkpoint
+        # that supports ``reasoning_effort`` but rejects
+        # ``enable_thinking`` still gets the ``low`` override. Only drop
+        # ``reasoning_effort`` on the SECOND TypeError below, when we
+        # know the retry itself failed.
         logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
         template_kwargs.pop("enable_thinking", None)
         try:
             return template_applicator.apply_chat_template(messages, **template_kwargs)
-        except TypeError:
-            pass
+        except TypeError as e2:
+            # Second failure. Only drop ``reasoning_effort`` when the error
+            # actually names it (codex R8 BLOCKING: unconditionally popping it
+            # here loses the load-bearing Hy3 ``reasoning_effort="low"`` override
+            # when the REAL culprit is ``tools`` — the template rejects tools,
+            # not reasoning_effort, and the prompt-injection tools fallback below
+            # would then run without the override, regressing Hy3 factual
+            # recall). When the failure is about tools, keep reasoning_effort so
+            # the tools fallback preserves it.
+            # Match Python's ACTUAL unexpected-kwarg error text rather than a
+            # loose substring (codex R9 NIT: a template/user error that merely
+            # mentions ``reasoning_effort`` in another context must not trigger
+            # the drop). CPython raises: "<fn>() got an unexpected keyword
+            # argument 'reasoning_effort'".
+            _e2 = str(e2)
+            reasoning_effort_is_culprit = (
+                "unexpected keyword argument 'reasoning_effort'" in _e2
+                or 'unexpected keyword argument "reasoning_effort"' in _e2
+            )
+            if reasoning_effort_is_culprit:
+                logger.debug(
+                    "Chat template TypeError persisted, dropping "
+                    "reasoning_effort (named as unexpected kwarg): %s",
+                    e2,
+                )
+                template_kwargs.pop("reasoning_effort", None)
+            else:
+                logger.debug(
+                    "Chat template TypeError persisted (not reasoning_effort) — "
+                    "keeping reasoning_effort for the tools fallback: %s",
+                    e2,
+                )
 
         # Step 2: template also rejects tools — fall back to prompt injection.
         # Restore enable_thinking: the step-1 pop removed it because we

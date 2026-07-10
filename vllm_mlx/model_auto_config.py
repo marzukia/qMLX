@@ -554,10 +554,38 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # Tencent Hy3 / Hunyuan 3 (295B/21B active MoE, 166 GB at 4-bit) is
     # served via the vendored ``vllm_mlx/models/hy_v3.py`` shim (PR
     # #1069) — Ultra-only launch, gated by the ``min_memory_gb: 192``
-    # metadata on the ``hy3-preview-4bit`` alias. Tool + reasoning
-    # parsers land in the PR-2 follow-up; parsers stay ``None`` here
-    # so the auto-config resolver treats HY3 as an unknown family
-    # until PR-2 wires the defensive tag-parser.
+    # metadata on the ``hy3-preview-4bit`` alias. PR-2 (#1069 follow-up)
+    # wires the suffix-tolerant ``hy_v3`` tool + reasoning parsers so a
+    # direct HF path serve (``mlx-community/Hy3-preview-4bit``, or any
+    # future Hy3 quant re-upload) auto-configures without requiring the
+    # alias-profile lookup path.
+    #
+    # Codex round-4 BLOCKING #1 (PR #1070): the earlier form was
+    # unanchored (``hy3|hy-v3|hunyuan.?3``), matching substrings inside
+    # unrelated HF paths (``mymodelhy3embedded``, ``not-hunyuanx3-test``)
+    # and auto-wiring them to the Hy3 parsers. Tighten to a family-boundary
+    # form: start-of-string OR a path/name separator (``/`` ``_`` ``.`` ``-``)
+    # precedes the family root.
+    #
+    # codex R11 BLOCKING: the TRAILING class must NOT include ``/`` — else a
+    # non-Hy3 model living under an HF org / local parent directory named
+    # ``hy3`` (``hy3/qwen-model``, ``some/hy3/nested-qwen``) was auto-wired to
+    # the Hy3 parsers because the ``hy3`` PARENT segment matched. The family
+    # root must sit in the FINAL path segment (the repo/alias name), so the
+    # root is followed by end-of-string OR an in-segment continuation
+    # (``_`` ``.`` ``-``), never a ``/`` path boundary. This still matches
+    # ``mlx-community/Hy3-preview-4bit``, bare ``hy3``, and ``org/hy3`` while
+    # rejecting a mere parent/namespace segment.
+    (
+        re.compile(
+            r"(?:^|[/_.\-])(?:hy3|hy-v3|hunyuan[-_]?3)(?:$|[_.\-])",
+            re.IGNORECASE,
+        ),
+        ModelConfig(
+            tool_call_parser="hy_v3",
+            reasoning_parser="hy_v3",
+        ),
+    ),
     # Pure recurrent / linear-attention families (Mamba, Jamba, RWKV).
     # Tool/reasoning parsers unknown → leave defaults; capability flags
     # block batched-verify-style optimizations.

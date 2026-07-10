@@ -92,6 +92,15 @@ MATRIX_EXEMPT: dict[str, str] = {
     "functionary": "TODO: add Functionary-medium model to golden_models",
     "xlam": "TODO: add xLAM model to golden_models",
     "seed_oss": "TODO: add Seed-OSS model to golden_models",
+    "hy_v3": (
+        "TODO: add Hy3-preview-4bit to golden_models once we secure a "
+        "192 GB+ M3 Ultra CI slot (166 GB weights, Ultra-only launch; "
+        "min_memory_gb=192 on the alias). Suffix-tolerant + defensive "
+        "malformed-close unit coverage lives in "
+        "tests/test_hy_v3_tool_parser.py and the streaming parity "
+        "invariant is pinned in tests/test_tool_call_streaming_parity.py."
+    ),
+    "hy3": "alias of hy_v3",
     # UI-TARS (ByteDance) — GUI-agent VLM. Adding a real golden_models
     # entry requires running a Qwen2-VL / Qwen2.5-VL backbone in the
     # pr_validate matrix (mlx-vlm path, not the plain mlx-lm path the
