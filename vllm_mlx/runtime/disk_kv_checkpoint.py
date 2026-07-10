@@ -1075,7 +1075,19 @@ def scan_checkpoints(root: str) -> list[tuple[str, float, int]]:
                         stat = child.stat(follow_symlinks=False)
                     except OSError:
                         continue
-                    out.append((child.path, stat.st_mtime, stat.st_size))
+                    # Fold the paired tokens blob (.tokens.bin) bytes into
+                    # the reported size so the disk-cap accounting reflects
+                    # true disk use (#9). The tokens blob is what makes a
+                    # checkpoint matchable/restorable; a missing blob means a
+                    # tokens-less (unmatchable) checkpoint that contributes
+                    # only its safetensors bytes.
+                    size = stat.st_size
+                    tok_blob = child.path.replace(_CHECKPOINT_EXT, _TOKENS_EXT)
+                    try:
+                        size += os.stat(tok_blob).st_size
+                    except OSError:
+                        pass
+                    out.append((child.path, stat.st_mtime, size))
             except OSError:
                 # Per-request dir vanished mid-scan — fine, move on.
                 continue
@@ -1134,8 +1146,26 @@ def enforce_disk_cap(
                 _STATS.bytes = total
             return 0, total
 
+        # Matchable-aware eviction order (#9). A checkpoint is "matchable"
+        # iff it has a paired tokens blob (``.tokens.bin``) — that blob is
+        # what the content index is built from and what restore byte-verifies
+        # against, so a tokens-less checkpoint (the interval hook's output) is
+        # dead weight for restore. Evict every UNMATCHABLE checkpoint before
+        # ANY matchable one, regardless of mtime, so the interval-write flood
+        # can't reclaim the received-prompt boundary checkpoints the next turn
+        # depends on. Within each class keep ``scan_checkpoints``' existing
+        # oldest-mtime-first order.
+        unmatchable: list[tuple[str, float, int]] = []
+        matchable: list[tuple[str, float, int]] = []
+        for row in entries:
+            tok_blob = row[0].replace(_CHECKPOINT_EXT, _TOKENS_EXT)
+            if os.path.exists(tok_blob):
+                matchable.append(row)
+            else:
+                unmatchable.append(row)
+
         evicted = 0
-        for path, _mtime, size in entries:
+        for path, _mtime, size in (*unmatchable, *matchable):
             if total <= low_water:
                 break
             try:

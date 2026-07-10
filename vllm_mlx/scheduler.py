@@ -5668,6 +5668,25 @@ class Scheduler:
         if interval is None or interval <= 0:
             return
 
+        # Change 2(a) / issue #9: when disk-KV RESTORE is enabled, skip the
+        # interval hook entirely. Its snapshots carry no ``tokens_key``, so
+        # they are never matchable, never enter the content index, and are
+        # never consumed by ``_maybe_disk_restore`` (the sole restore
+        # consumer, which only loads tokens-blob-bearing boundary checkpoints
+        # via the content index). But they DO burn the disk cap and, before
+        # this fix, evicted the received-prompt boundary checkpoints the next
+        # turn needs, cold-filling the cache on every multi-step turn. The
+        # store mirror (``_disk_persist_mirror``, keyed on prompt_token_ids)
+        # already deposits the matchable boundary checkpoint the restore path
+        # uses, so gating the interval hook off loses nothing restore relies
+        # on. The only capability it forfeits is crash-resume of an in-flight
+        # generation, which nothing reads (grep: no loader consumes interval
+        # bodies; restore is content-index/matchable-only). Change 1 is the
+        # belt-and-suspenders: any tokens-less body that does reach disk is
+        # evicted before any matchable checkpoint.
+        if getattr(self.config, "kv_disk_restore_enabled", False):
+            return
+
         # Lazy import keeps the module-load cost of vllm_mlx.scheduler
         # zero when the disk checkpoint feature is never used (the runtime
         # subpackage imports mlx_lm symbols that aren't free).

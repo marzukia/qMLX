@@ -720,3 +720,130 @@ def test_request_checkpoint_state_default_interval():
     assert state.last_checkpoint_at == 0
     assert state.requires_full_checkpoint is False
     assert state.kv_dtype == "bf16"
+
+
+# ---------------------------------------------------------------------------
+# Matchable-aware disk-cap eviction (#9)
+# ---------------------------------------------------------------------------
+
+
+def _write_matchable(root: str, req: str, tokens: list[int]) -> str:
+    """Write a checkpoint WITH a tokens blob (matchable / restorable)."""
+    offset = len(tokens)
+    path = _dkc.write_checkpoint(
+        _seed_kv_cache(num_tokens=offset),
+        root=root,
+        req_hash=_dkc.request_hash(req, model_name="m"),
+        token_offset=offset,
+        kv_dtype="bf16",
+        model_name="m",
+        extra_metadata={"tokens_key": list(tokens), "save_uuid": "u-" + req},
+    )
+    assert path is not None
+    # Sanity: the paired tokens blob (the matchable predicate) exists.
+    assert os.path.exists(path.replace(".safetensors", ".tokens.bin"))
+    return path
+
+
+def _write_tokensless(root: str, req: str, offset: int = 256) -> str:
+    """Write an interval-hook-style checkpoint WITHOUT a tokens blob."""
+    path = _dkc.write_checkpoint(
+        _seed_kv_cache(num_tokens=8),
+        root=root,
+        req_hash=_dkc.request_hash(req, model_name="m"),
+        token_offset=offset,
+        kv_dtype="bf16",
+        model_name="m",
+    )
+    assert path is not None
+    assert not os.path.exists(path.replace(".safetensors", ".tokens.bin"))
+    return path
+
+
+def test_disk_cap_evicts_unmatchable_before_matchable_regardless_of_age(root: str):
+    """Class beats age: a tokens-less (interval-hook) checkpoint is evicted
+    before a matchable (tokens-blob-bearing) boundary checkpoint even when
+    the matchable one is OLDER.
+
+    This is the core of issue #9 — the interval-write flood must never
+    reclaim the received-prompt boundary checkpoints the next turn's restore
+    depends on. Before the fix, ``enforce_disk_cap`` evicted strictly
+    oldest-mtime-first, so an old-but-precious boundary checkpoint was the
+    FIRST thing dropped.
+    """
+    _dkc.reset_content_index_for_tests()
+    matchable = _write_matchable(root, "boundary", tokens=list(range(1, 33)))
+    tokensless = _write_tokensless(root, "interval", offset=256)
+
+    # Make the MATCHABLE one strictly OLDER so a naive oldest-first policy
+    # would evict it first. The class rule must override the age rule.
+    old = os.path.getmtime(tokensless) - 120.0
+    os.utime(matchable, (old, old))
+
+    rows = _dkc.scan_checkpoints(root)
+    total = sum(s for _, _, s in rows)
+    # Cap one byte under the total; low_water=1.0 disables the drain so
+    # exactly one checkpoint is evicted — proving WHICH class goes first.
+    evicted, remaining = _dkc.enforce_disk_cap(
+        root, max_bytes=total - 1, low_water_fraction=1.0
+    )
+    assert evicted == 1
+    # The tokens-less (newer) one is gone; the matchable (older) one survives.
+    assert not os.path.exists(tokensless)
+    assert os.path.exists(matchable)
+    assert os.path.exists(matchable.replace(".safetensors", ".tokens.bin"))
+
+
+def test_scan_checkpoints_folds_tokens_blob_bytes_into_size(root: str):
+    """The disk-cap accounting must count the paired ``.tokens.bin`` bytes,
+    not just the safetensors body — otherwise the cap under-reports true disk
+    use and a matchable checkpoint looks smaller than it is.
+    """
+    _dkc.reset_content_index_for_tests()
+    path = _write_matchable(root, "acct", tokens=list(range(1, 65)))
+    body = os.path.getsize(path)
+    tok = os.path.getsize(path.replace(".safetensors", ".tokens.bin"))
+    rows = _dkc.scan_checkpoints(root)
+    assert len(rows) == 1
+    # Reported size == body + tokens blob.
+    assert rows[0][2] == body + tok
+
+
+def test_content_index_lookup_prefers_prompt_boundary_over_think_stripped(
+    root: str,
+):
+    """Think-strip divergence: a generated-output checkpoint keyed on
+    ``prompt + <think></think> + <tool_call>`` is NEVER a prefix of the next
+    prompt (the client strips ``<think>...</think>`` before echoing it back),
+    so a lookup for ``prompt + <tool_call>`` must return the prompt-boundary
+    checkpoint (a true prefix), not the generated-output one. This is why
+    keying checkpoints on generated output does not help (#9).
+    """
+    _dkc.reset_content_index_for_tests()
+
+    prompt = [1, 2, 3, 4]
+    think = [90, 91]  # <think></think>
+    tool_call = [50, 51]
+
+    # Boundary checkpoint: keyed on the received prompt only.
+    _write_matchable(root, "prompt-boundary", tokens=prompt)
+    # Generated-output checkpoint: prompt + think + tool_call.
+    gen_key = prompt + think + tool_call
+    _write_matchable(root, "gen-output", tokens=gen_key)
+
+    # Next turn's prompt: the client stripped the think block, so the tool
+    # result follows the prompt directly.
+    query = prompt + tool_call + [77, 78]  # + tool_result tokens
+
+    loaded = _dkc.get_content_index().lookup(query)
+    assert loaded is not None
+    # The prompt-boundary checkpoint (offset == len(prompt)) wins — the
+    # generated-output key is not a prefix of the think-stripped query.
+    assert loaded.token_offset == len(prompt)
+
+    # And the diagnostic divergence lands exactly at the assistant-content
+    # boundary (first token past the shared prompt).
+    div = _dkc.get_content_index().nearest_divergence(query)
+    assert div is not None
+    _best_off, divergence_index, _best_key = div
+    assert divergence_index == len(prompt)

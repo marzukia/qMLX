@@ -315,3 +315,101 @@ def test_safe_disk_checkpoint_records_silent_failure(
     # double-check the second call ticked again, so a "swallows but
     # forgets to record" regression also fails here.
     assert _dkc.get_stats()["hook_errors"] == after + 1
+
+
+# ---------------------------------------------------------------------------
+# 5) Multi-step boundary checkpoint survives the interval-write flood (#9)
+# ---------------------------------------------------------------------------
+
+
+def test_multistep_boundary_survives_interval_flood(isolated_root: Path) -> None:
+    """The received-prompt boundary checkpoint (written by the store mirror,
+    keyed on prompt_token_ids) must survive a flood of tokens-less interval
+    writes and still be a true-prefix restore hit for the NEXT turn's prompt.
+
+    Reproduces issue #9: a multi-step turn generates long output, firing many
+    interval writes; before the matchable-aware eviction those tokens-less
+    bodies evicted the boundary checkpoint the next turn needed, cold-filling
+    the cache.
+    """
+    _dkc.reset_content_index_for_tests()
+    sched = _make_scheduler(interval=256)
+
+    # Deposit the boundary checkpoint via the real store mirror (matchable:
+    # carries tokens_key == prompt, so it is indexed + restorable).
+    prompt = list(range(1000, 1000 + 256))
+    sched._disk_persist_mirror(prompt, _seed_kv_cache(num_tokens=256))
+
+    tok_blobs = list(isolated_root.rglob("*.tokens.bin"))
+    assert len(tok_blobs) == 1, f"mirror did not deposit boundary blob: {tok_blobs}"
+    boundary_body = Path(str(tok_blobs[0]).replace(".tokens.bin", ".safetensors"))
+    matchable_size = boundary_body.stat().st_size + tok_blobs[0].stat().st_size
+
+    # Flood with tokens-less interval-style checkpoints (no tokens_key).
+    root = str(isolated_root)
+    for i in range(8):
+        p = _dkc.write_checkpoint(
+            _seed_kv_cache(num_tokens=8),
+            root=root,
+            req_hash=_dkc.request_hash(f"interval-{i}", model_name="m"),
+            token_offset=256,
+            kv_dtype="bf16",
+            model_name="m",
+        )
+        assert p is not None
+
+    # Enforce a cap that would evict under a naive oldest-first policy. With
+    # low_water=1.0 the loop drains to exactly the cap, and the matchable
+    # boundary (evicted last, by class) is left untouched.
+    _dkc.enforce_disk_cap(root, max_bytes=matchable_size, low_water_fraction=1.0)
+
+    # Boundary checkpoint (body + tokens blob) survived.
+    assert boundary_body.exists()
+    assert tok_blobs[0].exists()
+
+    # And the NEXT turn's prompt (prompt + tool_call + tool_result tokens)
+    # still resolves to it as a true-prefix restore hit.
+    query = prompt + [50, 51, 77, 78]
+    loaded = _dkc.get_content_index().lookup(query)
+    assert loaded is not None
+    assert loaded.token_offset == len(prompt)
+
+
+# ---------------------------------------------------------------------------
+# 6) Interval hook is gated off when disk-KV restore is enabled (Change 2a)
+# ---------------------------------------------------------------------------
+
+
+def test_interval_hook_skipped_when_restore_enabled(isolated_root: Path) -> None:
+    """With ``kv_disk_restore_enabled`` true, the interval hook must not
+    write. Its tokens-less bodies are never matchable / never consumed by
+    restore, and pre-#9 they evicted the boundary checkpoints restore needs.
+
+    The skip is an EXPECTED early-return, so it must not bump ``hook_errors``.
+    """
+    sched = _make_scheduler(interval=256)
+    sched.config.kv_disk_restore_enabled = True
+    req = _make_request(num_tokens=512)
+    _attach_stub_batch_generator(sched, req)
+
+    sched._maybe_disk_checkpoint(req, response=SimpleNamespace())
+
+    stats = _dkc.get_stats()
+    assert stats["writes"] == 0
+    assert stats["hook_errors"] == 0  # expected skip, not an error
+    assert not list(isolated_root.rglob("*.safetensors"))
+
+
+def test_interval_hook_still_writes_when_restore_disabled(isolated_root: Path) -> None:
+    """Control for the gate: with restore DISABLED (the default), the interval
+    hook still writes at the boundary — the gate must key off the restore
+    flag only, not disable the hook wholesale.
+    """
+    sched = _make_scheduler(interval=256)
+    assert sched.config.kv_disk_restore_enabled is False
+    req = _make_request(num_tokens=512)
+    _attach_stub_batch_generator(sched, req)
+
+    sched._maybe_disk_checkpoint(req, response=SimpleNamespace())
+
+    assert _dkc.get_stats()["writes"] == 1
