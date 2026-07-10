@@ -1,6 +1,6 @@
-# Rapid-MLX Doctor — regression harness
+# qMLX Doctor — regression harness
 
-A four-tier "code health checkup" for Rapid-MLX:
+A four-tier "code health checkup" for qMLX:
 
 ```
 rapid-mlx doctor smoke       # ~2 min,  no model         — pre-commit

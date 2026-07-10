@@ -1,12 +1,12 @@
 # AI Client Compatibility
 
-Rapid-MLX is compatible with any AI client that supports the OpenAI API
+qMLX is compatible with any AI client that supports the OpenAI API
 or Anthropic Messages API. This guide catalogs known-compatible clients,
 provides configuration examples, and tracks community-reported results.
 
 ## API Compatibility Surface
 
-Rapid-MLX exposes two primary interfaces:
+qMLX exposes two primary interfaces:
 
 | API | Endpoints | Use Case |
 |-----|-----------|----------|
@@ -85,7 +85,7 @@ These clients have been verified through automated integration tests
 ## Clients to Test
 
 The following clients support OpenAI-compatible APIs but have not yet been
-verified against Rapid-MLX. If you have Apple Silicon and can test one,
+verified against qMLX. If you have Apple Silicon and can test one,
 see [Testing Methodology](#testing-methodology).
 
 - **CrewAI** (Framework) — `OPENAI_API_BASE=http://localhost:8000/v1`
@@ -179,9 +179,9 @@ string `not-needed`; use `sk-local` or `rapid-mlx` instead.
 - If the client requires a specific model ID from the list endpoint,
   the `/v1/models` response returns the loaded model's ID
 
-## Rapid-MLX agents CLI
+## qMLX agents CLI
 
-Rapid-MLX ships a built-in agent manager that can auto-configure
+qMLX ships a built-in agent manager that can auto-configure
 several popular coding agents:
 
 ```bash

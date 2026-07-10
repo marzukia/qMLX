@@ -1,4 +1,4 @@
-# Contributing to Rapid-MLX
+# Contributing to qMLX
 
 Thanks for your interest! Here's how to get started.
 
@@ -7,7 +7,7 @@ Thanks for your interest! Here's how to get started.
 ```bash
 # Clone and install in dev mode
 git clone https://github.com/raullenchai/Rapid-MLX.git
-cd Rapid-MLX
+cd qMLX
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -47,7 +47,7 @@ Most tests run without a model. Tests in `tests/test_event_loop.py` require a ru
 
 The PR template asks two questions up front: *why is this needed?* and *was AI used?* These aren't gatekeeping for the sake of it.
 
-- **Necessity** — Rapid-MLX auto-publishes to PyPI + Homebrew on every version-bump merge. Drive-by refactors and "increases coverage" PRs cost real review time and add real blast-radius risk for zero user value. PRs whose only justification is "looks cleaner" / "future-proofs" / "good practice" may be closed. **What unlocks merge:** a concrete user-visible reason ("fixes #123", "restores N% TPS", "patches CVE"), OR concrete repository maintenance value (typo / broken link / docs clarification, alias / metadata bookkeeping, deleting genuinely-dead code, CI/tooling fixes that reduce maintainer toil). The carveout is intentional — typo PRs are welcome, "polish for polish's sake" isn't.
+- **Necessity** — qMLX auto-publishes to PyPI + Homebrew on every version-bump merge. Drive-by refactors and "increases coverage" PRs cost real review time and add real blast-radius risk for zero user value. PRs whose only justification is "looks cleaner" / "future-proofs" / "good practice" may be closed. **What unlocks merge:** a concrete user-visible reason ("fixes #123", "restores N% TPS", "patches CVE"), OR concrete repository maintenance value (typo / broken link / docs clarification, alias / metadata bookkeeping, deleting genuinely-dead code, CI/tooling fixes that reduce maintainer toil). The carveout is intentional — typo PRs are welcome, "polish for polish's sake" isn't.
 
 - **AI assistance disclosure** — AI-authored code is welcome (we ship a lot of it ourselves). What we ask is **honesty about the role and the verification**: which files were AI-touched, what the AI did (wrote / reviewed / suggested), and how you confirmed the output is correct. We **don't ask for prompt transcripts**. "Fully human" and "Claude wrote tests, I wrote the impl and ran make check" are both fine; silence is treated more cautiously than disclosure. The standard: **you should be able to explain the intent, risk, and behavior of every non-generated change in your PR on demand**. For generated / boilerplate sections (scaffold, lockfile, framework hooks), identify them and describe how you verified them.
 
@@ -112,7 +112,7 @@ It's still new. File an issue with `[pr_validate]` in the title and the artifact
 
 - **Classify a model into a SuffixDecoding tier** — After adding a `ModelConfig` entry, run `python3.12 scripts/bench_suffix_decoding_integrated.py --model <id>` (10-20 min). Paste the resulting `suffix_decoding_tier=` and `suffix_bench_speedup=` into the entry. Reference the bench output in your PR. See [docs/suffix_decoding_eligibility.md](docs/suffix_decoding_eligibility.md).
 
-- **Verify client integrations** — Test Rapid-MLX with your favorite AI tool (Cursor, Continue, Aider, LangChain, etc.) and report results.
+- **Verify client integrations** — Test qMLX with your favorite AI tool (Cursor, Continue, Aider, LangChain, etc.) and report results.
 
 ### 🔴 Advanced
 
@@ -136,7 +136,7 @@ That's it. Find the MLX model on [HuggingFace mlx-community](https://huggingface
 
 ## How to Add Parser Auto-Detection
 
-When users serve a model without `--tool-call-parser`, Rapid-MLX auto-detects the right parser from the model name.
+When users serve a model without `--tool-call-parser`, qMLX auto-detects the right parser from the model name.
 
 **File:** `vllm_mlx/model_auto_config.py`
 

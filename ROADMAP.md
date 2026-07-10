@@ -1,6 +1,6 @@
-# Rapid-MLX Optimization Roadmap
+# qMLX Optimization Roadmap
 
-> Goal: For every popular model on Apple Silicon, Rapid-MLX should be the fastest engine — **zero configuration required**. Users pick a model, we auto-apply the best optimizations.
+> Goal: For every popular model on Apple Silicon, qMLX should be the fastest engine — **zero configuration required**. Users pick a model, we auto-apply the best optimizations.
 
 ## Strategy
 
@@ -98,7 +98,7 @@ The goal is to publish this table in README. Each cell = tok/s decode speed on t
 
 ### Decode Speed (tok/s) — Apple M3 Ultra 256GB
 
-| Model | Quant | Rapid-MLX | Upstream | Ollama | llama.cpp | mlx-lm | Best Speedup |
+| Model | Quant | qMLX | Upstream | Ollama | llama.cpp | mlx-lm | Best Speedup |
 |-------|-------|----------|----------|--------|-----------|--------|-------------|
 | Phi-4 Mini 14B | 4bit | **174** | 170 | 51 | 55 | 77 | **3.4x** vs Ollama |
 | Qwen3.5-4B | 4bit | **~158** | 155 | - | - | 168 | ~1.0x |
@@ -120,7 +120,7 @@ The goal is to publish this table in README. Each cell = tok/s decode speed on t
 
 ### TTFT (cached) — Prompt Cache Advantage
 
-| Model | Rapid-MLX | Upstream | Ollama | llama.cpp | Δ vs Upstream |
+| Model | qMLX | Upstream | Ollama | llama.cpp | Δ vs Upstream |
 |-------|----------|----------|--------|-----------|--------------|
 | Hermes-3-Llama 8B | **0.080s** | 0.106s | - | - | **1.3x** |
 | Qwen3-Coder-Next 80B (4bit) | **0.099s** | 0.141s | - | - | **1.4x** |
@@ -135,7 +135,7 @@ The goal is to publish this table in README. Each cell = tok/s decode speed on t
 
 ### Tool Calling
 
-| Model | Rapid-MLX | Ollama | llama.cpp |
+| Model | qMLX | Ollama | llama.cpp |
 |-------|----------|--------|-----------|
 | Qwen3.5-9B | **100%** | 100% | N/A |
 | Qwen3.5-4B | **100%** | - | - |
@@ -162,18 +162,18 @@ The goal is to publish this table in README. Each cell = tok/s decode speed on t
 - Starting with Qwen3.5-9B as first model to profile + benchmark
 
 ### 2026-03-13: Qwen3.5-9B benchmark complete
-- **Rapid-MLX: 108 tok/s decode, 0.14s cached TTFT**
+- **qMLX: 108 tok/s decode, 0.14s cached TTFT**
 - **Ollama: 41 tok/s decode, 0.28s cached TTFT**
 - **Result: 2.7x faster decode, 2.0x faster multi-turn TTFT**
 - Hardware: Mac Studio M3 Ultra 256GB
 - Quantization: both 4-bit
 
 ### 2026-03-14: Multi-model benchmark sweep
-- Benchmarked 8 models across 4 engines (Rapid-MLX, Ollama, llama.cpp, mlx-lm)
+- Benchmarked 8 models across 4 engines (qMLX, Ollama, llama.cpp, mlx-lm)
 - **Key wins**: Phi-4 174 tok/s (3.4x vs Ollama), GPT-OSS 123 tok/s (1.6x vs mlx-lm), Qwen3.5-9B 109 tok/s (4.2x vs Ollama)
 - **Tool calling**: Qwen family 100% perfect; Phi-4/Mistral/Gemma/GPT-OSS all 0%
 - **Root cause for 0% tool calls**: Mistral/Gemma chat templates don't accept `tools` param (silently stripped); Phi-4/GPT-OSS templates support tools but models don't produce them
-- **Gemma 3**: Rapid-MLX slower than mlx-lm (49 vs 73) — VLM pipeline overhead
+- **Gemma 3**: qMLX slower than mlx-lm (49 vs 73) — VLM pipeline overhead
 - **llama.cpp**: Can't load Qwen3.5 (rope.dimension_sections mismatch); Phi-4 works at 55 tok/s with 80% tool calls
 - **Llama-4-Scout**: Failed with dimension mismatch (mlx-lm compatibility)
 - **GLM-4.7-Flash**: Loaded from external SSD, 60 tok/s, 100% tool calling
@@ -187,4 +187,4 @@ The goal is to publish this table in README. Each cell = tok/s decode speed on t
 - **Hermes-3**: Fast (123 tok/s) but 0% tool calling despite Hermes fine-tune
 - **Devstral**: Tool calls produced with mistral parser but `[ARGS]` suffix bug — needs parser fix
 - **GLM-4.5-Air**: 100% tool calling but long decode broken (0.1 tok/s — infinite thinking loop)
-- Total: 15 models benchmarked on Rapid-MLX, 13 with mlx-lm comparison
+- Total: 15 models benchmarked on qMLX, 13 with mlx-lm comparison

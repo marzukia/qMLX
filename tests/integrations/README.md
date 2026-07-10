@@ -1,9 +1,9 @@
 # Integration tests
 
-End-to-end tests that exercise Rapid-MLX from a real client library.
+End-to-end tests that exercise qMLX from a real client library.
 
 These are **not** run as part of `pytest tests/` because they need a running
-Rapid-MLX server on `http://localhost:8000` and a loaded model — the fixtures
+qMLX server on `http://localhost:8000` and a loaded model — the fixtures
 `skip` cells when no server is reachable, so a naïve `pytest tests/` still
 comes out green.
 

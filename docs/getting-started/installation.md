@@ -52,7 +52,7 @@ first: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
 
 ```bash
 git clone https://github.com/raullenchai/Rapid-MLX.git
-cd Rapid-MLX
+cd qMLX
 pip install -e .
 ```
 

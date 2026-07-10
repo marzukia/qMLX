@@ -50,7 +50,7 @@ model = "default"            # or any rapid-mlx alias
 model_provider = "rapid-mlx"
 
 [model_providers.rapid-mlx]
-name = "Rapid-MLX (local)"
+name = "qMLX (local)"
 base_url = "http://localhost:8000/v1"
 ```
 
@@ -65,7 +65,7 @@ rejects `api_key = "..."` as an unknown field. Use `env_key` instead:
 
 ```toml
 [model_providers.rapid-mlx]
-name = "Rapid-MLX (local)"
+name = "qMLX (local)"
 base_url = "http://localhost:8000/v1"
 env_key = "RAPID_MLX_API_KEY"
 ```

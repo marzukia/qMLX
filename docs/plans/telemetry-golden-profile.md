@@ -339,7 +339,7 @@ breaks the deal we made when we asked them to opt in.
    rate-limit KV key and discarded, the UA is read for transport
    attribution and then dropped on the floor. Pinned at the Worker
    layer (vitest tests in
-   `Rapid-MLX-telemetry-worker/test/worker.test.js`).
+   `qMLX-telemetry-worker/test/worker.test.js`).
 7. **No header forwarding.** Worker never copies a request header
    into the R2 object body.
 8. **Opaque rotatable identity.** `client_id` is a local UUID4. User

@@ -75,7 +75,7 @@ Z. Zhong et al. (CMU) | [arXiv](https://arxiv.org/abs/2411.04975) | [Project](ht
 > Model-free speculative decoding using suffix trees built from past outputs; exploits repetitive patterns in agentic workloads.
 > Expected improvement: Up to 5.3x; 2.8x faster than EAGLE-2/3 on agentic benchmarks
 > Apple Silicon relevance: High -- no draft model memory needed
-> Rapid-MLX status: exposed only as an explicit flag. Local deep benches
+> qMLX status: exposed only as an explicit flag. Local deep benches
 > showed gains on Gemma 4 high-overlap copy/code/tool-XML traffic, but
 > regressions on GPT-OSS and Qwen3.6, so it is not a general-purpose
 > accelerator.

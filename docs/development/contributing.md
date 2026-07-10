@@ -7,7 +7,7 @@ We welcome contributions to rapid-mlx!
 ```bash
 # Clone the repository
 git clone https://github.com/raullenchai/Rapid-MLX.git
-cd Rapid-MLX
+cd qMLX
 
 # Install with dev dependencies
 pip install -e ".[dev]"
