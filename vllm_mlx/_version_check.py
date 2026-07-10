@@ -59,6 +59,12 @@ def _disabled() -> bool:
     benefit from a version warning. Only show when stderr is a TTY and
     the user hasn't explicitly opted out.
     """
+    # qMLX fork: no release cadence and no wish to nag users toward the
+    # upstream project, so the version check is disabled outright.
+    return True
+    # qMLX fork: no release cadence and no wish to nag users toward the
+    # upstream project, so the version check is disabled outright.
+    return True
     if os.environ.get("RAPID_MLX_DISABLE_VERSION_CHECK"):
         return True
     if os.environ.get("CI"):

@@ -85,7 +85,10 @@ def endpoint() -> str | None:
     """
     raw = os.environ.get(ENDPOINT_ENV)
     if raw is None:
-        return DEFAULT_ENDPOINT
+        # qMLX fork: no default collector (upstream's telemetry.rapidmlx.com
+        # is not ours). Telemetry only goes somewhere if the operator sets
+        # RAPID_MLX_TELEMETRY_ENDPOINT to their own endpoint.
+        return None
     if _is_localhost_override(raw):
         return raw
     return None
