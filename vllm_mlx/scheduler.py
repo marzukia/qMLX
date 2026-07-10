@@ -5531,7 +5531,23 @@ class Scheduler:
             # All guards passed — install the persisted KV tail exactly like
             # the in-memory hit branch does (prompt_cache + cached_tokens +
             # remaining_tokens), and tag the hit source for /metrics.
-            request.prompt_cache = loaded.cache
+            #
+            # DEQUANTIZE first: this mlx-lm can't batch-prefill the remaining
+            # tokens on top of a restored int4 QuantizedKVCache history
+            # ("does not yet support batching with history"), which aborted
+            # generation on every restored request. Convert the quantized
+            # attention layers back to bf16 KVCache (recurrent layers pass
+            # through) so the tail prefill runs. Per-request cache dtype, so
+            # only restored requests pay the ~4x transient KV; the live cache
+            # stays int4.
+            restored_cache = loaded.cache
+            try:
+                from .memory_cache import _dequantize_cache as _deq
+
+                restored_cache = _deq(restored_cache)
+            except Exception as _deq_err:  # pragma: no cover — defensive
+                logger.debug("[kv_restore] dequantize failed: %r", _deq_err)
+            request.prompt_cache = restored_cache
             request.cached_tokens = offset
             request.remaining_tokens = list(prompt_ids[offset:])
             request.cache_hit_type = "disk"
