@@ -605,54 +605,12 @@ def test_audit_batch_reasoning_parser_wirings() -> None:
     profiles = list_profiles()
     expected = {
         "nemotron-30b-4bit": "qwen3",
-        "hermes4-70b-4bit": "glm4",
     }
     for alias, parser in expected.items():
         assert alias in profiles, f"{alias} missing from aliases.json"
         assert profiles[alias].reasoning_parser == parser, (
             f"{alias}: reasoning_parser must be {parser!r} per audit. "
             f"Got {profiles[alias].reasoning_parser!r}."
-        )
-
-
-def test_bonsai_family_wires_glm4_reasoning_parser() -> None:
-    """The Bonsai chat template (verified at
-    https://huggingface.co/prism-ml/Bonsai-1.7B-unpacked/resolve/main/chat_template.jinja)
-    injects an empty ``<think>\\n\\n</think>`` block when
-    ``add_generation_prompt=True`` — the model's actual output stream
-    then contains only content, no tags. The base class' "no tags
-    yet, treat as reasoning" default would misclassify every Bonsai
-    token; the ``glm4`` parser overrides exactly that branch.
-
-    If a downstream user enables thinking via ``reasoning_content``
-    on a prior assistant turn, the model may emit real
-    ``<think>...</think>`` blocks; the same glm4 parser splits those
-    correctly. Net effect: glm4 is strictly safer than null with
-    zero behavioural downside for non-thinking turns.
-    """
-    profiles = list_profiles()
-    for alias in ("bonsai-1.7b-unpacked", "bonsai-4b-unpacked", "bonsai-8b-unpacked"):
-        assert alias in profiles, f"{alias} missing from aliases.json"
-        assert profiles[alias].reasoning_parser == "glm4", (
-            f"{alias}: reasoning_parser must be 'glm4' per audit. "
-            f"Got {profiles[alias].reasoning_parser!r}."
-        )
-
-
-def test_audit_batch_bonsai_tool_call_parser_wired() -> None:
-    """Pin the Model Onboarding SOP audit fix for the Bonsai family.
-    The chat template emits ``<tool_call>...</tool_call>`` blocks
-    (hermes pattern); leaving ``tool_call_parser=null`` made every
-    tool call land in ``message.content`` as plain text. Verified the
-    template format directly against
-    https://huggingface.co/prism-ml/Bonsai-1.7B-unpacked.
-    """
-    profiles = list_profiles()
-    for alias in ("bonsai-1.7b-unpacked", "bonsai-4b-unpacked", "bonsai-8b-unpacked"):
-        assert alias in profiles, f"{alias} missing from aliases.json"
-        assert profiles[alias].tool_call_parser == "hermes", (
-            f"{alias}: tool_call_parser must be 'hermes' per audit. "
-            f"Got {profiles[alias].tool_call_parser!r}."
         )
 
 
@@ -1046,20 +1004,6 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
         "devstral-24b-4bit previously pointed at Devstral-Small-2503-MLX-4bit "
         "which 404s. Use the 2507 (or 2505) MLX 4-bit upload."
     )
-    # glm4.5-air-4bit: ``-0111-`` date suffix was a community-only tag that
-    # got rolled into the default release.
-    assert "0111" not in profiles["glm4.5-air-4bit"].hf_path, (
-        "glm4.5-air-4bit previously pointed at GLM-4.5-Air-0111-4bit which "
-        "404s. The current canonical upload is GLM-4.5-Air-4bit."
-    )
-    # glm4.7-9b-4bit previously pointed at the full GLM-4.7 (355B MoE,
-    # ~185 GB at 4-bit) — the alias name implies a 9B model. The
-    # correct upload is the Flash variant (~16 GB).
-    assert "Flash" in profiles["glm4.7-9b-4bit"].hf_path, (
-        "glm4.7-9b-4bit must point at the GLM-4.7-Flash upload, not the full "
-        "GLM-4.7 (355B MoE) which is ~12x larger and won't fit on most "
-        "user disks."
-    )
     # gpt-oss-20b-mxfp4-q8 previously pointed at mlx-community/GPT-OSS-20B-4bit
     # which 404s; the canonical mlx-community release uses the
     # MXFP4-Q8 hybrid quantization.
@@ -1118,30 +1062,16 @@ _CURATED_RECOMMENDED_SAMPLING: dict[str, dict[str, float]] = {
     # Gemma 4 "effective" variants (e2b/e4b) share the same chat-tuned
     # training recipe as their full-size siblings, so the same sampling
     # guidance applies.
-    "gemma-4-e2b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-e4b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-12b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-12b-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-26b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-31b-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-31b-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # Gemma 4 QAT variants — same sampling as PTQ siblings. QAT changes
     # weight distribution (training with simulated quantization) not the
     # decoding distribution, so Google's chat sampling guidance applies
     # unchanged.
-    "gemma-4-12b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-12b-qat-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-26b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-31b-qat-4bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
-    "gemma-4-31b-qat-8bit": {"temperature": 1.0, "top_p": 0.95, "top_k": 64.0},
     # GLM-4.5-Air — THUDM publishes two recommendations: temperature=0.6
     # for *thinking* mode, ~1.0 for non-thinking. The alias has
     # reasoning_parser=glm4 → thinking IS the default response path,
     # so 0.6 is the right pick. (Users who want non-thinking can pass
     # temperature explicitly per-request.)
-    "glm4.5-air-4bit": {"temperature": 0.6, "top_p": 0.95},
     # GLM-4.7-Flash ships temperature=1.0 upstream; we add only top_p.
-    "glm4.7-9b-4bit": {"top_p": 0.95},
 }
 
 
@@ -1268,7 +1198,6 @@ def test_default_max_tokens_is_positive_or_none() -> None:
 
 _TIER4_ALIASES_AND_MOE: tuple[tuple[str, bool], ...] = (
     # alias, expected is_moe
-    ("kimi-k2.6", True),
     ("holo3.1-35b-a3b", True),
     ("holo3.1-35b-a3b-8bit", True),
     ("qwen3-0.6b", False),
@@ -1335,52 +1264,6 @@ def test_tier4_short_alias_keys_are_unique() -> None:
             f"in aliases.json; must appear exactly once. Duplicate keys "
             f"silently let the last one win, masking the first entry."
         )
-
-
-def test_kimi_k26_wires_kimi_tool_parser_and_deepseek_r1_reasoning() -> None:
-    """Kimi K2.6 (model_type=kimi_k25, DeepseekV3 sparse-expert backbone)
-    uses the native ``<|tool_calls_section_begin|>...`` tool format
-    handled by the kimi/kimi_k2/moonshot parser. The chat template
-    autonomously emits ``<think>...</think>`` blocks (default
-    ``preserve_thinking=false`` strips them from history, but the live
-    response carries them) — same "model decides" contract used by
-    R1-distill / VibeThinker / Phi-4-mini-reasoning, so route through
-    ``deepseek_r1`` to land the trace in ``reasoning_content`` instead
-    of leaking into ``content``.
-
-    Pinned here so a future "Kimi family default" sweep can't silently
-    flip these to e.g. ``hermes`` (wrong tool envelope) or ``None``
-    reasoning (think blocks would leak into content).
-    """
-    profile = list_profiles()["kimi-k2.6"]
-    assert profile.tool_call_parser == "kimi", (
-        f"kimi-k2.6: tool_call_parser must be 'kimi' — the model emits the "
-        f"native <|tool_calls_section_begin|> envelope, not hermes/qwen3 XML. "
-        f"Got {profile.tool_call_parser!r}."
-    )
-    assert profile.reasoning_parser == "deepseek_r1", (
-        f"kimi-k2.6: reasoning_parser must be 'deepseek_r1' — the chat "
-        f"template autonomously emits `<think>...</think>` blocks. "
-        f"Got {profile.reasoning_parser!r}."
-    )
-    assert profile.is_moe is True, "Kimi K2.6 is sparse-expert MoE."
-    assert profile.is_hybrid is False, (
-        "Kimi K2.6 is pure-attention (DeepseekV3 backbone), not hybrid."
-    )
-    assert profile.supports_spec_decode is False, (
-        "Kimi K2.6 is too large + MoE for spec-decode to be net-positive."
-    )
-    # codex r2 BLOCKING #1: explicit-pin the DFlash gate even though the
-    # AliasProfile default already forbids it on MoE. Defense-in-depth —
-    # if a future PR ever flips the dataclass default-False to default-True
-    # for any reason, this assertion catches the regression here instead
-    # of waiting for the broader ``test_dflash_excludes_moe_architectures``
-    # guard to fire at a much later boundary.
-    assert profile.supports_dflash is False, (
-        "kimi-k2.6: supports_dflash must be False — sparse-expert MoE "
-        "kills DFlash drafter acceptance (see "
-        "test_dflash_excludes_moe_architectures)."
-    )
 
 
 @pytest.mark.parametrize(
@@ -1495,60 +1378,4 @@ def test_bare_qwen3_short_aliases_follow_family_precedent(alias: str) -> None:
     assert profile.is_moe is False, (
         f"{alias}: vanilla Qwen3 0.6B/1.7B is dense (only A3B/A10B/A22B "
         f"siblings are MoE)."
-    )
-
-
-def test_glm_5_2_reap50_alias_resolves_to_pipenetwork_4bit() -> None:
-    """R15 Phase 6 #298 — GLM-5.2-REAP50 alias for the 256GB Mac Studio
-    MoE-fit story (体感 1).
-
-    The Cerebras REAP-pruned variant of GLM-5.2 drops the lowest-saliency
-    half of the 256 routed experts (down to ``n_routed_experts=128``).
-    Combined with mlx-community / pipenetwork 4-bit affine quantization
-    this lands at ~214 GB on disk and fits a 256GB Mac Studio with KV
-    headroom — the FIRST realistically-Mac-runnable GLM-5.2 variant.
-
-    Pinned here so a future bulk edit can't silently re-route the alias
-    to a different REAP pruning ratio (REAP25 / REAP75 land at different
-    disk sizes and DIFFERENT quality budgets — operators picked this
-    alias name expecting the 50% prune specifically) or flip routing
-    flags. The model_type at HF (``glm_moe_dsa``) shares the same chat
-    template + tool envelope family as GLM-4.5 / 4.7, so the existing
-    glm47 / glm4 parsers apply unchanged.
-
-    HF: https://huggingface.co/pipenetwork/GLM-5.2-REAP50-MLX-4bit
-    """
-    profile = list_profiles()["glm-5.2-reap50"]
-    assert profile.hf_path == "pipenetwork/GLM-5.2-REAP50-MLX-4bit", (
-        f"glm-5.2-reap50: hf_path drifted. The alias name carries the "
-        f"50% expert-prune semantics; pointing at REAP25 / REAP75 / "
-        f"non-REAP would silently change disk size + quality. "
-        f"Got {profile.hf_path!r}."
-    )
-    assert profile.is_moe is True, (
-        "glm-5.2-reap50: GLM-5.2 is sparse-expert (n_routed_experts=128 "
-        "after REAP-50% prune, num_experts_per_tok=8). Mis-tagging as "
-        "dense would mis-route DFlash / spec-decode gates."
-    )
-    assert profile.is_hybrid is False, (
-        "glm-5.2-reap50: pure-attention (glm_moe_dsa backbone), not hybrid."
-    )
-    assert profile.tool_call_parser == "glm47", (
-        f"glm-5.2-reap50: GLM-5.2 shares the GLM-4.7 ``<tool_call>...`` "
-        f"tool envelope. Got {profile.tool_call_parser!r}."
-    )
-    assert profile.reasoning_parser == "glm4", (
-        f"glm-5.2-reap50: GLM-5.2 chat template autonomously emits "
-        f"`<think>...</think>` blocks (same as GLM-4.5/4.7) — route "
-        f"through ``glm4`` so the trace lands in reasoning_content. "
-        f"Got {profile.reasoning_parser!r}."
-    )
-    assert profile.supports_spec_decode is False, (
-        "glm-5.2-reap50: 214 GB MoE — spec-decode drafter overhead "
-        "swamps the win at this size (same call as Kimi K2.6)."
-    )
-    assert profile.supports_dflash is False, (
-        "glm-5.2-reap50: sparse-expert MoE — DFlash drafter hidden-state "
-        "fusion misfires on expert-routing churn (see "
-        "test_dflash_excludes_moe_architectures)."
     )

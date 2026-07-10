@@ -49,8 +49,6 @@ from vllm_mlx.reasoning.deepseek_r1_parser import (
     DeepSeekR1ReasoningParser,
     VibeThinkerReasoningParser,
 )
-from vllm_mlx.reasoning.gemma4_parser import Gemma4ReasoningParser
-from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
 from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
 
@@ -117,7 +115,6 @@ THINK_PARSERS_WITH_BASE = [
     ("qwen3", Qwen3ReasoningParser),
     ("deepseek_r1", DeepSeekR1ReasoningParser),
     ("vibethinker", VibeThinkerReasoningParser),
-    ("glm4", Glm4ReasoningParser),
 ]
 
 
@@ -872,99 +869,6 @@ class TestFinalizeContractSurface:
                     )
 
 
-class TestGemma4ChannelGrammar:
-    """Gemma 4 uses ``<|channel>thought\\n…<channel|>`` channel grammar
-    instead of ``<think>…</think>``. The same shape leak applies when
-    ``stop`` cuts before the closing ``<channel|>`` — pre-fix
-    ``extract_reasoning`` routed the entire thought trace into
-    ``content`` (the no-blocks regex branch); post-fix detects the
-    unclosed opener and routes the body to ``reasoning``.
-
-    Cycle-6 F-CORR-2 (gemma-4-26b/12b).
-    """
-
-    def test_mid_thought_routes_to_reasoning(self):
-        parser = Gemma4ReasoningParser()
-        text = "<|channel>thought\nLet me think about 5+7. "
-        reasoning, content = parser.extract_reasoning(text)
-        assert reasoning is not None, "mid-thought trace must surface as reasoning"
-        assert "Let me think" in reasoning
-        # No channel-marker leak into content
-        if content:
-            assert "<|channel>" not in content, (
-                f"channel marker leaked into content: {content!r}"
-            )
-            assert "thought" not in content or content.startswith(
-                ("Sure", "Okay", "Let")
-            ), f"thought-trace bytes leaked into content: {content!r}"
-
-    def test_full_thought_plus_content_unchanged(self):
-        parser = Gemma4ReasoningParser()
-        text = (
-            "<|channel>thought\nLet me think.<channel|>"
-            "<|channel>content\nThe answer is 12.<channel|>"
-        )
-        reasoning, content = parser.extract_reasoning(text)
-        assert reasoning is not None and "Let me think" in reasoning
-        assert content is not None and "answer is 12" in content
-
-    def test_unterminated_thought_followed_by_content_channel(self):
-        """Codex round-13 BLOCKING (PR #799): the prior
-        ``if "<channel|>" not in trailing`` heuristic treated ANY later
-        channel closer as closing the unterminated thought block, so
-        ``<|channel>thought\\nsecret<|channel>content\\nanswer<channel|>``
-        (unterminated thought followed by a content channel) fell
-        through to the "No thinking tags — all content" path and leaked
-        the thought ``secret`` into ``content``.
-
-        Post-fix: detect the next ``<|channel>`` opener BEFORE any
-        ``<channel|>`` closer; if a new channel starts before the
-        thought closes, the thought is unterminated. The bytes from
-        the thought opener to the next channel opener are reasoning;
-        the bytes from the next opener onward are downstream
-        content (parsed through the regular channel strippers).
-        """
-        parser = Gemma4ReasoningParser()
-        # Malformed shape: thought channel opens, never closes, then
-        # a content channel opens + closes with the user-visible
-        # answer.
-        text = "<|channel>thought\nsecret<|channel>content\nThe answer is 12.<channel|>"
-        reasoning, content = parser.extract_reasoning(text)
-        assert reasoning is not None and "secret" in reasoning, (
-            f"codex r13 BLOCKING #2 regression — unterminated thought "
-            f"body must surface as reasoning: reasoning={reasoning!r}"
-        )
-        assert content is not None, (
-            f"downstream content channel must still surface: content={content!r}"
-        )
-        assert "secret" not in content, (
-            f"codex r13 BLOCKING #1 regression — thought body leaked into "
-            f"content: content={content!r}"
-        )
-        assert "answer is 12" in content, (
-            f"downstream content body lost: content={content!r}"
-        )
-        assert "<|channel>" not in content, (
-            f"channel marker leaked into content: {content!r}"
-        )
-
-    def test_unterminated_thought_unknown_downstream_channel_is_reasoning(self):
-        """Unknown downstream channels are not user-visible answer text."""
-        parser = Gemma4ReasoningParser()
-        text = (
-            "<|channel>thought\nsecret"
-            "<|channel>analysis\npreface "
-            "<|channel>content\nThe answer is 12.<channel|>"
-        )
-        reasoning, content = parser.extract_reasoning(text)
-        assert reasoning is not None and "secret" in reasoning
-        assert "preface" in reasoning
-        assert content is not None
-        assert "answer is 12" in content
-        assert "preface" not in content
-        assert "secret" not in content
-
-
 class TestHermesWithReasoningComposition:
     """Hermes is NOT a reasoning parser; the cycle-5 cross-confirmation
     came from qwen3.5-27b-8bit which layers the hermes tool parser on
@@ -1041,24 +945,3 @@ class TestNonStreamingHelperSymmetry:
             f"reasoning.\n  content={content!r}\n  reasoning={reasoning!r}"
         )
 
-    def test_gemma4_non_streaming_mid_thought(self):
-        from vllm_mlx.api.utils import clean_output_text, strip_thinking_tags
-        from vllm_mlx.service.helpers import _finalize_content_and_reasoning
-
-        raw_text = "<|channel>thought\nLet me think about 5+7. The answer is "
-        cleaned_text = raw_text
-        parser = Gemma4ReasoningParser()
-        content, reasoning = _finalize_content_and_reasoning(
-            raw_text=raw_text,
-            cleaned_text=cleaned_text,
-            tool_calls=[],
-            reasoning_parser=parser,
-            engine_reasoning_text="",
-            enable_thinking=True,
-        )
-        final_content = (
-            strip_thinking_tags(clean_output_text(content)) if content else None
-        )
-        # Channel-marker bytes must not leak into the final content surface.
-        assert reasoning and "Let me think" in reasoning
-        assert not final_content or "<|channel>" not in final_content

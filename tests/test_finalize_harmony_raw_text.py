@@ -210,7 +210,6 @@ def test_engine_reasoning_empty_falls_through_to_parser():
 # #575 — Case-4 leak plug + effective-thinking resolution + signature probe
 # ---------------------------------------------------------------------------
 
-from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
 from vllm_mlx.service.helpers import (
     _effective_enable_thinking,
     _parser_accepts_enable_thinking,
@@ -322,23 +321,6 @@ def test_570_qwen3_valid_non_thinking_answer_not_clobbered_when_thinking_off():
     assert cleaned == valid_answer
 
 
-def test_575_glm4_no_tags_thinking_on_does_not_clobber_content():
-    """GLM-4 explicitly diverges from Qwen3 — its parser drops the
-    ``enable_thinking`` kwarg before delegating, so even when the route
-    passes ``True`` the helper must NOT touch ``cleaned_text``."""
-    text = "GLM-4 plain answer with no think tags at all."
-    cleaned, reasoning = _finalize_content_and_reasoning(
-        raw_text=text,
-        cleaned_text=text,
-        tool_calls=[],
-        reasoning_parser=Glm4ReasoningParser(),
-        engine_reasoning_text="",
-        enable_thinking=True,
-    )
-    assert reasoning is None
-    assert cleaned == text
-
-
 def test_575_qwen3_normal_split_unchanged_with_thinking_on():
     """When the model emits the normal ``…</think>answer`` shape the
     helper's Case-4 leak plug must NOT fire — the well-behaved split
@@ -395,7 +377,6 @@ def test_effective_enable_thinking_no_model_name_preserves_none():
 def test_parser_accepts_enable_thinking_modern_parser():
     """All in-tree parsers accept the kwarg post-#575."""
     assert _parser_accepts_enable_thinking(Qwen3ReasoningParser()) is True
-    assert _parser_accepts_enable_thinking(Glm4ReasoningParser()) is True
     assert _parser_accepts_enable_thinking(HarmonyReasoningParser()) is True
 
 

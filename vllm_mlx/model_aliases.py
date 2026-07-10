@@ -771,9 +771,7 @@ POPULAR_ALIASES: tuple[str, ...] = (
     "qwen3.5-9b-4bit",  # mid-size general
     "qwen3.6-27b-4bit",  # latest hybrid family
     "qwen3-coder-30b-4bit",  # coding
-    "gemma-4-12b-qat-4bit",  # gemma family rep (12B QAT 4-bit)
     "gpt-oss-20b",  # 0.10.0: OpenAI open-weights harmony family
-    "llama3-3b-4bit",  # tiny llama
     "mistral-24b-4bit",  # mistral
     "deepseek-r1-32b-4bit",  # reasoning
 )

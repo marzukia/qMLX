@@ -901,7 +901,6 @@ def _parser_cases():
         DeepSeekR1ReasoningParser,
         VibeThinkerReasoningParser,
     )
-    from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
     from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
     think_open_only = "<think>Let me think about 17*23. 17 * 20 = 340. 17 * 3 ="
@@ -929,14 +928,6 @@ def _parser_cases():
         (
             "vibethinker",
             VibeThinkerReasoningParser,
-            think_open_only,
-            think_closed_trunc,
-            think_stop_mid,
-            think_happy,
-        ),
-        (
-            "glm4",
-            Glm4ReasoningParser,
             think_open_only,
             think_closed_trunc,
             think_stop_mid,
