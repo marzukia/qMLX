@@ -3055,6 +3055,7 @@ def serve_command(args):
         # hot-path call with ``should_checkpoint`` so the cost when off
         # is one int comparison.
         kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 256),
+        kv_disk_restore_enabled=getattr(args, "enable_disk_kv_restore", False),
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
@@ -4061,6 +4062,7 @@ def bench_command(args):
             kv_disk_checkpoint_interval=getattr(
                 args, "kv_disk_checkpoint_interval", 256
             ),
+            kv_disk_restore_enabled=getattr(args, "enable_disk_kv_restore", False),
             # PFlash long-prompt compression (#287)
             pflash_config=bench_pflash_config,
         )
@@ -6849,6 +6851,16 @@ Examples:
             "reload (R15 #296, default 256). 0 disables. Pairs with the "
             "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES env var (default 20 GiB) "
             "for the oldest-first disk-cap eviction policy."
+        ),
+    )
+    serve_parser.add_argument(
+        "--enable-disk-kv-restore",
+        action="store_true",
+        help=(
+            "Reload a verified KV prefix from disk on a cache miss instead "
+            "of re-prefilling (R15 #303, experimental, default OFF). Requires "
+            "--kv-disk-checkpoint-interval. Byte-verified and dtype/schema/"
+            "memory gated; any mismatch falls back to prefill."
         ),
     )
     serve_parser.add_argument(

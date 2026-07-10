@@ -103,6 +103,7 @@ import shutil
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -126,6 +127,26 @@ DEFAULT_CHECKPOINT_INTERVAL = 256
 # headroom rapid-desktop reserves under ~/.cache/rapid-mlx (#194).
 DEFAULT_MAX_DISK_BYTES = 20 * 1024 * 1024 * 1024
 _DISK_CAP_ENV = "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES"
+
+# Low-water mark for cap eviction. When the total crosses ``max_bytes`` (high
+# water), enforce_disk_cap drains down to ``max_bytes * _DISK_CAP_LOW_WATER``
+# instead of stopping at the cap, so writes don't thrash a single-item eviction
+# at the boundary every time. 0.80 = clear to 80%. Env-overridable.
+_DISK_CAP_LOW_WATER_ENV = "RAPID_MLX_KV_CHECKPOINT_LOW_WATER"
+
+
+def _resolve_low_water() -> float:
+    raw = os.environ.get(_DISK_CAP_LOW_WATER_ENV)
+    if raw is None:
+        return 0.80
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.80
+    return v if (math.isfinite(v) and 0.0 < v <= 1.0) else 0.80
+
+
+_DISK_CAP_LOW_WATER = _resolve_low_water()
 
 # Models that require a FULL cache-state snapshot at each boundary — i.e. the
 # attention cache cannot be reconstructed from a position offset alone:
@@ -162,6 +183,20 @@ MODELS_REQUIRING_FULL_CHECKPOINT: frozenset[str] = frozenset(
 # ``readdir`` cost scales with path length.
 _CHECKPOINT_EXT = ".safetensors"
 _METADATA_EXT = ".json"
+# Sidecar carrying the EXACT prompt token ids the checkpoint represents,
+# in the same magic/length/save_uuid/int32-LE format the in-process radix
+# uses on disk (``memory_cache._write_tokens_bin_v3``). Written next to the
+# safetensors body so a later restore can byte-verify the prefix before it
+# trusts the cache — a token blob that doesn't match the incoming prompt is
+# the difference between a hit and a silent-corruption reload.
+_TOKENS_EXT = ".tokens.bin"
+
+# Highest sidecar ``schema_version`` this build knows how to load. The
+# writer stamps ``schema_version=1``; :func:`load_checkpoint` refuses any
+# sidecar whose version is absent or greater than this so a checkpoint from
+# a newer, format-shifted build can never be mis-read as a current one
+# (reject-and-reprefill on any doubt — a wrong restore corrupts silently).
+_KNOWN_SCHEMA_VERSION = 1
 # Tmp file name shape: ``<basename>.tmp.safetensors``. The trailing
 # ``.safetensors`` is REQUIRED because ``mlx.core.save_safetensors``
 # silently auto-appends ``.safetensors`` when the path does not already
@@ -210,12 +245,65 @@ class CheckpointStats:
     bytes: int = 0
     evictions: int = 0
     hook_errors: int = 0
+    # R15-P4 (task #303): per-reason restore-reject tally. Keyed by the
+    # reason strings in :data:`RESTORE_REJECT_REASONS`. A restore that fails
+    # ANY validation guard bumps exactly one reason here so operators can see
+    # WHY disk restore is falling back to prefill (dtype drift vs a full/
+    # partial mismatch vs a memory-headroom skip look identical in the loads
+    # counter, which never moved because the load was refused).
+    restore_rejects: dict[str, int] = field(default_factory=dict)
+
+
+# Known restore-reject reasons. Emitted at 0 by /metrics even before the first
+# rejection so a dashboard panel stays flat-line rather than "no data". Any
+# reason passed to :func:`record_restore_reject` that is not in this set is
+# still counted (under its own label) — the set only seeds the always-present
+# series.
+RESTORE_REJECT_REASONS: tuple[str, ...] = (
+    "offset_out_of_range",
+    "model_identity_mismatch",
+    "kv_dtype_mismatch",
+    "full_checkpoint_mismatch",
+    "memory_headroom",
+    "exception",
+)
 
 
 # Module-level stats (process-monotonic). Mutated under the lock below.
 _STATS = CheckpointStats()
 _STATS_LOCK = threading.Lock()
 _DISK_LOCK = threading.RLock()
+
+# ---------------------------------------------------------------------------
+# LOCK ORDERING (R15-P2). Three locks can now be live at once — the
+# in-process prefix cache's ``MemoryAwarePrefixCache._lock``
+# (memory_cache.py), this module's ``_DISK_LOCK`` (guards all checkpoint
+# filesystem I/O), and a :class:`DiskCheckpointIndex`'s own lock (guards the
+# in-memory prompt→checkpoint map). To stay deadlock-free every acquisition
+# path uses the SAME outer→inner order:
+#
+#     MemoryAwarePrefixCache._lock  >  _DISK_LOCK  >  DiskCheckpointIndex._lock
+#
+# Concretely:
+#   1. A thread NEVER takes ``MemoryAwarePrefixCache._lock`` while holding
+#      either lock below it. The disk layer never calls back into the
+#      in-RAM cache, so this is satisfied structurally — the scheduler's
+#      add_request resolves the in-RAM prefix cache first, releases that
+#      lock, and only then queries the disk index.
+#   2. A thread NEVER takes ``_DISK_LOCK`` while holding a
+#      ``DiskCheckpointIndex`` lock. Both :meth:`DiskCheckpointIndex.lookup`
+#      and :meth:`DiskCheckpointIndex.build_from_root` do their disk I/O
+#      (which grabs ``_DISK_LOCK``) in a phase where the index lock is NOT
+#      held, then take the index lock separately to read/populate the
+#      in-memory map. The one legal nesting is the reverse:
+#      :func:`write_checkpoint` already holds ``_DISK_LOCK`` and calls
+#      :meth:`DiskCheckpointIndex.index_checkpoint`, which takes only the
+#      index lock — matching the outer→inner order above.
+#   3. None of these locks is held across a model forward. ``lookup``
+#      returns the materialised cache list and releases every lock before
+#      the scheduler feeds it to the generator.
+_CONTENT_INDEX: DiskCheckpointIndex | None = None
+_CONTENT_INDEX_LOCK = threading.Lock()
 
 
 def get_stats() -> dict[str, int]:
@@ -227,12 +315,18 @@ def get_stats() -> dict[str, int]:
     ``write_checkpoint`` from publishing a torn (writes, bytes) pair.
     """
     with _STATS_LOCK:
+        # Seed the known reasons at 0 so /metrics always emits every series,
+        # then overlay the live tallies. Copy so the caller can't mutate the
+        # module-level dict.
+        rejects = {reason: 0 for reason in RESTORE_REJECT_REASONS}
+        rejects.update(_STATS.restore_rejects)
         return {
             "writes": _STATS.writes,
             "loads": _STATS.loads,
             "bytes": _STATS.bytes,
             "evictions": _STATS.evictions,
             "hook_errors": _STATS.hook_errors,
+            "restore_rejects": rejects,
         }
 
 
@@ -249,6 +343,21 @@ def record_hook_error() -> None:
     """
     with _STATS_LOCK:
         _STATS.hook_errors += 1
+
+
+def record_restore_reject(reason: str) -> None:
+    """Bump the per-reason restore-reject tally under the stats lock.
+
+    R15-P4 (task #303). Called from the scheduler's ``_maybe_disk_restore``
+    every time a looked-up checkpoint fails a validation guard and the
+    request falls back to prefill. ``reason`` should be one of
+    :data:`RESTORE_REJECT_REASONS`, but an unknown reason is still counted
+    under its own label rather than dropped — a mislabelled reject is better
+    than a silent one.
+    """
+    key = str(reason) or "unknown"
+    with _STATS_LOCK:
+        _STATS.restore_rejects[key] = _STATS.restore_rejects.get(key, 0) + 1
 
 
 def reset_stats_for_tests() -> None:
@@ -328,6 +437,18 @@ def metadata_path(root: str, req_hash: str, token_offset: int) -> str:
     needs to know "where did this loaded entry come from".
     """
     return os.path.join(root, req_hash, f"checkpoint-{token_offset}{_METADATA_EXT}")
+
+
+def tokens_path(root: str, req_hash: str, token_offset: int) -> str:
+    """Return the absolute tokens-blob path for one checkpoint.
+
+    Sits next to the ``.safetensors`` / ``.json`` pair and holds the exact
+    prompt token ids the snapshot covers (v3 magic + length + save_uuid +
+    int32-LE tokens). Present only when the writer was handed a
+    ``tokens_key``; an older checkpoint without one simply has no blob and
+    the loader treats it as "can't verify a prefix" (safe: re-prefill).
+    """
+    return os.path.join(root, req_hash, f"checkpoint-{token_offset}{_TOKENS_EXT}")
 
 
 def model_requires_full_checkpoint(
@@ -512,6 +633,34 @@ def write_checkpoint(
         tmp_path = dst_path.replace(_CHECKPOINT_EXT, _TMP_INFIX + _CHECKPOINT_EXT)
         meta_tmp = meta_path + _TMP_INFIX
 
+        # One ``save_uuid`` per write binds the three on-disk artifacts —
+        # the safetensors body (embedded metadata below), the JSON sidecar,
+        # and the tokens blob — into a single logical commit. A restore that
+        # finds a body / sidecar / tokens triple whose uuids disagree knows
+        # it stitched two different writes together and must re-prefill.
+        # The scheduler may pre-mint one (so it can index the same uuid
+        # elsewhere); otherwise we mint it here.
+        save_uuid = None
+        if extra_metadata:
+            candidate = extra_metadata.get("save_uuid")
+            if isinstance(candidate, str) and candidate:
+                save_uuid = candidate
+        if save_uuid is None:
+            save_uuid = uuid.uuid4().hex
+
+        # Exact prompt token ids this checkpoint covers, if the caller
+        # handed them over. Persisted in the tokens blob (canonical, uuid-
+        # bound) so a later restore can byte-verify the prefix. Kept
+        # backward-safe: absent tokens just means no blob gets written.
+        tokens_for_blob: list[int] | None = None
+        if extra_metadata:
+            raw_tokens = extra_metadata.get("tokens_key")
+            if isinstance(raw_tokens, (list, tuple)) and raw_tokens:
+                try:
+                    tokens_for_blob = [int(t) for t in raw_tokens]
+                except (TypeError, ValueError):
+                    tokens_for_blob = None
+
         # Build the safetensors metadata that ships INSIDE the file.
         # ``save_prompt_cache`` requires str→str — JSON-encode the
         # boolean / int fields so the round-trip is faithful.
@@ -519,6 +668,7 @@ def write_checkpoint(
             "token_offset": str(token_offset),
             "kv_dtype": kv_dtype,
             "requires_full_checkpoint": "true" if requires_full_checkpoint else "false",
+            "save_uuid": save_uuid,
         }
         if model_name:
             st_meta["model_name"] = str(model_name)
@@ -545,6 +695,43 @@ def write_checkpoint(
                 pass
             return None
 
+        # Tokens blob — the exact prompt token ids this checkpoint covers,
+        # in the radix's v3 wire format (magic + count + save_uuid + int32
+        # LE). Written AFTER the body but BEFORE the sidecar so the sidecar,
+        # the loader's source of truth, is the last thing to land. A write
+        # failure here is non-fatal: the body + sidecar stay valid, the blob
+        # is simply absent, and a later restore falls back to re-prefill
+        # rather than trusting an unverifiable cache.
+        tokens_persisted = False
+        tokens_count = 0
+        if tokens_for_blob is not None:
+            try:
+                from vllm_mlx.memory_cache import _write_tokens_bin_v3
+            except Exception as e:  # pragma: no cover — defensive
+                logger.debug(
+                    f"[disk_kv_checkpoint] tokens-blob writer unavailable: {e}"
+                )
+                _write_tokens_bin_v3 = None
+            if _write_tokens_bin_v3 is not None:
+                tok_path = tokens_path(root, req_hash, token_offset)
+                tok_tmp = tok_path + _TMP_INFIX
+                try:
+                    _write_tokens_bin_v3(tok_tmp, tokens_for_blob, save_uuid)
+                    _fsync_file(tok_tmp)
+                    os.replace(tok_tmp, tok_path)
+                    _fsync_dir(dst_dir)
+                    tokens_persisted = True
+                    tokens_count = len(tokens_for_blob)
+                except Exception as e:
+                    logger.warning(
+                        f"[disk_kv_checkpoint] tokens-blob write failed at "
+                        f"{tok_path!r}: {e}; checkpoint kept without token verify"
+                    )
+                    try:
+                        os.unlink(tok_tmp)
+                    except OSError:
+                        pass
+
         # Sidecar JSON — written AFTER the safetensors so a torn shutdown
         # can never leave a JSON pointing at a missing body.
         meta_payload: dict[str, Any] = {
@@ -555,6 +742,9 @@ def write_checkpoint(
             "model_name": model_name,
             "created_at": time.time(),
             "size_bytes": _safe_filesize(dst_path),
+            "save_uuid": save_uuid,
+            "has_tokens": tokens_persisted,
+            "tokens_count": tokens_count,
         }
         if extra_metadata:
             for k, v in extra_metadata.items():
@@ -599,6 +789,41 @@ def write_checkpoint(
                 except Exception as e:  # pragma: no cover — radix is optional
                     logger.debug(f"[disk_kv_checkpoint] radix.insert failed: {e}")
 
+        # Content-index hand-off (R15-P2). When we persisted the exact prompt
+        # tokens, register this checkpoint in the process-wide prompt→checkpoint
+        # map so a LATER, differently-keyed request can find it by prefix
+        # without a rescan. In-memory only; takes just the content-index lock.
+        # We already hold ``_DISK_LOCK`` here, which is the legal outer→inner
+        # nesting per the module LOCK ORDERING note (_DISK_LOCK > index lock).
+        if tokens_persisted and tokens_for_blob is not None:
+            try:
+                get_content_index().index_checkpoint(
+                    tokens_for_blob,
+                    root=root,
+                    req_hash=req_hash,
+                    token_offset=token_offset,
+                    save_uuid=save_uuid,
+                )
+            except Exception as e:  # pragma: no cover — index is best-effort
+                logger.debug(
+                    f"[disk_kv_checkpoint] content-index hand-off failed: {e}"
+                )
+
+        # Disk-cap enforcement. This is the single point every write funnels
+        # through (both the store-level mirror and the interval hook), so the
+        # cap is enforced here rather than at the call sites. We already hold
+        # the reentrant _DISK_LOCK, and enforce_disk_cap re-acquires it. It
+        # evicts oldest-first, so the checkpoint just written (newest) and the
+        # deepest prefix of an in-flight request survive while shallow
+        # sub-prefixes are reclaimed. Never-raise: a full disk or a failed
+        # unlink must not tear down a completed write.
+        try:
+            enforce_disk_cap(root)
+        except Exception as e:  # pragma: no cover — cap is best-effort
+            logger.warning(
+                f"[disk_kv_checkpoint] enforce_disk_cap after write failed: {e}"
+            )
+
         return dst_path
 
 
@@ -632,17 +857,24 @@ def maybe_write_checkpoint(
         return last_checkpoint_at, None
 
     # Snap the new boundary to the largest multiple of ``interval`` that
-    # is still ``<= num_tokens``. Without snapping, a step that advances
-    # by N>interval (e.g. spec decode) would fire one checkpoint and
-    # then re-fire on the next step because ``last_checkpoint_at`` only
-    # bumped by interval, not by the actual gap.
+    # is still ``<= num_tokens``. This is the WATERMARK for write FREQUENCY
+    # only (so a step advancing by N>interval doesn't re-fire every step).
     new_boundary = (num_tokens // interval) * interval
+
+    # The recorded ``token_offset`` must equal the ACTUAL cache length, not
+    # the frequency boundary. The saved KV cache holds ``num_tokens`` of
+    # state; if we stamped ``new_boundary`` (< num_tokens) the restored cache
+    # would be longer than its claimed offset and ``_cache_offset_matches``
+    # would (correctly) reject it. Tie the offset to the persisted tokens so
+    # offset == len(tokens_key) == cache length stay consistent.
+    tokens_key = (extra_metadata or {}).get("tokens_key")
+    token_offset = len(tokens_key) if tokens_key else num_tokens
 
     path = write_checkpoint(
         cache,
         root=root,
         req_hash=req_hash,
-        token_offset=new_boundary,
+        token_offset=token_offset,
         kv_dtype=kv_dtype,
         requires_full_checkpoint=requires_full_checkpoint,
         model_name=model_name,
@@ -733,6 +965,20 @@ def load_checkpoint(path: str) -> LoadedCheckpoint | None:
                     f"{meta_path_str!r}: {e}; falling back to embedded metadata"
                 )
 
+        # Schema guard — reject-and-reprefill on any doubt. A wrong restore
+        # corrupts output silently (no exception), so we refuse a checkpoint
+        # whose sidecar version we can't positively vouch for: a missing
+        # sidecar / absent version (can't tell what wrote it) or a version
+        # newer than this build knows (a later, format-shifted writer).
+        version = sidecar.get("schema_version") if sidecar else None
+        if not isinstance(version, int) or version > _KNOWN_SCHEMA_VERSION:
+            logger.warning(
+                f"[disk_kv_checkpoint] refusing checkpoint at {path!r}: "
+                f"sidecar schema_version={version!r} is absent or newer than "
+                f"supported ({_KNOWN_SCHEMA_VERSION}); will re-prefill"
+            )
+            return None
+
         # The embedded metadata is str→str; coerce safely.
         embedded = st_meta or {}
         token_offset = int(
@@ -750,6 +996,22 @@ def load_checkpoint(path: str) -> LoadedCheckpoint | None:
                 str(embedded.get("requires_full_checkpoint", "false")).lower() == "true"
             )
         )
+
+        # save_uuid cross-check. The writer stamps ONE uuid into the body
+        # metadata, the sidecar, and the tokens blob to bind them as a single
+        # atomic write. The tokens<->sidecar binding is enforced by the radix
+        # reader; here we also refuse a body whose embedded uuid disagrees with
+        # the sidecar's, which would mean the safetensors body and its metadata
+        # came from different writes (a torn / mixed checkpoint). Fail closed.
+        body_uuid = embedded.get("save_uuid")
+        side_uuid = sidecar.get("save_uuid") if sidecar else None
+        if body_uuid and side_uuid and str(body_uuid) != str(side_uuid):
+            logger.warning(
+                f"[disk_kv_checkpoint] refusing checkpoint at {path!r}: "
+                f"save_uuid body={body_uuid!r} != sidecar={side_uuid!r} "
+                f"(mixed/torn write); will re-prefill"
+            )
+            return None
 
         with _STATS_LOCK:
             _STATS.loads += 1
@@ -789,13 +1051,18 @@ def scan_checkpoints(root: str) -> list[tuple[str, float, int]]:
         # Both are stale on rescan and must be cleaned up.
         tmp_body_marker = _TMP_INFIX + _CHECKPOINT_EXT  # e.g. ".tmp.safetensors"
         tmp_json_marker = _METADATA_EXT + _TMP_INFIX  # e.g. ".json.tmp"
+        tmp_tokens_marker = _TOKENS_EXT + _TMP_INFIX  # e.g. ".tokens.bin.tmp"
         for entry in os.scandir(root):
             if not entry.is_dir(follow_symlinks=False):
                 continue
             try:
                 for child in os.scandir(entry.path):
                     name = child.name
-                    if name.endswith(tmp_body_marker) or name.endswith(tmp_json_marker):
+                    if (
+                        name.endswith(tmp_body_marker)
+                        or name.endswith(tmp_json_marker)
+                        or name.endswith(tmp_tokens_marker)
+                    ):
                         # Stale tmp from a torn write — best-effort cleanup.
                         try:
                             os.unlink(child.path)
@@ -817,8 +1084,22 @@ def scan_checkpoints(root: str) -> list[tuple[str, float, int]]:
         return out
 
 
-def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, int]:
-    """Evict oldest checkpoints until the on-disk total fits in ``max_bytes``.
+def enforce_disk_cap(
+    root: str,
+    *,
+    max_bytes: int | None = None,
+    low_water_fraction: float = _DISK_CAP_LOW_WATER,
+) -> tuple[int, int]:
+    """Evict oldest checkpoints when the on-disk total exceeds ``max_bytes``.
+
+    Uses a high/low-water scheme: eviction TRIGGERS at ``max_bytes`` (the cap)
+    but, once triggered, evicts all the way down to ``max_bytes *
+    low_water_fraction`` (default 80%) rather than stopping the instant the
+    total slips back under the cap. Evicting only to the cap means every
+    subsequent write sits right at the boundary and re-triggers a single-item
+    eviction, thrashing: a hot checkpoint written and then immediately reclaimed.
+    Clearing to the low-water mark amortises eviction over many writes and keeps
+    a working set of recent checkpoints alive between reclaims.
 
     Returns ``(num_evicted, bytes_remaining)`` for the caller's log line.
     ``max_bytes`` defaults to :func:`resolve_max_disk_bytes`; pass ``0``
@@ -835,6 +1116,16 @@ def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, i
         max_bytes = resolve_max_disk_bytes()
     max_bytes = max(0, int(max_bytes))
 
+    # Clamp the low-water fraction to a sane (0, 1] and derive the target the
+    # eviction loop drains down to. A fraction of 1.0 collapses back to
+    # evict-to-cap (no hysteresis); anything <=0 or non-finite is nonsense and
+    # falls back to the default.
+    if not (isinstance(low_water_fraction, (int, float))
+            and math.isfinite(low_water_fraction)
+            and 0.0 < low_water_fraction <= 1.0):
+        low_water_fraction = _DISK_CAP_LOW_WATER
+    low_water = int(max_bytes * low_water_fraction)
+
     with _DISK_LOCK:
         entries = scan_checkpoints(root)
         total = sum(size for _, _, size in entries)
@@ -845,7 +1136,7 @@ def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, i
 
         evicted = 0
         for path, _mtime, size in entries:
-            if total <= max_bytes:
+            if total <= low_water:
                 break
             try:
                 os.unlink(path)
@@ -857,6 +1148,15 @@ def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, i
             sidecar = path.replace(_CHECKPOINT_EXT, _METADATA_EXT)
             try:
                 os.unlink(sidecar)
+            except OSError:
+                pass
+            # Drop the paired tokens blob too so eviction doesn't strand it
+            # (it's not counted in the byte total — scan only sums
+            # safetensors — but leaving it would keep the parent dir from
+            # being pruned and orphan a token list with no cache).
+            tok_blob = path.replace(_CHECKPOINT_EXT, _TOKENS_EXT)
+            try:
+                os.unlink(tok_blob)
             except OSError:
                 pass
             total -= size
@@ -876,6 +1176,447 @@ def enforce_disk_cap(root: str, *, max_bytes: int | None = None) -> tuple[int, i
             _STATS.bytes = total
 
         return evicted, total
+
+
+# ---------------------------------------------------------------------------
+# Prompt → checkpoint content index (R15-P2, task #297)
+# ---------------------------------------------------------------------------
+#
+# The write path keys every checkpoint dir by ``request_hash`` =
+# sha256(model::request_id), which is fine for the SAME request resuming but
+# useless for a brand-new request that happens to share a prefix (the Cursor
+# / Claude-Code shared-system-prompt workload). This index closes that gap:
+# it maps ``tuple(prompt_token_ids)`` → the checkpoint whose persisted tokens
+# are that exact prefix, so ``add_request`` can find a restore candidate by
+# CONTENT rather than by request id.
+#
+# It is populated two ways, both feeding the same map:
+#   * write-time hand-off — :func:`write_checkpoint` calls
+#     :meth:`DiskCheckpointIndex.index_checkpoint` right after it persists the
+#     tokens blob (no rescan needed for freshly-written checkpoints);
+#   * boot-time scan — :meth:`DiskCheckpointIndex.build_from_root` walks
+#     :func:`scan_checkpoints`, reads each checkpoint's persisted tokens blob,
+#     and indexes it (recovers checkpoints written by a previous process).
+#
+# Lookup returns the checkpoint with the LARGEST verified ``token_offset``
+# that is a true prefix of the incoming request, after a byte-level re-verify
+# of the on-disk tokens blob (reject-and-reprefill on ANY doubt — a wrong
+# restore corrupts output silently).
+
+
+@dataclass(frozen=True)
+class _CheckpointRef:
+    """Immutable pointer from a prompt prefix to its on-disk checkpoint.
+
+    Stored as the value side of :class:`DiskCheckpointIndex._by_key`. Frozen
+    so a concurrent reader can hold a reference without it changing under
+    them. Carries everything :meth:`DiskCheckpointIndex.lookup` needs to
+    reconstruct the paths (``root`` + ``req_hash`` + ``token_offset``) and to
+    bind the triple of on-disk artifacts (``save_uuid``).
+    """
+
+    path: str
+    root: str
+    req_hash: str
+    token_offset: int
+    save_uuid: str | None
+
+
+class DiskCheckpointIndex:
+    """Process-wide prompt→checkpoint map for restore-on-miss lookup.
+
+    Wraps a :class:`vllm_mlx.runtime.radix_index.RadixPrefixIndex` for the
+    O(prefix_len) longest-prefix walk and a side dict that carries the
+    checkpoint location the radix key alone can't (the radix only knows
+    "this token tuple is stored", not where its safetensors lives).
+
+    Concurrency: guarded by its own ``RLock``. Per the module-level LOCK
+    ORDERING note, this lock is the INNERMOST of the three checkpoint locks —
+    no method takes ``_DISK_LOCK`` (or the prefix-cache lock) while holding
+    it. :meth:`lookup` and :meth:`build_from_root` therefore split into a
+    disk phase (holds ``_DISK_LOCK``, not the index lock) and an index phase
+    (holds the index lock, no disk I/O). The only legal nesting is the
+    reverse — :func:`write_checkpoint` holds ``_DISK_LOCK`` and calls
+    :meth:`index_checkpoint`, which takes only this lock.
+    """
+
+    def __init__(self) -> None:
+        from .radix_index import RadixPrefixIndex
+
+        self._lock = threading.RLock()
+        self._radix = RadixPrefixIndex()
+        self._by_key: dict[tuple[int, ...], _CheckpointRef] = {}
+
+    # ------------------------------------------------------------------ #
+    # Population                                                         #
+    # ------------------------------------------------------------------ #
+
+    def index_checkpoint(
+        self,
+        tokens: list[int] | tuple[int, ...],
+        *,
+        root: str,
+        req_hash: str,
+        token_offset: int,
+        save_uuid: str | None = None,
+    ) -> bool:
+        """Register one freshly-written checkpoint. In-memory only.
+
+        Safe to call while holding ``_DISK_LOCK`` (does no file I/O). The
+        persisted-token length MUST equal ``token_offset`` — a checkpoint
+        whose tokens blob doesn't cover exactly the offset it claims can't be
+        trusted as a prefix, so we skip it rather than index an unverifiable
+        entry. Newest write for a given key wins (a re-run of the same prefix
+        points at the most recent, still-present file).
+
+        Returns True when the entry was indexed, False when skipped.
+        """
+        if not tokens:
+            return False
+        try:
+            key = tuple(int(t) for t in tokens)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(token_offset, int) or token_offset <= 0:
+            return False
+        if len(key) != token_offset:
+            return False
+        ref = _CheckpointRef(
+            path=checkpoint_path(root, req_hash, token_offset),
+            root=root,
+            req_hash=req_hash,
+            token_offset=token_offset,
+            save_uuid=save_uuid,
+        )
+        with self._lock:
+            if key not in self._by_key:
+                self._radix.insert(key)
+            self._by_key[key] = ref
+        return True
+
+    def build_from_root(self, root: str) -> int:
+        """Populate the index by scanning every checkpoint under ``root``.
+
+        Two-phase to honour the lock order: the disk phase enumerates and
+        reads token blobs (taking ``_DISK_LOCK`` inside the helpers, never
+        the index lock); the index phase takes the index lock and bulk-loads
+        the collected entries. Returns the number of checkpoints indexed.
+
+        Best-effort: a checkpoint with no tokens blob, a failing schema
+        guard, or a blob whose length disagrees with its filename offset is
+        skipped (it simply won't be a restore candidate — the request
+        re-prefills).
+        """
+        # --- disk phase (index lock NOT held) ---
+        collected: list[tuple[tuple[int, ...], _CheckpointRef]] = []
+        for path, _mtime, _size in scan_checkpoints(root):
+            parsed = _parse_checkpoint_path(path)
+            if parsed is None:
+                continue
+            req_hash, token_offset = parsed
+            tokens, save_uuid = _read_checkpoint_tokens(path)
+            if tokens is None:
+                continue
+            if len(tokens) != token_offset:
+                continue
+            key = tuple(tokens)
+            collected.append(
+                (
+                    key,
+                    _CheckpointRef(
+                        path=path,
+                        root=root,
+                        req_hash=req_hash,
+                        token_offset=token_offset,
+                        save_uuid=save_uuid,
+                    ),
+                )
+            )
+
+        # --- index phase (index lock held, no disk I/O) ---
+        indexed = 0
+        with self._lock:
+            for key, ref in collected:
+                if key not in self._by_key:
+                    self._radix.insert(key)
+                self._by_key[key] = ref
+                indexed += 1
+        return indexed
+
+    def forget_request(self, req_hash: str) -> int:
+        """Drop every indexed entry belonging to one request hash.
+
+        Called from :func:`cleanup_request` so a finished/evicted request
+        doesn't leave a dangling map entry. Stale entries are already
+        invalidation-safe at :meth:`lookup` (they fail the on-disk re-verify),
+        so this is a footprint optimization, not a correctness requirement.
+        In-memory only; takes just the index lock.
+        """
+        with self._lock:
+            doomed = [k for k, ref in self._by_key.items() if ref.req_hash == req_hash]
+            for key in doomed:
+                del self._by_key[key]
+                self._radix.remove(key)
+            return len(doomed)
+
+    def clear(self) -> None:
+        """Reset the map (test hook / reindex)."""
+        with self._lock:
+            self._radix.clear()
+            self._by_key.clear()
+
+    # ------------------------------------------------------------------ #
+    # Lookup                                                             #
+    # ------------------------------------------------------------------ #
+
+    def lookup(self, query_tokens: list[int] | tuple[int, ...]) -> LoadedCheckpoint | None:
+        """Return the best restore candidate for ``query_tokens``, or None.
+
+        "Best" = the checkpoint with the LARGEST ``token_offset`` whose
+        persisted tokens are a true prefix of ``query_tokens``. Because every
+        indexed key's length equals its ``token_offset``, the radix's
+        longest-prefix walk yields exactly that checkpoint.
+
+        Every uncertainty is a None (re-prefill) — a wrong restore corrupts
+        output silently, so we only return a cache we could byte-verify:
+
+        1. radix miss / no side-map entry → None;
+        2. the matched key isn't a true prefix of the query, or its length
+           disagrees with the claimed offset → None;
+        3. the on-disk tokens blob doesn't re-read byte-identically to the
+           matched key (with the uuid binding) → None;
+        4. ``load_checkpoint`` fails its own schema guard, or the loaded
+           cache's live offset disagrees with the claimed offset → None.
+
+        Lock discipline: phase 1 resolves the in-memory ref under the index
+        lock and releases it; phase 2 does all disk work with the index lock
+        dropped (see the module LOCK ORDERING note). No lock is held on
+        return, so the caller can forward the cache freely.
+        """
+        if not query_tokens:
+            return None
+        try:
+            query = [int(t) for t in query_tokens]
+        except (TypeError, ValueError):
+            return None
+
+        # --- phase 1: in-memory resolution (index lock only) ---
+        with self._lock:
+            n_entries = len(self._by_key)
+            _matched, key = self._radix.longest_prefix(query)
+            if key is None:
+                logger.info(
+                    "[kv_restore_lookup] MISS reason=radix_no_prefix "
+                    "query_len=%d index_entries=%d",
+                    len(query),
+                    n_entries,
+                )
+                return None
+            ref = self._by_key.get(key)
+        if ref is None:
+            logger.info(
+                "[kv_restore_lookup] MISS reason=key_not_in_map matched_len=%d",
+                len(key),
+            )
+            return None
+
+        offset = ref.token_offset
+        if offset <= 0 or offset != len(key):
+            logger.info(
+                "[kv_restore_lookup] MISS reason=offset_len_disagree offset=%d key_len=%d",
+                offset,
+                len(key),
+            )
+            return None
+        if list(key) != query[:offset]:
+            logger.info(
+                "[kv_restore_lookup] MISS reason=prefix_bytes_differ offset=%d",
+                offset,
+            )
+            return None
+
+        # --- phase 2: disk verify + materialise (index lock dropped) ---
+        tok_path = tokens_path(ref.root, ref.req_hash, offset)
+        if not _verify_tokens_blob(tok_path, key, ref.save_uuid):
+            logger.info(
+                "[kv_restore_lookup] MISS reason=tokens_blob_verify_fail offset=%d",
+                offset,
+            )
+            return None
+        loaded = load_checkpoint(ref.path)
+        if loaded is None:
+            logger.info(
+                "[kv_restore_lookup] MISS reason=load_checkpoint_none offset=%d",
+                offset,
+            )
+            return None
+        if loaded.token_offset != offset:
+            logger.info(
+                "[kv_restore_lookup] MISS reason=loaded_offset_disagree offset=%d loaded=%d",
+                offset,
+                loaded.token_offset,
+            )
+            return None
+        if not _cache_offset_matches(loaded.cache, offset):
+            logger.info(
+                "[kv_restore_lookup] MISS reason=cache_offset_mismatch offset=%d",
+                offset,
+            )
+            return None
+        return loaded
+
+    def stats(self) -> dict[str, int]:
+        """Snapshot of index size for /metrics folding."""
+        with self._lock:
+            return {
+                "content_index_entries": len(self._by_key),
+                "content_index_nodes": self._radix.stats().get("node_count", 0),
+            }
+
+
+def get_content_index() -> DiskCheckpointIndex:
+    """Return the process-wide :class:`DiskCheckpointIndex` singleton.
+
+    Constructed lazily on first use so a server that never enables disk
+    checkpointing never builds it (the write hand-off and the scheduler
+    lookup are the only callers, both gated on the off-by-default interval).
+    """
+    global _CONTENT_INDEX
+    with _CONTENT_INDEX_LOCK:
+        if _CONTENT_INDEX is None:
+            _CONTENT_INDEX = DiskCheckpointIndex()
+        return _CONTENT_INDEX
+
+
+def reset_content_index_for_tests() -> None:
+    """Test-only: drop the singleton so the next call rebuilds it fresh."""
+    global _CONTENT_INDEX
+    with _CONTENT_INDEX_LOCK:
+        _CONTENT_INDEX = None
+
+
+def build_content_index(root: str | None = None) -> int:
+    """Populate the singleton content index by scanning ``root``.
+
+    The one-liner a boot path (Phase 3 restore-on-miss) calls to recover the
+    prompt→checkpoint map from checkpoints a previous process left on disk.
+    Defaults to :func:`get_default_root`. Returns the number of checkpoints
+    indexed. Cheap no-op when the root doesn't exist yet (an operator who
+    never enabled disk checkpointing).
+    """
+    if root is None:
+        root = get_default_root()
+    return get_content_index().build_from_root(root)
+
+
+def _parse_checkpoint_path(path: str) -> tuple[str, int] | None:
+    """Recover ``(req_hash, token_offset)`` from a checkpoint safetensors path.
+
+    Layout is ``<root>/<req_hash>/checkpoint-<offset>.safetensors`` — see
+    :func:`checkpoint_path`. Returns None on any shape we don't recognise so
+    a stray file in the root can't crash the index build.
+    """
+    if not path.endswith(_CHECKPOINT_EXT):
+        return None
+    base = os.path.basename(path)[: -len(_CHECKPOINT_EXT)]
+    if not base.startswith("checkpoint-"):
+        return None
+    try:
+        offset = int(base[len("checkpoint-") :])
+    except ValueError:
+        return None
+    req_hash = os.path.basename(os.path.dirname(path))
+    if not req_hash:
+        return None
+    return req_hash, offset
+
+
+def _read_checkpoint_tokens(path: str) -> tuple[list[int] | None, str | None]:
+    """Read a checkpoint's persisted prompt tokens for indexing.
+
+    Returns ``(tokens, save_uuid)`` or ``(None, None)`` when the checkpoint
+    has no tokens blob, fails the sidecar schema guard, or the blob doesn't
+    read cleanly. Takes ``_DISK_LOCK`` for the file reads (never called with
+    the index lock held — see LOCK ORDERING).
+    """
+    tok_path = path.replace(_CHECKPOINT_EXT, _TOKENS_EXT)
+    meta_path_str = path.replace(_CHECKPOINT_EXT, _METADATA_EXT)
+    with _DISK_LOCK:
+        if not os.path.isfile(tok_path):
+            return None, None
+        sidecar: dict[str, Any] = {}
+        if os.path.isfile(meta_path_str):
+            try:
+                with open(meta_path_str, encoding="utf-8") as fh:
+                    sidecar = json.load(fh)
+            except Exception:
+                return None, None
+        # Same schema guard as load_checkpoint: reject absent/newer versions.
+        version = sidecar.get("schema_version") if sidecar else None
+        if not isinstance(version, int) or version > _KNOWN_SCHEMA_VERSION:
+            return None, None
+        save_uuid = sidecar.get("save_uuid")
+        save_uuid = save_uuid if isinstance(save_uuid, str) and save_uuid else None
+        try:
+            from vllm_mlx.memory_cache import (
+                _peek_tokens_bin_header,
+                _read_tokens_bin,
+            )
+        except Exception:  # pragma: no cover — defensive
+            return None, None
+        count, blob_uuid, reason = _peek_tokens_bin_header(tok_path)
+        if reason or count is None:
+            return None, None
+        tokens, reason = _read_tokens_bin(tok_path, count, save_uuid)
+        if reason or tokens is None:
+            return None, None
+    return tokens, save_uuid or blob_uuid
+
+
+def _verify_tokens_blob(
+    tok_path: str,
+    expected: tuple[int, ...],
+    expected_uuid: str | None,
+) -> bool:
+    """Byte-verify an on-disk tokens blob equals ``expected``.
+
+    The last gate before a restore trusts a cache: re-reads the tokens blob
+    (enforcing the uuid binding when present) and confirms it matches the
+    matched key exactly. Any mismatch / read failure returns False so the
+    caller re-prefills. Takes ``_DISK_LOCK`` (index lock not held).
+    """
+    with _DISK_LOCK:
+        if not os.path.isfile(tok_path):
+            return False
+        try:
+            from vllm_mlx.memory_cache import _read_tokens_bin
+        except Exception:  # pragma: no cover — defensive
+            return False
+        try:
+            tokens, reason = _read_tokens_bin(tok_path, len(expected), expected_uuid)
+        except Exception:
+            return False
+    if reason or tokens is None:
+        return False
+    return tokens == list(expected)
+
+
+def _cache_offset_matches(cache: list[Any], offset: int) -> bool:
+    """Reject a materialised cache whose live length disagrees with ``offset``.
+
+    A checkpoint written when a step overshot the boundary (e.g. spec decode
+    advancing several tokens at once) can hold MORE KV than the ``offset`` its
+    tokens blob covers. Restoring it as an ``offset``-length prefix would
+    silently feed the model extra state, corrupting output. We cross-check
+    every attention layer that exposes an integer ``offset`` attribute; if any
+    disagrees, reject. Recurrent layers with no ``offset`` are skipped — the
+    tokens-blob byte match already vouched for the prefix identity.
+    """
+    for layer in cache:
+        off = getattr(layer, "offset", None)
+        if isinstance(off, int) and off != offset:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +1742,18 @@ def cleanup_request(root: str, req_hash: str) -> int:
             return 0
         with _STATS_LOCK:
             _STATS.bytes = _measure_root_bytes(root)
-        return n
+    # Drop the request's content-index entries AFTER releasing _DISK_LOCK so
+    # the index lock is never taken while a disk lock is held in the reverse
+    # of the module LOCK ORDERING (index lock is the innermost; here it is
+    # taken as a leaf with no other lock held). Stale entries would fail the
+    # lookup re-verify anyway, so this is a footprint cleanup, not a
+    # correctness gate.
+    if _CONTENT_INDEX is not None:
+        try:
+            _CONTENT_INDEX.forget_request(req_hash)
+        except Exception as e:  # pragma: no cover — best-effort
+            logger.debug(f"[disk_kv_checkpoint] content-index forget failed: {e}")
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -1024,12 +1776,16 @@ __all__ = [
     "CheckpointStats",
     "DEFAULT_CHECKPOINT_INTERVAL",
     "DEFAULT_MAX_DISK_BYTES",
+    "RESTORE_REJECT_REASONS",
+    "DiskCheckpointIndex",
     "LoadedCheckpoint",
     "MODELS_REQUIRING_FULL_CHECKPOINT",
     "RequestCheckpointState",
+    "build_content_index",
     "checkpoint_path",
     "cleanup_request",
     "enforce_disk_cap",
+    "get_content_index",
     "get_default_root",
     "get_stats",
     "load_checkpoint",
@@ -1037,11 +1793,14 @@ __all__ = [
     "metadata_path",
     "model_requires_full_checkpoint",
     "record_hook_error",
+    "record_restore_reject",
     "request_hash",
+    "reset_content_index_for_tests",
     "reset_stats_for_tests",
     "resolve_max_disk_bytes",
     "scan_checkpoints",
     "should_checkpoint",
     "temporary_root",
+    "tokens_path",
     "write_checkpoint",
 ]

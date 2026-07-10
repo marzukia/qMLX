@@ -198,6 +198,15 @@ class EngineCore:
             config=scheduler_config,
             tool_logits_processor_factory=self.config.tool_logits_processor_factory,
         )
+        # Disk-KV checkpoint/restore keys on the scheduler's model identity.
+        # Without this the scheduler's ``_model_name`` is None, so every
+        # checkpoint is written identity-less and the restore identity guard
+        # fail-closes (rejects on unknown model). Stamp it from the engine
+        # config, same source used for model_path detection above.
+        self.scheduler._model_name = (
+            getattr(self.config, "model_name", None)
+            or getattr(self.config, "model_path", None)
+        ) or None
 
         # Output collectors for low-latency streaming (vLLM pattern)
         self._output_collectors: dict[str, RequestOutputCollector] = {}
