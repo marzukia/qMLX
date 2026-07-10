@@ -1402,29 +1402,66 @@ class DiskCheckpointIndex:
 
         # --- phase 1: in-memory resolution (index lock only) ---
         with self._lock:
+            n_entries = len(self._by_key)
             _matched, key = self._radix.longest_prefix(query)
             if key is None:
+                logger.info(
+                    "[kv_restore_lookup] MISS reason=radix_no_prefix "
+                    "query_len=%d index_entries=%d",
+                    len(query),
+                    n_entries,
+                )
                 return None
             ref = self._by_key.get(key)
         if ref is None:
+            logger.info(
+                "[kv_restore_lookup] MISS reason=key_not_in_map matched_len=%d",
+                len(key),
+            )
             return None
 
         offset = ref.token_offset
         if offset <= 0 or offset != len(key):
+            logger.info(
+                "[kv_restore_lookup] MISS reason=offset_len_disagree offset=%d key_len=%d",
+                offset,
+                len(key),
+            )
             return None
         if list(key) != query[:offset]:
+            logger.info(
+                "[kv_restore_lookup] MISS reason=prefix_bytes_differ offset=%d",
+                offset,
+            )
             return None
 
         # --- phase 2: disk verify + materialise (index lock dropped) ---
         tok_path = tokens_path(ref.root, ref.req_hash, offset)
         if not _verify_tokens_blob(tok_path, key, ref.save_uuid):
+            logger.info(
+                "[kv_restore_lookup] MISS reason=tokens_blob_verify_fail offset=%d",
+                offset,
+            )
             return None
         loaded = load_checkpoint(ref.path)
         if loaded is None:
+            logger.info(
+                "[kv_restore_lookup] MISS reason=load_checkpoint_none offset=%d",
+                offset,
+            )
             return None
         if loaded.token_offset != offset:
+            logger.info(
+                "[kv_restore_lookup] MISS reason=loaded_offset_disagree offset=%d loaded=%d",
+                offset,
+                loaded.token_offset,
+            )
             return None
         if not _cache_offset_matches(loaded.cache, offset):
+            logger.info(
+                "[kv_restore_lookup] MISS reason=cache_offset_mismatch offset=%d",
+                offset,
+            )
             return None
         return loaded
 
