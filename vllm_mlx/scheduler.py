@@ -5349,7 +5349,11 @@ class Scheduler:
             # off-by-default flag and done once per scheduler lifetime.
             if not getattr(self, "_disk_restore_index_built", False):
                 try:
-                    _dkc.build_content_index(_dkc.get_default_root())
+                    _n_indexed = _dkc.build_content_index(_dkc.get_default_root())
+                    logger.info(
+                        "[kv_restore] content-index built from disk: %d checkpoints indexed",
+                        _n_indexed,
+                    )
                 except Exception as _build_err:  # pragma: no cover — defensive
                     logger.debug(
                         "[kv_restore] content-index build failed: %r", _build_err
