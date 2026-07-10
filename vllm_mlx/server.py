@@ -2168,12 +2168,25 @@ Examples:
     # Initialize reasoning parser if specified (or auto-detected)
     if args.reasoning_parser:
         global _reasoning_parser, _reasoning_parser_name
-        from .reasoning import get_parser
+        try:
+            from .reasoning import get_parser
 
-        parser_cls = get_parser(args.reasoning_parser)
-        _reasoning_parser = parser_cls()
-        _reasoning_parser_name = args.reasoning_parser
-        logger.info(f"Reasoning parser enabled: {args.reasoning_parser}")
+            parser_cls = get_parser(args.reasoning_parser)
+            _reasoning_parser = parser_cls()
+            _reasoning_parser_name = args.reasoning_parser
+            logger.info(f"Reasoning parser enabled: {args.reasoning_parser}")
+        except (KeyError, ImportError) as e:
+            logger.warning(
+                f"Unknown or unavailable reasoning parser "
+                f"'{args.reasoning_parser}': {e}. Continuing without a "
+                f"reasoning parser."
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to initialize reasoning parser "
+                f"'{args.reasoning_parser}': {e}. Continuing without a "
+                f"reasoning parser."
+            )
 
     # Pre-load embedding model if specified. The H-08 guard already
     # fired at the top of this function (F-H08-INCOMPLETE fix); by the

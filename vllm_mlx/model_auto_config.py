@@ -361,36 +361,12 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="qwen3",
         ),
     ),
-    # GLM family (GLM-4.5, GLM-4.7)
-    (
-        re.compile(r"glm[-_]?4", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="glm47",
-            reasoning_parser=None,
-        ),
-    ),
-    # MiniMax M2.5
-    (
-        re.compile(r"minimax", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="minimax",
-            reasoning_parser="minimax",
-        ),
-    ),
     # GPT-OSS
     (
         re.compile(r"gpt[-_]?oss", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="harmony",
             reasoning_parser="harmony",
-        ),
-    ),
-    # Kimi
-    (
-        re.compile(r"kimi", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="kimi",
-            reasoning_parser=None,
         ),
     ),
     # Magistral (Mistral reasoning variant) — must precede generic
@@ -409,14 +385,6 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser=None,
-        ),
-    ),
-    # Gemma 4 (native tool format)
-    (
-        re.compile(r"gemma[-_]?4", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="gemma4",
-            reasoning_parser="gemma4",
         ),
     ),
     # Gemma 3n — on-device multimodal (text+image+audio). The chat
@@ -469,17 +437,6 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser="deepseek_r1",
-        ),
-    ),
-    # Llama (Llama 3.x and earlier)
-    # Note: Llama 4 Scout/Maverick (109B/400B params) deliberately NOT added —
-    # too large to run on the typical Mac the project targets, so the
-    # validation burden (pr_validate × all agents) is not justified.
-    (
-        re.compile(r"llama", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="llama",
-            reasoning_parser=None,
         ),
     ),
     # Phi-4-mini-reasoning — Microsoft's math-tuned 3.8B reasoning
@@ -549,41 +506,6 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser="qwen3",
-        ),
-    ),
-    # Tencent Hy3 / Hunyuan 3 (295B/21B active MoE, 166 GB at 4-bit) is
-    # served via the vendored ``vllm_mlx/models/hy_v3.py`` shim (PR
-    # #1069) — Ultra-only launch, gated by the ``min_memory_gb: 192``
-    # metadata on the ``hy3-preview-4bit`` alias. PR-2 (#1069 follow-up)
-    # wires the suffix-tolerant ``hy_v3`` tool + reasoning parsers so a
-    # direct HF path serve (``mlx-community/Hy3-preview-4bit``, or any
-    # future Hy3 quant re-upload) auto-configures without requiring the
-    # alias-profile lookup path.
-    #
-    # Codex round-4 BLOCKING #1 (PR #1070): the earlier form was
-    # unanchored (``hy3|hy-v3|hunyuan.?3``), matching substrings inside
-    # unrelated HF paths (``mymodelhy3embedded``, ``not-hunyuanx3-test``)
-    # and auto-wiring them to the Hy3 parsers. Tighten to a family-boundary
-    # form: start-of-string OR a path/name separator (``/`` ``_`` ``.`` ``-``)
-    # precedes the family root.
-    #
-    # codex R11 BLOCKING: the TRAILING class must NOT include ``/`` — else a
-    # non-Hy3 model living under an HF org / local parent directory named
-    # ``hy3`` (``hy3/qwen-model``, ``some/hy3/nested-qwen``) was auto-wired to
-    # the Hy3 parsers because the ``hy3`` PARENT segment matched. The family
-    # root must sit in the FINAL path segment (the repo/alias name), so the
-    # root is followed by end-of-string OR an in-segment continuation
-    # (``_`` ``.`` ``-``), never a ``/`` path boundary. This still matches
-    # ``mlx-community/Hy3-preview-4bit``, bare ``hy3``, and ``org/hy3`` while
-    # rejecting a mere parent/namespace segment.
-    (
-        re.compile(
-            r"(?:^|[/_.\-])(?:hy3|hy-v3|hunyuan[-_]?3)(?:$|[_.\-])",
-            re.IGNORECASE,
-        ),
-        ModelConfig(
-            tool_call_parser="hy_v3",
-            reasoning_parser="hy_v3",
         ),
     ),
     # Pure recurrent / linear-attention families (Mamba, Jamba, RWKV).
