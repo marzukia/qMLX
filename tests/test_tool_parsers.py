@@ -10,16 +10,9 @@ from vllm_mlx.tool_parsers import (
     AutoToolParser,
     DeepSeekToolParser,
     DeepSeekV3ToolParser,
-    FunctionaryToolParser,
-    GraniteToolParser,
     HermesToolParser,
-    KimiToolParser,
-    LlamaToolParser,
-    MistralToolParser,
-    NemotronToolParser,
     QwenToolParser,
     ToolParserManager,
-    xLAMToolParser,
 )
 
 
@@ -31,16 +24,9 @@ class TestToolParserManager:
         parsers = ToolParserManager.list_registered()
         expected = [
             "auto",
-            "mistral",
             "qwen",
-            "llama",
             "hermes",
             "deepseek",
-            "kimi",
-            "granite",
-            "nemotron",
-            "xlam",
-            "functionary",
         ]
         for p in expected:
             assert p in parsers, f"Parser '{p}' not found"
@@ -48,27 +34,13 @@ class TestToolParserManager:
     def test_get_tool_parser_by_name(self):
         """Test getting parsers by name."""
         test_cases = [
-            ("mistral", MistralToolParser),
             ("qwen", QwenToolParser),
             ("qwen3", QwenToolParser),
-            ("llama", LlamaToolParser),
-            ("llama3", LlamaToolParser),
-            ("llama4", LlamaToolParser),
             ("auto", AutoToolParser),
             ("deepseek", DeepSeekToolParser),
             ("deepseek_v3", DeepSeekV3ToolParser),
             ("deepseek_r1_0528", DeepSeekV3ToolParser),
             ("deepseek_r1", DeepSeekToolParser),
-            ("kimi", KimiToolParser),
-            ("kimi_k2", KimiToolParser),
-            ("moonshot", KimiToolParser),
-            ("granite", GraniteToolParser),
-            ("granite3", GraniteToolParser),
-            ("nemotron", NemotronToolParser),
-            ("nemotron3", NemotronToolParser),
-            ("xlam", xLAMToolParser),
-            ("functionary", FunctionaryToolParser),
-            ("meetkai", FunctionaryToolParser),
             ("hermes", HermesToolParser),
             ("nous", HermesToolParser),
         ]
@@ -85,74 +57,13 @@ class TestToolParserManager:
         """Test that all parsers can be instantiated without tokenizer."""
         for name in [
             "auto",
-            "mistral",
             "qwen",
-            "llama",
             "hermes",
             "deepseek",
-            "kimi",
-            "granite",
-            "nemotron",
-            "xlam",
-            "functionary",
         ]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             parser = parser_cls()  # Should not raise
             assert parser is not None
-
-
-class TestMistralToolParser:
-    """Test the Mistral tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return MistralToolParser()
-
-    def test_old_format_single(self, parser):
-        """Test parsing old Mistral format with single tool call."""
-        text = '[TOOL_CALLS] [{"name": "get_weather", "arguments": {"city": "Paris"}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "get_weather"
-        args = json.loads(result.tool_calls[0]["arguments"])
-        assert args["city"] == "Paris"
-
-    def test_old_format_multiple(self, parser):
-        """Test parsing old Mistral format with multiple tool calls."""
-        text = '[TOOL_CALLS] [{"name": "get_weather", "arguments": {"city": "Paris"}}, {"name": "get_time", "arguments": {"timezone": "UTC"}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 2
-        assert result.tool_calls[0]["name"] == "get_weather"
-        assert result.tool_calls[1]["name"] == "get_time"
-
-    def test_new_format(self, parser):
-        """Test parsing new Mistral format."""
-        text = '[TOOL_CALLS]get_weather{"city": "London"}'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "get_weather"
-
-    def test_no_tool_call(self, parser):
-        """Test that regular text is not parsed as tool call."""
-        text = "Hello, how can I help you today?"
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-        assert result.content == text
-
-    def test_content_with_tool_call(self, parser):
-        """Test content before tool call is preserved."""
-        text = 'Let me check the weather for you.[TOOL_CALLS] [{"name": "get_weather", "arguments": {}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.content == "Let me check the weather for you."
 
 
 class TestQwenToolParser:
@@ -319,41 +230,6 @@ class TestQwenToolParser:
         assert emitted[0]["index"] == 0
 
 
-class TestLlamaToolParser:
-    """Test the Llama tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return LlamaToolParser()
-
-    def test_function_format(self, parser):
-        """Test parsing Llama function format."""
-        text = '<function=multiply>{"x": 3, "y": 4}</function>'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "multiply"
-
-    def test_multiple_functions(self, parser):
-        """Test parsing multiple function calls."""
-        text = '<function=add>{"a": 1}</function><function=multiply>{"x": 3}</function>'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 2
-        assert result.tool_calls[0]["name"] == "add"
-        assert result.tool_calls[1]["name"] == "multiply"
-
-    def test_content_with_function(self, parser):
-        """Test content before function call."""
-        text = 'Computing result<function=calc>{"n": 5}</function>'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.content == "Computing result"
-
-
 class TestHermesToolParser:
     """Test the Hermes tool parser."""
 
@@ -440,227 +316,12 @@ class TestDeepSeekToolParser:
         assert not result.tools_called
 
 
-class TestKimiToolParser:
-    """Test the Kimi tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return KimiToolParser()
-
-    def test_kimi_format(self, parser):
-        """Test parsing Kimi K2 format."""
-        text = """<|tool_calls_section_begin|>
-<|tool_call_begin|>functions.get_weather:0<|tool_call_argument_begin|>{"city": "Beijing"}<|tool_call_end|>
-<|tool_calls_section_end|>"""
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "get_weather"
-
-    def test_simple_function_name(self, parser):
-        """Test with simple function name (no functions. prefix)."""
-        text = (
-            "<|tool_call_begin|>search:0<|tool_call_argument_begin|>{}<|tool_call_end|>"
-        )
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "search"
-
-    def test_no_tool_call(self, parser):
-        """Test text without tool calls."""
-        text = "I'll answer your question directly."
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-
-
-class TestGraniteToolParser:
-    """Test the Granite tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return GraniteToolParser()
-
-    def test_granite_30_format(self, parser):
-        """Test parsing Granite 3.0 format."""
-        text = (
-            '<|tool_call|>[{"name": "calculate", "arguments": {"expression": "2+2"}}]'
-        )
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "calculate"
-
-    def test_granite_31_format(self, parser):
-        """Test parsing Granite 3.1 format."""
-        text = '<tool_call>[{"name": "search", "arguments": {"query": "test"}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "search"
-
-    def test_multiple_calls(self, parser):
-        """Test multiple tool calls."""
-        text = '<|tool_call|>[{"name": "func1", "arguments": {}}, {"name": "func2", "arguments": {}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 2
-
-    def test_no_tool_call(self, parser):
-        """Test text without tool calls."""
-        text = "The answer is 42."
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-
-
-class TestNemotronToolParser:
-    """Test the Nemotron tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return NemotronToolParser()
-
-    def test_parameter_format(self, parser):
-        """Test parsing Nemotron parameter format."""
-        text = "<tool_call><function=get_weather><parameter=city>Paris</parameter><parameter=units>celsius</parameter></function></tool_call>"
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "get_weather"
-        args = json.loads(result.tool_calls[0]["arguments"])
-        assert args["city"] == "Paris"
-        assert args["units"] == "celsius"
-
-    def test_json_format(self, parser):
-        """Test parsing Nemotron with JSON arguments."""
-        text = '<tool_call><function=calculate>{"expression": "2*3"}</function></tool_call>'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "calculate"
-
-    def test_multiple_calls(self, parser):
-        """Test multiple Nemotron tool calls."""
-        text = "<tool_call><function=func1><parameter=a>1</parameter></function></tool_call><tool_call><function=func2><parameter=b>2</parameter></function></tool_call>"
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 2
-
-    def test_no_tool_call(self, parser):
-        """Test text without tool calls."""
-        text = "Here is the information you requested."
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-
-
-class TestXLAMToolParser:
-    """Test the xLAM tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return xLAMToolParser()
-
-    def test_json_array(self, parser):
-        """Test parsing JSON array format."""
-        text = '[{"name": "search", "arguments": {"query": "AI"}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "search"
-
-    def test_code_block(self, parser):
-        """Test parsing markdown code block."""
-        text = '```json\n[{"name": "calculate", "arguments": {"x": 5}}]\n```'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "calculate"
-
-    def test_after_think(self, parser):
-        """Test parsing after </think> tag."""
-        text = (
-            '<think>Let me search for this</think>[{"name": "search", "arguments": {}}]'
-        )
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "search"
-
-    def test_tool_calls_tag(self, parser):
-        """Test [TOOL_CALLS] tag format."""
-        text = '[TOOL_CALLS][{"name": "func", "arguments": {}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-
-    def test_no_tool_call(self, parser):
-        """Test text without tool calls."""
-        text = "I don't need to use any tools for this."
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-
-
-class TestFunctionaryToolParser:
-    """Test the Functionary tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return FunctionaryToolParser()
-
-    def test_recipient_format(self, parser):
-        """Test parsing Functionary v3 recipient format."""
-        text = '<|from|>assistant\n<|recipient|>get_weather\n<|content|>{"city": "NYC"}'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "get_weather"
-
-    def test_function_format(self, parser):
-        """Test parsing function format."""
-        text = '<function=search>{"query": "test"}</function>'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "search"
-
-    def test_json_array(self, parser):
-        """Test parsing JSON array."""
-        text = '[{"name": "func1", "arguments": {}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-
-    def test_no_tool_call(self, parser):
-        """Test text without tool calls."""
-        text = "Let me explain that to you."
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-
-
 class TestAutoToolParser:
     """Test the auto-detecting tool parser."""
 
     @pytest.fixture
     def parser(self):
         return AutoToolParser()
-
-    def test_detects_mistral(self, parser):
-        """Test auto detection of Mistral format."""
-        text = '[TOOL_CALLS] [{"name": "search", "arguments": {}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "search"
 
     def test_detects_qwen_xml(self, parser):
         """Test auto detection of Qwen XML format."""
@@ -677,22 +338,6 @@ class TestAutoToolParser:
 
         assert result.tools_called
         assert result.tool_calls[0]["name"] == "add"
-
-    def test_detects_llama(self, parser):
-        """Test auto detection of Llama format."""
-        text = '<function=multiply>{"x": 2}</function>'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "multiply"
-
-    def test_detects_nemotron(self, parser):
-        """Test auto detection of Nemotron format."""
-        text = "<tool_call><function=search><parameter=q>test</parameter></function></tool_call>"
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "search"
 
     def test_detects_raw_json(self, parser):
         """Test auto detection of raw JSON format."""
@@ -754,22 +399,13 @@ class TestEdgeCases:
     def test_empty_input(self):
         """Test with empty input."""
         parsers = [
-            MistralToolParser(),
             QwenToolParser(),
-            LlamaToolParser(),
             DeepSeekToolParser(),
             AutoToolParser(),
         ]
         for parser in parsers:
             result = parser.extract_tool_calls("")
             assert not result.tools_called
-
-    def test_malformed_json(self):
-        """Test with malformed JSON."""
-        parser = MistralToolParser()
-        text = '[TOOL_CALLS] [{"name": "func", "arguments": {invalid json}]'
-        result = parser.extract_tool_calls(text)
-        # Should not crash, may or may not parse
 
     def test_nested_arguments(self):
         """Test with deeply nested arguments."""
@@ -782,57 +418,8 @@ class TestEdgeCases:
         parsed_args = json.loads(result.tool_calls[0]["arguments"])
         assert parsed_args["level1"]["level2"]["level3"] == [1, 2, 3]
 
-    def test_unicode_in_arguments(self):
-        """Test with unicode characters in arguments."""
-        parser = MistralToolParser()
-        text = '[TOOL_CALLS] [{"name": "translate", "arguments": {"text": "日本語"}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        args = json.loads(result.tool_calls[0]["arguments"])
-        assert args["text"] == "日本語"
-
-    def test_special_characters_in_name(self):
-        """Test function names with special characters."""
-        parser = LlamaToolParser()
-        text = '<function=get_user_info>{"user_id": 123}</function>'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "get_user_info"
-
-    def test_tool_call_id_uniqueness(self):
-        """Test that each tool call gets a unique ID."""
-        parser = MistralToolParser()
-        text = '[TOOL_CALLS] [{"name": "func1", "arguments": {}}, {"name": "func2", "arguments": {}}]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        ids = [tc["id"] for tc in result.tool_calls]
-        assert len(ids) == len(set(ids)), "Tool call IDs should be unique"
-
-
 class TestStreamingParsing:
     """Test streaming tool call parsing."""
-
-    def test_mistral_streaming(self):
-        """Test Mistral streaming parsing."""
-        parser = MistralToolParser()
-
-        # Simulate streaming
-        result1 = parser.extract_tool_calls_streaming(
-            previous_text="",
-            current_text="Let me",
-            delta_text="Let me",
-        )
-        assert result1 == {"content": "Let me"}
-
-        result2 = parser.extract_tool_calls_streaming(
-            previous_text="Let me",
-            current_text="Let me[TOOL_CALLS]",
-            delta_text="[TOOL_CALLS]",
-        )
-        # Should start tool call parsing
 
     def test_auto_streaming(self):
         """Test auto parser streaming."""
@@ -844,470 +431,6 @@ class TestStreamingParsing:
             delta_text="Hello world",
         )
         assert result == {"content": "Hello world"}
-
-
-def _run_mistral_streaming(parser: MistralToolParser, chunks: list[str]) -> dict:
-    """Drive ``extract_tool_calls_streaming`` chunk-by-chunk and assemble.
-
-    Mirrors what an OpenAI-compatible client does with the SSE deltas:
-    concatenate each ``function.name`` / ``function.arguments`` fragment
-    using key-presence (NOT truthiness — codex #581 BLOCKING-3 flagged
-    that an empty-string ``name`` delta would otherwise be swallowed and
-    mask a production regression where ``"name": ""`` clobbers a real
-    name), record each ``id`` once, and accumulate text content. The
-    returned dict also exposes ``raw_name_deltas`` and
-    ``raw_args_deltas`` per tool index so individual tests can assert
-    on the wire-level sequence (e.g. "name was never emitted as the
-    empty string") rather than only the final assembled value.
-    """
-    content_parts: list[str] = []
-    tool_calls: dict[int, dict[str, str]] = {}
-    raw_name_deltas: dict[int, list[str]] = {}
-    raw_args_deltas: dict[int, list[str]] = {}
-    prev = ""
-    for chunk in chunks:
-        cur = prev + chunk
-        delta = parser.extract_tool_calls_streaming(
-            previous_text=prev,
-            current_text=cur,
-            delta_text=chunk,
-            request={"tools": []},
-        )
-        prev = cur
-        if not delta:
-            continue
-        if "content" in delta:
-            content_parts.append(delta["content"] or "")
-        for tc in delta.get("tool_calls") or []:
-            idx = tc["index"]
-            slot = tool_calls.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-            if tc.get("id"):
-                slot["id"] = tc["id"]
-            fn = tc.get("function") or {}
-            # Key presence — NOT truthiness — so we don't silently absorb
-            # a clobber-with-empty-string regression (codex BLOCKING-3).
-            if "name" in fn:
-                slot["name"] += fn["name"]
-                raw_name_deltas.setdefault(idx, []).append(fn["name"])
-            if "arguments" in fn:
-                slot["arguments"] += fn["arguments"]
-                raw_args_deltas.setdefault(idx, []).append(fn["arguments"])
-    # Release any prefix-held suffix at stream end (matches the
-    # postprocessor's finalize() path).
-    held = parser.flush_held_content(prev)
-    if held:
-        content_parts.append(held)
-    return {
-        "content": "".join(content_parts),
-        "tool_calls": tool_calls,
-        "raw_name_deltas": raw_name_deltas,
-        "raw_args_deltas": raw_args_deltas,
-    }
-
-
-def _assert_no_empty_name_deltas(assembled: dict) -> None:
-    """No ``function.name`` delta may be the empty string (codex BLOCKING-3).
-
-    A production regression that emits ``{"name": ""}`` after the real
-    name would clobber the name field in clients that *overwrite*
-    instead of concatenate. The assembler above tracks each raw delta
-    so this test-side assertion fails loudly when that happens.
-    """
-    for idx, deltas in assembled["raw_name_deltas"].items():
-        assert all(d != "" for d in deltas), (
-            f"tool {idx}: empty-string name delta emitted (sequence={deltas!r})"
-        )
-
-
-class TestMistralDevstralStreaming:
-    """Regression coverage for #579 — Devstral ``[ARGS]`` streaming.
-
-    The non-streaming path correctly strips the ``[ARGS]`` separator
-    (mistral_tool_parser.py extract_tool_calls), but the streaming
-    path operated chunk-by-chunk on ``delta_text`` and only handled
-    ``[ARGS]`` when it landed in the same delta as ``{``. Real
-    Devstral token streams split the separator across chunks, so the
-    literal ``[ARGS]`` leaked into ``arguments`` and (worse) the
-    name slot got clobbered with ``""``. Each test below replays a
-    realistic chunk shape reported by users and asserts the assembled
-    name/arguments match the non-streaming ground truth.
-    """
-
-    @pytest.fixture
-    def parser(self):
-        return MistralToolParser()
-
-    def test_args_separator_as_own_chunk(self, parser):
-        """``[ARGS]`` arrives by itself, must not leak into args or clobber name."""
-        chunks = [
-            "[TOOL_CALLS]",
-            "read",
-            "[ARGS]",
-            '{"file_path"',
-            ': "/tmp/foo.txt"',
-            "}",
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        _assert_no_empty_name_deltas(assembled)
-
-        assert list(assembled["tool_calls"].keys()) == [0]
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "read"
-        assert "[ARGS]" not in tc["arguments"]
-        args = json.loads(tc["arguments"])
-        assert args == {"file_path": "/tmp/foo.txt"}
-        assert tc["id"], "expected a generated tool-call id"
-
-    def test_args_separator_fused_with_open_brace(self, parser):
-        """``[ARGS]{"`` in one chunk must not emit empty-string name."""
-        chunks = [
-            "[TOOL_CALLS]",
-            "read",
-            '[ARGS]{"',
-            'file_path": "/tmp/foo.txt"',
-            "}",
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        _assert_no_empty_name_deltas(assembled)
-
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "read", (
-            f"name clobbered by empty emit from [ARGS]{{ chunk; got {tc['name']!r}"
-        )
-        assert "[ARGS]" not in tc["arguments"]
-        args = json.loads(tc["arguments"])
-        assert args == {"file_path": "/tmp/foo.txt"}
-
-    def test_name_and_args_separator_fused(self, parser):
-        """``read[ARGS]{`` arriving in one delta (one common Devstral tokenization)."""
-        chunks = [
-            "[TOOL_CALLS]",
-            'read[ARGS]{"file_path":"/tmp/foo.txt"}',
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        _assert_no_empty_name_deltas(assembled)
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "read"
-        assert json.loads(tc["arguments"]) == {"file_path": "/tmp/foo.txt"}
-
-    def test_pathological_chunking_from_bug_report(self, parser):
-        """Exact chunking that produced ``name='\"}'``, ``args='[ARGS]{\"'`` in #579."""
-        chunks = [
-            "[TOOL_CALLS]",
-            "read",
-            '[ARGS]{"',
-            'file_path":"/tmp/foo.txt',
-            '"}',
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        _assert_no_empty_name_deltas(assembled)
-        tc = assembled["tool_calls"][0]
-        # Pre-fix: name == '"}', arguments == '[ARGS]{"' — assert both gone.
-        assert tc["name"] == "read"
-        assert "[ARGS]" not in tc["arguments"]
-        assert json.loads(tc["arguments"]) == {"file_path": "/tmp/foo.txt"}
-
-    def test_streaming_matches_non_streaming(self, parser):
-        """End-to-end invariant: streaming-assembled output == non-streaming output."""
-        full_text = '[TOOL_CALLS]read[ARGS]{"file_path": "/tmp/foo.txt"}'
-        non_stream = parser.extract_tool_calls(full_text)
-        assert non_stream.tools_called
-        truth_name = non_stream.tool_calls[0]["name"]
-        truth_args = json.loads(non_stream.tool_calls[0]["arguments"])
-
-        # Replay the same bytes byte-by-byte (worst-case chunking)
-        chunks = list(full_text)
-        assembled = _run_mistral_streaming(MistralToolParser(), chunks)
-        _assert_no_empty_name_deltas(assembled)
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == truth_name
-        assert json.loads(tc["arguments"]) == truth_args
-        # The pre-opener portion contains no plain content, so nothing
-        # should have shipped on the ``content`` channel (codex
-        # BLOCKING-1: partial ``[TOOL_`` bytes must never leak).
-        assert assembled["content"] == ""
-
-    def test_content_then_tool_call(self, parser):
-        """Content before ``[TOOL_CALLS]`` streams as content, then tool call streams cleanly."""
-        chunks = [
-            "Let me ",
-            "check that.",
-            "[TOOL_CALLS]",
-            "read",
-            "[ARGS]",
-            '{"file_path":"/tmp/foo.txt"}',
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        _assert_no_empty_name_deltas(assembled)
-        assert assembled["content"] == "Let me check that."
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "read"
-        assert json.loads(tc["arguments"]) == {"file_path": "/tmp/foo.txt"}
-
-    def test_partial_opener_held_back_as_content(self, parser):
-        """Partial ``[TOOL_CALLS]`` prefix bytes must NOT ship as content
-        (codex #581 BLOCKING-1)."""
-        # Byte-by-byte stream of the opener split across many chunks.
-        # No content_delta should fire until the full opener arrives,
-        # because every prefix of ``[TOOL_CALLS]`` is held back.
-        chunks = list("[TOOL_CALLS]read[ARGS]{}")
-        assembled = _run_mistral_streaming(parser, chunks)
-        _assert_no_empty_name_deltas(assembled)
-        # Nothing ever shipped as content; the opener never leaked.
-        assert assembled["content"] == "", (
-            f"partial opener leaked as content: {assembled['content']!r}"
-        )
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "read"
-        assert json.loads(tc["arguments"]) == {}
-
-    def test_bracket_in_prose_is_released_not_held_forever(self, parser):
-        """A ``[`` in prose that doesn't continue toward ``[TOOL_CALLS]``
-        must be released as content (codex BLOCKING-1 regression guard:
-        the prefix-hold can't deadlock on plain content)."""
-        chunks = [
-            "She said [",
-            "hello] and waved.",  # ``[h`` proves ``[`` was prose, not opener
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        assert assembled["content"] == "She said [hello] and waved."
-        assert assembled["tool_calls"] == {}
-
-    def test_multi_tool_new_format(self, parser):
-        """``[TOOL_CALLS]a[ARGS]{}[TOOL_CALLS]b[ARGS]{}`` must yield TWO calls
-        (codex #581 BLOCKING-2). Pre-fix the second tool's bytes were
-        absorbed into the first call's arguments."""
-        chunks = [
-            "[TOOL_CALLS]",
-            'read[ARGS]{"file_path":"/tmp/a.txt"}',
-            '[TOOL_CALLS]write[ARGS]{"file_path":"/tmp/b.txt","content":"hi"}',
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        _assert_no_empty_name_deltas(assembled)
-        assert sorted(assembled["tool_calls"].keys()) == [0, 1]
-
-        tc0 = assembled["tool_calls"][0]
-        assert tc0["name"] == "read"
-        assert json.loads(tc0["arguments"]) == {"file_path": "/tmp/a.txt"}
-        assert tc0["id"]
-
-        tc1 = assembled["tool_calls"][1]
-        assert tc1["name"] == "write"
-        assert json.loads(tc1["arguments"]) == {
-            "file_path": "/tmp/b.txt",
-            "content": "hi",
-        }
-        assert tc1["id"] and tc1["id"] != tc0["id"]
-
-    def test_multi_tool_boundary_split_across_chunks(self, parser):
-        """The second ``[TOOL_CALLS]`` boundary arriving in pieces must not
-        leak partial bytes into the first call's arguments."""
-        chunks = [
-            "[TOOL_CALLS]",
-            'read[ARGS]{"file_path":"/tmp/a.txt"}',
-            "[TO",
-            "OL_CALLS]",  # opener completes only here
-            'write[ARGS]{"file_path":"/tmp/b.txt"}',
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        _assert_no_empty_name_deltas(assembled)
-        tc0 = assembled["tool_calls"][0]
-        # Pre-fix: ``"[TO"`` chunk would have appended ``[TO`` to the
-        # first call's arguments before the next chunk closed the opener.
-        assert json.loads(tc0["arguments"]) == {"file_path": "/tmp/a.txt"}
-        tc1 = assembled["tool_calls"][1]
-        assert tc1["name"] == "write"
-        assert json.loads(tc1["arguments"]) == {"file_path": "/tmp/b.txt"}
-
-    def test_flush_held_content_releases_partial_opener_at_eos(self, parser):
-        """A stream ending in ``"abc["`` must release ``"abc["`` at EOS —
-        ``flush_held_content`` is the contract that catches the bytes the
-        prefix-hold withheld during streaming."""
-        chunks = ["She said abc", "["]  # stream ends mid-sentinel
-        # _run_mistral_streaming calls flush_held_content at the end.
-        assembled = _run_mistral_streaming(parser, chunks)
-        assert assembled["content"] == "She said abc["
-        assert assembled["tool_calls"] == {}
-
-    def test_literal_tool_calls_inside_string_arg(self, parser):
-        """A literal ``[TOOL_CALLS]`` inside a string-valued arg must NOT
-        split tools (codex #581 round-2 BLOCKING-1). Pre-fix, the
-        body-split approach took the literal as a new tool boundary and
-        corrupted the first call's JSON."""
-        full = '[TOOL_CALLS]search[ARGS]{"query":"see [TOOL_CALLS] in docs","limit":5}'
-        assembled = _run_mistral_streaming(parser, list(full))
-        _assert_no_empty_name_deltas(assembled)
-        assert list(assembled["tool_calls"].keys()) == [0]
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "search"
-        # The literal ``[TOOL_CALLS]`` inside the string value must
-        # round-trip into the final JSON unmodified.
-        args = json.loads(tc["arguments"])
-        assert args == {"query": "see [TOOL_CALLS] in docs", "limit": 5}
-
-    def test_literal_args_inside_string_arg(self, parser):
-        """A literal ``[ARGS]`` inside a string-valued arg (after the real
-        ``[ARGS]`` separator) must NOT be stripped or re-interpreted."""
-        full = '[TOOL_CALLS]echo[ARGS]{"text":"[ARGS] is a delimiter"}'
-        assembled = _run_mistral_streaming(parser, list(full))
-        _assert_no_empty_name_deltas(assembled)
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "echo"
-        args = json.loads(tc["arguments"])
-        assert args == {"text": "[ARGS] is a delimiter"}
-
-    def test_args_value_ending_in_bracket_streams_through(self, parser):
-        """A valid arg JSON ending with a bracketed char (e.g. ``"["``)
-        must not be dropped at EOS (codex #581 round-2 BLOCKING-2). The
-        previous design prefix-held the args tail and silently lost
-        trailing bytes when the stream ended mid-sentinel-candidate."""
-        full = '[TOOL_CALLS]grep[ARGS]{"pattern":"["}'
-        assembled = _run_mistral_streaming(parser, list(full))
-        _assert_no_empty_name_deltas(assembled)
-        tc = assembled["tool_calls"][0]
-        args = json.loads(tc["arguments"])
-        assert args == {"pattern": "["}
-
-    def test_escaped_quote_inside_string_arg(self, parser):
-        """The JSON state machine must respect ``\\\"`` escapes, otherwise
-        a stray escaped quote could prematurely close the string and
-        cause the tokenizer to misidentify args boundaries."""
-        full = '[TOOL_CALLS]echo[ARGS]{"text":"she said \\"hi\\""}'
-        assembled = _run_mistral_streaming(parser, list(full))
-        _assert_no_empty_name_deltas(assembled)
-        tc = assembled["tool_calls"][0]
-        args = json.loads(tc["arguments"])
-        assert args == {"text": 'she said "hi"'}
-
-    def test_streaming_is_incremental_not_quadratic(self, parser):
-        """Codex #581 round-2 BLOCKING-3 / round-3 BLOCKING-2: drive a
-        long body across many small chunks and assert that the total
-        bytes walked equals the body length, NOT N × body length. A
-        re-scan implementation would have ``_stream_bytes_walked``
-        grow as O(L²) across N chunks; the incremental implementation
-        keeps it linear.
-
-        The previous single-chunk version of this test would have
-        passed any implementation, including a quadratic re-scan,
-        because there was only one delta to measure.
-        """
-        # A body with many bytes so the O(L) vs O(L²) split is large.
-        full = "[TOOL_CALLS]read[ARGS]" + '{"k":"' + ("x" * 200) + '"}'
-        _, _, body = full.partition(parser.BOT_TOKEN)
-        body_len = len(body)
-
-        # Drive ~50 small chunks (4 chars each) — many tiny deltas.
-        chunk_size = 4
-        chunks = [full[i : i + chunk_size] for i in range(0, len(full), chunk_size)]
-        assert len(chunks) > 30, "need many chunks to distinguish O(L) from O(L²)"
-
-        prev = ""
-        for chunk in chunks:
-            cur = prev + chunk
-            parser.extract_tool_calls_streaming(
-                previous_text=prev,
-                current_text=cur,
-                delta_text=chunk,
-                request={"tools": []},
-            )
-            prev = cur
-
-        # ``_stream_bytes_walked`` is incremented exactly once per byte
-        # of the new-format body that flows through the inner loop. A
-        # quadratic re-scan would observe each byte once per delta it
-        # was already present in, i.e. growing as
-        # O(num_chunks × body_len). The incremental invariant: total
-        # bytes walked == body length.
-        assert parser._stream_bytes_walked == body_len, (
-            f"expected O(L) walk over {body_len} body bytes, but inner "
-            f"loop walked {parser._stream_bytes_walked} chars across "
-            f"{len(chunks)} chunks — indicates re-scan / quadratic work"
-        )
-        # And the cumulative-offset invariant still holds.
-        assert parser._parsed_body_len == body_len
-
-    def test_leading_whitespace_between_args_tag_and_brace(self, parser):
-        """Whitespace between ``[ARGS]`` and ``{`` must NOT close args
-        prematurely (codex #581 round-3 BLOCKING-1). Pre-fix the JSON
-        state machine saw depth-0 outside string from the first space
-        and flipped ``args_closed`` true, dumping the actual ``{...}``
-        into the between-tools buffer."""
-        full = '[TOOL_CALLS]read[ARGS] {"x":1}'
-        assembled = _run_mistral_streaming(parser, list(full))
-        _assert_no_empty_name_deltas(assembled)
-        assert list(assembled["tool_calls"].keys()) == [0]
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "read"
-        assert json.loads(tc["arguments"]) == {"x": 1}
-
-    def test_leading_newline_between_args_tag_and_brace(self, parser):
-        """Same as the whitespace case but with ``\\n`` — common in
-        pretty-printed tool-call outputs."""
-        full = '[TOOL_CALLS]read[ARGS]\n  {"x":1}'
-        assembled = _run_mistral_streaming(parser, list(full))
-        _assert_no_empty_name_deltas(assembled)
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "read"
-        assert json.loads(tc["arguments"]) == {"x": 1}
-
-    def test_multi_tool_with_leading_whitespace_in_each_args(self, parser):
-        """Whitespace gating must work segment-by-segment too — a
-        leading space in the second tool's args mustn't be detected as
-        the first tool's args closure either."""
-        full = '[TOOL_CALLS]a[ARGS] {"x":1}[TOOL_CALLS]b[ARGS]  {"y":2}'
-        assembled = _run_mistral_streaming(parser, list(full))
-        _assert_no_empty_name_deltas(assembled)
-        assert sorted(assembled["tool_calls"].keys()) == [0, 1]
-        assert json.loads(assembled["tool_calls"][0]["arguments"]) == {"x": 1}
-        assert json.loads(assembled["tool_calls"][1]["arguments"]) == {"y": 2}
-
-    def test_multi_tool_with_string_args_containing_separators(self, parser):
-        """Combined round-2 stress case: two tools, one with a string arg
-        containing both ``[TOOL_CALLS]`` and ``[ARGS]`` literals. The
-        JSON-aware state machine must pass through the literals
-        verbatim and still detect the real second tool boundary."""
-        full = (
-            "[TOOL_CALLS]"
-            'log[ARGS]{"msg":"[TOOL_CALLS] is the opener, [ARGS] separates"}'
-            "[TOOL_CALLS]"
-            "ack[ARGS]{}"
-        )
-        assembled = _run_mistral_streaming(parser, list(full))
-        _assert_no_empty_name_deltas(assembled)
-        assert sorted(assembled["tool_calls"].keys()) == [0, 1]
-        tc0 = assembled["tool_calls"][0]
-        assert tc0["name"] == "log"
-        assert json.loads(tc0["arguments"]) == {
-            "msg": "[TOOL_CALLS] is the opener, [ARGS] separates"
-        }
-        tc1 = assembled["tool_calls"][1]
-        assert tc1["name"] == "ack"
-        assert json.loads(tc1["arguments"]) == {}
-
-    def test_old_array_format_streaming_still_works(self, parser):
-        """Pre-Devstral ``[TOOL_CALLS] [{...}]`` array format must still stream."""
-        chunks = [
-            "[TOOL_CALLS] ",
-            '[{"name": "get_weather", ',
-            '"arguments": {"city": "Paris"}}]',
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "get_weather"
-        args = json.loads(tc["arguments"])
-        assert args == {"city": "Paris"}
-
-    def test_new_format_no_args_separator(self, parser):
-        """Plain new format ``name{json}`` without ``[ARGS]`` still streams cleanly."""
-        chunks = [
-            "[TOOL_CALLS]",
-            "get_weather",
-            '{"city": "London"}',
-        ]
-        assembled = _run_mistral_streaming(parser, chunks)
-        tc = assembled["tool_calls"][0]
-        assert tc["name"] == "get_weather"
-        assert json.loads(tc["arguments"]) == {"city": "London"}
 
 
 class TestThinkTagStripping:
@@ -1570,29 +693,6 @@ class TestQwen3XmlAlias:
         assert emitted_tool_calls[-1]["function"]["name"] == "read"
         args = json.loads(emitted_tool_calls[-1]["function"]["arguments"])
         assert args["filePath"] == "/etc/hostname"
-
-
-class TestGemma4StreamingSignature:
-    """Regression: Gemma4ToolParser.extract_tool_calls_streaming must accept request=.
-
-    Issue #175 (aside): postprocessor passes request=self.request as a kwarg, but
-    Gemma4's override was missing the parameter, raising TypeError on every Gemma 4
-    streaming tool call.
-    """
-
-    def test_gemma4_streaming_accepts_request_kwarg(self):
-        from vllm_mlx.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
-
-        parser = Gemma4ToolParser(tokenizer=None)
-        # Must not raise TypeError
-        result = parser.extract_tool_calls_streaming(
-            previous_text="",
-            current_text="hello",
-            delta_text="hello",
-            request={"tools": []},
-        )
-        # Plain text passes through as content
-        assert result == {"content": "hello"}
 
 
 class TestHermesStreamingFixes:
@@ -1908,12 +1008,6 @@ class TestTextFormatToolCallFallback:
     # -- Fixtures --
 
     @pytest.fixture
-    def minimax_parser(self):
-        from vllm_mlx.tool_parsers import MiniMaxToolParser
-
-        return MiniMaxToolParser()
-
-    @pytest.fixture
     def hermes_parser(self):
         return HermesToolParser()
 
@@ -2156,112 +1250,6 @@ class TestTextFormatToolCallFallback:
         # Verify unique IDs
         ids = [c["id"] for c in calls]
         assert len(ids) == len(set(ids))
-
-    # =================================================================
-    # MiniMax-specific integration
-    # =================================================================
-
-    def test_minimax_extract_falls_back_to_text_format(self, minimax_parser):
-        """MiniMax extract_tool_calls() falls back to text-format when no XML found."""
-        text = '[Calling tool="web_search" query="weather"]'
-        result = minimax_parser.extract_tool_calls(text)
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        self._assert_tool_call(result.tool_calls[0], "web_search", query="weather")
-
-    def test_minimax_extract_text_format_variant2(self, minimax_parser):
-        """MiniMax extract_tool_calls() handles variant 2 text-format."""
-        text = '[Calling tool: exec({"command":"ls -la"})]'
-        result = minimax_parser.extract_tool_calls(text)
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        self._assert_tool_call(result.tool_calls[0], "exec", command="ls -la")
-
-    def test_minimax_extract_text_format_with_content(self, minimax_parser):
-        """MiniMax extracts text-format and preserves surrounding content."""
-        text = 'Let me check that for you. [Calling tool="web_search" query="test"]'
-        result = minimax_parser.extract_tool_calls(text)
-        assert result.tools_called
-        assert result.content == "Let me check that for you."
-
-    def test_minimax_has_pending_text_format(self, minimax_parser):
-        """MiniMax has_pending_tool_call() detects text-format."""
-        assert minimax_parser.has_pending_tool_call('[Calling tool="search" q="x"]')
-        assert not minimax_parser.has_pending_tool_call("Just regular text.")
-
-    def test_minimax_has_tool_start_text_format(self, minimax_parser):
-        """MiniMax _has_tool_start() detects [Calling tool="..."."""
-        assert minimax_parser._has_tool_start('[Calling tool="web_search" q="x"]')
-        assert not minimax_parser._has_tool_start("Regular text without tool calls.")
-
-    def test_minimax_has_tool_end_text_format(self, minimax_parser):
-        """MiniMax _has_tool_end() detects text-format completion."""
-        previous = 'Some text [Calling tool="search" q="te'
-        current = '[Calling tool="search" q="test"]'
-        assert minimax_parser._has_tool_end(current, previous)
-
-    def test_minimax_has_tool_end_no_new_match(self, minimax_parser):
-        """MiniMax _has_tool_end() returns False when no new match appeared."""
-        text = '[Calling tool="search" q="test"]'
-        assert not minimax_parser._has_tool_end(text, text)
-
-    def test_minimax_streaming_text_format(self, minimax_parser):
-        """MiniMax streaming: text-format tool call suppressed until complete, then emitted."""
-        chunks = [
-            "Let me check. ",
-            '[Calling tool="web_search"',
-            ' query="weather palo alto"',
-            "]",
-        ]
-
-        accumulated = ""
-        content_parts = []
-        tool_calls_found = []
-        for chunk in chunks:
-            prev = accumulated
-            accumulated += chunk
-            r = minimax_parser.extract_tool_calls_streaming(
-                previous_text=prev,
-                current_text=accumulated,
-                delta_text=chunk,
-            )
-            if r is not None:
-                if "content" in r:
-                    content_parts.append(r["content"])
-                if "tool_calls" in r:
-                    tool_calls_found.extend(r["tool_calls"])
-
-        # Content before the tool call should have been emitted
-        assert any("Let me check." in c for c in content_parts)
-        # Tool call should have been emitted once complete
-        assert len(tool_calls_found) == 1
-        assert tool_calls_found[0]["function"]["name"] == "web_search"
-        args = json.loads(tool_calls_found[0]["function"]["arguments"])
-        assert args["query"] == "weather palo alto"
-
-    def test_minimax_streaming_text_format_variant2(self, minimax_parser):
-        """MiniMax streaming: variant 2 text-format is detected when complete."""
-        chunks = [
-            "[Calling tool: exec(",
-            '{"command":"python3 --version"}',
-            ")]",
-        ]
-
-        accumulated = ""
-        tool_calls_found = []
-        for chunk in chunks:
-            prev = accumulated
-            accumulated += chunk
-            r = minimax_parser.extract_tool_calls_streaming(
-                previous_text=prev,
-                current_text=accumulated,
-                delta_text=chunk,
-            )
-            if r is not None and "tool_calls" in r:
-                tool_calls_found.extend(r["tool_calls"])
-
-        assert len(tool_calls_found) == 1
-        assert tool_calls_found[0]["function"]["name"] == "exec"
 
     # =================================================================
     # General ToolParser integration

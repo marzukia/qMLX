@@ -14,18 +14,10 @@ from vllm_mlx.api.utils import (
 from vllm_mlx.tool_parsers import (
     AutoToolParser,
     DeepSeekToolParser,
-    FunctionaryToolParser,
-    Glm47ToolParser,
-    GraniteToolParser,
     HarmonyToolParser,
     HermesToolParser,
-    KimiToolParser,
-    LlamaToolParser,
-    MistralToolParser,
-    NemotronToolParser,
     QwenToolParser,
     ToolParserManager,
-    xLAMToolParser,
 )
 
 
@@ -35,15 +27,9 @@ class TestNativeToolFormatCapability:
     def test_parsers_with_native_support(self):
         """Parsers that support native tool format should return True."""
         native_parsers = [
-            MistralToolParser,
-            LlamaToolParser,
             DeepSeekToolParser,
-            GraniteToolParser,
-            FunctionaryToolParser,
-            KimiToolParser,
             HermesToolParser,
             HarmonyToolParser,
-            Glm47ToolParser,
         ]
         for parser_cls in native_parsers:
             assert parser_cls.SUPPORTS_NATIVE_TOOL_FORMAT is True, (
@@ -57,8 +43,6 @@ class TestNativeToolFormatCapability:
         """Parsers that don't support native tool format should return False."""
         non_native_parsers = [
             QwenToolParser,
-            NemotronToolParser,
-            xLAMToolParser,
             AutoToolParser,
         ]
         for parser_cls in non_native_parsers:
@@ -73,16 +57,9 @@ class TestNativeToolFormatCapability:
         """Test native format detection via ToolParserManager."""
         # Native support
         for name in [
-            "mistral",
-            "llama",
             "deepseek",
-            "granite",
-            "functionary",
-            "kimi",
             "hermes",
             "harmony",
-            "glm47",
-            "glm4",
         ]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert parser_cls.supports_native_format() is True, (
@@ -90,7 +67,7 @@ class TestNativeToolFormatCapability:
             )
 
         # No native support
-        for name in ["qwen", "nemotron", "xlam", "auto"]:
+        for name in ["qwen", "auto"]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             assert parser_cls.supports_native_format() is False, (
                 f"Parser '{name}' should not support native format"

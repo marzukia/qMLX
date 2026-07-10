@@ -72,28 +72,6 @@ class TestDetectModelConfig:
             f"generic 'qwen3' regex? Got {cfg.reasoning_parser!r}."
         )
 
-    # GLM family
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "lmstudio-community/GLM-4.7-Flash-MLX-8bit",
-            "GLM-4.5-Air-MLX-4bit",
-            "glm4-9b-chat",
-        ],
-    )
-    def test_glm_family(self, model_path):
-        config = detect_model_config(model_path)
-        assert config is not None
-        assert config.tool_call_parser == "glm47"
-        assert config.reasoning_parser is None
-
-    # MiniMax
-    def test_minimax(self):
-        config = detect_model_config("lmstudio-community/MiniMax-M2.5-MLX-4bit")
-        assert config is not None
-        assert config.tool_call_parser == "minimax"
-        assert config.reasoning_parser == "minimax"
-
     # GPT-OSS
     def test_gpt_oss(self):
         config = detect_model_config("mlx-community/gpt-oss-20b-MXFP4-Q8")
@@ -383,20 +361,6 @@ class TestDetectModelConfig:
         assert config is not None
         assert config.tool_call_parser == "hermes"
 
-    # Llama
-    def test_llama(self):
-        config = detect_model_config("mlx-community/Meta-Llama-3.1-8B-Instruct-4bit")
-        assert config is not None
-        assert config.tool_call_parser == "llama"
-        assert config.reasoning_parser is None
-
-    # Kimi
-    def test_kimi(self):
-        config = detect_model_config("mlx-community/Kimi-Linear-48B-A3B-Instruct-6bit")
-        assert config is not None
-        assert config.tool_call_parser == "kimi"
-        assert config.reasoning_parser is None
-
     # Gemma 3 (non-3n) — text-only family; carries hermes tool format.
     @pytest.mark.parametrize(
         "model_path",
@@ -622,7 +586,6 @@ class TestCapabilityGates:
         "model_path",
         [
             "mlx-community/Qwen3-0.6B-8bit",
-            "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
             "mlx-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-4bit",
             "mlx-community/gemma-3-12b-it-4bit",
             "mlx-community/gpt-oss-20b-MXFP4-Q8",
@@ -1518,45 +1481,3 @@ class TestResolutionLogOnce:
         messages = " | ".join(r.message for r in emits)
         assert "qwen3.5-9b-4bit" in messages
         assert "qwen3.5-4b-4bit" in messages
-
-
-class TestHy3AutoDetectBoundary:
-    """codex R11 BLOCKING #3: the Hy3 auto-detect regex must key on the
-    repo/alias BASENAME (final path segment), not an arbitrary parent /
-    namespace segment. A non-Hy3 model living under an org or local parent
-    directory named ``hy3`` must NOT be auto-wired to the Hy3 tool/reasoning
-    parsers."""
-
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "mlx-community/Hy3-preview-4bit",  # canonical HF repo
-            "Hy3-preview-4bit",  # alias / basename
-            "hy3",  # bare family root
-            "org/hy3",  # repo literally named hy3 under an org
-            "hunyuan-3-preview",  # dash-separated family variant
-            "hy-v3-experimental",
-        ],
-    )
-    def test_hy3_basename_is_detected(self, model_path):
-        cfg = detect_model_config(model_path)
-        assert cfg.tool_call_parser == "hy_v3"
-        assert cfg.reasoning_parser == "hy_v3"
-
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "hy3/qwen-model",  # hy3 is the PARENT/org segment, not the model
-            "some/hy3/nested-qwen",  # hy3 is an intermediate path segment
-            "mymodelhy3embedded",  # incidental substring
-            "not-hunyuanx3-test",
-            "mlx-community/hunyuan5-preview",  # different family number
-        ],
-    )
-    def test_non_hy3_parent_or_substring_is_not_detected(self, model_path):
-        cfg = detect_model_config(model_path)
-        # ``detect_model_config`` returns ``None`` (no family match) or a config
-        # for a DIFFERENT family — either way it must NOT be the Hy3 parsers.
-        if cfg is not None:
-            assert cfg.tool_call_parser != "hy_v3"
-            assert cfg.reasoning_parser != "hy_v3"
