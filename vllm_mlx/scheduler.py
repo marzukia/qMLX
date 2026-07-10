@@ -5550,19 +5550,23 @@ class Scheduler:
                 except Exception:  # pragma: no cover — defensive
                     est_bytes = 0
                 # The on-disk size is the QUANTIZED footprint, but the restore
-                # runs the cache through _dequantize_cache first, so what lands
-                # resident is the bf16 expansion (int4 -> bf16 is ~4x), with a
-                # transient int4+bf16 peak (~5x) while mx.dequantize runs. Size
-                # the guard against that peak, or it clears a restore that then
-                # blows the Metal cap mid-dequant, the exact OOM this check
-                # exists to prevent. Recurrent layers pass through unexpanded,
-                # so this over-counts slightly on the hybrid cache, which is the
-                # safe direction.
+                # runs the cache through _dequantize_cache_streaming first, so
+                # what lands resident is the bf16 expansion (int4 -> bf16 is
+                # ~4x). The dequant now streams layer-by-layer with a per-layer
+                # mx.eval + free of the int4 source, so the transient peak is
+                # the ~4x bf16 steady state plus a single int4 layer, NOT the
+                # old simultaneous int4+bf16 ~5x peak (that is why the
+                # multiplier below is 4x, not 5x). Size the guard against that
+                # streamed peak, or it clears a restore that then blows the
+                # Metal cap mid-dequant, the exact OOM this check exists to
+                # prevent. Recurrent layers pass through unexpanded, so this
+                # over-counts slightly on the hybrid cache, which is the safe
+                # direction.
                 _dt = str(getattr(loaded, "kv_dtype", "") or "").lower()
                 if _dt in ("int4", "q4", "4bit"):
-                    est_bytes = int(est_bytes * 5)
+                    est_bytes = int(est_bytes * 4)
                 elif _dt in ("int8", "q8", "8bit"):
-                    est_bytes = int(est_bytes * 3)
+                    est_bytes = int(est_bytes * 2)
                 fraction = float(
                     getattr(self.config, "metal_pressure_evict_fraction", 0.9) or 0.9
                 )
@@ -5605,7 +5609,7 @@ class Scheduler:
                 # with history" and abort a request that re-prefills fine.
                 # Reject and fall back to prefill instead.
                 try:
-                    from .memory_cache import _dequantize_cache as _deq
+                    from .memory_cache import _dequantize_cache_streaming as _deq
 
                     restored_cache = _deq(restored_cache)
                 except Exception as _deq_err:  # pragma: no cover — defensive
