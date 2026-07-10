@@ -5229,17 +5229,20 @@ class Scheduler:
         return outputs, finished_ids
 
     def _disk_persist_mirror(self, tokens, cache) -> None:
-        """Enqueue an in-memory prefix-cache store for ASYNC disk persistence.
+        """Persist an in-memory prefix-cache store to disk, synchronously.
 
         Wired into MemoryAwarePrefixCache.store so disk coverage tracks memory
-        coverage (whole-snapshot writes keyed on the exact tokens; never trim —
-        hybrid recurrent layers can't rewind, issue #163). The actual write is
-        a multi-GB, lock-held, fsync'd save_prompt_cache; store() runs on the
-        prefill/boundary callback path many times per deep request, so doing it
-        inline STALLS the engine. We do only cheap prep here and hand off to a
-        single background writer thread with a bounded queue — a full queue
-        drops the snapshot (best-effort; memory still has it, only the
-        persistent tier misses that one). Never raises into the store hot path.
+        coverage (whole-snapshot writes keyed on the exact tokens; never trim,
+        hybrid recurrent layers can't rewind, issue #163). The write is
+        synchronous: store() fires at the prompt/message boundary, and only at
+        that instant does the cache state exactly match ``tokens``, so
+        serializing here captures the correct snapshot. Deferring it to a
+        background thread raced the advancing cache and captured offset+1, and a
+        cheap frozen snapshot of an mlx cache isn't available (deepcopy fails,
+        shallow-copy aliases the in-place-mutated buffers). The cost is that a
+        deep prompt's multi-GB save runs inline on the boundary callback; an
+        off-thread frozen-snapshot writer is the perf follow-up, correctness
+        first. Never raises into the store hot path.
         """
         try:
             interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
@@ -5277,62 +5280,7 @@ class Scheduler:
                 },
             )
         except Exception as _e:  # pragma: no cover — mirror is best-effort
-            logger.debug("[disk_persist] enqueue failed: %s", _e)
-
-    def _ensure_disk_writer(self) -> None:
-        """Lazily start the single background disk-checkpoint writer thread."""
-        if getattr(self, "_disk_writer_thread", None) is not None:
-            return
-        import queue as _q
-        import threading as _t
-
-        self._disk_write_q = _q.Queue(maxsize=6)
-        t = _t.Thread(
-            target=self._disk_writer_loop, name="disk-kv-writer", daemon=True
-        )
-        self._disk_writer_thread = t
-        t.start()
-
-    def _disk_writer_loop(self) -> None:
-        """Drain the write queue, doing the multi-GB save_prompt_cache off the
-        generation hot path. One thread, so writes serialize against each other
-        but never against generation. Best-effort per item."""
-        import array as _arr
-        import hashlib as _hl
-
-        from .runtime import disk_kv_checkpoint as _dkc
-
-        while True:
-            try:
-                tokens, cache, mname, kv_dtype = self._disk_write_q.get()
-            except Exception:  # pragma: no cover — queue torn down
-                return
-            try:
-                raw = _arr.array("i", (int(t) for t in tokens)).tobytes()
-                req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
-                _dkc.write_checkpoint(
-                    cache,
-                    root=_dkc.get_default_root(),
-                    req_hash=req_hash,
-                    token_offset=len(tokens),
-                    kv_dtype=kv_dtype,
-                    requires_full_checkpoint=_dkc.model_requires_full_checkpoint(
-                        mname
-                    ),
-                    model_name=mname,
-                    extra_metadata={
-                        "tokens_key": tokens,
-                        "save_uuid": uuid.uuid4().hex,
-                    },
-                )
-                logger.info("[mirror_dbg] WROTE offset=%d", len(tokens))
-            except Exception as _e:  # pragma: no cover — best-effort
-                logger.info("[mirror_dbg] WRITE FAILED n=%d: %r", len(tokens), _e)
-            finally:
-                try:
-                    self._disk_write_q.task_done()
-                except Exception:
-                    pass
+            logger.debug("[disk_persist] write failed: %s", _e)
 
     def _maybe_disk_restore(self, request: Request, *, pflash_compressed: bool) -> None:
         """Restore a request's KV prefix from a disk checkpoint on a miss.
@@ -5506,6 +5454,20 @@ class Scheduler:
                         est_bytes = int(os.path.getsize(loaded.path))
                 except Exception:  # pragma: no cover — defensive
                     est_bytes = 0
+                # The on-disk size is the QUANTIZED footprint, but the restore
+                # runs the cache through _dequantize_cache first, so what lands
+                # resident is the bf16 expansion (int4 -> bf16 is ~4x), with a
+                # transient int4+bf16 peak (~5x) while mx.dequantize runs. Size
+                # the guard against that peak, or it clears a restore that then
+                # blows the Metal cap mid-dequant, the exact OOM this check
+                # exists to prevent. Recurrent layers pass through unexpanded,
+                # so this over-counts slightly on the hybrid cache, which is the
+                # safe direction.
+                _dt = str(getattr(loaded, "kv_dtype", "") or "").lower()
+                if _dt in ("int4", "q4", "4bit"):
+                    est_bytes = int(est_bytes * 5)
+                elif _dt in ("int8", "q8", "8bit"):
+                    est_bytes = int(est_bytes * 3)
                 fraction = float(
                     getattr(self.config, "metal_pressure_evict_fraction", 0.9) or 0.9
                 )
@@ -5541,12 +5503,25 @@ class Scheduler:
             # only restored requests pay the ~4x transient KV; the live cache
             # stays int4.
             restored_cache = loaded.cache
-            try:
-                from .memory_cache import _dequantize_cache as _deq
+            if str(loaded.kv_dtype or "").lower() not in ("bf16", "float16", "fp16"):
+                # Quantized on disk: must dequantize before install. If it
+                # fails, DO NOT install the quantized cache, the tail prefill
+                # would then hit "QuantizedKVCache does not yet support batching
+                # with history" and abort a request that re-prefills fine.
+                # Reject and fall back to prefill instead.
+                try:
+                    from .memory_cache import _dequantize_cache as _deq
 
-                restored_cache = _deq(restored_cache)
-            except Exception as _deq_err:  # pragma: no cover — defensive
-                logger.debug("[kv_restore] dequantize failed: %r", _deq_err)
+                    restored_cache = _deq(restored_cache)
+                except Exception as _deq_err:  # pragma: no cover — defensive
+                    _dkc.record_restore_reject("dequantize_failed")
+                    logger.warning(
+                        "[kv_restore] request=%s REJECT reason=dequantize_failed "
+                        "%r; re-prefilling",
+                        rid,
+                        _deq_err,
+                    )
+                    return
             request.prompt_cache = restored_cache
             request.cached_tokens = offset
             request.remaining_tokens = list(prompt_ids[offset:])

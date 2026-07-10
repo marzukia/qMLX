@@ -401,6 +401,48 @@ def test_disk_cap_evicts_oldest_first(root: str, monkeypatch):
     assert os.path.exists(p2)
 
 
+def test_disk_cap_enforced_through_write_path(root: str, monkeypatch):
+    """Regression guard: the cap must be enforced by ``write_checkpoint``
+    ITSELF, not only by a manual ``enforce_disk_cap`` call. The live store
+    mirror and the interval hook both funnel through ``write_checkpoint``,
+    so a cap that only fired from the (now-disabled) generation-time hook
+    would let the checkpoint dir grow unbounded. This writes several
+    checkpoints under a tiny env cap and asserts the total stays bounded
+    without ever calling ``enforce_disk_cap`` directly.
+    """
+    cache_in = _seed_kv_cache(num_tokens=8)
+    # Size the cap to roughly two checkpoints, then write five with
+    # increasing mtimes so eviction has a deterministic oldest-first order.
+    first = _dkc.write_checkpoint(
+        cache_in,
+        root=root,
+        req_hash=_dkc.request_hash("req-0", model_name="m"),
+        token_offset=256,
+        kv_dtype="bf16",
+        model_name="m",
+    )
+    assert first is not None
+    one = os.path.getsize(first)
+    monkeypatch.setenv(_dkc._DISK_CAP_ENV, str(int(one * 2.5)))
+    for i in range(1, 6):
+        p = _dkc.write_checkpoint(
+            cache_in,
+            root=root,
+            req_hash=_dkc.request_hash(f"req-{i}", model_name="m"),
+            token_offset=256,
+            kv_dtype="bf16",
+            model_name="m",
+        )
+        assert p is not None
+        # Nudge mtime forward so the LRU order is well-defined.
+        os.utime(p, (os.path.getmtime(p) + i, os.path.getmtime(p) + i))
+    rows = _dkc.scan_checkpoints(root)
+    total = sum(s for _, _, s in rows)
+    # write_checkpoint enforced the cap inline: the total never blew past it.
+    assert total <= int(one * 2.5)
+    assert len(rows) <= 3
+
+
 def test_disk_cap_zero_disables_eviction(root: str):
     """``max_bytes=0`` is the operator escape hatch — no eviction even
     when the disk is full of checkpoints.

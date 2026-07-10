@@ -789,6 +789,21 @@ def write_checkpoint(
                     f"[disk_kv_checkpoint] content-index hand-off failed: {e}"
                 )
 
+        # Disk-cap enforcement. This is the single point every write funnels
+        # through (both the store-level mirror and the interval hook), so the
+        # cap is enforced here rather than at the call sites. We already hold
+        # the reentrant _DISK_LOCK, and enforce_disk_cap re-acquires it. It
+        # evicts oldest-first, so the checkpoint just written (newest) and the
+        # deepest prefix of an in-flight request survive while shallow
+        # sub-prefixes are reclaimed. Never-raise: a full disk or a failed
+        # unlink must not tear down a completed write.
+        try:
+            enforce_disk_cap(root)
+        except Exception as e:  # pragma: no cover — cap is best-effort
+            logger.warning(
+                f"[disk_kv_checkpoint] enforce_disk_cap after write failed: {e}"
+            )
+
         return dst_path
 
 
