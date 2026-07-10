@@ -1,14 +1,20 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/qmlx-dark.png">
-    <img alt="qMLX" src="assets/qmlx-light.png" width="240">
-  </picture>
-</p>
+<div align="center">
+
+[![qMLX](assets/qmlx-light.png#gh-light-mode-only)](https://qmlx.mrzk.io)
+[![qMLX](assets/qmlx-dark.png#gh-dark-mode-only)](https://qmlx.mrzk.io)
+
+</div>
 
 <p align="center">
   <strong>Keeping a hybrid 122B warm on a Mac.</strong>
   <br>
   <em>A Qwen-specialised fork of <a href="https://github.com/raullenchai/Rapid-MLX">Rapid-MLX</a> for long-context serving of hybrid MoE models on Apple Silicon.</em>
+</p>
+
+<p align="center">
+  <a href="https://qmlx.mrzk.io">Website</a> &middot;
+  <a href="https://github.com/marzukia/qMLX#readme">Docs</a> &middot;
+  <a href="https://charted.mrzk.io">charted</a>
 </p>
 
 ---
