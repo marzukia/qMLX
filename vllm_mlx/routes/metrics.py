@@ -1085,6 +1085,22 @@ def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
         )
         out.append(f'rapid_mlx_prefill_kind_total{{kind="{kind}"}} {monotonic}')
 
+    kv_restore = hm.get("kv_restore_result")
+    if not isinstance(kv_restore, dict):
+        kv_restore = {}
+    out.append(
+        "# HELP rapid_mlx_kv_restore_total Disk KV restore attempts by "
+        "result; hit means a checkpoint prefix was found, verified, and "
+        "installed."
+    )
+    out.append("# TYPE rapid_mlx_kv_restore_total counter")
+    for result in ("hit", "miss"):
+        raw = int(_coerce_number(kv_restore.get(result)))
+        monotonic = _cache_counter_accumulator.advance(
+            f"rapid_mlx_kv_restore_total|{result}", raw
+        )
+        out.append(f'rapid_mlx_kv_restore_total{{result="{result}"}} {monotonic}')
+
     match = hm.get("prefix_cache_match")
     if not isinstance(match, dict):
         match = {}

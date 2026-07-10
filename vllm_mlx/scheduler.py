@@ -5367,6 +5367,15 @@ class Scheduler:
         Every reject bumps ``rapid_mlx_kv_checkpoint_restore_rejects_total``
         with a ``reason`` label via ``disk_kv_checkpoint.record_restore_reject``.
         """
+        # Disk (SSD) KV-restore hit-rate accounting (issue #10 follow-up).
+        # ``_restore_attempted`` flips true only once a real checkpoint
+        # lookup runs (below), so the gate returns above the lookup are NOT
+        # counted. ``_restore_installed`` flips true only when a checkpoint
+        # is actually installed onto the request. The ``finally`` records
+        # exactly one hit/miss per attempt from these two flags — a single
+        # accounting point that cannot double-count or miss a return path.
+        _restore_attempted = False
+        _restore_installed = False
         try:
             if not getattr(self.config, "kv_disk_restore_enabled", False):
                 return
@@ -5396,6 +5405,12 @@ class Scheduler:
                     )
                 self._disk_restore_index_built = True
 
+            # Attempt boundary: from here a real checkpoint lookup runs, so
+            # this request counts toward the SSD hit-rate denominator
+            # regardless of the outcome. Set BEFORE the call so a lookup
+            # that itself raises still lands as a miss (via the outer
+            # except + finally), matching the restore-reject accounting.
+            _restore_attempted = True
             loaded = _dkc.get_content_index().lookup(prompt_ids)
             if loaded is None:
                 # No verified prefix on disk — normal miss, prefill.
@@ -5606,6 +5621,9 @@ class Scheduler:
             request.cached_tokens = offset
             request.remaining_tokens = list(prompt_ids[offset:])
             request.cache_hit_type = "disk"
+            # Verified checkpoint actually installed onto the request — the
+            # only path that counts as a disk-restore HIT.
+            _restore_installed = True
             # Touch-on-restore: bump the checkpoint's mtime to now so a
             # frequently-restored prefix reads as recently-used. enforce_disk_cap
             # evicts oldest-mtime first, so with this the eviction order becomes
@@ -5638,6 +5656,10 @@ class Scheduler:
             request.cached_tokens = 0
             request.remaining_tokens = request.prompt_token_ids
             request.cache_hit_type = "miss"
+            # A partial install that then raised was just scrubbed back to a
+            # miss above; force the flag to match so the finally records this
+            # attempt as a miss (never a double-counted hit + miss).
+            _restore_installed = False
             try:
                 from .runtime import disk_kv_checkpoint as _dkc_err
 
@@ -5650,6 +5672,12 @@ class Scheduler:
                 request.request_id,
                 _restore_err,
             )
+        finally:
+            # Single accounting point for the SSD hit-rate counter: one
+            # increment per request that reached the lookup. hit + miss thus
+            # equals the disk-restore attempt count exactly.
+            if _restore_attempted:
+                self.honest_metrics.record_disk_restore(hit=_restore_installed)
 
     def _safe_disk_checkpoint(self, request: Request, response: Any) -> None:
         """Wrap ``_maybe_disk_checkpoint`` in a never-raise contract.

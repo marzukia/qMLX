@@ -137,6 +137,141 @@ def test_prefix_match_type_distribution():
     }
 
 
+def test_record_disk_restore_hit_and_miss():
+    """The accumulator routes hit/miss into the right bucket, neither by default."""
+    hm = HonestMetrics()
+    assert hm.snapshot()["kv_restore_result"] == {"hit": 0, "miss": 0}
+    hm.record_disk_restore(hit=True)
+    hm.record_disk_restore(hit=True)
+    hm.record_disk_restore(hit=False)
+    assert hm.snapshot()["kv_restore_result"] == {"hit": 2, "miss": 1}
+
+
+# --- scheduler-level wiring of the disk-restore hit/miss counter -----------
+#
+# These drive the real ``Scheduler._maybe_disk_restore`` control flow with a
+# fake ``self`` / ``request`` and a monkeypatched disk-checkpoint module, so
+# they assert the ACTUAL attempt boundary (which requests count) rather than
+# just the accumulator contract. hit + miss must equal disk-restore attempts.
+
+
+def _restore_self(honest: HonestMetrics, *, enabled: bool = True):
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            kv_disk_restore_enabled=enabled,
+            kv_cache_dtype="bf16",
+            metal_pressure_evict_fraction=0.9,
+        ),
+        _disk_restore_index_built=True,
+        _model_name="test-model",
+        _resolve_metal_cap_bytes=lambda: 0,  # skip the memory-headroom guard
+        _current_metal_active_bytes=lambda: 0,
+        honest_metrics=honest,
+    )
+
+
+def _restore_request():
+    return SimpleNamespace(
+        cache_hit_type="miss",
+        prompt_cache=None,
+        prompt_token_ids=[1, 2, 3, 4, 5],
+        request_id="req-abcdef123456",
+        cached_tokens=0,
+        remaining_tokens=None,
+    )
+
+
+def _patch_dkc(monkeypatch, *, lookup_result, requires_full=False):
+    import vllm_mlx.runtime.disk_kv_checkpoint as dkc
+
+    monkeypatch.setattr(
+        dkc,
+        "get_content_index",
+        lambda: SimpleNamespace(lookup=lambda ids: lookup_result),
+    )
+    monkeypatch.setattr(dkc, "record_restore_reject", lambda reason: None)
+    monkeypatch.setattr(dkc, "record_hook_error", lambda: None)
+    monkeypatch.setattr(
+        dkc, "model_requires_full_checkpoint", lambda name: requires_full
+    )
+    return dkc
+
+
+def test_disk_restore_hit_counts_hit(monkeypatch):
+    from vllm_mlx.scheduler import Scheduler
+
+    loaded = SimpleNamespace(
+        token_offset=3,
+        metadata={"model_name": "test-model"},
+        kv_dtype="bf16",
+        requires_full_checkpoint=False,
+        cache=["fake-kv"],
+        path=None,
+    )
+    _patch_dkc(monkeypatch, lookup_result=loaded, requires_full=False)
+    hm = HonestMetrics()
+    req = _restore_request()
+    Scheduler._maybe_disk_restore(_restore_self(hm), req, pflash_compressed=False)
+    # Verified + installed → the only HIT path.
+    assert req.cache_hit_type == "disk"
+    assert req.cached_tokens == 3
+    assert hm.snapshot()["kv_restore_result"] == {"hit": 1, "miss": 0}
+
+
+def test_disk_restore_verify_fail_counts_miss(monkeypatch):
+    """A candidate found but rejected (kv_dtype drift) is a miss, not a hit."""
+    from vllm_mlx.scheduler import Scheduler
+
+    loaded = SimpleNamespace(
+        token_offset=3,
+        metadata={"model_name": "test-model"},
+        kv_dtype="int4",  # mismatches the run's bf16 → verify-fail reject
+        requires_full_checkpoint=False,
+        cache=["fake-kv"],
+        path=None,
+    )
+    _patch_dkc(monkeypatch, lookup_result=loaded, requires_full=False)
+    hm = HonestMetrics()
+    req = _restore_request()
+    Scheduler._maybe_disk_restore(_restore_self(hm), req, pflash_compressed=False)
+    assert req.cache_hit_type == "miss"  # untouched by the rejected restore
+    assert hm.snapshot()["kv_restore_result"] == {"hit": 0, "miss": 1}
+
+
+def test_disk_restore_lookup_miss_counts_miss(monkeypatch):
+    """A lookup that finds no checkpoint is a miss (attempt still happened)."""
+    from vllm_mlx.scheduler import Scheduler
+
+    _patch_dkc(monkeypatch, lookup_result=None)
+    hm = HonestMetrics()
+    req = _restore_request()
+    Scheduler._maybe_disk_restore(_restore_self(hm), req, pflash_compressed=False)
+    assert hm.snapshot()["kv_restore_result"] == {"hit": 0, "miss": 1}
+
+
+def test_disk_restore_no_attempt_counts_neither(monkeypatch):
+    """A request that never engaged the disk-restore path counts as neither."""
+    from vllm_mlx.scheduler import Scheduler
+
+    called = {"lookup": False}
+
+    import vllm_mlx.runtime.disk_kv_checkpoint as dkc
+
+    def _boom():
+        called["lookup"] = True
+        return SimpleNamespace(lookup=lambda ids: None)
+
+    monkeypatch.setattr(dkc, "get_content_index", _boom)
+    hm = HonestMetrics()
+    req = _restore_request()
+    # Feature disabled → gate returns before the lookup ever runs.
+    Scheduler._maybe_disk_restore(
+        _restore_self(hm, enabled=False), req, pflash_compressed=False
+    )
+    assert called["lookup"] is False  # no lookup == no attempt
+    assert hm.snapshot()["kv_restore_result"] == {"hit": 0, "miss": 0}
+
+
 def test_ttft_is_first_minus_arrival():
     """TTFT observation is first_token_time - arrival_time."""
     hm = HonestMetrics()
@@ -271,6 +406,9 @@ def _honest_block() -> dict[str, Any]:
     hm.record_prefix_match("miss")
     hm.record_prefix_match("prefix")
     hm.record_prefix_match("exact")
+    hm.record_disk_restore(hit=True)
+    hm.record_disk_restore(hit=True)
+    hm.record_disk_restore(hit=False)
     hm.record_finish(0.0, 0.30, 2.30, 11)  # ttft .3, decode (11-1)/2 = 5
     return hm.snapshot()
 
@@ -320,6 +458,38 @@ def test_route_renders_prefill_kind_and_match(metrics_client):
     assert _sample_value(body, 'rapid_mlx_prefix_cache_match_total{type="exact"}') == 1
     # unused canonical types still present at 0 (flat-line, not "no data")
     assert _sample_value(body, 'rapid_mlx_prefix_cache_match_total{type="lcp"}') == 0
+
+
+def test_route_renders_kv_restore_hit_miss(metrics_client):
+    metrics_client.cfg.engine = _fake_engine(
+        _base_stats(honest_metrics=_honest_block())
+    )
+    body = metrics_client.client.get("/metrics").text
+    assert (
+        "# HELP rapid_mlx_kv_restore_total Disk KV restore attempts by result" in body
+    )
+    assert _sample_value(body, 'rapid_mlx_kv_restore_total{result="hit"}') == 2
+    assert _sample_value(body, 'rapid_mlx_kv_restore_total{result="miss"}') == 1
+    # Disk hit rate = 2 / (2 + 1) computable in PromQL from these two series.
+
+
+def test_kv_restore_counter_sticky(metrics_client):
+    """rapid_mlx_kv_restore_total never decreases across a source reset."""
+    metrics_client.cfg.engine = _fake_engine(
+        _base_stats(honest_metrics=_honest_block())
+    )
+    body1 = metrics_client.client.get("/metrics").text
+    assert _sample_value(body1, 'rapid_mlx_kv_restore_total{result="hit"}') == 2
+
+    hm_lo = HonestMetrics()
+    hm_lo.record_disk_restore(hit=True)  # raw hit drops to 1
+    metrics_client.cfg.engine = _fake_engine(
+        _base_stats(honest_metrics=hm_lo.snapshot())
+    )
+    body2 = metrics_client.client.get("/metrics").text
+    hit2 = _sample_value(body2, 'rapid_mlx_kv_restore_total{result="hit"}')
+    assert hit2 >= 2  # folded baseline(2) + raw(1) == 3, never below 2
+    assert hit2 == 3
 
 
 def test_route_renders_ttft_and_decode_histograms(metrics_client):

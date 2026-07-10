@@ -139,6 +139,17 @@ class HonestMetrics:
         self.prompt_tokens_reused: dict[str, int] = {"memory": 0, "disk": 0}
         self.prefill_kind: dict[str, int] = {"cold": 0, "extend": 0, "exact": 0}
         self.prefix_cache_match: dict[str, int] = {t: 0 for t in PREFIX_MATCH_TYPES}
+        # Disk (SSD) KV-restore attempts by result. Request-level: exactly
+        # one increment per request that actually ran a disk-checkpoint
+        # lookup (hit == a checkpoint prefix was found, verified, AND
+        # installed; miss == the lookup found nothing or a candidate was
+        # rejected before install). Requests that never engaged the
+        # disk-restore path are counted as neither, so hit + miss ==
+        # disk-restore attempts and hit / (hit + miss) is the true SSD
+        # hit rate. On this hybrid model the in-memory prefix cache always
+        # misses and the reuse rides on disk restore, so this — not
+        # prefix_cache_match — is the honest reuse-hit-rate surface.
+        self.kv_restore_result: dict[str, int] = {"hit": 0, "miss": 0}
         self._ttft = FixedBucketHistogram(TTFT_BUCKET_BOUNDS)
         self._decode_tps = FixedBucketHistogram(DECODE_TPS_BUCKET_BOUNDS)
 
@@ -190,6 +201,20 @@ class HonestMetrics:
             with self._lock:
                 self.prefix_cache_match[match_type] += 1
 
+    def record_disk_restore(self, hit: bool) -> None:
+        """Record one disk (SSD) KV-restore attempt as hit or miss.
+
+        Call site: the single accounting point at the end of the
+        scheduler's ``_maybe_disk_restore``, reached only when a disk
+        checkpoint lookup actually ran (all the earlier gate returns —
+        feature off, PFlash, an in-memory hit, empty prompt — happen
+        before the lookup and are NOT attempts). ``hit`` is true only when
+        a checkpoint was found, verified, and installed onto the request;
+        every lookup-miss / validation-reject path is a miss.
+        """
+        with self._lock:
+            self.kv_restore_result["hit" if hit else "miss"] += 1
+
     def record_finish(
         self,
         arrival_time: float | None,
@@ -231,6 +256,7 @@ class HonestMetrics:
                 "prompt_tokens_reused": dict(self.prompt_tokens_reused),
                 "prefill_kind": dict(self.prefill_kind),
                 "prefix_cache_match": dict(self.prefix_cache_match),
+                "kv_restore_result": dict(self.kv_restore_result),
                 "ttft_seconds": self._ttft.snapshot(),
                 "decode_tokens_per_second": self._decode_tps.snapshot(),
             }
