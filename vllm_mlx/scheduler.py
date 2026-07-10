@@ -2480,6 +2480,9 @@ class Scheduler:
                     config=cache_config,
                     radix_index=radix_idx,
                 )
+                # Persistent-tier mirror: every in-memory store also lands on
+                # disk (throttled), so disk restore covers what memory covers.
+                self.memory_aware_cache._disk_persist_cb = self._disk_persist_mirror
                 logger.info(
                     f"Memory-aware cache enabled: "
                     f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB, "
@@ -3048,41 +3051,10 @@ class Scheduler:
                     f"store_time={_dt:.3f}s"
                 )
 
-            # Disk-KV checkpoint at the PROMPT boundary, under the SAME key the
-            # in-memory cache just used (prompt_token_ids) and the same
-            # prompt-length cache. This is what makes disk restore align with
-            # continuations: a future turn's prompt_token_ids prefix-matches
-            # this exactly like the in-memory hit does. The generation-time
-            # writer keyed on prompt+output, whose emitted reasoning/think
-            # tokens don't reappear in re-tokenized history, so it never
-            # matched. Offset == len(prompt_tokens) == cache length keeps
-            # _cache_offset_matches happy.
-            interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
-            if interval and extracted_cache is not None:
-                try:
-                    from .runtime import disk_kv_checkpoint as _dkc
-
-                    _mname = getattr(self, "_model_name", None)
-                    _dkc.write_checkpoint(
-                        extracted_cache,
-                        root=_dkc.get_default_root(),
-                        req_hash=_dkc.request_hash(request_id, model_name=_mname),
-                        token_offset=len(prompt_tokens),
-                        kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16")
-                        or "bf16",
-                        requires_full_checkpoint=_dkc.model_requires_full_checkpoint(
-                            _mname
-                        ),
-                        model_name=_mname,
-                        extra_metadata={
-                            "tokens_key": prompt_tokens,
-                            "save_uuid": uuid.uuid4().hex,
-                        },
-                    )
-                except Exception as _e:  # pragma: no cover — best-effort
-                    logger.debug(
-                        "[disk_kv] prompt-boundary checkpoint failed: %s", _e
-                    )
+            # (Disk persistence now happens via the store-level mirror wired on
+            # memory_aware_cache — see _disk_persist_mirror — so this store is
+            # already checkpointed to disk under prompt_token_ids. No explicit
+            # write needed here.)
 
         return _prompt_cache_save
 
@@ -5255,6 +5227,62 @@ class Scheduler:
             outputs.append(output)
 
         return outputs, finished_ids
+
+    def _disk_persist_mirror(self, tokens, cache) -> None:
+        """Mirror an in-memory prefix-cache store to the disk checkpoint tier.
+
+        Wired into MemoryAwarePrefixCache.store so disk coverage tracks memory
+        coverage: whole-snapshot writes (never trim — hybrid recurrent layers
+        can't rewind, issue #163), at multiple prefix boundaries. Throttled to
+        ~one checkpoint per STRIDE-token band per conversation signature, so a
+        deep prompt writes a handful of snapshots, not one per store. Content
+        is keyed by the token sequence so the restore lookup finds it (and an
+        identical prefix dedups to one file). Best-effort; never raises into
+        the store hot path.
+        """
+        try:
+            interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
+            if not interval or not tokens or cache is None:
+                return
+            n = len(tokens)
+            STRIDE = 4096
+            if n < STRIDE:
+                return
+            import array as _arr
+            import hashlib as _hl
+
+            band = n // STRIDE
+            sig = _hl.sha256(
+                _arr.array("i", (int(t) for t in tokens[:2048])).tobytes()
+            ).hexdigest()[:12]
+            seen = getattr(self, "_disk_mirror_seen", None)
+            if seen is None:
+                seen = self._disk_mirror_seen = set()
+            key = (sig, band)
+            if key in seen:
+                return
+            seen.add(key)
+
+            from .runtime import disk_kv_checkpoint as _dkc
+
+            mname = getattr(self, "_model_name", None)
+            raw = _arr.array("i", (int(t) for t in tokens)).tobytes()
+            req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
+            _dkc.write_checkpoint(
+                cache,
+                root=_dkc.get_default_root(),
+                req_hash=req_hash,
+                token_offset=n,
+                kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
+                requires_full_checkpoint=_dkc.model_requires_full_checkpoint(mname),
+                model_name=mname,
+                extra_metadata={
+                    "tokens_key": list(tokens),
+                    "save_uuid": uuid.uuid4().hex,
+                },
+            )
+        except Exception as _e:  # pragma: no cover — mirror is best-effort
+            logger.debug("[disk_persist] mirror write failed: %s", _e)
 
     def _maybe_disk_restore(self, request: Request, *, pflash_compressed: bool) -> None:
         """Restore a request's KV prefix from a disk checkpoint on a miss.
