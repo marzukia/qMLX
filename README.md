@@ -1,4 +1,9 @@
-<h1 align="center">qMLX</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/qmlx-dark.png">
+    <img alt="qMLX" src="assets/qmlx-light.png" width="240">
+  </picture>
+</p>
 
 <p align="center">
   <strong>Keeping a hybrid 122B warm on a Mac.</strong>
