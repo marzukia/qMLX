@@ -1,0 +1,23 @@
+qMLX
+Copyright (c) 2026 Andryo Marzuki
+
+This product is a fork of Rapid-MLX
+(https://github.com/raullenchai/Rapid-MLX), developed by raullenchai and the
+Rapid-MLX contributors and licensed under the Apache License, Version 2.0.
+The upstream Apache-2.0 licence text is retained in full in LICENSE-APACHE.
+Upstream code incorporated in this repository remains licensed under
+Apache-2.0.
+
+Files in this repository have been modified relative to the upstream
+Rapid-MLX source. Per section 4(b) of the Apache License, Version 2.0, this
+notice records that changes have been made; the complete per-file change
+history is available in this repository's git log.
+
+Portions of this software are derived from or vendored from Apple's mlx-lm
+project (https://github.com/ml-explore/mlx-lm), Copyright (c) Apple Inc.,
+licensed under the MIT License. Original copyright headers are retained in
+the affected files (for example vllm_mlx/models/deepseek_v4.py and
+vllm_mlx/models/hy_v3.py).
+
+Original contributions made in qMLX are licensed under the MIT License; see
+LICENSE. The effective licence of the combined work is MIT AND Apache-2.0.
