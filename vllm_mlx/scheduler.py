@@ -5574,7 +5574,13 @@ class Scheduler:
                     fraction = 0.9
                 ceiling = int(cap_bytes * fraction)
                 active = self._current_metal_active_bytes()
-                if est_bytes > 0 and active + est_bytes > ceiling:
+                # Memory-headroom guard: OFF by default. It over-estimated the
+                # transient dequant footprint and sat well below the physical
+                # limit, rejecting restores that actually fit. Opt back in with
+                # RAPID_MLX_ENABLE_HEADROOM_GUARD=1 (pending a rework that sizes
+                # the estimate honestly).
+                if (est_bytes > 0 and active + est_bytes > ceiling
+                        and os.environ.get("RAPID_MLX_ENABLE_HEADROOM_GUARD")):
                     _dkc.record_restore_reject("memory_headroom")
                     logger.info(
                         "[kv_restore] request=%s REJECT reason=memory_headroom "
