@@ -5229,39 +5229,34 @@ class Scheduler:
         return outputs, finished_ids
 
     def _disk_persist_mirror(self, tokens, cache) -> None:
-        """Mirror an in-memory prefix-cache store to the disk checkpoint tier.
+        """Enqueue an in-memory prefix-cache store for ASYNC disk persistence.
 
         Wired into MemoryAwarePrefixCache.store so disk coverage tracks memory
-        coverage: whole-snapshot writes (never trim — hybrid recurrent layers
-        can't rewind, issue #163), at multiple prefix boundaries. Throttled to
-        ~one checkpoint per STRIDE-token band per conversation signature, so a
-        deep prompt writes a handful of snapshots, not one per store. Content
-        is keyed by the token sequence so the restore lookup finds it (and an
-        identical prefix dedups to one file). Best-effort; never raises into
-        the store hot path.
+        coverage (whole-snapshot writes keyed on the exact tokens; never trim —
+        hybrid recurrent layers can't rewind, issue #163). The actual write is
+        a multi-GB, lock-held, fsync'd save_prompt_cache; store() runs on the
+        prefill/boundary callback path many times per deep request, so doing it
+        inline STALLS the engine. We do only cheap prep here and hand off to a
+        single background writer thread with a bounded queue — a full queue
+        drops the snapshot (best-effort; memory still has it, only the
+        persistent tier misses that one). Never raises into the store hot path.
         """
         try:
             interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
             if not interval or not tokens or cache is None:
                 return
-            n = len(tokens)
-            STRIDE = 4096
-            if n < STRIDE:
+            if len(tokens) < 256:
+                # Cold-prefilling <256 tokens is instant; not worth a write.
                 return
+            # SYNCHRONOUS write. This runs from store() which fires at the
+            # prompt/message boundary — at that instant the cache state exactly
+            # matches ``tokens``, so serializing here captures the correct
+            # snapshot (no async cache-advance race, which corrupted the
+            # offset when the write was deferred). Perf: for deep prompts this
+            # is a multi-GB save; an off-thread FROZEN-snapshot writer is the
+            # optimization follow-up, but correctness first.
             import array as _arr
             import hashlib as _hl
-
-            band = n // STRIDE
-            sig = _hl.sha256(
-                _arr.array("i", (int(t) for t in tokens[:2048])).tobytes()
-            ).hexdigest()[:12]
-            seen = getattr(self, "_disk_mirror_seen", None)
-            if seen is None:
-                seen = self._disk_mirror_seen = set()
-            key = (sig, band)
-            if key in seen:
-                return
-            seen.add(key)
 
             from .runtime import disk_kv_checkpoint as _dkc
 
@@ -5272,7 +5267,7 @@ class Scheduler:
                 cache,
                 root=_dkc.get_default_root(),
                 req_hash=req_hash,
-                token_offset=n,
+                token_offset=len(tokens),
                 kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
                 requires_full_checkpoint=_dkc.model_requires_full_checkpoint(mname),
                 model_name=mname,
@@ -5282,7 +5277,62 @@ class Scheduler:
                 },
             )
         except Exception as _e:  # pragma: no cover — mirror is best-effort
-            logger.debug("[disk_persist] mirror write failed: %s", _e)
+            logger.debug("[disk_persist] enqueue failed: %s", _e)
+
+    def _ensure_disk_writer(self) -> None:
+        """Lazily start the single background disk-checkpoint writer thread."""
+        if getattr(self, "_disk_writer_thread", None) is not None:
+            return
+        import queue as _q
+        import threading as _t
+
+        self._disk_write_q = _q.Queue(maxsize=6)
+        t = _t.Thread(
+            target=self._disk_writer_loop, name="disk-kv-writer", daemon=True
+        )
+        self._disk_writer_thread = t
+        t.start()
+
+    def _disk_writer_loop(self) -> None:
+        """Drain the write queue, doing the multi-GB save_prompt_cache off the
+        generation hot path. One thread, so writes serialize against each other
+        but never against generation. Best-effort per item."""
+        import array as _arr
+        import hashlib as _hl
+
+        from .runtime import disk_kv_checkpoint as _dkc
+
+        while True:
+            try:
+                tokens, cache, mname, kv_dtype = self._disk_write_q.get()
+            except Exception:  # pragma: no cover — queue torn down
+                return
+            try:
+                raw = _arr.array("i", (int(t) for t in tokens)).tobytes()
+                req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
+                _dkc.write_checkpoint(
+                    cache,
+                    root=_dkc.get_default_root(),
+                    req_hash=req_hash,
+                    token_offset=len(tokens),
+                    kv_dtype=kv_dtype,
+                    requires_full_checkpoint=_dkc.model_requires_full_checkpoint(
+                        mname
+                    ),
+                    model_name=mname,
+                    extra_metadata={
+                        "tokens_key": tokens,
+                        "save_uuid": uuid.uuid4().hex,
+                    },
+                )
+                logger.info("[mirror_dbg] WROTE offset=%d", len(tokens))
+            except Exception as _e:  # pragma: no cover — best-effort
+                logger.info("[mirror_dbg] WRITE FAILED n=%d: %r", len(tokens), _e)
+            finally:
+                try:
+                    self._disk_write_q.task_done()
+                except Exception:
+                    pass
 
     def _maybe_disk_restore(self, request: Request, *, pflash_compressed: bool) -> None:
         """Restore a request's KV prefix from a disk checkpoint on a miss.
@@ -5576,6 +5626,15 @@ class Scheduler:
         Any failure is swallowed with a debug log; the caller wraps this
         whole method in a broad try/except as belt-and-suspenders.
         """
+        # DISABLED: superseded by the store-level persistent-tier mirror
+        # (_disk_persist_mirror), which persists the pure prompt/message
+        # boundary snapshots keyed on prompt_token_ids — the ones that match
+        # continuations. This generation-time hook snapped checkpoints to the
+        # 256-tok boundary of prompt+output, producing entries that never
+        # matched a re-tokenized continuation and polluted the index/dir
+        # alongside the mirror. Keep it a no-op so only the mirror writes.
+        return
+
         interval = getattr(self.config, "kv_disk_checkpoint_interval", 0)
         if interval is None or interval <= 0:
             return
