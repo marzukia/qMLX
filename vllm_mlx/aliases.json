@@ -697,20 +697,6 @@
       "json_array": 1.08
     }
   },
-  "hermes4-70b-4bit": {
-    "hf_path": "lmstudio-community/Hermes-4-70B-MLX-4bit",
-    "tool_call_parser": "hermes",
-    "reasoning_parser": "glm4",
-    "is_hybrid": false,
-    "supports_spec_decode": true,
-    "suffix_decoding_tier": "avoid",
-    "suffix_bench_speedup": {
-      "chat": 0.695,
-      "json_array": 1.08,
-      "tool_loop": 0.751,
-      "code_edit": 0.679
-    }
-  },
   "qwen3-vl-8b-4bit": {
     "hf_path": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
     "tool_call_parser": "hermes",
@@ -830,46 +816,6 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true
-  },
-  "bonsai-1.7b-unpacked": {
-    "hf_path": "prism-ml/Bonsai-1.7B-unpacked",
-    "tool_call_parser": "hermes",
-    "reasoning_parser": "glm4",
-    "is_hybrid": false,
-    "supports_spec_decode": true,
-    "suffix_decoding_tier": "avoid",
-    "suffix_bench_speedup": {
-      "chat": 0.713,
-      "json_array": 1.304,
-      "tool_loop": 0.884,
-      "code_edit": 1.051
-    }
-  },
-  "bonsai-4b-unpacked": {
-    "hf_path": "prism-ml/Bonsai-4B-unpacked",
-    "tool_call_parser": "hermes",
-    "reasoning_parser": "glm4",
-    "is_hybrid": false,
-    "supports_spec_decode": true,
-    "suffix_decoding_tier": "avoid",
-    "suffix_bench_speedup": {
-      "chat": 0.732,
-      "json_array": 0.799,
-      "code_edit": 1.012
-    }
-  },
-  "bonsai-8b-unpacked": {
-    "hf_path": "prism-ml/Bonsai-8B-unpacked",
-    "tool_call_parser": "hermes",
-    "reasoning_parser": "glm4",
-    "is_hybrid": false,
-    "supports_spec_decode": true,
-    "suffix_decoding_tier": "avoid",
-    "suffix_bench_speedup": {
-      "chat": 0.78,
-      "json_array": 1.268,
-      "code_edit": 1.181
-    }
   },
   "smollm3-3b-4bit": {
     "hf_path": "mlx-community/SmolLM3-3B-4bit",
