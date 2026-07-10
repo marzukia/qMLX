@@ -40,7 +40,15 @@ Alpha. It runs one model (Qwen3.5-122B-A10B) on one class of machine (M3 Ultra, 
 
 ## Install
 
-From source (this is a fork, not published to PyPI under its own name):
+```sh
+uv add qmlx-serve
+```
+
+Or `pip install qmlx-serve`. The PyPI name is `qmlx-serve` because the exact
+`qmlx` is blocked as too similar to `mlx`; the import package is still
+`vllm_mlx` and the CLI is still `rapid-mlx`.
+
+From source:
 
 ```sh
 git clone https://github.com/marzukia/qMLX.git
