@@ -1343,6 +1343,41 @@ class DiskCheckpointIndex:
                 indexed += 1
         return indexed
 
+    def nearest_divergence(self, query_tokens):
+        """Diagnostics: indexed key with the longest common prefix vs
+        ``query_tokens`` + the token index where they first diverge.
+
+        Returns ``(best_offset, divergence_index, best_key)`` or ``None`` if the
+        index is empty. Unlike :meth:`lookup` (needs a TRUE prefix), this finds
+        the nearest PARTIAL match so a restore MISS can report exactly where the
+        incoming prompt left the closest checkpoint — the "why did it break"
+        signal. O(index_size * shared_len); only the (already slow) miss path
+        calls it.
+        """
+        try:
+            q = [int(t) for t in query_tokens]
+        except (TypeError, ValueError):
+            return None
+        if not q:
+            return None
+        with self._lock:
+            items = list(self._by_key.items())
+        best_lcp = -1
+        best_off = 0
+        best_key = None
+        for key, ref in items:
+            n = len(key) if len(key) < len(q) else len(q)
+            i = 0
+            while i < n and key[i] == q[i]:
+                i += 1
+            if i > best_lcp:
+                best_lcp = i
+                best_off = ref.token_offset
+                best_key = key
+        if best_key is None:
+            return None
+        return (best_off, best_lcp, best_key)
+
     def forget_request(self, req_hash: str) -> int:
         """Drop every indexed entry belonging to one request hash.
 
