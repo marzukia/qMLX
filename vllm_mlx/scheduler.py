@@ -41,6 +41,7 @@ from ._sampler_fast_path import (  # noqa: E402
     make_fused_top_p_temp_sampler,
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
+from .honest_metrics import HonestMetrics  # noqa: E402
 from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
@@ -2547,6 +2548,12 @@ class Scheduler:
         # stays flat. Observability only — bypass semantics unchanged.
         self.pflash_bypass_count = 0
         self.pflash_compressed_tokens_dropped = 0
+        # Honest per-request reuse / latency accounting (issues #10, #2).
+        # Splits the amortized ``prompt_tokens_total`` into offered vs
+        # computed vs reused-by-source, tracks prefill kind + prefix-cache
+        # match type, and records TTFT / pure-decode-throughput histograms.
+        # Lives for the process lifetime (not reset by cache.clear()).
+        self.honest_metrics = HonestMetrics()
         # Cancellation observability (M-01). ``num_requests_processed``
         # deliberately excludes aborted requests, so operators staring at
         # ``rapid_mlx_requests_processed_total = 0`` after fifty bailed-
@@ -4389,6 +4396,14 @@ class Scheduler:
             cache, remaining = self.memory_aware_cache.fetch(request.prompt_token_ids)
             _fetch_dt = _time.monotonic() - _fetch_t0
             request.cache_hit_type = self.memory_aware_cache._last_match_type
+            # Issue #2: record the in-memory prefix-cache match-type
+            # distribution off the authoritative ``_last_match_type`` here,
+            # BEFORE a subsequent disk restore can overwrite
+            # ``cache_hit_type`` to "disk" (which would lose the fact that
+            # the in-memory cache missed on this prompt).
+            self.honest_metrics.record_prefix_match(
+                self.memory_aware_cache._last_match_type
+            )
             if cache:
                 request.prompt_cache = cache
                 request.cached_tokens = len(request.prompt_token_ids) - len(remaining)
@@ -4959,6 +4974,20 @@ class Scheduler:
                 scheduled.append(request)
 
                 self.total_prompt_tokens += request.num_prompt_tokens
+                # Issues #10, #2: honest offered / computed / reused split.
+                # Captured HERE — the batch generator has just accepted the
+                # request WITH ``cache_to_use`` installed. ``cached_tokens``
+                # is authoritative at this point: the validate-cache
+                # (invalid → 0) and insert-exception (fallback → 0) guards
+                # above have already scrubbed it to 0 for any lookup that
+                # reported a hit but did not become a real install, so
+                # ``reused`` counts only KV that was actually installed.
+                self.honest_metrics.record_prefill(
+                    num_prompt_tokens=request.num_prompt_tokens,
+                    cached_tokens=request.cached_tokens,
+                    cache_hit_type=request.cache_hit_type,
+                    remaining_tokens=request.remaining_tokens,
+                )
                 cache_info = (
                     f", {request.cached_tokens} cached"
                     if request.cached_tokens > 0
@@ -5206,6 +5235,26 @@ class Scheduler:
                 self.total_completion_tokens += request.num_output_tokens
                 self.num_requests_processed += 1
 
+                # Issue #10: stamp the last-token time and record TTFT +
+                # pure-decode-throughput histograms. ``t_last_token`` is
+                # taken off ``time.time()`` (NOT a monotonic clock) on
+                # purpose: ``first_token_time`` and ``arrival_time`` are
+                # already wall-clock ``time.time()`` stamps, and the decode
+                # window ``t_last_token - first_token_time`` must use one
+                # clock end-to-end — a monotonic ``t_last_token`` minus a
+                # wall-clock ``first_token_time`` would be garbage. The
+                # decode rate excludes the prompt and the arrival→first
+                # window by construction (see honest_metrics.record_finish).
+                import time as _time_finish
+
+                request.t_last_token = _time_finish.time()
+                self.honest_metrics.record_finish(
+                    arrival_time=request.arrival_time,
+                    first_token_time=request.first_token_time,
+                    t_last_token=request.t_last_token,
+                    num_output_tokens=request.num_output_tokens,
+                )
+
                 logger.debug(
                     f"Request {request_id} finished: {response.finish_reason}, "
                     f"{request.num_output_tokens} tokens"
@@ -5360,21 +5409,19 @@ class Scheduler:
                     if len(prompt_ids) >= 2000 and os.environ.get(
                         "RAPID_MLX_KV_RESTORE_DIVERGENCE_LOG", "1"
                     ) not in ("0", "false", "False"):
-                        _nd = _dkc.get_content_index().nearest_divergence(
-                            prompt_ids
-                        )
+                        _nd = _dkc.get_content_index().nearest_divergence(prompt_ids)
                         if _nd is not None:
                             _off, _lcp, _key = _nd
                             if 0 <= _lcp < len(prompt_ids):
                                 _W = 40
                                 _before = self._decode_tokens(
-                                    list(prompt_ids[max(0, _lcp - _W):_lcp])
+                                    list(prompt_ids[max(0, _lcp - _W) : _lcp])
                                 )
                                 _cached_next = self._decode_tokens(
-                                    list(_key[_lcp:_lcp + _W])
+                                    list(_key[_lcp : _lcp + _W])
                                 )
                                 _incoming_next = self._decode_tokens(
-                                    list(prompt_ids[_lcp:_lcp + _W])
+                                    list(prompt_ids[_lcp : _lcp + _W])
                                 )
                                 logger.info(
                                     "[kv_restore_divergence] deep miss "
@@ -5382,14 +5429,16 @@ class Scheduler:
                                     "diverged_at=%d (shared %.1f%%) | "
                                     "before=%r | cached_next=%r | "
                                     "incoming_next=%r",
-                                    len(prompt_ids), _off, _lcp,
+                                    len(prompt_ids),
+                                    _off,
+                                    _lcp,
                                     100.0 * _lcp / max(1, len(prompt_ids)),
-                                    _before, _cached_next, _incoming_next,
+                                    _before,
+                                    _cached_next,
+                                    _incoming_next,
                                 )
                 except Exception as _div_err:  # pragma: no cover
-                    logger.debug(
-                        "[kv_restore_divergence] failed: %r", _div_err
-                    )
+                    logger.debug("[kv_restore_divergence] failed: %r", _div_err)
                 return
 
             offset = loaded.token_offset
@@ -5574,8 +5623,7 @@ class Scheduler:
                     _touch_err,
                 )
             logger.info(
-                "[kv_restore] request=%s HIT cached=%d remaining=%d dtype=%s "
-                "path=%s",
+                "[kv_restore] request=%s HIT cached=%d remaining=%d dtype=%s path=%s",
                 rid,
                 offset,
                 len(request.remaining_tokens),
@@ -6290,8 +6338,14 @@ class Scheduler:
             if req.first_token_time is not None:
                 ttft = round(req.first_token_time - req.arrival_time, 3)
                 gen_elapsed = now - req.first_token_time
-                if gen_elapsed > 0 and n_out > 0:
-                    tok_s = round(n_out / gen_elapsed, 1)
+                # Issue #10: decode rate is inter-token GAPS over the decode
+                # window, i.e. (n - 1) gaps since the first token, NOT n / t.
+                # Dividing all n output tokens by the post-first-token window
+                # over-counts by one token (the first token spans zero
+                # decode gaps) and silently folds in nothing before it. Needs
+                # ≥2 tokens for a gap to exist.
+                if gen_elapsed > 0 and n_out >= 2:
+                    tok_s = round((n_out - 1) / gen_elapsed, 1)
 
             # Progress: completion_tokens / max_tokens
             progress = round(n_out / req.max_tokens, 3) if req.max_tokens > 0 else 0.0
@@ -6356,6 +6410,11 @@ class Scheduler:
                 self.num_prefix_cache_pressure_evictions
             ),
         }
+        # Issues #10, #2: honest reuse / latency block. Folded as a nested
+        # snapshot so /metrics can render the offered/computed/reused split,
+        # prefill-kind + prefix-match distributions, and the TTFT / decode
+        # histograms without the route reaching into scheduler internals.
+        stats["honest_metrics"] = self.honest_metrics.snapshot()
         # R15-P1 (task #296): disk-backed KV checkpoint counters.
         # Folded straight from the module-level ``disk_kv_checkpoint``
         # stats so /metrics can render writes / loads / bytes / evictions
