@@ -1,5 +1,10 @@
 <div align="center">
-  <a href="https://qmlx.mrzk.io"><img src="assets/qmlx-favicon.png" alt="qMLX" width="120"></a>
+  <a href="https://qmlx.mrzk.io">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/marzukia/qMLX/main/assets/qmlx-dark.png">
+      <img alt="qMLX" src="https://raw.githubusercontent.com/marzukia/qMLX/main/assets/qmlx-light.png" width="260">
+    </picture>
+  </a>
 </div>
 
 <p align="center">
