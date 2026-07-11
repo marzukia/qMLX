@@ -1,7 +1,7 @@
 """R2-first / HuggingFace-fallback model downloader.
 
-``rapid-mlx pull <alias>`` (and the implicit prefetch invoked by
-``rapid-mlx serve <alias>`` / ``rapid-mlx chat <alias>`` when the model
+``qmlx pull <alias>`` (and the implicit prefetch invoked by
+``qmlx serve <alias>`` / ``qmlx chat <alias>`` when the model
 isn't cached) tries the project's Cloudflare R2 mirror at
 ``https://models.rapidmlx.com`` first and falls back to HuggingFace
 **per file** on any miss. R2 is edge-cached and substantially faster
@@ -23,7 +23,7 @@ Design constraints (from PR #649 spec):
   with ``refs/main`` pinned. The next ``hf_hub_download`` /
   ``snapshot_download`` call sees a cache hit. We do NOT invent a
   parallel cache.
-* Default ON — set ``RAPID_MLX_MODEL_MIRROR=""`` to disable.
+* Default ON — set ``QMLX_MODEL_MIRROR=""`` to disable.
 * No new third-party deps — stdlib ``urllib`` + ``huggingface_hub``.
 * Concurrency capped at 4 to stay polite to Cloudflare.
 * Resume — interrupted ``.part`` files are completed via ``Range`` requests.
@@ -50,13 +50,13 @@ from typing import Any
 # Cloudflare's edge fronts the R2 bucket at this hostname. The catalog
 # lives at ``/api/models`` and per-file objects at
 # ``/<owner>/<repo>/<filename>``. Override / disable with the
-# ``RAPID_MLX_MODEL_MIRROR`` env var.
+# ``QMLX_MODEL_MIRROR`` env var.
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
 # Cloudflare 403s the default ``Python-urllib/*`` UA — verified by the
-# maintainer. Any plausible browser-ish UA works. Keep ``rapid-mlx`` in
+# maintainer. Any plausible browser-ish UA works. Keep ``qmlx`` in
 # the string so the maintainer can spot our traffic in R2 logs.
-_USER_AGENT = "Mozilla/5.0 (rapid-mlx mirror client)"
+_USER_AGENT = "Mozilla/5.0 (qmlx mirror client)"
 
 # Catalog responses are tiny (a few hundred KB at most) and Cloudflare
 # caches them ``public, max-age=300``. 10 s is plenty.
@@ -183,7 +183,7 @@ def _mirror_base() -> str:
     Empty string means "force HF" — distinct from "unset" which means
     "use the project default". This is the documented opt-out knob.
     """
-    return os.environ.get("RAPID_MLX_MODEL_MIRROR", MIRROR_DEFAULT).strip()
+    return os.environ.get("QMLX_MODEL_MIRROR", MIRROR_DEFAULT).strip()
 
 
 def fetch_catalog(
@@ -218,7 +218,7 @@ def fetch_catalog_with_status(
     url = f"{base.rstrip('/')}/api/models"
     # Codex round-11 NIT #3: ``urllib.request.Request(url)`` raises
     # ``ValueError`` for a malformed URL (e.g. a user typo in
-    # ``RAPID_MLX_MODEL_MIRROR``). Construct it inside the guarded block
+    # ``QMLX_MODEL_MIRROR``). Construct it inside the guarded block
     # so it routes to "treat as transient, fall through to HF" instead
     # of escaping the whole pull with a raw stack trace.
     try:
@@ -322,10 +322,10 @@ def _sidecar_key_for(relpath: str) -> str:
 
     Codex round-14 BLOCKING #1+#2: the ``.part`` and ``.lock`` sidecars
     used to live next to the target inside ``snapshots/<sha>/``. That
-    lets a repository file legitimately named ``.foo.rapid-mlx-mirror
+    lets a repository file legitimately named ``.foo.qmlx-mirror
     .part`` (yes, file names can start with dots) collide with the
     temp file for ``foo``, and similarly for ``.lock``. Move sidecars
-    into ``repo_root/.rapid-mlx-mirror/`` with a flattened key derived
+    into ``repo_root/.qmlx-mirror/`` with a flattened key derived
     from the *relative* path — no chance of collision with an HF
     sibling listing because no HF repo ships files with our key shape.
 
@@ -362,7 +362,7 @@ def _download_one_from_r2(
     ``.part`` already exists from a prior aborted run.
 
     ``sidecar_dir`` is the per-repo private sidecar directory
-    (``repo_root/.rapid-mlx-mirror/``) where the ``.part`` and ``.lock``
+    (``repo_root/.qmlx-mirror/``) where the ``.part`` and ``.lock``
     files live — kept OUT of ``snapshots/<sha>/`` so they can't
     collide with legitimate repo assets (codex round-14 BLOCKING #1
     + #2). ``sidecar_key`` is the per-file key from
@@ -839,8 +839,8 @@ def _safe_unlink(path: Path) -> None:
 def _acquire_part_lock(lock_path: Path):
     """Acquire an exclusive advisory lock on ``lock_path``.
 
-    Codex round-11 BLOCKING #2: prevents two concurrent ``rapid-mlx``
-    processes from racing on the same ``<file>.rapid-mlx-mirror.part``.
+    Codex round-11 BLOCKING #2: prevents two concurrent ``qmlx``
+    processes from racing on the same ``<file>.qmlx-mirror.part``.
     Uses stdlib ``fcntl.flock`` on posix. ``LOCK_EX`` blocks the
     caller until the holder releases — which is fine since downloads
     are expected to be slow and only one of two competing pulls would
@@ -856,7 +856,7 @@ def _acquire_part_lock(lock_path: Path):
         import fcntl  # type: ignore[import-not-found]
     except ImportError:
         # Windows / very old systems — best-effort, no lock. The actual
-        # rapid-mlx use case is MLX-only (macOS), so this branch is
+        # qmlx use case is MLX-only (macOS), so this branch is
         # essentially unreachable in practice.
         return None
     try:
@@ -1112,10 +1112,10 @@ def download_with_mirror_fallback(
     # Codex round-14 BLOCKING #1+#2: keep ``.part`` and ``.lock``
     # sidecars OUT of ``snapshots/<sha>/`` so they can't collide with
     # legitimate repo assets named like our temp files. The leading
-    # ``.rapid-mlx-mirror`` directory is namespaced under the repo
+    # ``.qmlx-mirror`` directory is namespaced under the repo
     # root, so it shares the lifecycle of the cached model but never
     # mingles with HF's own snapshot files.
-    sidecar_dir = repo_root / ".rapid-mlx-mirror"
+    sidecar_dir = repo_root / ".qmlx-mirror"
     try:
         snap_dir.mkdir(parents=True, exist_ok=True)
         refs_dir.mkdir(parents=True, exist_ok=True)
@@ -1126,7 +1126,7 @@ def download_with_mirror_fallback(
     # Catalog lookup — for the project default mirror, the catalog
     # confirms whether the alias is mirrored and gives us
     # ``download_url_base``. For a custom mirror (user set
-    # ``RAPID_MLX_MODEL_MIRROR=<other URL>``), the catalog endpoint may
+    # ``QMLX_MODEL_MIRROR=<other URL>``), the catalog endpoint may
     # not exist — fall back to the direct-layout convention
     # (``<base>/<owner>/<repo>/<file>``) that PR #647 introduced.
     #
@@ -1188,7 +1188,7 @@ def download_with_mirror_fallback(
         # Catalog unreachable (custom mirror or transient outage); we
         # still try direct ``<base>/<owner>/<repo>/<file>`` URLs and
         # fall back to HF per file on 404. Preserves PR #647's contract
-        # for non-default ``RAPID_MLX_MODEL_MIRROR`` URLs.
+        # for non-default ``QMLX_MODEL_MIRROR`` URLs.
         _print_dim(
             f"  {BOLD}Pulling {repo_id}{RESET} {DIM}(mirror direct-layout, "
             f"fallback: HF){RESET}"

@@ -2,17 +2,17 @@
 # PYTHON_ARGCOMPLETE_OK
 # SPDX-License-Identifier: Apache-2.0
 """
-CLI for rapid-mlx (package name: ``vllm_mlx``).
+CLI for qmlx (package name: ``vllm_mlx``).
 
 Commands:
-    rapid-mlx serve <model> --port 8000    Start OpenAI-compatible server
-    rapid-mlx bench <model>                Run benchmark
-    rapid-mlx chat <model>                 Interactive chat REPL
+    qmlx serve <model> --port 8000    Start OpenAI-compatible server
+    qmlx bench <model>                Run benchmark
+    qmlx chat <model>                 Interactive chat REPL
 
 Usage:
-    rapid-mlx serve qwen3.5-4b-4bit --port 8000
-    rapid-mlx bench qwen3.5-4b-4bit --num-prompts 10
-    rapid-mlx chat qwen3.5-4b-4bit
+    qmlx serve qwen3.5-4b-4bit --port 8000
+    qmlx bench qwen3.5-4b-4bit --num-prompts 10
+    qmlx chat qwen3.5-4b-4bit
 """
 
 import argparse
@@ -21,7 +21,7 @@ import sys
 
 from vllm_mlx._completion import alias_completer
 
-# Project-default mirror for ``RAPID_MLX_MODEL_MIRROR`` (consumed by
+# Project-default mirror for ``QMLX_MODEL_MIRROR`` (consumed by
 # ``_try_mirror_prefetch``). Public Cloudflare Worker → R2 bucket, with
 # rate-limit + Range-request passthrough. Override with the env var
 # (set to an empty string to disable the mirror and force HF Hub).
@@ -70,7 +70,7 @@ def _auth_feature_str(argv_api_key: str | None) -> str | None:
 def _port_arg(value: str) -> int:
     """Argparse ``type`` callable: validate ``--port`` is in [1, 65535].
 
-    Without this, ``rapid-mlx chat --port 99999`` parsed successfully and
+    Without this, ``qmlx chat --port 99999`` parsed successfully and
     dropped the user into a REPL whose first turn failed with a confusing
     ``Failed to parse: http://127.0.0.1:99999/...``. Validate early so the
     user sees a one-line argparse error instead.
@@ -93,8 +93,8 @@ def _listen_fd_arg(value: str) -> int:
 
     ``--listen-fd`` enables socket activation — the supervisor (launchd,
     systemd, an external parent process) binds the listening socket
-    itself and execve's into ``rapid-mlx serve`` with the pre-bound fd.
-    This closes the bind→auth TOCTOU window: by the time rapid-mlx
+    itself and execve's into ``qmlx serve`` with the pre-bound fd.
+    This closes the bind→auth TOCTOU window: by the time qmlx
     runs, the socket is already bound but no requests can be accepted
     until ``uvicorn.run`` calls ``accept()`` — at which point the
     FastAPI app (with all route auth dependencies wired) is already
@@ -123,7 +123,7 @@ def _listen_fd_arg(value: str) -> int:
 
 
 def _apply_body_receive_timeout_env(server_mod, *, logger=None) -> None:
-    """Resolve ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` onto
+    """Resolve ``QMLX_BODY_RECEIVE_TIMEOUT_SECONDS`` onto
     ``server_mod._body_receive_timeout_seconds`` (H-14 / F-072
     slow-DoS gate).
 
@@ -155,7 +155,7 @@ def _apply_body_receive_timeout_env(server_mod, *, logger=None) -> None:
 
         logger = _logging.getLogger(__name__)
 
-    _brt_env_name = "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"
+    _brt_env_name = "QMLX_BODY_RECEIVE_TIMEOUT_SECONDS"
     _brt_env = os.environ.get(_brt_env_name, "").strip()
     if not _brt_env:
         return
@@ -214,9 +214,9 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     ``""``) coexist with a more-specific loopback listener
     (``127.0.0.1``) on the same port. v0.8.2 dogfood finding #2
     reproduced the resulting PortSweep bypass: ``nc -l 127.0.0.1 11812``
-    + ``rapid-mlx serve --port 11812`` BOTH succeed, and
+    + ``qmlx serve --port 11812`` BOTH succeed, and
     ``curl 127.0.0.1:11812/healthz`` returns HTTP 000 (kernel routes
-    loopback to nc, not rapid-mlx). The fix is to explicitly probe the
+    loopback to nc, not qmlx). The fix is to explicitly probe the
     loopback address whenever the requested bind is wider than loopback.
 
     Extracted from ``serve_command`` so the legacy
@@ -264,14 +264,14 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
             except OSError:
                 # Surface the host we actually collided on so the user
                 # can distinguish "LAN port busy" from "loopback port
-                # already claimed by another rapid-mlx / nc / proxy".
+                # already claimed by another qmlx / nc / proxy".
                 # Use the empty-string-friendly display name so
                 # ``--host ""`` shows up as ``0.0.0.0`` rather than a
                 # confusing bare quote.
                 display_host = probe_host or "0.0.0.0"
                 print(f"\n  Error: Port {port} is already in use on {display_host}.")
                 print(
-                    f"  Try a different port: rapid-mlx serve {model} --port {port + 1}"
+                    f"  Try a different port: qmlx serve {model} --port {port + 1}"
                 )
                 sys.exit(1)
 
@@ -287,7 +287,7 @@ def _print_port_collision_and_exit(
     In ``--listen-fd`` mode the ``host``/``port`` args don't describe
     the real bind (the supervisor owns it), so we omit the
     port-specific ``lsof -i :N`` hint and reference the inherited fd
-    instead — otherwise the operator would chase a port the rapid-mlx
+    instead — otherwise the operator would chase a port the qmlx
     process never tried to bind (codex round-1 NIT #3).
     """
     if in_listen_fd_mode:
@@ -460,14 +460,14 @@ def _port_is_busy(host: str, port: int) -> bool:
 
 def _chat_config_dir() -> str:
     """Directory for first-launch tip markers (and future per-user chat
-    state). Honors ``RAPID_MLX_CONFIG_HOME`` override; otherwise falls back
-    to ``~/.config/rapid-mlx``. The directory is created lazily by the
+    state). Honors ``QMLX_CONFIG_HOME`` override; otherwise falls back
+    to ``~/.config/qmlx``. The directory is created lazily by the
     writer; callers don't need to ensure it exists for reads.
     """
-    override = os.environ.get("RAPID_MLX_CONFIG_HOME")
+    override = os.environ.get("QMLX_CONFIG_HOME")
     if override:
         return override
-    return os.path.join(os.path.expanduser("~"), ".config", "rapid-mlx")
+    return os.path.join(os.path.expanduser("~"), ".config", "qmlx")
 
 
 def _seen_tips_path() -> str:
@@ -520,9 +520,9 @@ def _mark_tip_seen(key: str) -> None:
 def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     """Print fuzzy suggestions + a curated popular-models hint.
 
-    Replaces the older "Did you mean: X?" + "Run `rapid-mlx models`" pattern
+    Replaces the older "Did you mean: X?" + "Run `qmlx models`" pattern
     that left users empty-handed when no close fuzzy match existed
-    (e.g. ``rapid-mlx chat gemma4-27b`` returned zero suggestions, told the
+    (e.g. ``qmlx chat gemma4-27b`` returned zero suggestions, told the
     user to run another command, and gave no hint of what was actually
     supported). Now: always show *something* — fuzzy matches when we have
     them, curated popular aliases when we don't.
@@ -534,7 +534,7 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
         print(f"  Did you mean: {', '.join(suggestions)}?")
     else:
         print(f"  Try one of: {', '.join(POPULAR_ALIASES)}")
-    print(f"  Run `rapid-mlx models` to see all {len(list_aliases())} aliases,")
+    print(f"  Run `qmlx models` to see all {len(list_aliases())} aliases,")
     print(f"  or pass a full path like: {full_path_example}")
 
 
@@ -651,7 +651,7 @@ def _resolve_audio_download_alias(command: str | None, model: str) -> str | None
 def _serve_audio_mode(args, entry) -> None:
     """Bind the audio-only serve path for a resolved registry entry.
 
-    R10-C1 audio-serve-mode. Pre-fix every ``rapid-mlx serve kokoro``
+    R10-C1 audio-serve-mode. Pre-fix every ``qmlx serve kokoro``
     crash-looped because the text-model boot path was the ONLY path:
 
     1. ``_ensure_model_downloaded(args.model)`` queried HF for the
@@ -713,7 +713,7 @@ def _serve_audio_mode(args, entry) -> None:
     # path, mirroring the text-mode contract at ``server.load_model``
     # (``_model_name = served_model_name or model_name``). Pre-fix the
     # audio dispatcher ignored the flag, so operators wrapping
-    # ``rapid-mlx serve kokoro`` behind a gateway with a stable
+    # ``qmlx serve kokoro`` behind a gateway with a stable
     # ``model_name`` saw the raw HF id on ``/v1/models`` and the
     # gateway's model-id allowlist 404'd. The underlying HF id stays
     # on ``_model_path`` (cache dir / engine input), and the friendly
@@ -727,7 +727,7 @@ def _serve_audio_mode(args, entry) -> None:
     # the SAME middleware stack as chat/embeddings — the same env vars
     # and CLI flags govern auth + body-size caps + CORS. Diverging
     # here would silently weaken the deployment posture for anyone who
-    # added ``--api-key`` to their ``rapid-mlx serve kokoro`` command.
+    # added ``--api-key`` to their ``qmlx serve kokoro`` command.
     server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
 
@@ -735,7 +735,7 @@ def _serve_audio_mode(args, entry) -> None:
     if _max_body_arg is not None:
         server._max_request_bytes = max(0, int(_max_body_arg))
     else:
-        _env = os.environ.get("RAPID_MLX_MAX_REQUEST_BYTES", "").strip()
+        _env = os.environ.get("QMLX_MAX_REQUEST_BYTES", "").strip()
         if _env:
             try:
                 server._max_request_bytes = max(0, int(_env))
@@ -757,7 +757,7 @@ def _serve_audio_mode(args, entry) -> None:
     # ``load_model`` so we must call it explicitly here. Without this
     # sync the auth middleware reads ``cfg.api_key`` (still ``None``
     # because nothing populated it) instead of ``server._api_key``,
-    # so ``rapid-mlx serve kokoro --api-key SECRET`` would silently
+    # so ``qmlx serve kokoro --api-key SECRET`` would silently
     # accept unauthenticated /v1/audio/* requests. Codex r1 HIGH #1.
     server._sync_config()
 
@@ -916,7 +916,7 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
         )
         print(
             "  Tip: use a registered embedding alias (see "
-            "``rapid-mlx ls`` for the list — e.g. "
+            "``qmlx ls`` for the list — e.g. "
             "``embeddinggemma-300m-6bit``) or pass the full "
             "HuggingFace id (e.g. "
             "``mlx-community/embeddinggemma-300m-6bit``).\n"
@@ -1006,7 +1006,7 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         print()
         print("  Suggestions:")
         print("    - Free disk space, or set HF_HOME to a drive with more room")
-        print("    - Pick a smaller variant: rapid-mlx models")
+        print("    - Pick a smaller variant: qmlx models")
         if not force:
             print(
                 "    - Bypass this check (download will likely fail mid-way): "
@@ -1239,7 +1239,7 @@ def _check_alias_min_memory(user_typed: str) -> None:
     )
     print(
         f"{YELLOW}   Recommended: pick a Tier-1 alias sized for this "
-        "machine (`rapid-mlx models` for the full list). "
+        "machine (`qmlx models` for the full list). "
         f"Proceeding anyway…{RESET}\n"
     )
 
@@ -1380,10 +1380,10 @@ def _check_memory_capacity(model_name: str) -> None:
         print("  iBoot AMCC threshold. Recommended actions:")
         print()
         print("    - Close other apps to free RAM, or")
-        print("    - Pick a smaller model:    rapid-mlx models")
+        print("    - Pick a smaller model:    qmlx models")
         print(
             "    - Or lower memory headroom: "
-            "rapid-mlx serve <model> --gpu-memory-utilization 0.75"
+            "qmlx serve <model> --gpu-memory-utilization 0.75"
         )
     else:
         print(
@@ -1401,7 +1401,7 @@ def _try_mirror_prefetch(model_name: str) -> bool:
     plain ``snapshot_download(repo_id)`` path (catalog unavailable for
     catalog-only paths, or one or more files failed both R2 and HF).
 
-    Set ``RAPID_MLX_MODEL_MIRROR=""`` to disable R2 entirely and force
+    Set ``QMLX_MODEL_MIRROR=""`` to disable R2 entirely and force
     HuggingFace.
 
     Codex round-6 BLOCKING #2: the mirror module already returns
@@ -1423,7 +1423,7 @@ def _try_mirror_prefetch(model_name: str) -> bool:
 def _ensure_model_downloaded(model_name: str) -> None:
     """Pre-fetch a model in the foreground so HF's tqdm progress is visible.
 
-    Used by ``rapid-mlx chat``: the chat REPL spawns ``serve`` as a
+    Used by ``qmlx chat``: the chat REPL spawns ``serve`` as a
     subprocess with stdout/stderr redirected to a log file. If the model
     isn't cached, the user sees a silent multi-minute hang while several
     GB downloads behind the log. Calling ``snapshot_download`` here first
@@ -2037,7 +2037,7 @@ def _preflight_ddtree_or_exit(args):
             f"\n  Error: DDTree requires a known alias, got "
             f"{alias_name!r}. DDTree eligibility is recorded per-alias "
             f"in aliases.json; ad-hoc HuggingFace paths can't be "
-            f"validated. Try ``rapid-mlx info qwen3.5-9b-8bit``.\n"
+            f"validated. Try ``qmlx info qwen3.5-9b-8bit``.\n"
         )
         sys.exit(1)
     try:
@@ -2073,7 +2073,7 @@ def serve_command(args):
 
     # Parent-PID watchdog (rapid-desktop issue #449): if the supervisor
     # passed its own PID via ``--watchdog-ppid`` or
-    # ``$RAPID_MLX_WATCHDOG_PPID``, spawn a daemon thread that polls
+    # ``$QMLX_WATCHDOG_PPID``, spawn a daemon thread that polls
     # ``os.getppid()`` every 2 s. When the parent dies (re-parented to
     # launchd / init), the watchdog sends SIGTERM to ourselves so the
     # FastAPI lifespan can flush + release the model — falling back to
@@ -2113,8 +2113,8 @@ def serve_command(args):
 
     # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
     # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
-    # extra, but ``rapid-mlx serve ui-tars-1.5-7b-4bit`` on a fresh
-    # ``pip install rapid-mlx`` previously fell into the engine load
+    # extra, but ``qmlx serve ui-tars-1.5-7b-4bit`` on a fresh
+    # ``pip install qmlx`` previously fell into the engine load
     # path BEFORE the missing-dep error surfaced (deep ImportError
     # after weight download + alias resolution). Probe here so the
     # operator sees an actionable hint before the long download starts.
@@ -2132,7 +2132,7 @@ def serve_command(args):
 
     # R6-H4 (Eva 0.8.7 dogfood): same boot-guard shape for audio aliases.
     # ``mlx-audio`` lives behind the ``[audio]`` extra; pre-fix
-    # ``rapid-mlx serve kokoro`` (or whisper/parakeet/chatterbox/...) on
+    # ``qmlx serve kokoro`` (or whisper/parakeet/chatterbox/...) on
     # a base install printed the startup banner, opened the port, and
     # only crashed on the first audio request (the in-route lane probe).
     # That looked like "successful boot, broken inference" instead of
@@ -2171,7 +2171,7 @@ def serve_command(args):
     #   - tool/reasoning parsers auto-configured
     #   - CORS allow-origin warning printed
     # so the operator saw five INFO lines and a banner before the
-    # actionable ``Install with: pip install 'rapid-mlx[dflash]'`` line,
+    # actionable ``Install with: pip install 'qmlx[dflash]'`` line,
     # matching Diego's earlier ``[embeddings]`` regression shape exactly.
     # Hoist the cheap ``have_runtime()`` probe to the same boot-guard tier
     # as the other extras so the error lands FIRST. ``importlib.util.
@@ -2186,7 +2186,7 @@ def serve_command(args):
                 "\n  Error: DFlash speculative decoding "
                 '(``--speculative-config \'{"method":"dflash"}\'``) requires '
                 "mlx-vlm 0.5.0+ for the DFlash drafter hooks. Install with: "
-                "``pip install 'rapid-mlx[dflash]'``.\n"
+                "``pip install 'qmlx[dflash]'``.\n"
             )
             sys.exit(1)
 
@@ -2223,7 +2223,7 @@ def serve_command(args):
 
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
-    # RAPID_MLX_DISABLE_VERSION_CHECK, CI=1, and non-TTY stdin. Cached
+    # QMLX_DISABLE_VERSION_CHECK, CI=1, and non-TTY stdin. Cached
     # piggy-backs on the existing staleness check's cache (24h TTL).
     from vllm_mlx._version_check import prompt_upgrade_if_available
 
@@ -2461,8 +2461,8 @@ def serve_command(args):
     # the same process.
     server._enable_audio_lane = bool(getattr(args, "enable_audio", False))
 
-    # Configure server security settings. ``RAPID_MLX_API_KEY`` env var
-    # is the secret-friendly form ``rapid-mlx share`` uses to avoid
+    # Configure server security settings. ``QMLX_API_KEY`` env var
+    # is the secret-friendly form ``qmlx share`` uses to avoid
     # exposing the key in argv; inline ``--api-key`` overrides it for
     # backwards-compat with existing scripts. ``_resolve_api_key`` is
     # the single SSOT — both this entrypoint and the ``vllm_mlx.server``
@@ -2473,14 +2473,14 @@ def serve_command(args):
 
     # Per-request body-size cap. Resolution order:
     #   1. ``--max-request-bytes`` (explicit CLI flag, including 0 to disable)
-    #   2. ``RAPID_MLX_MAX_REQUEST_BYTES`` env var
+    #   2. ``QMLX_MAX_REQUEST_BYTES`` env var
     #   3. ``ServerConfig`` dataclass default (8 MiB)
     # See vllm_mlx/middleware/body_size.py for the DoS rationale.
     _max_body_arg = getattr(args, "max_request_bytes", None)
     if _max_body_arg is not None:
         server._max_request_bytes = max(0, int(_max_body_arg))
     else:
-        _env_name = "RAPID_MLX_MAX_REQUEST_BYTES"
+        _env_name = "QMLX_MAX_REQUEST_BYTES"
         _env = os.environ.get(_env_name, "").strip()
         if _env:
             try:
@@ -2507,7 +2507,7 @@ def serve_command(args):
     # writing the config singleton directly here would be clobbered by
     # the subsequent ``_sync_config`` (mirrors the ``_max_request_bytes``
     # pattern just above).
-    _sse_env_name = "RAPID_MLX_SSE_KEEPALIVE_SECONDS"
+    _sse_env_name = "QMLX_SSE_KEEPALIVE_SECONDS"
     _sse_env = os.environ.get(_sse_env_name, "").strip()
     if _sse_env:
         try:
@@ -2516,7 +2516,7 @@ def serve_command(args):
             # NOTE: the env-var name is interpolated via ``%s`` (not baked
             # into the format string) so the
             # ``tests/test_no_out_of_band_routing.py`` constant scan
-            # doesn't see the literal ``RAPID_MLX_…=%r is not a number``
+            # doesn't see the literal ``QMLX_…=%r is not a number``
             # as a stand-alone string and false-positive on a routing
             # match. Same pattern the body-receive timeout block below
             # uses.
@@ -2538,11 +2538,11 @@ def serve_command(args):
     _apply_body_receive_timeout_env(server, logger=logger)
 
     # Configure CORS (F-090 + F-091). Default: wildcard ``*`` for friendly
-    # single-machine UX — rapid-mlx is primarily run locally and a
+    # single-machine UX — qmlx is primarily run locally and a
     # browser frontend at ``http://localhost:3000`` hitting the API at
     # ``http://localhost:8000`` "just works". Operators on multi-tenant /
     # production deployments lock down via
-    # ``RAPID_MLX_CORS_ALLOW_ORIGINS=https://your.app,https://other.app``.
+    # ``QMLX_CORS_ALLOW_ORIGINS=https://your.app,https://other.app``.
     # The full env-var family (METHODS / HEADERS / MAX_AGE /
     # ALLOW_CREDENTIALS) still applies; see
     # ``vllm_mlx/server.py::configure_cors_from_env``.
@@ -2648,7 +2648,7 @@ def serve_command(args):
                 f"\n  Error: DFlash requires a known alias, got "
                 f"{_alias_name!r}. DFlash eligibility is recorded per-alias "
                 f"in aliases.json; ad-hoc HuggingFace paths can't be "
-                f"validated. Try ``rapid-mlx info qwen3.5-27b-8bit``.\n"
+                f"validated. Try ``qmlx info qwen3.5-27b-8bit``.\n"
             )
             sys.exit(1)
         try:
@@ -2777,7 +2777,7 @@ def serve_command(args):
     # Store MCP config path for FastAPI startup
     if args.mcp_config:
         print(f"MCP config: {args.mcp_config}")
-        os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
+        os.environ["QMLX_MCP_CONFIG"] = args.mcp_config
 
     # Pre-load embedding model if specified.
     #
@@ -2896,7 +2896,7 @@ def serve_command(args):
 
         # codex r1 BLOCKING #1: ``--reasoning`` must override the
         # legacy ``--kv-cache-quantization`` flag too — otherwise
-        # ``rapid-mlx serve --reasoning --kv-cache-quantization
+        # ``qmlx serve --reasoning --kv-cache-quantization
         # --kv-cache-quantization-bits 4`` silently resolves to int4
         # and the operator who deliberately asked for the reasoning
         # profile gets the AIME-class quality cliff. Reject the
@@ -3193,7 +3193,7 @@ def serve_command(args):
     # Check port availability before loading model (avoid wasting RAM on conflict).
     # Set SO_REUSEADDR to match uvicorn's bind behavior — without it, this
     # preflight fails on a port still in TCP TIME_WAIT (e.g. just after a
-    # previous rapid-mlx process exited), even though uvicorn would happily
+    # previous qmlx process exited), even though uvicorn would happily
     # bind it. Caused spurious "port in use" errors for back-to-back server
     # starts in the validation pipeline.
     #
@@ -3381,7 +3381,7 @@ def serve_command(args):
     # Calling it AGAIN here makes the wire-up explicit at the CLI
     # surface — a future refactor that moves the hook out of
     # ``load_model`` (e.g. into a lifespan event) won't silently drop
-    # ``--enable-audio`` for the ``rapid-mlx serve`` path. The helper
+    # ``--enable-audio`` for the ``qmlx serve`` path. The helper
     # is idempotent (app-local sentinel) so the second call is a
     # cheap attribute read.
     server.register_audio_routes_if_enabled()
@@ -3444,7 +3444,7 @@ def serve_command(args):
 
 
 def _run_tier_submit_flow(args) -> int:
-    """``rapid-mlx bench <model> --tier <T> --submit`` — PR #5 unification.
+    """``qmlx bench <model> --tier <T> --submit`` — PR #5 unification.
 
     Three-phase pipeline:
 
@@ -3508,17 +3508,17 @@ def _run_tier_submit_flow(args) -> int:
     # The narrow --tier (no --submit) --base-url path is still
     # supported — that's the gauntlet/release_check use case where
     # we WANT to validate against an already-running server.
-    # Belt-and-braces: an active ``RAPID_MLX_HARNESS_PROFILES_FILTER``
+    # Belt-and-braces: an active ``QMLX_HARNESS_PROFILES_FILTER``
     # produces a partial harness payload (only the filtered keys), which
     # would fail the schema-v2 ``required`` set at submission time
     # downstream. The G12 gauntlet path only sets this env when calling
     # ``--tier harness --base-url`` (no --submit) — but a future caller
     # combining ``--submit`` with the filter would silently break here.
     # Refuse loudly instead.
-    if os.environ.get("RAPID_MLX_HARNESS_PROFILES_FILTER"):
+    if os.environ.get("QMLX_HARNESS_PROFILES_FILTER"):
         print(
             "  Error: --submit is incompatible with "
-            "RAPID_MLX_HARNESS_PROFILES_FILTER. The filter scopes the "
+            "QMLX_HARNESS_PROFILES_FILTER. The filter scopes the "
             "sweep to a subset of harnesses, producing a payload that "
             "would fail the community-bench schema's required-keys check "
             "(all 5 harnesses must be present). Unset the env var or "
@@ -3573,7 +3573,7 @@ def _run_tier_submit_flow(args) -> int:
                 "couldn't answer the boot prompt cleanly — submitting "
                 "speed/harness numbers from this run would be "
                 "misleading. Re-check the model + environment with "
-                "`rapid-mlx bench <model> --tier smoke` first.",
+                "`qmlx bench <model> --tier smoke` first.",
                 file=sys.stderr,
             )
             return 1
@@ -3683,7 +3683,7 @@ def _run_submit_flow(
         print(
             f"  Error: --submit requires the canonical alias key "
             f"(e.g. 'qwen3.5-9b-4bit'), not the resolved HF path "
-            f"'{user_typed}'. Run `rapid-mlx models` for the whitelist."
+            f"'{user_typed}'. Run `qmlx models` for the whitelist."
         )
         return 2
     profile = resolve_profile(user_typed)
@@ -3693,7 +3693,7 @@ def _run_submit_flow(
             f"Only models listed in vllm_mlx/aliases.json can be submitted "
             f"(this keeps the comparison apples-to-apples)."
         )
-        print("  Run `rapid-mlx models` to see the full whitelist.")
+        print("  Run `qmlx models` to see the full whitelist.")
         return 2
     alias = user_typed
     hf_path = profile.hf_path
@@ -3759,7 +3759,7 @@ def _run_submit_flow(
         # Spinning the worker BEFORE load and reusing it for
         # AsyncEngineCore keeps every MLX op on a single owning thread.
         # Mirrors the pattern in ``BatchedEngine._start_llm`` (which is
-        # why ``rapid-mlx serve`` works but the unfixed ``bench`` path
+        # why ``qmlx serve`` works but the unfixed ``bench`` path
         # doesn't).
         print(f"  Loading model {alias} ({hf_path})…")
         model_load_executor = concurrent.futures.ThreadPoolExecutor(
@@ -3774,7 +3774,7 @@ def _run_submit_flow(
             # internal ``ModuleNotFoundError: No module named 'mlx_lm.models.X'``
             # for any architecture it can't import. The Gemma 4 family lives
             # in mlx-vlm (the model classes are vision-aware even for the
-            # text-only checkpoints), so a bare ``pip install rapid-mlx``
+            # text-only checkpoints), so a bare ``pip install qmlx``
             # without the ``[vision]`` extras hits this every time. The
             # README still recommends ``gemma-4-*`` aliases so newcomers
             # would otherwise see a raw traceback and conclude the model
@@ -3797,7 +3797,7 @@ def _run_submit_flow(
                 )
                 print("  Install them and re-run:")
                 print()
-                print("    pip install 'rapid-mlx[vision]'")
+                print("    pip install 'qmlx[vision]'")
                 print()
                 print(
                     "  Or, if you only need text inference (smaller "
@@ -3836,7 +3836,7 @@ def _run_submit_flow(
             f"cpu_cores={hardware.cpu_cores}, gpu_cores={hardware.gpu_cores}"
         )
         print(
-            f"    macos={software.macos}, rapid_mlx={software.rapid_mlx}, "
+            f"    macos={software.macos}, qmlx={software.qmlx}, "
             f"mlx={software.mlx}, python={software.python}"
         )
 
@@ -3995,7 +3995,7 @@ def bench_command(args):
     # else stays ``off``. Resolves before config_from_args so the
     # validate path sees the final mode, then runs the MLLM-rejection
     # gate ``serve``/``server.py`` already enforce (codex r3 BLOCKING:
-    # bench previously skipped this check, so ``rapid-mlx bench
+    # bench previously skipped this check, so ``qmlx bench
     # --pflash always <mllm-alias>`` would admit a combo PFlash
     # explicitly rejects elsewhere).
     args.pflash = _pflash_resolve_default(args, model_name=args.model)
@@ -4058,7 +4058,7 @@ def bench_command(args):
             kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
             # R15-P1 (task #296): disk-backed KV checkpointing. Bench
             # path mirrors serve so a regression in the boundary trigger
-            # surfaces in `rapid-mlx bench` numbers too.
+            # surfaces in `qmlx bench` numbers too.
             kv_disk_checkpoint_interval=getattr(
                 args, "kv_disk_checkpoint_interval", 256
             ),
@@ -4259,8 +4259,8 @@ def _print_cached_models() -> None:
     print()
     if not rows:
         print(
-            "  No models cached yet. Run 'rapid-mlx pull <alias>' or "
-            "'rapid-mlx chat <alias>' to download one."
+            "  No models cached yet. Run 'qmlx pull <alias>' or "
+            "'qmlx chat <alias>' to download one."
         )
         print()
         return
@@ -4311,7 +4311,7 @@ def _print_cached_models() -> None:
     print(sep)
     print(f"  Total: {_format_bytes(total_bytes)}")
     print()
-    print("  Tip: `rapid-mlx rm <hf-repo>` to free disk space")
+    print("  Tip: `qmlx rm <hf-repo>` to free disk space")
     print()
 
 
@@ -4326,7 +4326,7 @@ def models_command(args):
     ``--cached`` swaps to a disk-only view: scans the HuggingFace cache,
     cross-references against the alias registry, and renders
     ``Alias | HF repo | Size on disk | Last modified``. Also reachable as
-    the top-level ``rapid-mlx ls`` alias.
+    the top-level ``qmlx ls`` alias.
     """
     from vllm_mlx._version_check import print_staleness_warning_if_any
     from vllm_mlx.model_aliases import list_profiles
@@ -4392,13 +4392,13 @@ def models_command(args):
 
     print(sep)
 
-    # R10-C1: audio alias section. Pre-R10 ``rapid-mlx models`` listed
+    # R10-C1: audio alias section. Pre-R10 ``qmlx models`` listed
     # zero audio aliases because they don't live in ``aliases.json``
     # (which only carries text-LM profiles). Users had no in-tool way
     # to discover ``kokoro`` / ``whisper-large-v3`` / ``parakeet`` —
     # they had to read the docs site. Now the audio registry
     # (vllm_mlx/audio/aliases.json) feeds the same table so
-    # ``rapid-mlx models`` is the canonical "what can I serve?" view
+    # ``qmlx models`` is the canonical "what can I serve?" view
     # across every lane.
     try:
         from vllm_mlx.audio.registry import list_audio_aliases
@@ -4432,12 +4432,12 @@ def models_command(args):
         print(audio_sep)
 
     print()
-    print("  Tip: `rapid-mlx info <alias>` for the full per-model profile")
-    print("       `rapid-mlx pull <alias>` to download")
-    print("       `rapid-mlx chat <alias>` for an interactive REPL")
-    print("       `rapid-mlx serve <alias>` for an OpenAI-compatible server")
+    print("  Tip: `qmlx info <alias>` for the full per-model profile")
+    print("       `qmlx pull <alias>` to download")
+    print("       `qmlx chat <alias>` for an interactive REPL")
+    print("       `qmlx serve <alias>` for an OpenAI-compatible server")
     if audio_entries:
-        print("       `rapid-mlx serve kokoro|whisper-large-v3|parakeet` for audio")
+        print("       `qmlx serve kokoro|whisper-large-v3|parakeet` for audio")
     print()
 
 
@@ -4506,7 +4506,7 @@ def pull_command(args):
     t0 = time.monotonic()
 
     # R2-first / HuggingFace-fallback per file. Default mirror is
-    # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
+    # ``https://models.rapidmlx.com``; set ``QMLX_MODEL_MIRROR=""``
     # to force HF only. The function prints its own progress + summary.
     if _try_mirror_prefetch(repo_id):
         from pathlib import Path
@@ -4569,7 +4569,7 @@ def rm_command(args):
     """Remove a model from the HuggingFace cache.
 
     Default flow prompts for confirmation, defaulting to N — a real user
-    typo (``rapid-mlx rm qwn3.5-9b-4bit`` → matches a 6 GB model) could
+    typo (``qmlx rm qwn3.5-9b-4bit`` → matches a 6 GB model) could
     silently nuke gigabytes of weights pre-0.9.7. EOF (non-TTY pipe,
     ctrl-D) also cancels rather than being treated as accept-by-default.
     ``-y/--yes`` skips the prompt for scripts.
@@ -4579,7 +4579,7 @@ def rm_command(args):
     repo_id = args.model
     cache = scan_cache_dir()
     # Filter by repo_type=="model" — same repo_id can refer to a dataset or
-    # space, and we don't want ``rapid-mlx rm foo`` deleting a dataset.
+    # space, and we don't want ``qmlx rm foo`` deleting a dataset.
     matching = [
         r for r in cache.repos if r.repo_id == repo_id and r.repo_type == "model"
     ]
@@ -4610,7 +4610,7 @@ def rm_command(args):
 
 
 def ps_command(_args):
-    """List running rapid-mlx servers (process scan)."""
+    """List running qmlx servers (process scan)."""
     import time
 
     import psutil
@@ -4622,13 +4622,13 @@ def ps_command(_args):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
         if not any(
-            ("rapid-mlx" in c or "vllm_mlx" in c) and "serve" in cmd for c in cmd
+            ("qmlx" in c or "vllm_mlx" in c) and "serve" in cmd for c in cmd
         ):
             continue
 
-        # 0.9.0 dogfood: ``rapid-mlx serve`` runs under a ``caffeinate
-        # -is rapid-mlx serve ...`` wrapper on macOS to prevent sleep.
-        # The wrapper's argv carries the same ``rapid-mlx`` / ``serve``
+        # 0.9.0 dogfood: ``qmlx serve`` runs under a ``caffeinate
+        # -is qmlx serve ...`` wrapper on macOS to prevent sleep.
+        # The wrapper's argv carries the same ``qmlx`` / ``serve``
         # tokens as the real server, so the substring match above
         # double-counts it as a second row (same port, different PID).
         # The wrapper is never the actual server — its argv[0] basename
@@ -4663,7 +4663,7 @@ def ps_command(_args):
         try:
             i = cmd.index("serve") + 1
             # Pre-PR this loop ``break``ed on the first positional, so a
-            # ``rapid-mlx serve qwen3.5-4b-4bit --port 8005`` ended with
+            # ``qmlx serve qwen3.5-4b-4bit --port 8005`` ended with
             # port="8000" because the positional model token came before
             # ``--port``. Keep scanning for flags after we've captured the
             # model — argparse accepts them on either side.
@@ -4696,7 +4696,7 @@ def ps_command(_args):
         rows.append((proc.info["pid"], port, model, uptime))
 
     if not rows:
-        print("\n  No rapid-mlx servers running.")
+        print("\n  No qmlx servers running.")
         return
 
     print()
@@ -4731,7 +4731,7 @@ def _spawn_chat_server(
     ``log_handle`` is the ``managed_tempfile_path`` context-manager handle
     that owns ``log_path``. When provided, ownership is transferred to the
     proc inside a SIGTERM/SIGINT-masked critical section that also performs
-    the ``register_in`` append and the ``_rapid_mlx_log*`` attribute set.
+    the ``register_in`` append and the ``_qmlx_log*`` attribute set.
     Without the mask + atomic transfer, a signal landing between
     ``_active_procs.append`` and the caller's later ``handle.release()``
     could fire ``_teardown_proc`` (which intentionally keeps non-empty
@@ -4773,25 +4773,25 @@ def _spawn_chat_server(
     # child stdin is not a TTY). Without this, the child's B2 gate would
     # see a stdin pipe and re-evaluate against a potentially-stale cache.
     child_env = os.environ.copy()
-    child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
+    child_env["QMLX_CHAT_SPAWN"] = "1"
     # Parent-PID watchdog (rapid-desktop #449 sibling fix). The
     # SIGTERM-handler + atexit pair installed below cannot fire under
     # SIGKILL of the chat REPL — the spawned ``serve`` would otherwise
-    # outlive ``rapid-mlx chat`` and keep the model + port locked. The
+    # outlive ``qmlx chat`` and keep the model + port locked. The
     # watchdog inside the child polls ``os.getppid()`` every 2 s and
     # self-terminates the moment the live PPID stops matching this
     # stamp.
     #
     # Direct assignment (NOT setdefault). Codex r2 MAJOR: if the chat
     # REPL itself was launched under a supervisor that already exported
-    # ``RAPID_MLX_WATCHDOG_PPID=<grandparent_pid>``, ``setdefault``
+    # ``QMLX_WATCHDOG_PPID=<grandparent_pid>``, ``setdefault``
     # would carry the grandparent's PID into the child env. The
     # watchdog would then compare ``os.getppid()`` (= chat REPL's PID,
     # the IMMEDIATE parent) against the grandparent PID, mismatch on
     # first poll, and self-terminate the freshly-booted server. The
     # spawner owns the watchdog relationship for the spawn it just
     # created — overwrite is correct.
-    child_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+    child_env["QMLX_WATCHDOG_PPID"] = str(os.getpid())
     # Atomic critical section: block SIGTERM/SIGINT delivery around
     # the whole ``Popen()`` + register + attribute-set + ``release()``
     # sequence. We use ``pthread_sigmask(SIG_BLOCK, ...)`` so the
@@ -4871,8 +4871,8 @@ def _spawn_chat_server(
         # Stash the log handle and path on the proc object so the chat REPL
         # can close+unlink them when the proc is torn down (fixes the file
         # descriptor + tempfile leak across `/model` swaps).
-        proc._rapid_mlx_log = log
-        proc._rapid_mlx_log_path = log_path
+        proc._qmlx_log = log
+        proc._qmlx_log_path = log_path
         # Hand the tempfile path off to ``_teardown_proc`` BEFORE we
         # leave the masked section. Once released, the ``with`` block's
         # ``finally`` in the caller is a no-op for this path.
@@ -5451,13 +5451,13 @@ def chat_command(args):
             # has the server's stderr to look at. Previously every log
             # was unlinked, which scrubbed useful debugging breadcrumbs
             # along with the noise.
-            fh = getattr(p, "_rapid_mlx_log", None)
+            fh = getattr(p, "_qmlx_log", None)
             if fh is not None:
                 try:
                     fh.close()
                 except OSError:
                     pass
-            lp = getattr(p, "_rapid_mlx_log_path", None)
+            lp = getattr(p, "_qmlx_log_path", None)
             if lp:
                 try:
                     size = os.path.getsize(lp)
@@ -5572,17 +5572,17 @@ def chat_command(args):
             # OSError covers ConnectionRefusedError + socket.timeout
             # (which is an alias for ``TimeoutError`` in Python 3.10+).
             print(
-                f"\n  {RED}Error:{RESET} no rapid-mlx server reachable at "
+                f"\n  {RED}Error:{RESET} no qmlx server reachable at "
                 f"127.0.0.1:{args.port}."
             )
-            print(f"    Start one with: rapid-mlx serve <alias> --port {args.port}")
+            print(f"    Start one with: qmlx serve <alias> --port {args.port}")
             print("    Or omit --port to spawn one automatically.")
             sys.exit(1)
         base_url = f"http://127.0.0.1:{args.port}"
     else:
         # Pre-download in the foreground so the HF tqdm progress bar lands
         # in the user's terminal. Otherwise the serve subprocess swallows
-        # the bar into the log file and `rapid-mlx chat` looks frozen for
+        # the bar into the log file and `qmlx chat` looks frozen for
         # several minutes on first run with a fresh model.
         _ensure_model_downloaded(args.model)
 
@@ -5600,7 +5600,7 @@ def chat_command(args):
         # policy cannot be undone by a signal during the handoff
         # (codex round-1 BLOCKING #1).
         with managed_tempfile_path(
-            prefix="rapid-mlx-chat-", suffix=".log"
+            prefix="qmlx-chat-", suffix=".log"
         ) as _log_handle:
             log_path = _log_handle.path
             print(f"\n  Starting server {DIM}(log: {log_path}){RESET} ...")
@@ -5655,7 +5655,7 @@ def chat_command(args):
     _is_pipe_or_no_color = (not sys.stdout.isatty()) or ("NO_COLOR" in os.environ)
     if not _is_pipe_or_no_color and not _has_seen_tip("chat_intro_codex"):
         print(
-            f"  {DIM}For a Claude Code-like TUI: `rapid-mlx agents codex --setup`, "
+            f"  {DIM}For a Claude Code-like TUI: `qmlx agents codex --setup`, "
             f"then run `codex` in any project.{RESET}\n"
         )
         _mark_tip_seen("chat_intro_codex")
@@ -5669,7 +5669,7 @@ def chat_command(args):
     if args.system:
         messages.append({"role": "system", "content": args.system})
 
-    # The rapid-mlx server's ChatCompletionRequest exposes a top-level
+    # The qmlx server's ChatCompletionRequest exposes a top-level
     # ``enable_thinking`` field — ``chat_template_kwargs`` is not a recognized
     # request field and would be silently dropped.
     #
@@ -5763,7 +5763,7 @@ def chat_command(args):
             # open() that an exists()-then-open("w") check has. Also
             # naturally rejects existing symlinks pointing elsewhere.
             with open(path, "x", encoding="utf-8") as f:
-                f.write(f"# rapid-mlx chat — {served_name}\n\n")
+                f.write(f"# qmlx chat — {served_name}\n\n")
                 for m in messages:
                     if m["role"] == "system":
                         continue
@@ -5836,7 +5836,7 @@ def chat_command(args):
         #     stdin. ``confirm_or_abort`` self-skips again internally
         #     but skipping ``estimate_repo_size_bytes`` saves the wait.
         if "/" in resolved and not os.path.exists(resolved):
-            _env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
+            _env_val = os.environ.get("QMLX_AUTO_PULL", "").strip().lower()
             _auto_yes = _env_val in {"1", "true", "yes"}
             _interactive = sys.stdin.isatty()
             if not _auto_yes and _interactive:
@@ -5892,7 +5892,7 @@ def chat_command(args):
         #    keep-non-empty-log policy on signal-during-handoff (codex
         #    round-1 BLOCKING #1).
         with managed_tempfile_path(
-            prefix="rapid-mlx-chat-", suffix=".log"
+            prefix="qmlx-chat-", suffix=".log"
         ) as _new_log_handle:
             new_log_path = _new_log_handle.path
             print(f"  Starting server {DIM}(log: {new_log_path}){RESET} ...")
@@ -5989,7 +5989,7 @@ def chat_command(args):
                 if not rest:
                     print(
                         f"  {YELLOW}Usage: /model <alias>{RESET}  "
-                        f"{DIM}(see `rapid-mlx models`){RESET}\n"
+                        f"{DIM}(see `qmlx models`){RESET}\n"
                     )
                 else:
                     _switch_model(rest)
@@ -6120,7 +6120,7 @@ def info_command(args):
 
 
 def _print_dflash_status(alias: str, profile) -> None:
-    """Render a 3-row DFlash status block for ``rapid-mlx info <alias>``.
+    """Render a 3-row DFlash status block for ``qmlx info <alias>``.
 
     Shows each gate (declared support / not MoE / not 4-bit / drafter
     present) so a user who tried DFlash and got a vague error can see
@@ -6166,7 +6166,7 @@ def _print_dflash_status(alias: str, profile) -> None:
         ),
         (
             "mlx-vlm 0.5.0+",
-            _yes(have_runtime(), "installed", "missing (need rapid-mlx[dflash])"),
+            _yes(have_runtime(), "installed", "missing (need qmlx[dflash])"),
         ),
     ]
 
@@ -6184,14 +6184,14 @@ def _print_dflash_status(alias: str, profile) -> None:
     print()
     if eligible:
         print(
-            f"  Start with: rapid-mlx serve {alias} "
+            f"  Start with: qmlx serve {alias} "
             """--speculative-config '{"method":"dflash"}'"""
         )
         print()
 
 
 def _print_ddtree_status(alias: str, profile) -> None:
-    """Render DDTree status for ``rapid-mlx info <alias>``."""
+    """Render DDTree status for ``qmlx info <alias>``."""
     from vllm_mlx.speculative.ddtree.eligibility import have_runtime, report
     from vllm_mlx.speculative.dflash.eligibility import _looks_like_4bit
 
@@ -6265,7 +6265,7 @@ def _print_ddtree_status(alias: str, profile) -> None:
     print()
     if eligible:
         print(
-            f"  Start with: rapid-mlx serve {alias} "
+            f"  Start with: qmlx serve {alias} "
             """--speculative-config '{"method":"ddtree"}'"""
         )
         print()
@@ -6298,9 +6298,9 @@ def agents_command(args):
             print(f"  {p.name:<15} {p.display_name:<20} {stars:>5}  [{fc}]  {models}")
         print()
         print(f"  {len(profiles)} agents supported")
-        print("  Usage: rapid-mlx agents <name>          Show setup guide")
-        print("         rapid-mlx agents <name> --setup   Auto-configure")
-        print("         rapid-mlx agents <name> --test    Run integration tests")
+        print("  Usage: qmlx agents <name>          Show setup guide")
+        print("         qmlx agents <name> --setup   Auto-configure")
+        print("         qmlx agents <name> --test    Run integration tests")
         print()
         return
 
@@ -6308,7 +6308,7 @@ def agents_command(args):
     profile = get_profile(agent_name)
     if not profile:
         print(f"  Unknown agent: {agent_name}")
-        print("  Run 'rapid-mlx agents' to see available agents.")
+        print("  Run 'qmlx agents' to see available agents.")
         sys.exit(1)
 
     # --test: run integration tests
@@ -6324,7 +6324,7 @@ def agents_command(args):
         )
         if not runner._server_available():
             print(f"\n  Server not running at {base_url}")
-            print("  Start it first: rapid-mlx serve <model>")
+            print("  Start it first: qmlx serve <model>")
             sys.exit(1)
 
         report = runner.run()
@@ -6376,13 +6376,13 @@ def upgrade_command(args):
 
     current = _installed_version() or "dev"
     print()
-    print(f"  Current:  rapid-mlx {current}")
+    print(f"  Current:  qmlx {current}")
 
     latest = get_latest_version(force_refresh=True)
     if latest is None:
         print("  Latest:   (could not reach GitHub — check your network)\n")
         sys.exit(1)
-    print(f"  Latest:   rapid-mlx {latest}")
+    print(f"  Latest:   qmlx {latest}")
 
     cur = _parse_version(current)
     lat = _parse_version(latest)
@@ -6447,14 +6447,14 @@ def telemetry_command(args) -> None:
 
     Five actions: ``status`` / ``enable`` / ``disable`` / ``preview`` /
     ``reset``. Defaults to ``status`` when no action given so users can
-    type ``rapid-mlx telemetry`` and immediately see what's set up.
+    type ``qmlx telemetry`` and immediately see what's set up.
     """
     # Imports kept inside the function so the telemetry package is only
     # loaded when actually needed — keeps `--help` and unrelated
     # subcommands cheap.
     import json
 
-    from vllm_mlx import __version__ as rapid_mlx_version
+    from vllm_mlx import __version__ as qmlx_version
     from vllm_mlx.telemetry import (
         consent_source,
         get_consent_state,
@@ -6479,7 +6479,7 @@ def telemetry_command(args) -> None:
         if state is not None:
             print(
                 f"  Consent:   {state.consent} (recorded {state.prompted_at}, "
-                f"by rapid-mlx {state.prompted_version})"
+                f"by qmlx {state.prompted_version})"
             )
         else:
             print("  Consent:   never prompted")
@@ -6491,29 +6491,29 @@ def telemetry_command(args) -> None:
         return
 
     if action == "enable":
-        record_consent(True, rapid_mlx_version=rapid_mlx_version)
+        record_consent(True, qmlx_version=qmlx_version)
         # Generate the client_id eagerly so `preview` immediately after
         # has a real id to show.
         get_or_create_client_id()
         print()
         print("  Telemetry: ENABLED. Thanks for helping us prioritise.")
-        print("  Disable anytime with `rapid-mlx telemetry disable`.")
-        print("  Preview what we'd send: `rapid-mlx telemetry preview`.")
+        print("  Disable anytime with `qmlx telemetry disable`.")
+        print("  Preview what we'd send: `qmlx telemetry preview`.")
         print()
         return
 
     if action == "disable":
-        record_consent(False, rapid_mlx_version=rapid_mlx_version)
+        record_consent(False, qmlx_version=qmlx_version)
         print()
         print("  Telemetry: disabled. No data will be sent.")
-        print("  Re-enable anytime with `rapid-mlx telemetry enable`.")
+        print("  Re-enable anytime with `qmlx telemetry enable`.")
         print()
         return
 
     if action == "preview":
         cid = get_or_create_client_id()
         payload = sample_preview_payload(
-            client_id=cid, rapid_mlx_version=rapid_mlx_version
+            client_id=cid, qmlx_version=qmlx_version
         )
         print()
         print("  Sample payload (this is exactly the shape we send):")
@@ -6542,7 +6542,7 @@ def main():
     from importlib.metadata import version as pkg_version
 
     try:
-        _version = pkg_version("rapid-mlx")
+        _version = pkg_version("qmlx")
     except Exception:
         _version = "dev"
 
@@ -6551,22 +6551,22 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  rapid-mlx chat                                      # interactive REPL (defaults to qwen3.5-4b-4bit)
-  rapid-mlx chat qwen3.5-9b-4bit --think                   # larger model, surface reasoning
-  rapid-mlx serve qwen3.5-9b-4bit --port 8000              # OpenAI-compatible server
-  rapid-mlx serve mlx-community/Qwen3.5-9B-4bit       # full HF repo also works
-  rapid-mlx models                                    # list all aliases
-  rapid-mlx info qwen3.5-9b-4bit                           # show per-alias profile
+  qmlx chat                                      # interactive REPL (defaults to qwen3.5-4b-4bit)
+  qmlx chat qwen3.5-9b-4bit --think                   # larger model, surface reasoning
+  qmlx serve qwen3.5-9b-4bit --port 8000              # OpenAI-compatible server
+  qmlx serve mlx-community/Qwen3.5-9B-4bit       # full HF repo also works
+  qmlx models                                    # list all aliases
+  qmlx info qwen3.5-9b-4bit                           # show per-alias profile
 """,
     )
     parser.add_argument(
-        "--version", "-V", action="version", version=f"rapid-mlx {_version}"
+        "--version", "-V", action="version", version=f"qmlx {_version}"
     )
     parser.add_argument(
         "--no-telemetry",
         action="store_true",
         help="Disable anonymous usage telemetry for this run "
-        "(equivalent to RAPID_MLX_TELEMETRY=0).",
+        "(equivalent to QMLX_TELEMETRY=0).",
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
@@ -6620,11 +6620,11 @@ Examples:
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
     # Socket activation — let an external supervisor (launchd, systemd,
     # parent process) bind the listening socket and execve into
-    # ``rapid-mlx`` with the pre-bound fd. This closes the bind→auth
+    # ``qmlx`` with the pre-bound fd. This closes the bind→auth
     # TOCTOU window described in issue #574: no co-located process can
     # land an unauthenticated request between socket bind and FastAPI
     # auth dependency registration, because by the time
-    # ``rapid-mlx serve`` runs, the app (with auth dependencies wired
+    # ``qmlx serve`` runs, the app (with auth dependencies wired
     # into chat/embeddings/audio/models routers) is already constructed
     # before ``uvicorn.run`` starts ``accept()``-ing on the fd.
     #
@@ -6644,7 +6644,7 @@ Examples:
             "File descriptor of a pre-bound listening socket (3-1023). "
             "Used for socket activation (launchd/systemd/parent-process "
             "supervision) — supervisor binds the loopback socket, "
-            "validates auth secret, then execve's into rapid-mlx. "
+            "validates auth secret, then execve's into qmlx. "
             "When set, --host/--port are ignored for binding."
         ),
     )
@@ -6838,7 +6838,7 @@ Examples:
     )
     # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok boundaries.
     # 0 disables the feature entirely (no scheduler-hot-path cost, no
-    # ~/.cache/rapid-mlx/kv_checkpoints/ directory creation); the default
+    # ~/.cache/qmlx/kv_checkpoints/ directory creation); the default
     # 256 matches MLX-LM's KVCache.step and LMCache's external-chunk size
     # so the on-disk shape aligns with the in-memory shape on reload.
     serve_parser.add_argument(
@@ -6847,9 +6847,9 @@ Examples:
         default=256,
         help=(
             "Token interval at which the scheduler snapshots KV state to "
-            "~/.cache/rapid-mlx/kv_checkpoints/ for resume / shared-prefix "
+            "~/.cache/qmlx/kv_checkpoints/ for resume / shared-prefix "
             "reload (R15 #296, default 256). 0 disables. Pairs with the "
-            "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES env var (default 20 GiB) "
+            "QMLX_KV_CHECKPOINT_MAX_BYTES env var (default 20 GiB) "
             "for the oldest-first disk-cap eviction policy."
         ),
     )
@@ -6914,7 +6914,7 @@ Examples:
         help=(
             "vLLM-style speculative decoding JSON config. This frontend "
             "parses method/model/num_speculative_tokens now. DFlash "
-            "requires the rapid-mlx[dflash] extra and is available with "
+            "requires the qmlx[dflash] extra and is available with "
             '\'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
             '\'{"method":"mtp","num_speculative_tokens":3,'
@@ -7084,7 +7084,7 @@ Examples:
         "--chunked-prefill-tokens 2048",
     )
     # Task #292: opt-in for ``/v1/audio/*`` routes on a text-only server.
-    # The audio-mode boot path (``rapid-mlx serve kokoro`` etc.) auto-
+    # The audio-mode boot path (``qmlx serve kokoro`` etc.) auto-
     # enables the routes via the registry hit — this flag is the
     # escape hatch for operators who want the audio router mounted
     # alongside a text engine (e.g. side-car deployments that proxy the
@@ -7116,7 +7116,7 @@ Examples:
     )
     # Security options
     # ``--api-key`` accepts an inline value OR falls back to the
-    # ``RAPID_MLX_API_KEY`` env var. ``rapid-mlx share`` uses the env-var
+    # ``QMLX_API_KEY`` env var. ``qmlx share`` uses the env-var
     # form so the bearer key never lands in argv (visible to ``ps`` for
     # any local user). Inline value still works for backwards-compat
     # with existing scripts; if both are set, the inline value wins.
@@ -7126,7 +7126,7 @@ Examples:
         default=None,
         help=(
             "API key for authentication (if not set, falls back to the "
-            "RAPID_MLX_API_KEY env var; if neither, no auth required)"
+            "QMLX_API_KEY env var; if neither, no auth required)"
         ),
     )
     serve_parser.add_argument(
@@ -7159,7 +7159,7 @@ Examples:
             "Maximum HTTP request body size in bytes (default: 8 MiB = "
             "8388608). Requests over this cap are rejected with HTTP 413 "
             "before JSON parsing or tokenization runs. 0 disables the cap. "
-            "Falls back to the RAPID_MLX_MAX_REQUEST_BYTES env var if unset."
+            "Falls back to the QMLX_MAX_REQUEST_BYTES env var if unset."
         ),
     )
     serve_parser.add_argument(
@@ -7183,7 +7183,7 @@ Examples:
         # names + per-family aliases like ``deepseek_v31``, ``llama4``,
         # ``moonshot`` for kimi, ``nous`` for hermes). The argparse hard-
         # coded list drifted to 19 over multiple releases and rejected
-        # legitimate aliases users discovered via ``rapid-mlx info``.
+        # legitimate aliases users discovered via ``qmlx info``.
         # Validation now happens post-parse in
         # ``_validate_tool_call_parser_choice`` against the live registry.
         # v0.6.63 onboarding sweep finding #1.
@@ -7461,7 +7461,7 @@ Examples:
         help=(
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/embeddinggemma-300m-6bit). Requires the "
-            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+            "[embeddings] extra: pip install 'qmlx[embeddings]'."
         ),
     )
     # Parent-PID watchdog (rapid-desktop issue #449). When set, the
@@ -7469,7 +7469,7 @@ Examples:
     # the parent dies (re-parent to launchd / init on macOS/Linux). The
     # supervisor passes its own PID at spawn so a SIGKILL on the desktop
     # cannot leave a 30 GB orphan holding the model + port. ``0`` /
-    # negative / unset disables. The ``RAPID_MLX_WATCHDOG_PPID`` env var
+    # negative / unset disables. The ``QMLX_WATCHDOG_PPID`` env var
     # is honoured as a fallback when the CLI flag is omitted; the flag
     # wins when both are present.
     serve_parser.add_argument(
@@ -7480,7 +7480,7 @@ Examples:
         help=(
             "Self-terminate when the parent with this PID dies (defeats "
             "orphan-sidecar after SIGKILL on the supervisor). Honors "
-            "$RAPID_MLX_WATCHDOG_PPID as a fallback. Set to 0 / unset to "
+            "$QMLX_WATCHDOG_PPID as a fallback. Set to 0 / unset to "
             "disable."
         ),
     )
@@ -7715,12 +7715,12 @@ Examples:
         action="store_true",
         help="Skip the confirmation prompt and remove the model immediately.",
     )
-    subparsers.add_parser("ps", help="List running rapid-mlx servers")
+    subparsers.add_parser("ps", help="List running qmlx servers")
 
     # Upgrade — detect install method and run the right upgrade command
     upgrade_parser = subparsers.add_parser(
         "upgrade",
-        help="Upgrade rapid-mlx to the latest version (brew / pip / install.sh)",
+        help="Upgrade qmlx to the latest version (brew / pip / install.sh)",
     )
     upgrade_parser.add_argument(
         "-y",
@@ -7746,7 +7746,7 @@ Examples:
         help="Interactive chat REPL with a model",
         description=(
             "Interactive chat REPL with a model.\n\n"
-            "Note: 'rapid-mlx run' is an alias for 'chat' (Ollama compatibility)."
+            "Note: 'qmlx run' is an alias for 'chat' (Ollama compatibility)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         # See serve_parser for the rationale: ``--think``/``--no-think`` +
@@ -7778,7 +7778,7 @@ Examples:
         "--no-think is also accepted for back-compat.",
     )
     # Hidden cross-alias for users who picked up the ``--no-thinking`` muscle
-    # memory from ``rapid-mlx serve``. ``serve --no-thinking`` and
+    # memory from ``qmlx serve``. ``serve --no-thinking`` and
     # ``chat --no-think`` mean different things internally (server-side
     # parser disable vs. per-request ``enable_thinking=false``), but the
     # flag-name difference trips users. We accept the wrong-side name as
@@ -7913,12 +7913,12 @@ Examples:
 
     # Doctor command — pure env-health probe (≤5 s, no model load, no server).
     # Model-validation tiers (smoke/check/full/benchmark) moved to
-    # ``rapid-mlx bench --tier ...`` as of v0.7.22.
+    # ``qmlx bench --tier ...`` as of v0.7.22.
     #
     # The legacy positional ``tier`` plus ``--model``, ``--models``, and
     # ``--update-baselines`` are intentionally retained (SUPPRESSed from
     # --help) for one release so users hitting the old form
-    # ``rapid-mlx doctor check --model qwen3.5-9b-4bit`` get the actionable
+    # ``qmlx doctor check --model qwen3.5-9b-4bit`` get the actionable
     # bench redirect from ``doctor_command`` instead of an argparse
     # ``unrecognized arguments`` wall. Codex review round 1 flagged this:
     # rejecting at argparse-time defeated the redirect. Drop these in a
@@ -7994,7 +7994,7 @@ Examples:
 
     # Launch subcommand — one-shot bootstrap that patches IDE/agent
     # client configs (Cline, Claude Code, Continue, Cursor) to route
-    # at the local rapid-mlx server. See GH issue #566 for motivation.
+    # at the local qmlx server. See GH issue #566 for motivation.
     # Registered AFTER share so the help-text ordering reads
     # serve→…→share→launch, matching the rough "more common first" flow.
     from vllm_mlx.launch.cli import register as _register_launch
@@ -8005,7 +8005,7 @@ Examples:
     # when the shell completion handler invokes us with the
     # ``_ARGCOMPLETE`` env var set, this function short-circuits before
     # any heavy import paths or model resolution runs, so the user gets
-    # snappy ``rapid-mlx chat gemma-4-<TAB>`` even on a cold shell.
+    # snappy ``qmlx chat gemma-4-<TAB>`` even on a cold shell.
     #
     # ``_action_conflicts`` and ``_seen_non_default_actions`` are
     # populated by argcomplete inside ``IntrospectiveArgumentParser._
@@ -8068,7 +8068,7 @@ Examples:
     # Telemetry session lifecycle — emit session_start once we know what
     # subcommand we're dispatching, register an atexit hook for
     # session_end so the duration covers the whole interactive run
-    # (including ``rapid-mlx chat`` REPLs and ``serve`` processes that
+    # (including ``qmlx chat`` REPLs and ``serve`` processes that
     # only exit on Ctrl-C). emit.* helpers are individually guarded by
     # ``is_enabled()`` — when telemetry is off the calls are cheap
     # no-ops, no payload constructed.
@@ -8233,9 +8233,9 @@ Examples:
             # them unchanged, then this fail-fast branch trips with
             # "is not a known alias or HuggingFace path" BEFORE
             # ``serve_command`` can run the audio boot guard. On a
-            # fresh ``pip install rapid-mlx`` (no ``[audio]`` extra)
+            # fresh ``pip install qmlx`` (no ``[audio]`` extra)
             # that means the operator sees a generic "unknown alias"
-            # instead of the actionable "install rapid-mlx[audio]"
+            # instead of the actionable "install qmlx[audio]"
             # hint, and on a healthy install with ``[audio]`` the
             # short alias resolves at request time inside the audio
             # routes (``TTS_MODEL_ALIASES`` / ``STT_MODEL_ALIASES``)
@@ -8290,23 +8290,23 @@ Examples:
     # For subcommands that may trigger a first-time download of a large
     # repo (chat/run/serve/pull/bench), warn the user before kicking off
     # a multi-GB transfer. Cached repos and small downloads pass through
-    # invisibly. Env override: RAPID_MLX_AUTO_PULL=1. See
+    # invisibly. Env override: QMLX_AUTO_PULL=1. See
     # ``vllm_mlx/_download_gate.py`` for the policy.
     #
     # Codex round 1 surfaced two ordering issues:
     #   (a) the chat REPL spawns its own ``serve`` subprocess after the
-    #       parent already gated; without RAPID_MLX_CHAT_SPAWN=1 in the
+    #       parent already gated; without QMLX_CHAT_SPAWN=1 in the
     #       child env, the second main() would re-prompt (or worse,
     #       deadlock on a non-TTY child stdin path that doesn't reach
     #       the early-return).
     #   (b) the env / TTY checks belong *before* the 5-second HF
     #       metadata fetch — otherwise every CI run that sets
-    #       RAPID_MLX_AUTO_PULL=1 still pays the network round-trip.
+    #       QMLX_AUTO_PULL=1 still pays the network round-trip.
     # Single-use marker: pop the env var as soon as we observe it so a
-    # grandchild ``rapid-mlx`` spawn (e.g. a nested invocation from a
+    # grandchild ``qmlx`` spawn (e.g. a nested invocation from a
     # user hook, a doctor self-probe, or some future hub helper) does
     # NOT inherit the bypass. Codex round-2 BLOCKING #2.
-    _chat_spawn_child = os.environ.pop("RAPID_MLX_CHAT_SPAWN", "") == "1"
+    _chat_spawn_child = os.environ.pop("QMLX_CHAT_SPAWN", "") == "1"
 
     _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench", "jlens"}
     if (
@@ -8321,7 +8321,7 @@ Examples:
         # without touching the HF API. ``confirm_or_abort`` re-checks
         # both internally; we mirror them here so we can skip the size
         # estimate as well.
-        _env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
+        _env_val = os.environ.get("QMLX_AUTO_PULL", "").strip().lower()
         _auto_yes = _env_val in {"1", "true", "yes"}
         _interactive = sys.stdin.isatty()
         if not _auto_yes and _interactive:
@@ -8351,7 +8351,7 @@ Examples:
         args.cached = True
         models_command(args)
     elif args.command == "version":
-        print(f"rapid-mlx {_version}")
+        print(f"qmlx {_version}")
     elif args.command == "help":
         target = getattr(args, "subcommand", None)
         if not target:
@@ -8367,7 +8367,7 @@ Examples:
             )
             if matches:
                 print(f"  Did you mean: {', '.join(matches)}?")
-            print("Run `rapid-mlx help` for the list of subcommands.")
+            print("Run `qmlx help` for the list of subcommands.")
             sys.exit(1)
     elif args.command == "pull":
         pull_command(args)

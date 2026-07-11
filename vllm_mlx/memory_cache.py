@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Memory-aware prefix cache for rapid-mlx.
+Memory-aware prefix cache for qmlx.
 
 This module provides a prefix cache implementation that tracks memory usage
 and evicts entries based on memory pressure rather than entry count.
@@ -77,7 +77,7 @@ _MAX_ENTRIES_FALLBACK = 50  # Fallback if memory detection fails
 # refuse a new file cleanly. New loaders accept both 2 and 3 so the
 # upgrade path is one-way: a v3 writer can read a v2 file from a
 # previous deploy (legacy-mode tokens.bin), then re-save under v3.
-_TOKENS_MAGIC = b"RMTKBIN1"  # 8 bytes — "rapid-mlx tokens-bin v1"
+_TOKENS_MAGIC = b"RMTKBIN1"  # 8 bytes — "qmlx tokens-bin v1"
 # Header layout for v3 tokens.bin:
 #   [0..8)   magic       — b"RMTKBIN1"
 #   [8..12)  token_count — uint32 LE
@@ -576,7 +576,7 @@ def _cache_classes_compatible(
     """
     if not class_names:
         # Backward compat: pre-cache_type files have no class info. Assume
-        # KVCache (the only thing all earlier rapid-mlx versions wrote).
+        # KVCache (the only thing all earlier qmlx versions wrote).
         # Always compatible.
         return True, ""
     for cn in class_names:
@@ -617,11 +617,11 @@ def _get_available_memory() -> int:
 # Name of the env var operators set to bound the prefix-cache memory.
 # Exported so the metrics route, config dumps, and the tests can refer
 # to a single canonical string.
-PREFIX_CACHE_MAX_BYTES_ENV = "RAPID_MLX_PREFIX_CACHE_MAX_BYTES"
+PREFIX_CACHE_MAX_BYTES_ENV = "QMLX_PREFIX_CACHE_MAX_BYTES"
 
 
 def _resolve_env_cache_max_bytes() -> int:
-    """Read ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` from the environment.
+    """Read ``QMLX_PREFIX_CACHE_MAX_BYTES`` from the environment.
 
     Returns the parsed integer when the env var is set to a positive
     integer; ``0`` for any other shape (unset, blank, non-integer, or
@@ -654,7 +654,7 @@ def _resolve_env_cache_max_bytes() -> int:
     return value
 
 
-# Once-per-process flag so an operator who set ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES``
+# Once-per-process flag so an operator who set ``QMLX_PREFIX_CACHE_MAX_BYTES``
 # to garbage (e.g. ``"5GB"`` instead of bytes) sees the warning once and
 # the cache silently falls through to the heuristic instead of spamming
 # the log on every reconfig.
@@ -802,7 +802,7 @@ class MemoryCacheConfig:
         Compute the memory limit in bytes.
 
         Resolution order (first hit wins):
-          1. ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` env var — operator
+          1. ``QMLX_PREFIX_CACHE_MAX_BYTES`` env var — operator
              override for ops who need to bound the cache to a known
              ceiling regardless of system RAM (R6-H6 fix from the
              0.8.7 dogfood: the default 20% of available RAM let the
@@ -911,8 +911,8 @@ class CacheStats:
             "max_memory_mb": round(self.max_memory_bytes / _BYTES_PER_MB, 2),
             # R7-M1 (dogfood-088 Talia r2): raw-byte fields surface the
             # cap + current usage in the unit the Prometheus gauges
-            # ``rapid_mlx_prefix_cache_cap_bytes`` and
-            # ``rapid_mlx_prefix_cache_current_bytes`` consume. The
+            # ``qmlx_prefix_cache_cap_bytes`` and
+            # ``qmlx_prefix_cache_current_bytes`` consume. The
             # MB-rounded fields above stay (existing dashboards depend
             # on them) but Prometheus prefers raw bytes for byte-unit
             # series (see "Base units" in the Prometheus naming
@@ -924,17 +924,17 @@ class CacheStats:
             "entry_count": self.entry_count,
             # R10-D: cumulative count of entries the loader rejected for
             # any per-entry corruption signal — drives the
-            # ``rapid_mlx_prefix_cache_load_skipped_total`` Prometheus
+            # ``qmlx_prefix_cache_load_skipped_total`` Prometheus
             # counter and closes the R9-L4 observability gap.
             "load_skipped": int(self.load_skipped),
             # R12-T1: cumulative count of entries the save-side
             # post-write verify rejected — drives the
-            # ``rapid_mlx_prefix_cache_save_drift_drops_total``
+            # ``qmlx_prefix_cache_save_drift_drops_total``
             # Prometheus counter. Cumulative same as ``load_skipped``.
             "save_drift_drops": int(self.save_drift_drops),
             # #1025 / #1058: cumulative count of hybrid recurrent-state
             # entries skipped at store time — drives the
-            # ``rapid_mlx_prefix_cache_non_trimmable_skips_total`` counter and
+            # ``qmlx_prefix_cache_non_trimmable_skips_total`` counter and
             # is the observable signal that the GatedDeltaNet leak fix is
             # active for a given model.
             "non_trimmable_skips": int(self.non_trimmable_skips),
@@ -1943,7 +1943,7 @@ class MemoryAwarePrefixCache:
         """Clear all cached entries.
 
         R10-D codex round 2 HIGH: ``load_skipped`` is cumulative —
-        it backs the ``rapid_mlx_prefix_cache_load_skipped_total``
+        it backs the ``qmlx_prefix_cache_load_skipped_total``
         Prometheus counter, which by contract must never decrease.
         The metrics route's sticky accumulator catches a process-
         global reset, but if ``clear()`` runs BETWEEN two scrapes
@@ -1953,7 +1953,7 @@ class MemoryAwarePrefixCache:
         regresses either.
 
         R12-T1: the same carry-over applies to ``save_drift_drops``
-        — it backs the ``rapid_mlx_prefix_cache_save_drift_drops_total``
+        — it backs the ``qmlx_prefix_cache_save_drift_drops_total``
         Prometheus counter and must be monotonic.
         """
         with self._lock:
@@ -1981,7 +1981,7 @@ class MemoryAwarePrefixCache:
 
         When a radix index is attached, its counters are nested under
         ``radix`` so the /metrics route can surface them as
-        ``rapid_mlx_prefix_cache_radix_*`` without colliding with the
+        ``qmlx_prefix_cache_radix_*`` without colliding with the
         legacy cache counters.
         """
         out = self._stats.to_dict()
@@ -2091,7 +2091,7 @@ class MemoryAwarePrefixCache:
                 fixtures don't break — see codex round 3 BLOCKING-2.
                 A ``None`` value preserves the pre-existing "save
                 everything, no deadline" behavior used by tests and the
-                offline ``rapid-mlx`` CLI.
+                offline ``qmlx`` CLI.
 
         Returns True if at least one entry was committed to disk.
         """

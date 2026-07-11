@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Unified OpenAI-compatible API server for rapid-mlx.
+Unified OpenAI-compatible API server for qmlx.
 
 This module provides a FastAPI server that exposes an OpenAI-compatible
 API for LLM and MLLM (Multimodal Language Model) inference using MLX on Apple Silicon.
@@ -242,7 +242,7 @@ def _resolve_api_key(argv_value: str | None) -> str | None:
     """Resolve the effective API key with env-var fallback.
 
     Argv-inline (``--api-key X``) wins for backwards-compat with
-    existing scripts; otherwise we fall back to the ``RAPID_MLX_API_KEY``
+    existing scripts; otherwise we fall back to the ``QMLX_API_KEY``
     env var. The env-var form keeps the bearer key out of ``argv``
     (visible to ``ps -ef`` for any local user) — this is the path
     rapid-desktop's sidecar shim uses to avoid the codex BLOCKER #3
@@ -253,25 +253,25 @@ def _resolve_api_key(argv_value: str | None) -> str | None:
     a model — a regression here is the bug the dogfood-v0.8.2 finding
     #3 exposed, so a test-via-the-real-code path matters.
     """
-    return argv_value or os.environ.get("RAPID_MLX_API_KEY")
+    return argv_value or os.environ.get("QMLX_API_KEY")
 
 
 # Per-request body size cap (DoS defense). 0 disables. Resolved from
-# CLI ``--max-request-bytes`` / ``RAPID_MLX_MAX_REQUEST_BYTES`` and
+# CLI ``--max-request-bytes`` / ``QMLX_MAX_REQUEST_BYTES`` and
 # pushed into ``ServerConfig.max_request_bytes`` via ``_sync_config``;
 # the ASGI middleware (``middleware/body_size.py``) reads it per
 # request, so a test fixture mutating the config takes effect immediately.
 _max_request_bytes: int = 8 * 1024 * 1024
 
 # SSE keepalive interval (F-070 DoS / proxy idle-timeout defense). 0
-# disables. Resolved from ``RAPID_MLX_SSE_KEEPALIVE_SECONDS`` and
+# disables. Resolved from ``QMLX_SSE_KEEPALIVE_SECONDS`` and
 # pushed into ``ServerConfig.sse_keepalive_seconds`` via
 # ``_sync_config``. ``_disconnect_guard`` reads it at start of each
 # stream — see ``vllm_mlx/service/helpers.py``.
 _sse_keepalive_seconds: float = 20.0
 
 # Body-receive idle timeout (F-072 slow-DoS defense). 0 disables.
-# Resolved from ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` and pushed
+# Resolved from ``QMLX_BODY_RECEIVE_TIMEOUT_SECONDS`` and pushed
 # into ``ServerConfig.body_receive_timeout_seconds`` via
 # ``_sync_config``. The ``RequestBodyLimitMiddleware`` wraps each
 # ``receive()`` in ``asyncio.wait_for`` until the body is fully on the
@@ -463,7 +463,7 @@ async def lifespan(app: FastAPI):
     # (mirrors load_mcp_config's existence-aware fallback); fall back to the
     # first that is merely set so a genuinely-missing path still surfaces an
     # error rather than being silently ignored.
-    mcp_env_vars = ("RAPID_MLX_MCP_CONFIG", "VLLM_MLX_MCP_CONFIG")
+    mcp_env_vars = ("QMLX_MCP_CONFIG", "VLLM_MLX_MCP_CONFIG")
     mcp_candidates = [v for v in (os.environ.get(k) for k in mcp_env_vars) if v]
     mcp_config = next(
         (p for p in mcp_candidates if os.path.isfile(os.path.expanduser(p))),
@@ -480,7 +480,7 @@ async def lifespan(app: FastAPI):
     # shape) still passed the shallow probe and 500'd at first use.
     #
     # Off by default to keep cold-start fast for text-only deploys —
-    # turn on via ``RAPID_MLX_AUDIO_DEEP_PROBE=1`` when running an
+    # turn on via ``QMLX_AUDIO_DEEP_PROBE=1`` when running an
     # audio-serving build. The dry-run is non-fatal: any failure is
     # caught inside ``deep_probe_audio_lane`` and recorded as
     # ``degraded`` / ``missing``; the lifespan completes regardless
@@ -496,10 +496,10 @@ async def lifespan(app: FastAPI):
     # presence check internally and records the missing-extra
     # status via the same code path the route's 503 envelope uses.
     # Codex r3 NIT #2: lowercase the env value before comparing so
-    # ``RAPID_MLX_AUDIO_DEEP_PROBE=False`` (capital F) and ``NO``
+    # ``QMLX_AUDIO_DEEP_PROBE=False`` (capital F) and ``NO``
     # (uppercase) are treated as falsy, not truthy. Mirrors the
-    # convention used by every other ``RAPID_MLX_*`` boolean knob.
-    _audio_deep_probe = os.environ.get("RAPID_MLX_AUDIO_DEEP_PROBE", "").strip().lower()
+    # convention used by every other ``QMLX_*`` boolean knob.
+    _audio_deep_probe = os.environ.get("QMLX_AUDIO_DEEP_PROBE", "").strip().lower()
     if _audio_deep_probe and _audio_deep_probe not in ("0", "false", "no"):
         try:
             from .audio.probe import deep_probe_audio_lane as _deep_probe
@@ -572,7 +572,7 @@ async def lifespan(app: FastAPI):
     # Round 19 codex review (PR #532): Drive the telemetry session_end
     # path here too. ``atexit`` does NOT fire on SIGTERM (systemd /
     # Docker / Kubernetes graceful stop), so an opted-in user running
-    # ``rapid-mlx serve`` under a service manager would otherwise lose
+    # ``qmlx serve`` under a service manager would otherwise lose
     # the lifecycle end event. uvicorn drives this lifespan shutdown
     # on SIGTERM, so the hook lands. The latch inside the telemetry
     # emit module ensures the event is sent exactly once even if
@@ -610,7 +610,7 @@ install_audio_body_limit_middleware(app)
 # ``/v1/audio/transcriptions`` so the multipart-aware 25 MB cap upstream
 # is not trampled by the generic 8 MiB JSON cap), and the limit lookup
 # (ServerConfig.max_request_bytes, overridable via --max-request-bytes /
-# RAPID_MLX_MAX_REQUEST_BYTES).
+# QMLX_MAX_REQUEST_BYTES).
 # SECURITY: blanket request-body JSON nesting-depth cap across all
 # /v1/* JSON routes. Defends against the D-DEEP-JSON DoS pattern where
 # a ~10 KB body of ``{"a":{"a":…}}`` 1000 levels deep blew the Python
@@ -618,7 +618,7 @@ install_audio_body_limit_middleware(app)
 # HTTP 500 on every body-binding route (chat / completions /
 # embeddings / messages / responses). See middleware/body_depth.py
 # for the design rationale; the cap is read from
-# ``RAPID_MLX_MAX_BODY_DEPTH`` per request (default 64) so a test
+# ``QMLX_MAX_BODY_DEPTH`` per request (default 64) so a test
 # fixture mutating the env takes effect immediately. Installed BEFORE
 # the size cap so the size cap ends up OUTERMOST at request time
 # (Starlette stacks middleware in reverse install order). That way a
@@ -665,13 +665,13 @@ from .middleware.probe_fastpath import install_probe_fastpath_middleware  # noqa
 install_probe_fastpath_middleware(app)
 
 # CORS configuration — configurable via --cors-origins CLI flag and the
-# ``RAPID_MLX_CORS_*`` env-var family (F-090 / F-091). The previous default
+# ``QMLX_CORS_*`` env-var family (F-090 / F-091). The previous default
 # registered CORSMiddleware with ``allow_origins=["*"]`` and
 # ``allow_methods=["*"]`` (DELETE/GET/HEAD/OPTIONS/PATCH/POST/PUT) for
 # every request, which let any browser-side attacker make authenticated
 # requests to ``/v1/chat/completions`` if the user had an open tab. The
 # new default is **no CORS at all**: operators opt in by setting
-# ``RAPID_MLX_CORS_ALLOW_ORIGINS`` (or ``--cors-origins`` for ad-hoc use).
+# ``QMLX_CORS_ALLOW_ORIGINS`` (or ``--cors-origins`` for ad-hoc use).
 # A wildcard is still permitted for back-compat but logs a startup WARNING
 # so the operator notices.
 
@@ -807,14 +807,14 @@ def configure_cors(
         # Fetch spec rejects this combination; force-disable credentials
         # so the response stays valid and log a warning so the operator
         # notices. ``%s`` interpolation (rather than baking the literal
-        # ``RAPID_MLX_…`` env-var name into the format string) avoids
+        # ``QMLX_…`` env-var name into the format string) avoids
         # the ``tests/test_no_out_of_band_routing.py`` constant-scan
         # false-positive — same trick used by the body-receive timeout
         # / SSE keepalive blocks in cli.py.
         logger.warning(
             "%s requested with a wildcard origin is invalid per the "
             "Fetch spec; forcing allow_credentials=False",
-            "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
+            "QMLX_CORS_ALLOW_CREDENTIALS",
         )
         allow_credentials = False
     # ``methods=None`` and ``headers=None`` mean "back-compat single-arg
@@ -854,15 +854,15 @@ def configure_cors_from_env(
     Resolution order:
       1. ``cli_origins`` (CLI ``--cors-origins`` flag) — when supplied,
          takes precedence over the env var (matches the pattern used by
-         ``--max-request-bytes`` vs ``RAPID_MLX_MAX_REQUEST_BYTES``).
-      2. ``RAPID_MLX_CORS_ALLOW_ORIGINS`` env var (comma-separated).
+         ``--max-request-bytes`` vs ``QMLX_MAX_REQUEST_BYTES``).
+      2. ``QMLX_CORS_ALLOW_ORIGINS`` env var (comma-separated).
       3. Unset / empty → CORS middleware is NOT registered. Cross-origin
          requests get no ``Access-Control-Allow-Origin`` header and the
          preflight ``OPTIONS`` returns 405 (no leak of allowed methods).
          This is the production-friendly default (F-090).
 
     Method / header / max-age / credentials overrides come from the rest
-    of the ``RAPID_MLX_CORS_*`` family; see ``vllm_mlx/cli.py``.
+    of the ``QMLX_CORS_*`` family; see ``vllm_mlx/cli.py``.
 
     Returns the resolved origin list (empty list when CORS is disabled).
     """
@@ -872,10 +872,10 @@ def configure_cors_from_env(
     # clients send custom headers like ``OpenAI-Organization`` and
     # ``X-Requested-With`` that would now fail preflight if we silently
     # narrowed those defaults. The env-driven path
-    # (``RAPID_MLX_CORS_ALLOW_ORIGINS``) is brand-new in this PR — it
+    # (``QMLX_CORS_ALLOW_ORIGINS``) is brand-new in this PR — it
     # gets the restrictive default (closes F-091 by default). Operators
     # on either path can still pin the methods/headers explicitly via
-    # ``RAPID_MLX_CORS_ALLOW_METHODS`` / ``_HEADERS``.
+    # ``QMLX_CORS_ALLOW_METHODS`` / ``_HEADERS``.
     origins: list[str] = []
     came_from_cli = False
     came_from_default = False
@@ -893,7 +893,7 @@ def configure_cors_from_env(
         # closed) plus a startup WARNING so the typo is visible. Falling
         # through to wildcard would silently fail open for a deployment
         # bug, which is the failure mode codex was flagging.
-        env_raw = os.environ.get("RAPID_MLX_CORS_ALLOW_ORIGINS")
+        env_raw = os.environ.get("QMLX_CORS_ALLOW_ORIGINS")
         if env_raw is not None:
             parsed = _parse_csv(env_raw)
             if parsed:
@@ -902,7 +902,7 @@ def configure_cors_from_env(
                 env_present_but_empty = True
                 # Format via %s/%r placeholders so the env-var name only
                 # appears in the args tuple (test_no_out_of_band_routing
-                # treats inline ``RAPID_MLX_<X>=...`` literals as routing
+                # treats inline ``QMLX_<X>=...`` literals as routing
                 # references — same shape as the methods/headers warnings
                 # below).
                 logger.warning(
@@ -912,23 +912,23 @@ def configure_cors_from_env(
                     "bug is visible. Unset the env var entirely to use "
                     "the friendly default wildcard, or set it to a real "
                     "comma-separated origin list.",
-                    "RAPID_MLX_CORS_ALLOW_ORIGINS",
+                    "QMLX_CORS_ALLOW_ORIGINS",
                     env_raw,
                 )
 
     if not origins and not env_present_but_empty:
-        # Default-allow wildcard for friendly single-machine UX. rapid-mlx
+        # Default-allow wildcard for friendly single-machine UX. qmlx
         # is primarily run locally — defaulting to deny would break any
         # browser-based frontend ("CORS error" in the console) without an
         # obvious server-side signal. Operators on multi-tenant or
         # production deployments lock down via
-        # ``RAPID_MLX_CORS_ALLOW_ORIGINS=https://your.app`` (the existing
+        # ``QMLX_CORS_ALLOW_ORIGINS=https://your.app`` (the existing
         # env-var family still applies).
         origins = ["*"]
         came_from_default = True
         logger.info(
             "CORS allow-origin defaulting to wildcard '*' (no "
-            "RAPID_MLX_CORS_ALLOW_ORIGINS set). Set the env var to an "
+            "QMLX_CORS_ALLOW_ORIGINS set). Set the env var to an "
             "explicit origin list (e.g. "
             "'https://chat.openai.com,https://claude.ai') to lock down "
             "for production / multi-tenant deployments."
@@ -937,7 +937,7 @@ def configure_cors_from_env(
     if "*" in origins and not came_from_default:
         logger.warning(
             "CORS allow-origin set to wildcard '*' — any origin can call this "
-            "server from a browser. Set RAPID_MLX_CORS_ALLOW_ORIGINS to an "
+            "server from a browser. Set QMLX_CORS_ALLOW_ORIGINS to an "
             "explicit origin list for production deployments."
         )
 
@@ -945,7 +945,7 @@ def configure_cors_from_env(
     #
     # Codex round-1 BLOCKING: distinguish ``env unset`` from ``env set to
     # an all-whitespace / all-empty CSV``. If we treated both as "use
-    # default", an operator typo like ``RAPID_MLX_CORS_ALLOW_METHODS=" , "``
+    # default", an operator typo like ``QMLX_CORS_ALLOW_METHODS=" , "``
     # would silently broaden the surface to the default POST/GET/OPTIONS
     # instead of narrowing it. The defensive shape is: ``env present but
     # empty after parse`` → log a WARNING and fall back to the default,
@@ -957,7 +957,7 @@ def configure_cors_from_env(
     # wide-open ``["*"]`` — not the restrictive F-091 default — so the
     # documented CLI back-compat path doesn't silently break browser
     # clients that send custom headers (``OpenAI-Organization`` etc.).
-    methods_env = os.environ.get("RAPID_MLX_CORS_ALLOW_METHODS")
+    methods_env = os.environ.get("QMLX_CORS_ALLOW_METHODS")
     if methods_env is None:
         methods = ["*"] if came_from_cli else list(_DEFAULT_CORS_METHODS)
     else:
@@ -969,13 +969,13 @@ def configure_cors_from_env(
                 "commas only); falling back to %s. Set the env var to a "
                 "real comma-separated method list, or unset it entirely "
                 "to use the default.",
-                "RAPID_MLX_CORS_ALLOW_METHODS",
+                "QMLX_CORS_ALLOW_METHODS",
                 methods_env,
                 fallback_methods,
             )
             methods = fallback_methods
 
-    headers_env = os.environ.get("RAPID_MLX_CORS_ALLOW_HEADERS")
+    headers_env = os.environ.get("QMLX_CORS_ALLOW_HEADERS")
     if headers_env is None:
         headers = ["*"] if came_from_cli else list(_DEFAULT_CORS_HEADERS)
     else:
@@ -987,13 +987,13 @@ def configure_cors_from_env(
                 "commas only); falling back to %s. Set the env var to a "
                 "real comma-separated header list, or unset it entirely "
                 "to use the default.",
-                "RAPID_MLX_CORS_ALLOW_HEADERS",
+                "QMLX_CORS_ALLOW_HEADERS",
                 headers_env,
                 fallback_headers,
             )
             headers = fallback_headers
 
-    max_age_env = os.environ.get("RAPID_MLX_CORS_MAX_AGE", "").strip()
+    max_age_env = os.environ.get("QMLX_CORS_MAX_AGE", "").strip()
     max_age = _DEFAULT_CORS_MAX_AGE
     if max_age_env:
         try:
@@ -1001,23 +1001,23 @@ def configure_cors_from_env(
         except ValueError:
             logger.warning(
                 "%s=%r is not an integer; falling back to the %d s default",
-                "RAPID_MLX_CORS_MAX_AGE",
+                "QMLX_CORS_MAX_AGE",
                 max_age_env,
                 _DEFAULT_CORS_MAX_AGE,
             )
 
     # Codex round-1 NIT: the documented default is ``False`` (matching
     # the security-correct default-deny stance of the rest of the
-    # ``RAPID_MLX_CORS_*`` family), but the legacy ``configure_cors``
+    # ``QMLX_CORS_*`` family), but the legacy ``configure_cors``
     # back-compat path defaults to ``True`` for any non-wildcard origin
     # (Fetch-spec-correct but at odds with the documentation). Resolve by
     # making the default explicit here: env unset → False. Operators who
     # need cookies / Authorization auto-forwarded must opt in by setting
-    # ``RAPID_MLX_CORS_ALLOW_CREDENTIALS=true``. Existing
+    # ``QMLX_CORS_ALLOW_CREDENTIALS=true``. Existing
     # ``configure_cors(origins)`` callers in tests / share / dflash still
     # see the legacy behavior — those callers don't go through this
     # resolver.
-    creds_env = os.environ.get("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "").strip().lower()
+    creds_env = os.environ.get("QMLX_CORS_ALLOW_CREDENTIALS", "").strip().lower()
     allow_credentials: bool = False
     if creds_env:
         if creds_env in ("1", "true", "yes", "on"):
@@ -1027,11 +1027,11 @@ def configure_cors_from_env(
         else:
             logger.warning(
                 "%s=%r is not a boolean; falling back to the False default",
-                "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
+                "QMLX_CORS_ALLOW_CREDENTIALS",
                 creds_env,
             )
 
-    # Fail-closed path: ``RAPID_MLX_CORS_ALLOW_ORIGINS`` was set but
+    # Fail-closed path: ``QMLX_CORS_ALLOW_ORIGINS`` was set but
     # parsed to an empty list (operator-controlled typo). Don't register
     # CORSMiddleware — that's the visible signal the WARNING above
     # promises. Returning ``[]`` here also keeps the legacy ``configure_cors``
@@ -1518,7 +1518,7 @@ def load_model(
     # Task #292: attach ``/v1/audio/*`` routes only when the loaded model
     # actually supports audio OR the operator passed ``--enable-audio``.
     # Pre-fix the router was attached at module import (before any model
-    # was loaded), so a text-only ``rapid-mlx serve <text-model>`` boot
+    # was loaded), so a text-only ``qmlx serve <text-model>`` boot
     # advertised the audio paths and 500'd on first POST. Calling the
     # helper here — after the model is loaded and ``_model_name`` is
     # stamped — gives FastAPI the chance to return a stock 404 for the
@@ -1835,7 +1835,7 @@ Examples:
         help="Enable continuous batching (default: on).",
     )
     # PFlash long-prompt prefill compression (#287). Off by default. The
-    # unified ``rapid-mlx serve`` CLI exposes the same surface; we mirror
+    # unified ``qmlx serve`` CLI exposes the same surface; we mirror
     # it here so the standalone ``python -m vllm_mlx.server`` path is
     # not a silent gap (SOP §10).
     from .cli import _add_pflash_args as _add_pflash_args_to_server_parser
@@ -1853,7 +1853,7 @@ Examples:
     parser.add_argument("--kv-group-size", type=int, default=64, help=_ap.SUPPRESS)
     parser.add_argument("--draft-model", type=str, default=None, help=_ap.SUPPRESS)
     parser.add_argument("--num-draft-tokens", type=int, default=4, help=_ap.SUPPRESS)
-    # TurboQuant flags — MUST match ``rapid-mlx serve`` (cli.py) choice
+    # TurboQuant flags — MUST match ``qmlx serve`` (cli.py) choice
     # set + defaults so this standalone entry is functionally at parity.
     # Pre-#969, this parser was missing the ``"none"`` off-switch added
     # in #962 (argparse rejected the flag outright) AND the parsed values
@@ -1887,7 +1887,7 @@ Examples:
         help="Default max tokens for generation (caps when client sends None)",
     )
     # ``--api-key`` accepts an inline value OR falls back to the
-    # ``RAPID_MLX_API_KEY`` env var. The env-var form keeps the bearer
+    # ``QMLX_API_KEY`` env var. The env-var form keeps the bearer
     # key out of ``argv`` (visible to ``ps -ef`` for any local user) —
     # the standalone-shim spawn path that rapid-desktop's sidecar uses
     # would otherwise leak the per-launch bearer token in the process
@@ -1900,7 +1900,7 @@ Examples:
         default=None,
         help=(
             "API key for authentication (if not set, falls back to the "
-            "RAPID_MLX_API_KEY env var; if neither, no auth required)"
+            "QMLX_API_KEY env var; if neither, no auth required)"
         ),
     )
     parser.add_argument(
@@ -1963,7 +1963,7 @@ Examples:
         help=(
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/all-MiniLM-L6-v2-4bit). Requires the "
-            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+            "[embeddings] extra: pip install 'qmlx[embeddings]'."
         ),
     )
     parser.add_argument(
@@ -2016,7 +2016,7 @@ Examples:
         default=None,
         help="API key for cloud model (overrides environment variable).",
     )
-    # Task #292: mirror the ``rapid-mlx serve`` ``--enable-audio`` flag
+    # Task #292: mirror the ``qmlx serve`` ``--enable-audio`` flag
     # on the legacy ``python -m vllm_mlx.server`` entrypoint so the same
     # text-mode-with-audio escape hatch is available to operators who
     # boot via the older command (e.g. supervisord units, internal
@@ -2035,7 +2035,7 @@ Examples:
     args = parser.parse_args()
 
     # PortSweep pre-flight (codex round-1 MAJOR on PR #848): mirror the
-    # ``rapid-mlx serve`` CLI's loopback-shadow probe here so the
+    # ``qmlx serve`` CLI's loopback-shadow probe here so the
     # legacy ``python -m vllm_mlx.server`` entrypoint doesn't silently
     # reopen the v0.8.2 dogfood-finding-#2 bypass. Probes ``args.host``
     # AND ``127.0.0.1`` when ``args.host`` is a wildcard alias
@@ -2103,7 +2103,7 @@ Examples:
         logger.info("  Authentication: ENABLED (API key required)")
     else:
         logger.warning(
-            "  Authentication: DISABLED - Set RAPID_MLX_API_KEY env or "
+            "  Authentication: DISABLED - Set QMLX_API_KEY env or "
             "use --api-key to enable"
         )
     if args.rate_limit > 0:
@@ -2115,7 +2115,7 @@ Examples:
 
     # Set MCP config for lifespan
     if args.mcp_config:
-        os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
+        os.environ["QMLX_MCP_CONFIG"] = args.mcp_config
 
     # Auto-detect parser config from model name when not explicitly set.
     # SOP §10: honor --no-tool-call-parser / --no-reasoning-parser opt-
@@ -2194,7 +2194,7 @@ Examples:
     # or ``mlx_embeddings`` is importable. The shared helper re-probes
     # defensively as belt-and-braces and also performs the D-EMBED-ALIAS
     # alias-resolution + ModelNotFoundError translation so behaviour
-    # matches the unified ``rapid-mlx serve`` path exactly. Lazy import
+    # matches the unified ``qmlx serve`` path exactly. Lazy import
     # to avoid a circular at module-load time (cli imports server in
     # ``serve_command``; server imports cli only inside this branch).
     if args.embedding_model:
@@ -2205,7 +2205,7 @@ Examples:
     # Build a SchedulerConfig so user-supplied flags on this standalone entry
     # (`python -m vllm_mlx.server` / `mise run`) reach the engine. Pre-0.6.52
     # this entrypoint forwarded args.prefill_step_size to load_model where it
-    # was silently dropped — same bug class as #400. The unified rapid-mlx
+    # was silently dropped — same bug class as #400. The unified qmlx
     # CLI builds a richer SchedulerConfig in cli.py; the standalone path only
     # exposes a small subset of flags, so we plumb just those.
     from .pflash import config_from_args as _server_pflash_config_from_args
@@ -2227,7 +2227,7 @@ Examples:
     except ValueError as e:
         parser.error(str(e))
 
-    # TurboQuant resolution (#969): mirror ``rapid-mlx serve`` so the
+    # TurboQuant resolution (#969): mirror ``qmlx serve`` so the
     # standalone entry actually honors ``--kv-cache-turboquant``. The
     # helper collapses the ``"none"`` off-switch sentinel to ``None`` and
     # applies the per-alias ``k8v4_verified`` default. There is no

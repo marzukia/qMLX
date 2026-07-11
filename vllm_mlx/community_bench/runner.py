@@ -236,7 +236,7 @@ async def _run_one_round(
             f"Re-running won't help on greedy sampling with a fixed-seed prompt. "
             f"Please file a bug at "
             f"https://github.com/raullenchai/Rapid-MLX/issues/new with the model "
-            f"alias, rapid-mlx version, and this exact error so we can pin the "
+            f"alias, qmlx version, and this exact error so we can pin the "
             f"regression. Your hardware row is NOT at fault."
         )
 

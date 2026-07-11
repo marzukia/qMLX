@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Base engine interface for rapid-mlx inference.
+Base engine interface for qmlx inference.
 """
 
 from abc import ABC, abstractmethod

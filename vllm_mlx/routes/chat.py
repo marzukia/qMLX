@@ -1726,7 +1726,7 @@ async def _create_chat_completion_impl(
                 # one exists, so clients see "did you mean 'get_Weather'?"
                 # instead of having to diff their tool list character-by-
                 # character. OpenAI's API is case-sensitive too, but its
-                # error message is equally terse — the rapid-mlx hint is
+                # error message is equally terse — the qmlx hint is
                 # additive and OpenAI-shape-compatible (clients that ignore
                 # the suffix still see the canonical 400).
                 hint = ""
@@ -1929,7 +1929,7 @@ async def _create_chat_completion_impl(
         if json_instruction:
             messages = _inject_json_instruction(messages, json_instruction)
 
-    # #448 — translate the OpenAI ``reasoning_effort`` knob into rapid-mlx's
+    # #448 — translate the OpenAI ``reasoning_effort`` knob into qmlx's
     # native controls. MUST run BEFORE the tool auto-disable below so a
     # ``reasoning_effort="none"`` request registers its enable_thinking
     # preference first (the tool auto-disable then no-ops on it) and a
@@ -1979,7 +1979,7 @@ async def _create_chat_completion_impl(
     # ``reasoning_effort``, or the Responses-native ``reasoning``
     # dict). MUST run BEFORE ``_resolve_enable_thinking`` so the
     # resolved value drives ``max_tokens`` headroom + the engine
-    # kwarg below from one source. Mirrors the ``rapid-mlx chat``
+    # kwarg below from one source. Mirrors the ``qmlx chat``
     # REPL's ``--no-think`` default for thinking-capable models on
     # the OpenAI-SDK surface.
     if maybe_auto_disable_thinking_for_casual_chat(request):
@@ -2079,7 +2079,7 @@ async def _create_chat_completion_impl(
     # blown → ~60–90 s of wasted prefill before client gives up). Same
     # gate runs in routes/completions, routes/anthropic, routes/responses.
     #
-    # rapid-mlx#280 (codex MED on PR #893 review): thread the resolved
+    # qmlx#280 (codex MED on PR #893 review): thread the resolved
     # ``enable_thinking`` so the prompt-token estimate matches what the
     # engine actually generates. The R12-T1F / R12-T2F auto-disable
     # above mutates ``request.chat_template_kwargs`` BEFORE this gate
@@ -2329,12 +2329,12 @@ async def _create_chat_completion_impl(
     # whatever the model produced. Distinguish the two modes here so
     # the rest of the function can react.
     strict_mode = is_strict_json_schema(response_format)
-    # R12-4: respect the ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` escape
+    # R12-4: respect the ``QMLX_STRICT_JSON_SCHEMA=off`` escape
     # hatch — operators who depended on the pre-R12-4 silent-200
     # behavior keep the legacy code path. The flag is intentionally
     # checked ONCE per request (not at import time) so an operator
     # can toggle it on a running process via ``os.environ`` (the
-    # rapid-mlx desktop client relies on this).
+    # qmlx desktop client relies on this).
     strict_enforcement_active = strict_mode and strict_enforcement_enabled()
 
     # Codex r3 BLOCKING #2 + defense-in-depth: ``strict=true`` with
@@ -2453,7 +2453,7 @@ async def _create_chat_completion_impl(
                     # repair retry on validation failure, and
                     # surfaces 422 only if BOTH attempts fail. The
                     # disable flag
-                    # ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` (checked
+                    # ``QMLX_STRICT_JSON_SCHEMA=off`` (checked
                     # at request time) restores the legacy
                     # silent-pass-through behavior for operators
                     # who need the escape hatch.
@@ -2468,7 +2468,7 @@ async def _create_chat_completion_impl(
                     else:
                         logger.warning(
                             "Strict json_schema mode requested but "
-                            "RAPID_MLX_STRICT_JSON_SCHEMA=off — "
+                            "QMLX_STRICT_JSON_SCHEMA=off — "
                             "falling through to prompt-injection "
                             "only (legacy silent-pass-through). "
                             "Unset the env var to restore "
@@ -2485,7 +2485,7 @@ async def _create_chat_completion_impl(
                 # Surface the silent-degradation case: client asked for
                 # json_schema response_format but the engine can't
                 # enforce it (most commonly: the user installed
-                # `rapid-mlx` without the `[guided]` extra). When
+                # `qmlx` without the `[guided]` extra). When
                 # ``strict=false`` the OpenAI contract is suggestion-only
                 # so we fall through to prompt-injection (existing
                 # behavior). When ``strict=true`` see the R12-4 branch
@@ -2496,7 +2496,7 @@ async def _create_chat_completion_impl(
                     "%s.supports_guided_generation=False). Falling back "
                     "to unconstrained decoding — schema will NOT be "
                     "enforced. Install with `pip install "
-                    "'rapid-mlx[guided]'` to enable outlines-backed "
+                    "'qmlx[guided]'` to enable outlines-backed "
                     "schema enforcement.",
                     type(engine).__name__,
                 )
@@ -2758,7 +2758,7 @@ async def _create_chat_completion_impl(
                                     "unconstrained generation because the "
                                     "client asked for strict=true. "
                                     "Investigate the server logs and the "
-                                    "rapid_mlx_response_format_strict_"
+                                    "qmlx_response_format_strict_"
                                     "violations_total metric."
                                 ),
                                 "type": "api_error",
@@ -2844,7 +2844,7 @@ async def _create_chat_completion_impl(
     # H-06: when the client asked for strict json_schema mode and we
     # routed through guided decoding, validate the buffered text
     # against the schema. Outlines should make this unreachable; a
-    # non-zero ``rapid_mlx_response_format_strict_violations_total``
+    # non-zero ``qmlx_response_format_strict_violations_total``
     # rate signals that the constrained-decoding path silently
     # degraded (e.g. ``generate_with_schema`` swallowed an outlines
     # API change and fell back to ``self.chat(...)``).
@@ -2875,7 +2875,7 @@ async def _create_chat_completion_impl(
                             f"did not validate against the supplied schema ({err}). "
                             "This indicates the constrained-decoding path silently "
                             "degraded; investigate the server logs and the "
-                            "rapid_mlx_response_format_strict_violations_total metric."
+                            "qmlx_response_format_strict_violations_total metric."
                         ),
                         "type": "api_error",
                         "code": "strict_schema_violation",
@@ -2937,7 +2937,7 @@ async def _create_chat_completion_impl(
             # deterministic ``422 json_schema_violation``. The helper
             # mirrors ``enforce_context_length_for_messages`` and is
             # centralized so chat + responses share one gate.
-            # rapid-mlx#280: thread the resolved ``enable_thinking`` so
+            # qmlx#280: thread the resolved ``enable_thinking`` so
             # the repair-prompt fit check renders the way the engine
             # actually will. Pre-fix the gate rendered with the
             # template default, so on auto-disabled (R12-M2 strict-
@@ -3496,7 +3496,7 @@ async def _create_chat_completion_impl(
         # (H-01) semantics after the R-01 (#815) opt-in flip produced
         # empty-bubble regressions in every GUI client that only renders
         # ``message.content``. Power callers that want strict-null
-        # behaviour set ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``
+        # behaviour set ``QMLX_REASONING_CUTOFF_NOTICE=disabled``
         # (or ``0`` / ``false`` / ``no`` / ``off``). The helper itself
         # owns ALL the predicates (env gate, finish_reason, content
         # emptiness, tool-call gate, reasoning presence) so this call
@@ -4271,7 +4271,7 @@ async def stream_chat_completion(
             # extra-bytes-on-the-final-chunk event, NOT a per-token
             # mirror of the reasoning trace (D-STOP-THINK regression
             # guard). Default-on: opt out via
-            # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``. Gating
+            # ``QMLX_REASONING_CUTOFF_NOTICE=disabled``. Gating
             # logic matches the non-streaming call site — the helper
             # owns it.
             if not has_any_tool_calls and not structured_output_requested:
@@ -4572,7 +4572,7 @@ async def stream_chat_completion_guided(
                             "to unconstrained streaming because the client "
                             "asked for strict=true. Investigate the server "
                             "logs and the "
-                            "rapid_mlx_response_format_strict_violations_total "
+                            "qmlx_response_format_strict_violations_total "
                             "metric."
                         ),
                         "type": "api_error",
@@ -4637,7 +4637,7 @@ async def stream_chat_completion_guided(
                             f"did not validate against the supplied schema ({err}). "
                             "This indicates the constrained-decoding path silently "
                             "degraded; investigate the server logs and the "
-                            "rapid_mlx_response_format_strict_violations_total metric."
+                            "qmlx_response_format_strict_violations_total metric."
                         ),
                         "type": "api_error",
                         "code": "strict_schema_violation",
@@ -4801,7 +4801,7 @@ async def stream_chat_completion_strict_postgen(
     # schemas in our pydantic-ai corpus marshal to ~50 KiB) but
     # comfortably below per-request memory limits operators expect
     # streaming to honor. Override via
-    # ``RAPID_MLX_STRICT_BUFFER_BYTES`` for unusual workloads.
+    # ``QMLX_STRICT_BUFFER_BYTES`` for unusual workloads.
     #
     # Codex r12 #1 (design decision, documented for future passes):
     # the wrapper streams incremental content deltas to the client
@@ -4836,7 +4836,7 @@ async def stream_chat_completion_strict_postgen(
     _BUFFER_CAP_DEFAULT = 2 * 1024 * 1024
     try:
         _buffer_cap = int(
-            os.environ.get("RAPID_MLX_STRICT_BUFFER_BYTES", str(_BUFFER_CAP_DEFAULT))
+            os.environ.get("QMLX_STRICT_BUFFER_BYTES", str(_BUFFER_CAP_DEFAULT))
         )
         if _buffer_cap <= 0:
             _buffer_cap = _BUFFER_CAP_DEFAULT
@@ -4850,7 +4850,7 @@ async def stream_chat_completion_strict_postgen(
                 "%s=%d exceeds hard maximum %d; clamping to %d to preserve "
                 "memory-safety guarantee. If you need a larger cap, file an "
                 "issue rather than raising the hard limit.",
-                "RAPID_MLX_STRICT_BUFFER_BYTES",
+                "QMLX_STRICT_BUFFER_BYTES",
                 _buffer_cap,
                 _BUFFER_CAP_HARD_MAX,
                 _BUFFER_CAP_HARD_MAX,
@@ -5077,7 +5077,7 @@ async def stream_chat_completion_strict_postgen(
                 )
             else:
                 cap_guidance = (
-                    f"raise RAPID_MLX_STRICT_BUFFER_BYTES (current: "
+                    f"raise QMLX_STRICT_BUFFER_BYTES (current: "
                     f"{_buffer_cap} bytes, hard maximum: "
                     f"{_BUFFER_CAP_HARD_MAX} bytes) or investigate a "
                     "runaway generation."

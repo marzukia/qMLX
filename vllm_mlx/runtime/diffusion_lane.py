@@ -27,7 +27,7 @@ Dependency
 mlx-vlm >= 0.6.3, which contains Blaizzy/mlx-vlm#1347 (Gemma 4 DLM
 model files) and #1348 (long-context prefill fix). Verified locally
 2026-06-10. The pyproject pin floor is bumped to ``>=0.6.3`` so a
-fresh ``pip install rapid-mlx`` lands a build that has the
+fresh ``pip install qmlx`` lands a build that has the
 ``mlx_vlm.models.diffusion_gemma`` package on disk.
 """
 
@@ -196,7 +196,7 @@ def _break_mlx_vlm_eos_token_id_aliasing(model: Any, processor: Any) -> None:
 
     An upstream fix should land in mlx-vlm itself (change line
     1890 to ``self.eos_token_ids = list(eos_token_ids)``); when
-    rapid-mlx's mlx-vlm floor moves past the fixed release this
+    qmlx's mlx-vlm floor moves past the fixed release this
     workaround can be deleted.
     """
     try:
@@ -484,7 +484,7 @@ class DiffusionEngine(BaseEngine):
                 return
             self._worker = threading.Thread(
                 target=self._worker_loop,
-                name="rapid-mlx-diffusion-worker",
+                name="qmlx-diffusion-worker",
                 daemon=True,
             )
             self._worker.start()
@@ -814,7 +814,7 @@ class DiffusionEngine(BaseEngine):
             # dropped the array — operators only learned about it when
             # the model produced a plain-prose answer to what looked
             # like a tool request. Log a one-line WARNING so the drop
-            # is at least visible in ``rapid-mlx logs``.
+            # is at least visible in ``qmlx logs``.
             logger.warning(
                 "DiffusionEngine: dropping %d tool(s) from chat template — "
                 "the active model has no tool-call parser registered. "
@@ -1099,7 +1099,7 @@ class DiffusionEngine(BaseEngine):
 
             pump_thread = threading.Thread(
                 target=pump,
-                name="rapid-mlx-diffusion-pump",
+                name="qmlx-diffusion-pump",
                 daemon=True,
             )
             # codex pr_validate r10 BLOCKING #3: ``pump_thread.start()``

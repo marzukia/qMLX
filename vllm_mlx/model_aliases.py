@@ -112,7 +112,7 @@ class AliasProfile:
     # GatedDeltaNet), forcing the alias-level routing decision (hybrid
     # throttle + prefix-boundary snapshot) back on even after the JSON
     # marked the model as non-hybrid. That re-promotion is what
-    # wedges ``rapid-mlx serve qwen3.5-4b-4bit`` on metal::malloc with a
+    # wedges ``qmlx serve qwen3.5-4b-4bit`` on metal::malloc with a
     # 499000 byte limit; ``--no-hybrid`` was the only workaround.
     #
     # Default ``False`` keeps the existing safety-net behaviour for

@@ -29,13 +29,13 @@ PROTOCOL_VERSION = "1"
 MANIFEST_FILENAME = "manifest.json"
 
 # Default sandbox root for export/import paths. Overridable via the
-# ``RAPID_MLX_CACHE_EXPORT_DIR`` env var. All caller-supplied paths must
+# ``QMLX_CACHE_EXPORT_DIR`` env var. All caller-supplied paths must
 # resolve inside this directory after symlink expansion — otherwise a
 # bearer-token holder could write arbitrary files anywhere on disk.
 _DEFAULT_EXPORT_DIR = os.path.join(
-    os.path.expanduser("~"), ".cache", "rapid-mlx", "cache_exports"
+    os.path.expanduser("~"), ".cache", "qmlx", "cache_exports"
 )
-_EXPORT_DIR_ENV = "RAPID_MLX_CACHE_EXPORT_DIR"
+_EXPORT_DIR_ENV = "QMLX_CACHE_EXPORT_DIR"
 
 
 class InvalidExportPathError(ValueError):
@@ -85,7 +85,7 @@ _FIELD_TYPES: dict[str, type] = {
     "index_format_version": int,
     "entries": int,
     "total_bytes": int,
-    "rapid_mlx_version": str,
+    "qmlx_version": str,
     "created_at": str,
     "extra": dict,
 }
@@ -123,10 +123,10 @@ class Manifest:
     index_format_version: int = 0
     entries: int = 0
     total_bytes: int = 0
-    # Free-form provenance — exporting instance's rapid-mlx version
+    # Free-form provenance — exporting instance's qmlx version
     # and a timestamp. Importers MUST NOT gate on these (they're
     # informational), but they're invaluable for debugging.
-    rapid_mlx_version: str = ""
+    qmlx_version: str = ""
     created_at: str = ""
     extra: dict = field(default_factory=dict)
 

@@ -5,7 +5,7 @@ stars: 16000
 
 # OpenCode (opencode.ai) is a Claude-Code-like terminal coding agent.
 # It speaks the OpenAI-compatible chat completions API via the
-# ``@ai-sdk/openai-compatible`` provider; we point that at rapid-mlx.
+# ``@ai-sdk/openai-compatible`` provider; we point that at qmlx.
 #
 # Config lives at ~/.config/opencode/opencode.json (or ./opencode.json in
 # a project root). The ``$schema`` URL is canonical from opencode.ai.
@@ -16,7 +16,7 @@ config:
     {
       "$schema": "https://opencode.ai/config.json",
       "provider": {
-        "rapid-mlx": {
+        "qmlx": {
           "npm": "@ai-sdk/openai-compatible",
           "name": "Rapid-MLX",
           "options": {
@@ -28,7 +28,7 @@ config:
           }
         }
       },
-      "model": "rapid-mlx/{model_id}"
+      "model": "qmlx/{model_id}"
     }
 
 models:
@@ -58,5 +58,5 @@ capabilities:
 
 known_issues:
   - "Config schema may need updating across OpenCode versions — if this template doesn't load, run `opencode --help` and check `~/.config/opencode/opencode.json` against the docs at opencode.ai."
-  - "OpenCode is interactive-only (no headless query mode); --test in rapid-mlx agents will skip the query check."
-  - "First run of OpenCode may prompt for an Anthropic API key — choose 'skip' since rapid-mlx is providing the model via the openai-compat provider."
+  - "OpenCode is interactive-only (no headless query mode); --test in qmlx agents will skip the query check."
+  - "First run of OpenCode may prompt for an Anthropic API key — choose 'skip' since qmlx is providing the model via the openai-compat provider."

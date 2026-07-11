@@ -15,12 +15,12 @@ the surface was validator-recursion, not parser-bytes.
 This module owns the structural-depth measurement used by:
 
 * The per-tool depth validator on :class:`ToolDefinition.function.parameters`
-  (env override ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``, default 64) — rejects
+  (env override ``QMLX_MAX_TOOL_SCHEMA_DEPTH``, default 64) — rejects
   with the canonical 400 envelope before the chat-template sanitiser
   runs.
 * The whole-body depth guard wired into
   :class:`vllm_mlx.middleware.body_depth.RequestBodyDepthMiddleware`
-  (env override ``RAPID_MLX_MAX_BODY_DEPTH``, default 64) — rejects any
+  (env override ``QMLX_MAX_BODY_DEPTH``, default 64) — rejects any
   body whose JSON nesting depth exceeds the cap before FastAPI / Pydantic
   recurses over it.
 
@@ -46,8 +46,8 @@ from typing import Any
 # Env knobs. Resolved at request time (via :func:`resolve_max_*`) so a
 # test fixture that mutates ``os.environ`` between cases doesn't need
 # to rebuild the FastAPI app.
-MAX_TOOL_SCHEMA_DEPTH_ENV = "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH"
-MAX_BODY_DEPTH_ENV = "RAPID_MLX_MAX_BODY_DEPTH"
+MAX_TOOL_SCHEMA_DEPTH_ENV = "QMLX_MAX_TOOL_SCHEMA_DEPTH"
+MAX_BODY_DEPTH_ENV = "QMLX_MAX_BODY_DEPTH"
 
 # Default caps. See module docstring for the "64 vs the Python
 # recursion limit" rationale. Centralised so the request-model
@@ -64,7 +64,7 @@ def _resolve_env_int(name: str, default: int) -> int:
     silently disabling the depth gate on a typo would mask the real
     cause; mirrors :func:`vllm_mlx.middleware.body_size._resolve_limit`).
     A non-positive value (``0``, ``-1``) is honoured as "disable the
-    gate" so operators can opt out via ``RAPID_MLX_MAX_BODY_DEPTH=0``.
+    gate" so operators can opt out via ``QMLX_MAX_BODY_DEPTH=0``.
     """
     raw = os.environ.get(name, "").strip()
     if not raw:

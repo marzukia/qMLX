@@ -44,7 +44,7 @@ chain for the same ``mx.random.seed`` because we sample with an
 explicit key instead of through ``categorical_sampling``'s
 ``@mx.compile`` boundary — but reproducibility is **within-engine** as
 the OpenAI spec promises ("we cannot guarantee determinism across model
-versions or backends"). Two calls to rapid-mlx with the same
+versions or backends"). Two calls to qmlx with the same
 ``(seed, temperature, top_p, top_k, min_p, prompt)`` produce the same
 token stream; that's the contract H-11 makes good on.
 """
@@ -179,7 +179,7 @@ def make_seeded_sampler(
     # is purely deterministic (``seed & 0xFFFFFFFF``), which means:
     #
     #   * Same input seed always maps to the same backend key, so
-    #     reproducibility is preserved within rapid-mlx. (OpenAI's spec
+    #     reproducibility is preserved within qmlx. (OpenAI's spec
     #     only promises within-engine determinism — they explicitly
     #     warn "we cannot guarantee determinism across model versions
     #     or backends".)

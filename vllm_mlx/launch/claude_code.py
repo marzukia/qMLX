@@ -7,7 +7,7 @@ config from ``~/.config/claude/settings.json`` and also honours a small
 set of environment variables — most importantly
 ``ANTHROPIC_BASE_URL`` and ``ANTHROPIC_API_KEY``.
 
-rapid-mlx already serves the Anthropic ``/v1/messages`` shape (see the
+qmlx already serves the Anthropic ``/v1/messages`` shape (see the
 README "Claude Code" section), so the launch step is simply:
 
 1. Write a ``settings.json`` that points Claude Code at our local
@@ -87,7 +87,7 @@ def write_or_patch_config(
     config_path: Path | None = None,
 ) -> Path:
     """Patch ``~/.config/claude/settings.json`` to route at the local
-    rapid-mlx Anthropic-compatible endpoint.
+    qmlx Anthropic-compatible endpoint.
 
     Keys we own (all under the top-level ``env`` object, which Anthropic
     documents as the recommended way to feed Claude Code env vars from
@@ -99,7 +99,7 @@ def write_or_patch_config(
       ``/v1/v1/messages``).
     * ``env.ANTHROPIC_API_KEY`` → ``<api_key>``
     * ``env.ANTHROPIC_MODEL`` → ``<model>`` (Claude Code reads this as
-      the default model id; the rapid-mlx server accepts any
+      the default model id; the qmlx server accepts any
       ``claude-*`` model name and routes to the actually-loaded engine,
       so this is informational rather than enforced).
 

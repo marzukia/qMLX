@@ -2,7 +2,7 @@
 """DFlash block-diffusion speculative decoding for Qwen3.5 / Qwen3.6.
 
 This package wires the **block-diffusion drafter** family (arxiv 2410.04097
-"Block Diffusion-based Speculative Decoding") into rapid-mlx's standardized
+"Block Diffusion-based Speculative Decoding") into qmlx's standardized
 ``--speculative-config`` interface. It sits next to :mod:`vllm_mlx.spec_decode.mtp`
 as the second model-side speculative-decode backend the CLI knows about.
 
@@ -27,7 +27,7 @@ Public surface
 
 * :class:`DFlashAcceptCounter` — process-local attempts/accepts/
   tokens-saved counter. Surfaced via
-  ``rapid_mlx_spec_decode_dflash_*_total`` in
+  ``qmlx_spec_decode_dflash_*_total`` in
   :mod:`vllm_mlx.routes.metrics`.
 * :func:`detect_dflash_eligibility` — returns
   :class:`DFlashEligibility` for a (model_type, alias_name) pair.
@@ -40,7 +40,7 @@ Public surface
 Architecture note (vs the mlx-vlm bridge)
 -----------------------------------------
 
-There are **two** DFlash code paths in rapid-mlx and they target different
+There are **two** DFlash code paths in qmlx and they target different
 runtimes:
 
 * :mod:`vllm_mlx.speculative.dflash` — the original PoC bridge that

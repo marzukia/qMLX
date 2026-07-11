@@ -13,7 +13,7 @@ RAM reduction at long context + 2.2× parallel-chat throughput).
 
 The design is a deliberate port of LM Studio MLX-engine PR #326's prompt-
 cache layer (specifically the ``prompt_cache/`` package at commit
-``ea1a6bb16``), narrowed to the rapid-mlx use case:
+``ea1a6bb16``), narrowed to the qmlx use case:
 
 - **Boundary granularity**: 256 tokens (``DEFAULT_CHECKPOINT_INTERVAL``),
   same as ``mlx_engine/.../types.py::DEFAULT_PREFIX_CHUNK_SIZE``. The MLX-LM
@@ -31,10 +31,10 @@ cache layer (specifically the ``prompt_cache/`` package at commit
   rename to ``<token_offset>.safetensors``. Mirrors the prefix-cache
   ``cache_dir.new/`` → ``cache_dir`` rename in ``MemoryAwarePrefixCache``.
 - **Disk-budget eviction**: oldest-first across all checkpoints in
-  ``~/.cache/rapid-mlx/kv_checkpoints/``, capped at a configurable byte cap
-  (default 20 GiB, env override ``RAPID_MLX_KV_CHECKPOINT_MAX_BYTES``).
+  ``~/.cache/qmlx/kv_checkpoints/``, capped at a configurable byte cap
+  (default 20 GiB, env override ``QMLX_KV_CHECKPOINT_MAX_BYTES``).
   ``mtime``-ordered LRU rather than the size-aware policy in PR #326 because
-  the rapid-mlx scheduler is single-tenant per process and the cap exists
+  the qmlx scheduler is single-tenant per process and the cap exists
   primarily to keep a runaway agent from filling the disk, not to optimize
   hit rate across a vision-mixed workload.
 - **Special-model handling**: a small registry
@@ -43,7 +43,7 @@ cache layer (specifically the ``prompt_cache/`` package at commit
   window state and the offset alone can't reconstruct it) and Qwen3.5 hybrid
   attention (full + sliding layers alternate). For these we write the WHOLE
   ``prompt_cache`` list at the boundary; for everything else we write the
-  whole list too (we don't slice — rapid-mlx loads checkpoints "as a
+  whole list too (we don't slice — qmlx loads checkpoints "as a
   resumable suspension point" and the writer doesn't have to know which
   layers are sliceable). The registry is exposed for the loader because a
   partial restore policy could be added later: today both paths converge.
@@ -52,7 +52,7 @@ Deviations from LM Studio PR #326 (documented for the PR body):
 
 - **No record-kind slicing**. The upstream code separates ``kv_delta`` /
   ``rotating_delta`` / ``state_checkpoint`` and writes per-layer per-chunk.
-  We write the whole cache list at one boundary because (a) rapid-mlx's
+  We write the whole cache list at one boundary because (a) qmlx's
   in-process radix already handles cross-tenant prefix dedup, so disk
   checkpoints don't need to dedup against each other, and (b) the upstream
   delta path requires fine-grained slicing that doesn't compose with the
@@ -60,7 +60,7 @@ Deviations from LM Studio PR #326 (documented for the PR body):
   sliced cheaply on the seq axis without dequantizing first — the prefix
   cache already learnt this the hard way at memory_cache.py:2014).
 - **No image-span hashing**. We index by request hash, not by chunk hash.
-  Image / vision is handled by the rapid-mlx ``mllm_*`` lane on a separate
+  Image / vision is handled by the qmlx ``mllm_*`` lane on a separate
   cache.
 - **No blob-store coalescing**. Each checkpoint is its own safetensors file
   under a per-request directory; the disk-cap eviction policy is
@@ -82,7 +82,7 @@ Integration touchpoints:
   will re-prefill, not crash.
 - ``vllm_mlx.runtime.disk_kv_checkpoint.get_stats`` returns a stats dict
   the scheduler folds into ``get_stats()`` so ``/metrics`` can render the
-  four ``rapid_mlx_kv_checkpoint_*`` series (writes, loads, bytes,
+  four ``qmlx_kv_checkpoint_*`` series (writes, loads, bytes,
   evictions).
 
 Concurrency: every public function takes a per-checkpoint-root ``RLock``
@@ -124,15 +124,15 @@ DEFAULT_CHECKPOINT_INTERVAL = 256
 
 # Disk cap default: 20 GiB. The env override is honoured at scan-time so an
 # operator can shrink/grow without restarting the server. Picked to match the
-# headroom rapid-desktop reserves under ~/.cache/rapid-mlx (#194).
+# headroom rapid-desktop reserves under ~/.cache/qmlx (#194).
 DEFAULT_MAX_DISK_BYTES = 20 * 1024 * 1024 * 1024
-_DISK_CAP_ENV = "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES"
+_DISK_CAP_ENV = "QMLX_KV_CHECKPOINT_MAX_BYTES"
 
 # Low-water mark for cap eviction. When the total crosses ``max_bytes`` (high
 # water), enforce_disk_cap drains down to ``max_bytes * _DISK_CAP_LOW_WATER``
 # instead of stopping at the cap, so writes don't thrash a single-item eviction
 # at the boundary every time. 0.80 = clear to 80%. Env-overridable.
-_DISK_CAP_LOW_WATER_ENV = "RAPID_MLX_KV_CHECKPOINT_LOW_WATER"
+_DISK_CAP_LOW_WATER_ENV = "QMLX_KV_CHECKPOINT_LOW_WATER"
 
 
 def _resolve_low_water() -> float:
@@ -310,7 +310,7 @@ def get_stats() -> dict[str, int]:
     """Snapshot the process-monotonic counters as a dict.
 
     Called by ``Scheduler.get_stats()`` so ``/metrics`` can fold the four
-    ``rapid_mlx_kv_checkpoint_*`` series next to the existing prefix-cache
+    ``qmlx_kv_checkpoint_*`` series next to the existing prefix-cache
     series. Snapshotting under the lock keeps a concurrent
     ``write_checkpoint`` from publishing a torn (writes, bytes) pair.
     """
@@ -379,13 +379,13 @@ def reset_stats_for_tests() -> None:
 def get_default_root() -> str:
     """Return the on-disk root for KV checkpoints.
 
-    ``~/.cache/rapid-mlx/kv_checkpoints/`` — sibling of the existing
+    ``~/.cache/qmlx/kv_checkpoints/`` — sibling of the existing
     ``prefix_cache/`` directory used by the in-process radix. The dir is
     created lazily by the first ``write_checkpoint`` so operators who never
     enable disk checkpointing don't see an empty directory show up.
     """
     return os.path.join(
-        os.path.expanduser("~"), ".cache", "rapid-mlx", "kv_checkpoints"
+        os.path.expanduser("~"), ".cache", "qmlx", "kv_checkpoints"
     )
 
 
@@ -394,7 +394,7 @@ def resolve_max_disk_bytes(default: int = DEFAULT_MAX_DISK_BYTES) -> int:
 
     Returns 0 (cap disabled) when the env var is explicitly set to ``0``
     or a negative integer. Matches the convention the prefix cache uses
-    for ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES``: an explicit ``0`` is the
+    for ``QMLX_PREFIX_CACHE_MAX_BYTES``: an explicit ``0`` is the
     escape hatch, not "use default".
     """
     raw = os.environ.get(_DISK_CAP_ENV)
@@ -1830,11 +1830,11 @@ def temporary_root() -> str:
     """Return a fresh temporary checkpoint root (unit-test helper).
 
     Used by the disk-checkpoint tests so they don't pollute
-    ``~/.cache/rapid-mlx/`` and don't race against any other agent. The
+    ``~/.cache/qmlx/`` and don't race against any other agent. The
     caller is responsible for ``shutil.rmtree`` cleanup; using
     ``tempfile.TemporaryDirectory`` is cleaner in test fixtures.
     """
-    return tempfile.mkdtemp(prefix="rapid-mlx-kv-checkpoint-")
+    return tempfile.mkdtemp(prefix="qmlx-kv-checkpoint-")
 
 
 __all__ = [

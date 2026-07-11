@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Honest per-request reuse / latency accounting (issues #10, #2).
 
-The pre-existing ``rapid_mlx_prompt_tokens_total`` /
-``rapid_mlx_completion_tokens_total`` counters mix genuinely-computed
+The pre-existing ``qmlx_prompt_tokens_total`` /
+``qmlx_completion_tokens_total`` counters mix genuinely-computed
 prompt tokens with tokens that were reused from a KV cache, and the
 ``/v1/status`` ``tokens_per_second`` divides output tokens by wall time
 that includes the prefill. Both overstate throughput on cache hits — the
@@ -129,7 +129,7 @@ class HonestMetrics:
     ``cache.clear()`` / ``Scheduler.reset()`` — those clear cache contents
     and per-request ledgers, not lifetime observability counters — so the
     exposed series stay monotonic for the life of the process (matching
-    every other ``rapid_mlx_*_total`` counter).
+    every other ``qmlx_*_total`` counter).
     """
 
     def __init__(self) -> None:

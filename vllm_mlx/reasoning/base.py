@@ -52,7 +52,7 @@ class ReasoningParser(ABC):
         Initialize parser with optional tokenizer.
 
         Args:
-            tokenizer: Optional tokenizer for token-based parsing. For rapid-mlx,
+            tokenizer: Optional tokenizer for token-based parsing. For qmlx,
                       text-based parsing is sufficient, so this is optional.
         """
         self.tokenizer = tokenizer

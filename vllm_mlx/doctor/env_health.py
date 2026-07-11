@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Environment-health probes for ``rapid-mlx doctor``.
+"""Environment-health probes for ``qmlx doctor``.
 
 The whole module is a tree of cheap, side-effect-free checks: chip / OS / disk,
 Python interpreter, packages installed, HF cache, network, shell integration,
-optional dev tools. The user runs ``rapid-mlx doctor`` to answer one question
+optional dev tools. The user runs ``qmlx doctor`` to answer one question
 — "is my install/env broken?" — so every probe must:
 
 * run in well under a second (no model load, no engine init, no server boot);
 * never escalate to sudo or read user data outside ``~/.cache/huggingface``;
 * report a deterministic status (✓ / ⚠ / ✗) with a one-line label.
 
-Total wall-clock for ``rapid-mlx doctor`` ≤ 5 s on a warm cache, dominated by
+Total wall-clock for ``qmlx doctor`` ≤ 5 s on a warm cache, dominated by
 the single 2-second network HEAD against ``huggingface.co`` (which downgrades
 to ⚠ on timeout — never ✗).
 
@@ -102,19 +102,19 @@ REQUIRED_PACKAGES: list[tuple[str, str]] = [
     ("transformers", "transformers"),
     ("fastapi", "fastapi"),
     ("uvicorn", "uvicorn"),
-    ("rapid-mlx", "rapid-mlx"),
+    ("qmlx", "qmlx"),
 ]
 
 # Each tuple: (distribution, label, install hint). Missing optionals are ⚠
 # (warning) not ✗ — that's the whole point of "optional". The hint is
 # echoed verbatim in the report so the user can copy-paste.
 OPTIONAL_PACKAGES: list[tuple[str, str, str]] = [
-    ("mlx-vlm", "mlx-vlm (vision extras)", "pip install 'rapid-mlx[vision]'"),
-    ("mlx-audio", "mlx-audio (audio extras)", "pip install 'rapid-mlx[audio]'"),
+    ("mlx-vlm", "mlx-vlm (vision extras)", "pip install 'qmlx[vision]'"),
+    ("mlx-audio", "mlx-audio (audio extras)", "pip install 'qmlx[audio]'"),
     (
         "mlx-embeddings",
         "mlx-embeddings (embeddings extras)",
-        "pip install 'rapid-mlx[embeddings]'",
+        "pip install 'qmlx[embeddings]'",
     ),
 ]
 
@@ -248,10 +248,10 @@ def section_system() -> Section:
     """Hardware + OS section.
 
     ⚠ on:
-      * non-Apple-Silicon (rapid-mlx targets M-series; works elsewhere but
+      * non-Apple-Silicon (qmlx targets M-series; works elsewhere but
         with Metal-fallback caveats).
       * < 20 GB free disk (model weights are big).
-      * HF cache > 100 GB (suggest ``rapid-mlx rm`` cleanup).
+      * HF cache > 100 GB (suggest ``qmlx rm`` cleanup).
 
     ✗ on:
       * < 5 GB free disk (next download will fail).
@@ -333,14 +333,14 @@ def section_system() -> Section:
             # mounted cache. Don't penalise the user; just say so.
             s.add(
                 f"HF cache size: too large to size in {_CACHE_WALK_BUDGET_S:.1f}s "
-                "(consider `rapid-mlx rm` if unused models accumulated)",
+                "(consider `qmlx rm` if unused models accumulated)",
                 CheckStatus.WARN,
                 detail=f"path={cache} budget_s={_CACHE_WALK_BUDGET_S}",
             )
         elif cache_size_gb > 100:
             s.add(
                 f"HF cache size: {cache_size_gb:.0f} GB "
-                "(consider `rapid-mlx rm` for unused models)",
+                "(consider `qmlx rm` for unused models)",
                 CheckStatus.WARN,
                 detail=f"cache_gb={cache_size_gb:.1f} path={cache}",
             )
@@ -360,7 +360,7 @@ def section_system() -> Section:
 
 
 def _install_location() -> tuple[str, Path]:
-    """Classify where ``rapid-mlx`` is installed: ``uv tool``, ``pipx``,
+    """Classify where ``qmlx`` is installed: ``uv tool``, ``pipx``,
     ``virtualenv``, ``system``. Returned label is for display; the path
     is shown in --verbose."""
     exe = Path(sys.executable).resolve()
@@ -387,7 +387,7 @@ def section_python() -> Section:
     py_ver = ".".join(str(x) for x in sys.version_info[:3])
     # Defensive: pyproject pins ``requires-python = ">=3.10"`` so install-
     # time pip would already have refused — but doctor should still tell the
-    # user clearly if they somehow got rapid-mlx onto an older interpreter
+    # user clearly if they somehow got qmlx onto an older interpreter
     # (e.g. a hand-copied wheel). Ruff's UP036 flags this as dead under our
     # support matrix; that's the point of the defensive branch.
     if sys.version_info >= (3, 10):  # noqa: UP036
@@ -398,7 +398,7 @@ def section_python() -> Section:
         )
     else:  # pragma: no cover — only reachable on unsupported interpreters
         s.add(
-            f"Python {py_ver} (rapid-mlx requires >= 3.10)",
+            f"Python {py_ver} (qmlx requires >= 3.10)",
             CheckStatus.FAIL,
             detail=f"executable={sys.executable}",
         )
@@ -495,7 +495,7 @@ def section_optional_packages() -> Section:
     # The plain optional-package row above only reports presence/version —
     # it cannot say "you have mlx-vlm but it's too old for [dflash]". This
     # extra row makes the gate explicit so a fresh-install user knows whether
-    # `pip install 'rapid-mlx[dflash]'` will actually work.
+    # `pip install 'qmlx[dflash]'` will actually work.
     dflash_min = (0, 5, 0)
     vlm_ver = _safe_version("mlx-vlm")
     if vlm_ver and _version_at_least(vlm_ver, dflash_min):
@@ -510,7 +510,7 @@ def section_optional_packages() -> Section:
             f"mlx-vlm 0.5.0+ (dflash extras) not installed or too old "
             f"(current: {current}, need: 0.5.0+)",
             CheckStatus.WARN,
-            detail="pip install 'rapid-mlx[dflash]'",
+            detail="pip install 'qmlx[dflash]'",
         )
 
     return s
@@ -671,7 +671,7 @@ def section_network(
 # ---------------------------------------------------------------------------
 
 
-_ARGCOMPLETE_HOOK_NEEDLE = "register-python-argcomplete rapid-mlx"
+_ARGCOMPLETE_HOOK_NEEDLE = "register-python-argcomplete qmlx"
 
 # Bound per-rc read so a 50 MB hand-edited zshrc, a named pipe, or a
 # block device pointed-to via symlink can't make doctor hang or eat RAM.
@@ -737,18 +737,18 @@ def section_shell_integration(
     s = Section("Shell Integration")
     which_fn = which or shutil.which
 
-    cli_path = which_fn("rapid-mlx")
+    cli_path = which_fn("qmlx")
     if cli_path:
         s.add(
-            f"rapid-mlx in $PATH ({cli_path})",
+            f"qmlx in $PATH ({cli_path})",
             CheckStatus.OK,
             detail=f"path={cli_path}",
         )
     else:
         s.add(
-            "rapid-mlx NOT on $PATH",
+            "qmlx NOT on $PATH",
             CheckStatus.FAIL,
-            detail="shutil.which('rapid-mlx') returned None",
+            detail="shutil.which('qmlx') returned None",
         )
 
     present, rc = _argcomplete_hook_present(rcs=rcs)
@@ -761,7 +761,7 @@ def section_shell_integration(
     else:
         s.add(
             "argcomplete not activated — add "
-            '`eval "$(register-python-argcomplete rapid-mlx)"` to your shell rc',
+            '`eval "$(register-python-argcomplete qmlx)"` to your shell rc',
             CheckStatus.WARN,
             detail="no shell rc contains the activation snippet",
         )
@@ -777,7 +777,7 @@ def section_shell_integration(
 def section_optional_tools(
     *, which: Callable[[str], str | None] | None = None
 ) -> Section:
-    """Probe for development tools that improve the rapid-mlx experience but
+    """Probe for development tools that improve the qmlx experience but
     are never required to run inference. Missing → ✗ (issue) because the user
     explicitly opted into a workflow that needs them — phrasing makes it
     clear they're only relevant if you're using those harnesses."""
@@ -808,7 +808,7 @@ def section_optional_tools(
 
 # Sections fixed in spec order. Adding a new probe means appending to one
 # of these lists, not adding a new section midway — keeps the user's mental
-# model stable across rapid-mlx versions.
+# model stable across qmlx versions.
 _SECTION_BUILDERS = (
     section_system,
     section_python,

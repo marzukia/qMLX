@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Process-local MTP accept-rate counter (R15 task #302).
 
-The Prometheus surface (``rapid_mlx_spec_decode_*``) is the canonical
+The Prometheus surface (``qmlx_spec_decode_*``) is the canonical
 external observability for whether the lossless contract is actually
 holding in production. ``MTPAcceptCounter`` is the in-process backing
 state — both the chain MTP generator and any future tree MTP variant
@@ -65,7 +65,7 @@ class MTPAcceptSnapshot:
     Returned by :meth:`MTPAcceptCounter.snapshot`. The fields are the
     raw counter values; the renderer in :mod:`vllm_mlx.routes.metrics`
     converts ``attempts`` / ``accepts`` into the
-    ``rapid_mlx_spec_decode_accept_ratio`` gauge.
+    ``qmlx_spec_decode_accept_ratio`` gauge.
     """
 
     attempts: int

@@ -5,7 +5,7 @@ Vendored Gemma 4 model classes from mlx-vlm 0.6.3.
 **Why vendor:** Google publishes Gemma 4 checkpoints under a VLM-family
 architecture, so the Python model class lives in `mlx-vlm`. In 0.10.0 we
 listed `mlx-vlm` under the `[vision]` extra to keep text-only installs
-lean; but a fresh `pip install rapid-mlx==0.10.0 && rapid-mlx serve
+lean; but a fresh `pip install qmlx==0.10.0 && qmlx serve
 gemma-4-12b-4bit` then failed with `ImportError: mlx-vlm dependency
 missing`, contradicting our own release notes' "+13 Gemma 4 aliases"
 headline. Promoting `mlx-vlm` to a core dep would drag in ~+483 MB of

@@ -334,7 +334,7 @@ def _resolve_audio_entry(model_id: str):
     """Return the audio registry entry for ``model_id`` (alias OR HF id).
 
     R11-B-F4 (Bo 0.8.12 dogfood): the wire-level ``/v1/models`` listing
-    for an audio-only alias (``rapid-mlx serve kokoro``) advertised
+    for an audio-only alias (``qmlx serve kokoro``) advertised
     ``capabilities=["text"]`` and ``modality=null`` because the
     capability detector was wired only for text / VLM / embedding
     lanes. Drop-in OpenAI clients couldn't tell an audio alias from a
@@ -480,7 +480,7 @@ def effective_parsers_for(
     4. **None** — preserves the existing wire shape for ids with no
        live runtime AND no alias profile entry.
 
-    R12 MED-1 (Vlad + Sven dogfood, rapid-mlx 0.8.15): pre-fix the
+    R12 MED-1 (Vlad + Sven dogfood, qmlx 0.8.15): pre-fix the
     ``/v1/models`` handler read ``profile.tool_call_parser`` /
     ``profile.reasoning_parser`` directly, so a server booted with
     a raw HF id (no alias profile) returned ``null`` for both fields
@@ -636,7 +636,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
     context_window = _resolve_context_window(model_id)
     # F-K-CAPABILITIES-OMIT-AUDIO: per-lane audio status snapshot, or
     # ``None`` when the deep probe never ran (e.g.
-    # ``RAPID_MLX_AUDIO_DEEP_PROBE`` unset). Identical value is
+    # ``QMLX_AUDIO_DEEP_PROBE`` unset). Identical value is
     # attached to every entry — the listing's role is to advertise
     # SERVER-WIDE backend health, not per-model audio capability
     # (which would require a separate dry-run per audio alias).
@@ -843,7 +843,7 @@ async def retrieve_model(model_id: str) -> ModelInfo:
     Uses Starlette's ``:path`` converter so HF-style ids containing
     ``/`` (e.g. ``mlx-community/all-MiniLM-L6-v2-4bit``) match the
     route without forcing clients to URL-encode the slash — every
-    other rapid-mlx endpoint accepts the bare HF id, this one
+    other qmlx endpoint accepts the bare HF id, this one
     should too. Slashes in alias ids are still safe: the lookup is
     a string-equality match against the registry / cfg, not a path
     parse.

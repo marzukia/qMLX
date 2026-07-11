@@ -2,7 +2,7 @@
 """Telemetry payload schema v1 — wire shape only.
 
 Phase 1 ships the dataclasses + a sample-payload builder used by
-``rapid-mlx telemetry preview``. **No event sites populate these in
+``qmlx telemetry preview``. **No event sites populate these in
 Phase 1** — they exist so reviewers can audit exactly what could ever
 go on the wire, and so Phase 2 can wire events without re-debating the
 shape.
@@ -87,7 +87,7 @@ class TelemetryPayload:
     schema_version: int
     client_id: str
     session_id: str
-    rapid_mlx_version: str
+    qmlx_version: str
     platform: PlatformInfo
     event: str  # "session_start" | "session_end" | "request" | "error"
     timestamp: str  # ISO-8601 UTC, "Z" suffix
@@ -115,9 +115,9 @@ def _utc_now_iso() -> str:
 def sample_preview_payload(
     *,
     client_id: str,
-    rapid_mlx_version: str,
+    qmlx_version: str,
 ) -> TelemetryPayload:
-    """A representative payload for ``rapid-mlx telemetry preview``.
+    """A representative payload for ``qmlx telemetry preview``.
 
     Built from real platform info + made-up session fields so users can
     see exactly what would leave their machine without having to start
@@ -129,7 +129,7 @@ def sample_preview_payload(
         schema_version=SCHEMA_VERSION,
         client_id=client_id,
         session_id="preview-0000000000000000",
-        rapid_mlx_version=rapid_mlx_version,
+        qmlx_version=qmlx_version,
         platform=PlatformInfo(
             os=info["os"],
             os_version=info["os_version"],

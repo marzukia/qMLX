@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""UI-TARS Computer-Use action parser for rapid-mlx.
+"""UI-TARS Computer-Use action parser for qmlx.
 
 UI-TARS (ByteDance) is a Qwen2-VL / Qwen2.5-VL based GUI agent VLM that
 takes a screenshot + instruction and emits one or more action calls in

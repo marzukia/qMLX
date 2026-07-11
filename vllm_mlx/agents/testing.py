@@ -748,7 +748,7 @@ def _agent_query(
         # The subprocess exits 0 and writes the refusal to stdout, so
         # without this check downstream tests see "no expected substring"
         # and report FAIL — which is dishonest, it's a harness-config
-        # mismatch, not a rapid-mlx regression. Propagate as SKIP via the
+        # mismatch, not a qmlx regression. Propagate as SKIP via the
         # ``SKIP:``-prefixed err sentinel that each ``_test_e2e_*`` already
         # honors.
         #
@@ -794,7 +794,7 @@ def _err_to_status(err: str | None) -> TestStatus:
     - ``"not found"`` → SKIP. Harness binary isn't installed; we can't
       run the e2e gate and shouldn't pretend to.
     - ``"SKIP:"`` prefix → SKIP. ``_agent_query`` propagates this for
-      harness-side init refusals where rapid-mlx has nothing to fix —
+      harness-side init refusals where qmlx has nothing to fix —
       currently the Hermes-on-32K-context case (#655).
     - anything else → ERROR. Subprocess crashed / timed out / etc.
     """
@@ -1220,7 +1220,7 @@ class AgentTestRunner:
             # Set base URL env var so specific test modules use the right server
             import sys
 
-            os.environ["RAPID_MLX_BASE_URL"] = self.base_url
+            os.environ["QMLX_BASE_URL"] = self.base_url
 
             # Suppress sys.exit (test modules call exit() at the end)
             original_exit = sys.exit
@@ -1238,7 +1238,7 @@ class AgentTestRunner:
             # If module failed to execute, report it as an error
             if exec_error is not None:
                 # ImportError / ModuleNotFoundError nearly always means
-                # the harness deps weren't installed in the rapid-mlx
+                # the harness deps weren't installed in the qmlx
                 # venv. The profile's ``install_cmd`` is exactly that
                 # hint; surface it in the message so users have a
                 # one-line copy-paste fix instead of "Module execution
@@ -1254,7 +1254,7 @@ class AgentTestRunner:
                         if testing and testing.install_cmd:
                             hint = (
                                 f" [hint: harness deps missing — run "
-                                f"`{testing.install_cmd}` in the rapid-mlx venv]"
+                                f"`{testing.install_cmd}` in the qmlx venv]"
                             )
                     except (AttributeError, KeyError):
                         # Profile shape changed under us — fall back to

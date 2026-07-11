@@ -129,7 +129,7 @@ class ServerConfig:
     # (≈ 500 KB JSON) plus tool schemas and a small inline image_url,
     # while still rejecting the 10–100 MB DoS payloads documented in
     # rapid-desktop#273. Overridable via ``--max-request-bytes`` or
-    # ``RAPID_MLX_MAX_REQUEST_BYTES``; ``0`` disables the cap.
+    # ``QMLX_MAX_REQUEST_BYTES``; ``0`` disables the cap.
     max_request_bytes: int = 8 * 1024 * 1024
 
     # --- SSE keepalive (DoS / proxy idle-timeout defense, F-070) ---
@@ -146,7 +146,7 @@ class ServerConfig:
     #
     # Default 20 s sits comfortably below the tightest common idle
     # timeout (30 s — some SaaS gateways) while staying invisible to
-    # short generations. Set to 0 via ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0``
+    # short generations. Set to 0 via ``QMLX_SSE_KEEPALIVE_SECONDS=0``
     # to disable the heartbeat entirely (escape hatch for operators
     # whose upstream proxies are configured with generous timeouts).
     sse_keepalive_seconds: float = 20.0
@@ -166,7 +166,7 @@ class ServerConfig:
     # mobile / satellite links (a 1 MB body at 64 kbps takes ~130 s
     # but ships ≥1 KB chunks every ~125 ms, well under the per-chunk
     # deadline) while bouncing connections that ship nothing. Set to 0
-    # via ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS=0`` to disable.
+    # via ``QMLX_BODY_RECEIVE_TIMEOUT_SECONDS=0`` to disable.
     body_receive_timeout_seconds: float = 15.0
 
     # --- Cloud routing ---

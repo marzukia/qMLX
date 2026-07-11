@@ -4,7 +4,7 @@ Pydantic models for Anthropic Messages API.
 
 These models define the request and response schemas for the
 Anthropic-compatible /v1/messages endpoint, enabling clients like
-Claude Code to communicate with rapid-mlx.
+Claude Code to communicate with qmlx.
 """
 
 import uuid
@@ -463,7 +463,7 @@ class AnthropicRequest(BaseModel):
     # ``invalid_request_error``) so this matches the upstream
     # contract. The downstream ``_enforce_max_generation_tokens_ceiling``
     # model_validator already covers the upper-bound gate when
-    # ``RAPID_MLX_MAX_GENERATION_TOKENS`` is set.
+    # ``QMLX_MAX_GENERATION_TOKENS`` is set.
     @field_validator("max_tokens", mode="before")
     @classmethod
     def _validate_max_tokens(cls, v) -> int:
@@ -579,7 +579,7 @@ class AnthropicRequest(BaseModel):
     # ``int | None``), so the ceiling check fires on every request when
     # the env var is set. See ``models._enforce_max_generation_tokens_ceiling``
     # for the opt-in contract — the cap is only applied when
-    # ``RAPID_MLX_MAX_GENERATION_TOKENS`` is set to a positive integer.
+    # ``QMLX_MAX_GENERATION_TOKENS`` is set to a positive integer.
     @model_validator(mode="after")
     def _enforce_generation_budget_ceiling(self) -> "AnthropicRequest":
         _enforce_max_generation_tokens_ceiling(self.max_tokens)

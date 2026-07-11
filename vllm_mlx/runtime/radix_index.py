@@ -5,7 +5,7 @@ Radix-tree prefix-cache index (R15-P1, task #303).
 This module ships a **lookup-acceleration index** that sits alongside the
 existing ``MemoryAwarePrefixCache`` storage layer. It does NOT replace the
 on-disk cache format — entries continue to live in
-``~/.cache/rapid-mlx/prefix_cache/<model>/`` as before — but it replaces the
+``~/.cache/qmlx/prefix_cache/<model>/`` as before — but it replaces the
 ``bisect`` over ``_sorted_keys`` with an O(prefix_len) walk through a token
 trie. Stacks unchanged on Phase 4 TurboQuant K8V4 (storage-format) because
 the radix only indexes token sequences, not their KV state representation.
@@ -136,7 +136,7 @@ class RadixStats:
     LRU eviction (which only decrements ``node_count``) and a manual
     ``clear()`` (which DOES reset everything except the cumulative counters,
     matching the Prometheus counter contract). Callers can compute rates
-    via ``rate(rapid_mlx_prefix_cache_radix_hits_total[5m])``.
+    via ``rate(qmlx_prefix_cache_radix_hits_total[5m])``.
     """
 
     # Cumulative counters (only increase). The lookup p50/p99 are derived
@@ -211,7 +211,7 @@ class RadixPrefixIndex:
         idx.insert([1, 2, 3, 5])       # shares [1,2,3] prefix
         matched, key = idx.longest_prefix([1, 2, 3, 5, 6])
         # matched == [1, 2, 3, 5], key == (1, 2, 3, 5)
-        idx.save("~/.cache/rapid-mlx/.../radix.index")
+        idx.save("~/.cache/qmlx/.../radix.index")
 
     The index is the *source of truth for prefix lookup*, but the *KV state
     storage* lives in ``MemoryAwarePrefixCache._entries``. Both data
@@ -443,7 +443,7 @@ class RadixPrefixIndex:
         """Atomically write the radix index to ``path``.
 
         Atomicity is via the ``<path>.tmp`` → rename pattern that every
-        other on-disk artefact in rapid-mlx uses. A partial write leaves
+        other on-disk artefact in qmlx uses. A partial write leaves
         the ``.tmp`` orphan and the previous ``radix.index`` intact —
         next boot loads the old one and reinserts any drift.
         """

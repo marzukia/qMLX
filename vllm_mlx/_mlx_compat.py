@@ -59,14 +59,14 @@ def install() -> None:
     except ImportError:
         return  # Linux CI / no MLX
 
-    if getattr(mx, "_rapid_mlx_compat_installed", False):
+    if getattr(mx, "_qmlx_compat_installed", False):
         return
 
     # No-op on builds that predate ``mx.new_thread_local_stream`` (#408): the
     # M5 single-stream bug only manifests when ``mlx_lm.generate`` captures
     # this symbol at module import. Older mlx never had it, so neither
     # ``mlx_lm.generate`` nor the bug it triggers can be present here. We
-    # intentionally do NOT set ``_rapid_mlx_compat_installed`` here — if
+    # intentionally do NOT set ``_qmlx_compat_installed`` here — if
     # the symbol later appears (importlib.reload, dynamic upgrade), the
     # next install() call should re-evaluate and apply the wrap.
     if not hasattr(mx, "new_thread_local_stream"):
@@ -112,22 +112,22 @@ def install() -> None:
         # First call for this device — probe. Log at INFO so that anyone
         # filing a hardware-shaped bug report has the device family in
         # their startup output. Future M5+/Apple chip families will land
-        # here first; greppable on "rapid-mlx compat".
+        # here first; greppable on "qmlx compat".
         stream = original(device)
         if _probe(stream, device):
             _probe_cache[repr(device)] = True
             logger.info(
-                "rapid-mlx compat: device %s supports thread-local streams (no shim).",
+                "qmlx compat: device %s supports thread-local streams (no shim).",
                 device,
             )
             return stream
         _probe_cache[repr(device)] = False
         logger.info(
-            "rapid-mlx compat: device %s uses default_stream fallback (#404 M5 path).",
+            "qmlx compat: device %s uses default_stream fallback (#404 M5 path).",
             device,
         )
         return mx.default_stream(device)
 
     mx.new_thread_local_stream = patched_new_thread_local_stream
-    mx._rapid_mlx_compat_installed = True
+    mx._qmlx_compat_installed = True
     logger.debug("MLX compat shim installed (#404 M5 single-stream guard).")

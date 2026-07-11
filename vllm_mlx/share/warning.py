@@ -71,7 +71,7 @@ def render(
         f"\n{red}╔══════════════════════════════════════════════════════════════════╗{reset}\n"
         f"{red}║  ⚠  PUBLIC INTERNET — read this before sharing                   ║{reset}\n"
         f"{red}╠══════════════════════════════════════════════════════════════════╣{reset}\n"
-        f"{red}║{reset} rapid-mlx share is now exposing this machine to the public      {red} ║{reset}\n"
+        f"{red}║{reset} qmlx share is now exposing this machine to the public      {red} ║{reset}\n"
         f"{red}║{reset} internet. Anyone who has the API key below can:                {red} ║{reset}\n"
         f"{red}║{reset}   • use your compute (free inference on your bill)              {red} ║{reset}\n"
         f"{red}║{reset}   • see every prompt and response that goes through              {red}║{reset}\n"
@@ -85,9 +85,9 @@ def render(
         f"  {bold}Key:{reset}    {yellow}{api_key}{reset}\n"
         f"\n"
         f"  Test it (key stays out of shell history via env-var):\n"
-        f"    export RAPID_MLX_SHARE_KEY={yellow}<paste-key>{reset}\n"
+        f"    export QMLX_SHARE_KEY={yellow}<paste-key>{reset}\n"
         f"    curl -sS {safe_url} \\\n"
-        f'      -H "Authorization: Bearer $RAPID_MLX_SHARE_KEY" \\\n'
+        f'      -H "Authorization: Bearer $QMLX_SHARE_KEY" \\\n'
         f"      -H 'Content-Type: application/json' \\\n"
         f"      -d {safe_body}\n"
         f"\n"

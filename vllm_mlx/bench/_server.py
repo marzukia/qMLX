@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Subprocess lifecycle helper for ``rapid-mlx serve`` during bench tier runs.
+"""Subprocess lifecycle helper for ``qmlx serve`` during bench tier runs.
 
 Previously lived at ``vllm_mlx/doctor/server.py``; PR #622 slimmed the
 doctor module to pure env-health and deleted the file, but
 ``vllm_mlx/bench/tier_runner.py`` still imported it — so every actual
-``rapid-mlx bench --tier ...`` invocation (which is exactly the path
+``qmlx bench --tier ...`` invocation (which is exactly the path
 that took over the model-validation work) crashed with
 ``ModuleNotFoundError: No module named 'vllm_mlx.doctor.server'``.
 
@@ -64,7 +64,7 @@ def serve(
     boot_timeout_s: int = 180,
     model_path: str | Path | None = None,
 ):
-    """Boot ``rapid-mlx serve <model>`` and yield the live base URL.
+    """Boot ``qmlx serve <model>`` and yield the live base URL.
 
     Yields a dict with:
 
@@ -120,7 +120,7 @@ def serve(
         log_fh = open(log_path, "w")
     else:
         tmp_log = Path(
-            tempfile.mkstemp(prefix=f"rapid-mlx-bench-{port}-", suffix=".log")[1]
+            tempfile.mkstemp(prefix=f"qmlx-bench-{port}-", suffix=".log")[1]
         )
         log_fh = open(tmp_log, "w")
     try:
@@ -134,7 +134,7 @@ def serve(
         # env value from a grandparent supervisor cannot mis-target
         # the watchdog at the wrong PID.
         spawn_env = os.environ.copy()
-        spawn_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+        spawn_env["QMLX_WATCHDOG_PPID"] = str(os.getpid())
         proc = subprocess.Popen(  # noqa: S603 — args constructed by us
             cmd,
             cwd=REPO_ROOT,

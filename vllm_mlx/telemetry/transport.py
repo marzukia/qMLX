@@ -15,7 +15,7 @@ Implementation choices, called out because they look unusual:
   CPython 3.10+ and is already imported elsewhere in this codebase.
 
 - **HTTPS except loopback dev overrides.** The endpoint is overridable
-  via ``RAPID_MLX_TELEMETRY_ENDPOINT`` for debug rigs and local Worker
+  via ``QMLX_TELEMETRY_ENDPOINT`` for debug rigs and local Worker
   dev. The exact rule (round 17 codex catch -- the prior "HTTPS-only"
   shorthand made the loopback exemption look like a bug):
     * Public hosts -- HTTPS required, no exceptions.
@@ -51,8 +51,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 DEFAULT_ENDPOINT = "https://telemetry.rapidmlx.com/v1/events"
-DEBUG_ENV = "RAPID_MLX_TELEMETRY_DEBUG"
-ENDPOINT_ENV = "RAPID_MLX_TELEMETRY_ENDPOINT"
+DEBUG_ENV = "QMLX_TELEMETRY_DEBUG"
+ENDPOINT_ENV = "QMLX_TELEMETRY_ENDPOINT"
 
 TIMEOUT_S = 3.0
 RETRY_BACKOFFS_S: tuple[float, ...] = (0.5, 2.0)
@@ -66,7 +66,7 @@ def endpoint() -> str | None:
     monkey-patch ``os.environ`` per case without poisoning each other.
 
     Round 3 codex review caught that an unrestricted override
-    (``RAPID_MLX_TELEMETRY_ENDPOINT=https://attacker.example/`` set in
+    (``QMLX_TELEMETRY_ENDPOINT=https://attacker.example/`` set in
     a user's shell rc or by a malicious wrapper script) would silently
     redirect every opted-in user's events to a hostile collector, with
     the privacy guarantees of the disclosure ("only our Worker hashes
@@ -87,7 +87,7 @@ def endpoint() -> str | None:
     if raw is None:
         # qMLX fork: no default collector (upstream's telemetry.rapidmlx.com
         # is not ours). Telemetry only goes somewhere if the operator sets
-        # RAPID_MLX_TELEMETRY_ENDPOINT to their own endpoint.
+        # QMLX_TELEMETRY_ENDPOINT to their own endpoint.
         return None
     if _is_localhost_override(raw):
         return raw
@@ -141,17 +141,17 @@ def _user_agent() -> str:
     the pipeline to function at all.
 
     The UA exposes only the package name + version, which is already
-    in the payload's ``rapid_mlx_version`` field — no new PII. The
+    in the payload's ``qmlx_version`` field — no new PII. The
     repository link is conventional courtesy so an analytics consumer
     on the receiver side can attribute hits without guessing.
     """
     try:
         from importlib.metadata import version
 
-        v = version("rapid-mlx")
+        v = version("qmlx")
     except Exception:
         v = "dev"
-    return f"rapid-mlx/{v} (+https://github.com/raullenchai/Rapid-MLX)"
+    return f"qmlx/{v} (+https://github.com/raullenchai/Rapid-MLX)"
 
 
 def post_batch(events: list[dict[str, Any]]) -> bool:
@@ -184,7 +184,7 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
 
     url = endpoint()
     if url is None:
-        # Round 16 codex catch: ``RAPID_MLX_TELEMETRY_ENDPOINT`` was
+        # Round 16 codex catch: ``QMLX_TELEMETRY_ENDPOINT`` was
         # set but rejected by ``endpoint()`` (non-localhost host /
         # malformed URL). The previous fallback to the production
         # endpoint could leak dev/test traffic into the production R2
@@ -295,7 +295,7 @@ def post_batch(events: list[dict[str, Any]]) -> bool:
 def _log(msg: str) -> None:
     """Debug-only logger.
 
-    Silent unless ``RAPID_MLX_TELEMETRY_DEBUG`` is set to a truthy
+    Silent unless ``QMLX_TELEMETRY_DEBUG`` is set to a truthy
     value. Goes to stderr so it does not interleave with subcommand
     output that may be JSON-piped.
     """

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # of 3.5s is the largest value that still leaves enough room under a
 # 5s SIGTERM grace for ``engine.stop()`` + telemetry session_end +
 # uvicorn's own teardown to finish before SIGKILL. Override with the
-# ``RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET`` env var (seconds, float;
+# ``QMLX_PREFIX_CACHE_SHUTDOWN_BUDGET`` env var (seconds, float;
 # ``0`` disables the deadline and restores the old "flush everything"
 # behavior — useful for offline CLI saves where no signal is coming).
 _DEFAULT_SHUTDOWN_BUDGET_SEC = 3.5
@@ -38,14 +38,14 @@ _COMMIT_HEADROOM_SEC = 0.4
 
 
 def _shutdown_budget_sec() -> float:
-    raw = os.environ.get("RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET")
+    raw = os.environ.get("QMLX_PREFIX_CACHE_SHUTDOWN_BUDGET")
     if raw is None:
         return _DEFAULT_SHUTDOWN_BUDGET_SEC
     try:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
         logger.warning(
-            f"[lifespan] invalid RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET={raw!r}, "
+            f"[lifespan] invalid QMLX_PREFIX_CACHE_SHUTDOWN_BUDGET={raw!r}, "
             f"falling back to default {_DEFAULT_SHUTDOWN_BUDGET_SEC}s"
         )
         return _DEFAULT_SHUTDOWN_BUDGET_SEC
@@ -133,7 +133,7 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> None:
 
     Runs against a wall-clock budget (default
     :data:`_DEFAULT_SHUTDOWN_BUDGET_SEC`, overridable via the
-    ``RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET`` env var). When the
+    ``QMLX_PREFIX_CACHE_SHUTDOWN_BUDGET`` env var). When the
     deadline is reached the per-entry loop inside
     ``MemoryAwarePrefixCache.save_to_disk`` stops and the partial
     snapshot is committed via the same atomic rename as a full flush —
@@ -285,10 +285,10 @@ def get_cache_dir() -> str:
     # tens-of-models-per-user scale we'd ever see in practice.
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
     leaf = f"{safe_name}--{digest}"
-    # ~/.cache/rapid-mlx/ (was ~/.cache/vllm-mlx/ pre-rename). The cache is
+    # ~/.cache/qmlx/ (was ~/.cache/vllm-mlx/ pre-rename). The cache is
     # best-effort and silently rebuilds, so the moved location just costs a
     # one-time recompute; any stale ~/.cache/vllm-mlx/ dir is inert and safe
     # to delete.
     return os.path.join(
-        os.path.expanduser("~"), ".cache", "rapid-mlx", "prefix_cache", leaf
+        os.path.expanduser("~"), ".cache", "qmlx", "prefix_cache", leaf
     )

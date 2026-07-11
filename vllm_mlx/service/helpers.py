@@ -1006,7 +1006,7 @@ def _rescue_silent_drop_from_reasoning(
 
 # ---------------------------------------------------------------------------
 # Reasoning-cutoff sentinel (default ON; opt out via
-# RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled). H-01 / R-01 / issue #858.
+# QMLX_REASONING_CUTOFF_NOTICE=disabled). H-01 / R-01 / issue #858.
 # ---------------------------------------------------------------------------
 #
 # When a reasoning model (qwen3, deepseek_r1, phi-4-mini-reasoning, glm4,
@@ -1037,7 +1037,7 @@ def _rescue_silent_drop_from_reasoning(
 #   The literal sentinel is the user-visible cue that ``max_tokens`` was
 #   too low, and restoring it as the default outweighs the
 #   structured-purity gain. Power callers that want strict-null behaviour
-#   set ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` (or ``0`` /
+#   set ``QMLX_REASONING_CUTOFF_NOTICE=disabled`` (or ``0`` /
 #   ``false`` / ``no`` / ``off``).
 #
 # Structured truncation signals — also present on every transport,
@@ -1080,8 +1080,8 @@ def _rescue_silent_drop_from_reasoning(
 #: (R12-M1b dedupe fix).
 
 #: Env var values that EXPLICITLY DISABLE the rescue notice. The
-#: primary knob is ``RAPID_MLX_REASONING_RESCUE`` (R12-8 / issue #259);
-#: the legacy ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` (PR #802 / #815 /
+#: primary knob is ``QMLX_REASONING_RESCUE`` (R12-8 / issue #259);
+#: the legacy ``QMLX_REASONING_CUTOFF_NOTICE`` (PR #802 / #815 /
 #: #860) is still honoured as a back-compat alias so existing
 #: rapid-desktop / agent deployments don't break on upgrade.
 #:
@@ -1094,15 +1094,15 @@ def _rescue_silent_drop_from_reasoning(
 #: env var.
 _CUTOFF_NOTICE_DISABLED_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
 
-#: Primary R12-8 env var. ``RAPID_MLX_REASONING_RESCUE=off`` disables
+#: Primary R12-8 env var. ``QMLX_REASONING_RESCUE=off`` disables
 #: the rescue; default is ``on``. Both this name and the legacy alias
 #: below are read; if either is set to a disable value, the rescue is
 #: off (operator intent: "I do not want the literal text injection").
-_RESCUE_ENV_PRIMARY = "RAPID_MLX_REASONING_RESCUE"
+_RESCUE_ENV_PRIMARY = "QMLX_REASONING_RESCUE"
 #: Legacy alias from PR #802 / #860 (issue #858). Kept for back-compat
-#: so callers that already set ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``
+#: so callers that already set ``QMLX_REASONING_CUTOFF_NOTICE=disabled``
 #: don't need to re-deploy when they upgrade to the R12-8 build.
-_RESCUE_ENV_LEGACY = "RAPID_MLX_REASONING_CUTOFF_NOTICE"
+_RESCUE_ENV_LEGACY = "QMLX_REASONING_CUTOFF_NOTICE"
 
 
 def _cutoff_notice_enabled() -> bool:
@@ -1120,15 +1120,15 @@ def _cutoff_notice_enabled() -> bool:
     Reads the env vars on each call so test harnesses can flip the
     gate per-request via ``monkeypatch.setenv`` without restarting the
     process. The cost is negligible (``os.environ.get`` is a dict
-    lookup) and matches how every other ``RAPID_MLX_*`` env-gated knob
+    lookup) and matches how every other ``QMLX_*`` env-gated knob
     is read in this module.
 
     Two env vars are honoured (in this priority order):
 
-    * ``RAPID_MLX_REASONING_RESCUE`` — R12-8 primary name. Easier to
+    * ``QMLX_REASONING_RESCUE`` — R12-8 primary name. Easier to
       discover than the legacy alias (``RESCUE`` is what the operator
       thinks of it as) and aligns with the task spec.
-    * ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` — legacy alias from PR
+    * ``QMLX_REASONING_CUTOFF_NOTICE`` — legacy alias from PR
       #802 / #860 (issue #858). Still honoured so existing
       rapid-desktop deployments and operator runbooks that already
       reference this name keep working without a rebuild.
@@ -1233,8 +1233,8 @@ def _apply_reasoning_cutoff_notice(
     fields.
 
     Returns ``final_content`` unchanged when:
-    * the env var disables the rescue (``RAPID_MLX_REASONING_RESCUE=off``
-      or the legacy ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``)
+    * the env var disables the rescue (``QMLX_REASONING_RESCUE=off``
+      or the legacy ``QMLX_REASONING_CUTOFF_NOTICE=disabled``)
     * ``finish_reason`` is anything other than ``"length"`` (stop-string
       cut mid-think hits the D-STOP-THINK regression guard — strict
       null wins; a clean ``"stop"`` finish on an empty answer is a
@@ -1877,7 +1877,7 @@ def _client_signalled_reasoning_intent(*sources) -> bool:
 
 
 def maybe_apply_reasoning_effort(request) -> bool:
-    """Translate the OpenAI ``reasoning_effort`` knob into rapid-mlx's
+    """Translate the OpenAI ``reasoning_effort`` knob into qmlx's
     native reasoning controls at the route layer (issue #448).
 
     The schema layer (``_validate_reasoning_effort_field`` on
@@ -2039,7 +2039,7 @@ def maybe_auto_disable_thinking_for_casual_chat(request, *, extra_signals=None) 
 
         client.chat.completions.create(
             model="qwen3.5-4b-4bit",   # thinking-capable
-            messages=[{"role":"user","content":"In 8 words, what is rapid-mlx?"}],
+            messages=[{"role":"user","content":"In 8 words, what is qmlx?"}],
             max_tokens=80,
         )
 
@@ -2047,7 +2047,7 @@ def maybe_auto_disable_thinking_for_casual_chat(request, *, extra_signals=None) 
     ``<think>...</think>`` and never emits an answer — the response
     surfaces with ``finish_reason="length"`` and ``content`` carrying
     the rescue-sentinel header followed by raw chain-of-thought (the
-    repro pinned in this task). The ``rapid-mlx chat`` REPL already
+    repro pinned in this task). The ``qmlx chat`` REPL already
     solves this by defaulting ``--no-think`` for thinking-capable
     models — this helper is the OpenAI-SDK-surface parity for that
     same default, so a brand-new user gets a useful first request
@@ -2190,7 +2190,7 @@ def enable_thinking_warning_header(request, parser_name: str | None) -> dict[str
     Conditions to fire (all must hold):
       1. The client EXPLICITLY set ``chat_template_kwargs.enable_thinking``
          (the OpenAI-extension key — the top-level ``enable_thinking``
-         field is the rapid-mlx extension and is already auth-traceable
+         field is the qmlx extension and is already auth-traceable
          via per-request docs, so we skip it to keep the surface narrow).
       2. The active reasoning parser is not in
          ``_THINKING_FLAG_HONORING_PARSERS``.
@@ -3064,7 +3064,7 @@ def _resolve_sync_scheduler_for_abort(engine):
                 abort = getattr(inner_sched, "abort_request", None)
                 if abort is not None and not asyncio.iscoroutinefunction(abort):
                     return abort
-            # D-M01-DEAD (0.8.2 dogfood): the PRODUCTION ``rapid-mlx
+            # D-M01-DEAD (0.8.2 dogfood): the PRODUCTION ``qmlx
             # serve`` shape is ``BatchedEngine._engine`` →
             # ``AsyncEngineCore.engine`` → ``EngineCore.scheduler``.
             # ``AsyncEngineCore`` does NOT expose ``.scheduler``
@@ -3329,7 +3329,7 @@ def _force_abort_request(engine, request_id_holder) -> bool:
                 f"{str(request_id)[:12]}) -> {result}"
             )
             # M-01: attribute the abort to client disconnect so
-            # ``rapid_mlx_requests_cancelled_via_disconnect_total`` ticks
+            # ``qmlx_requests_cancelled_via_disconnect_total`` ticks
             # alongside the total. We bump only when the sync entry
             # actually accepted the abort (``result == True``) — the
             # scheduler returns False for unknown ids and we must not
@@ -3463,7 +3463,7 @@ async def _disconnect_guard(
     connection during long prefills. Routes whose clients only count
     parsed SSE events may pass ``keepalive_factory`` to emit a
     route-specific heartbeat event instead. Set ``keepalive_seconds=0``
-    or ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0`` to disable.
+    or ``QMLX_SSE_KEEPALIVE_SECONDS=0`` to disable.
 
     C-01 force-abort (Astrid r3 dogfooding): when
     ``request_id_holder`` is a mutable list AND the engine publishes
@@ -3703,7 +3703,7 @@ async def _disconnect_guard(
             # bandwidth contract.
             #
             # Gated on ``keepalive_enabled`` so the
-            # ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0`` escape hatch keeps
+            # ``QMLX_SSE_KEEPALIVE_SECONDS=0`` escape hatch keeps
             # the post-role-chunk frame off the wire too — an operator
             # that opted out of heartbeats opted ALL THE WAY out.
             if chunk_count == 1 and keepalive_enabled:

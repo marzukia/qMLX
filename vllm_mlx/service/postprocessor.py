@@ -1748,7 +1748,7 @@ class StreamingPostProcessor:
 
         Codex r3 BLOCKING #1: a hypothetical future parser could emit
         a single delta carrying ``name`` PLUS the first PARTIAL JSON
-        fragment (``'{"city":"Pa'``). The current rapid-mlx parsers
+        fragment (``'{"city":"Pa'``). The current qmlx parsers
         don't do this (hermes / qwen3coder finalize args before
         emitting them with ``name``, or emit ``name`` with empty args
         and stream fragments WITHOUT ``name``), but defending against

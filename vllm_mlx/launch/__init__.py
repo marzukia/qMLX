@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``rapid-mlx launch <client>`` — one-shot bootstrap.
+"""``qmlx launch <client>`` — one-shot bootstrap.
 
 Detects whether the named client (Cline, Claude Code CLI, Continue,
 Cursor) is installed on this machine, then writes/patches the client's
-local config so it routes traffic at the local rapid-mlx OpenAI-
+local config so it routes traffic at the local qmlx OpenAI-
 compatible server (default ``http://127.0.0.1:8000/v1``). Optionally
-spawns ``rapid-mlx serve`` in the background so a user goes from a
+spawns ``qmlx serve`` in the background so a user goes from a
 fresh install to "Cline talking to my Mac" in one command.
 
 The implementation lives in per-client modules so each adapter's
@@ -30,7 +30,7 @@ one-verb UX).
 from . import claude_code, cline, continue_dev, cursor
 
 # Registry consumed by ``vllm_mlx.launch.cli`` — order is the
-# display order in ``rapid-mlx launch list``. Keys are the
+# display order in ``qmlx launch list``. Keys are the
 # user-facing client names accepted on the CLI (kebab-case so
 # ``claude-code`` matches Cline's blog post / Cursor's settings panel
 # shape; ``continue`` would collide with the Python keyword so we use

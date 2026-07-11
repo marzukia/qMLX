@@ -28,7 +28,7 @@ def _torch():
     ``vllm_platform`` is the vLLM platform-plugin entry point — the only
     runtime path that hits this module is when vLLM proper loads the
     plugin (via the ``vllm.platform_plugins`` entry-point). The CLI
-    path (``rapid-mlx serve``, ``chat``, ``bench``) doesn't import
+    path (``qmlx serve``, ``chat``, ``bench``) doesn't import
     this module at all. So torch is a heavy (~700 MB) opt-in dep and
     used to be a hard top-level import that broke every base install
     on plugin-discovery scans (vLLM imports plugin modules eagerly).
@@ -43,7 +43,7 @@ def _torch():
     except ImportError as exc:
         raise ImportError(
             "vllm_mlx.vllm_platform requires PyTorch when invoked by vLLM. "
-            "Install with: pip install 'rapid-mlx[vision]' (vision extras "
+            "Install with: pip install 'qmlx[vision]' (vision extras "
             "include torch), or `pip install torch` directly."
         ) from exc
 

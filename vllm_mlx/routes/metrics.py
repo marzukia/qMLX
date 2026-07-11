@@ -25,13 +25,13 @@ Design choices
   proxy. Prometheus 2.x scrape configs *can* carry bearer tokens
   (``authorization`` section in ``scrape_config``), so this is a
   deliberate convention choice rather than a protocol limitation:
-  matching the de-facto pattern keeps rapid-mlx interoperable with the
+  matching the de-facto pattern keeps qmlx interoperable with the
   large body of existing Prometheus tooling that assumes an unauth
   ``/metrics`` target.
 - **Engine-not-loaded** is a 200, not a 500 — Prometheus would otherwise
   drop the entire target. Build info is always emitted.
 - **Counter monotonicity** — the cache stats backing the
-  ``rapid_mlx_prefix_cache_*_total`` series are reset to zero whenever
+  ``qmlx_prefix_cache_*_total`` series are reset to zero whenever
   the cache is cleared (admin-triggered via ``POST /cache/clear`` or
   internal recovery paths). Prometheus counters MUST be monotonically
   non-decreasing for ``rate()`` to work; otherwise ``rate()`` will spike
@@ -172,11 +172,11 @@ def _coerce_number(value: Any, default: float = 0.0) -> float:
 
 
 def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
-    """Emit the R15 #300 ``rapid_mlx_kv_cache_dtype`` gauge.
+    """Emit the R15 #300 ``qmlx_kv_cache_dtype`` gauge.
 
     Three series — ``dtype="bf16"`` / ``"int8"`` / ``"int4"`` — exactly
     one of which is 1, the others 0. Lets a dashboard wire a single
-    alert / panel against ``rapid_mlx_kv_cache_dtype{dtype="int4"} ==
+    alert / panel against ``qmlx_kv_cache_dtype{dtype="int4"} ==
     1`` without parsing string-valued samples (which Prometheus does
     not support natively).
 
@@ -249,14 +249,14 @@ def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
         dtype = "bf16"
 
     out: list[str] = [
-        "# HELP rapid_mlx_kv_cache_dtype Effective KV cache dtype "
+        "# HELP qmlx_kv_cache_dtype Effective KV cache dtype "
         "(R15 #300). One series per dtype label; the value is 1 for "
         "the active dtype and 0 for the others.",
-        "# TYPE rapid_mlx_kv_cache_dtype gauge",
+        "# TYPE qmlx_kv_cache_dtype gauge",
     ]
     for candidate in ("bf16", "int8", "int4"):
         active = 1 if dtype == candidate else 0
-        out.append(f'rapid_mlx_kv_cache_dtype{{dtype="{candidate}"}} {active}')
+        out.append(f'qmlx_kv_cache_dtype{{dtype="{candidate}"}} {active}')
     return out
 
 
@@ -284,7 +284,7 @@ def _render_response_format_counters() -> list[str]:
     out: list[str] = []
     out.extend(
         _fmt_metric(
-            "rapid_mlx_response_format_strict_total",
+            "qmlx_response_format_strict_total",
             "counter",
             (
                 "Requests with response_format.type=json_schema and "
@@ -298,7 +298,7 @@ def _render_response_format_counters() -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_response_format_strict_violations_total",
+            "qmlx_response_format_strict_violations_total",
             "counter",
             (
                 "Strict json_schema responses that failed post-decode "
@@ -314,7 +314,7 @@ def _render_response_format_counters() -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_response_format_strict_repairs_attempted_total",
+            "qmlx_response_format_strict_repairs_attempted_total",
             "counter",
             (
                 "R12-4 strict-mode auto-repair attempts. Ticks once per "
@@ -322,20 +322,20 @@ def _render_response_format_counters() -> list[str]:
                 "jsonschema.validate and was re-prompted with a "
                 "system-injected repair hint. Includes attempts that "
                 "ultimately still failed (those also bump "
-                "rapid_mlx_response_format_strict_violations_total)."
+                "qmlx_response_format_strict_violations_total)."
             ),
             int(rf_stats.get("strict_repairs_attempted_total", 0)),
         )
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_response_format_strict_repairs_succeeded_total",
+            "qmlx_response_format_strict_repairs_succeeded_total",
             "counter",
             (
                 "R12-4 strict-mode auto-repair successes. Ticks when an "
                 "auto-repair attempt produced output that validated "
                 "against the supplied schema. Divide by "
-                "rapid_mlx_response_format_strict_repairs_attempted_total "
+                "qmlx_response_format_strict_repairs_attempted_total "
                 "for the repair success rate — low rates suggest the "
                 "client's schema is too restrictive for the model."
             ),
@@ -344,7 +344,7 @@ def _render_response_format_counters() -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_response_format_strict_repairs_skipped_context_overflow_total",
+            "qmlx_response_format_strict_repairs_skipped_context_overflow_total",
             "counter",
             (
                 "H-06 #267b strict-mode repair-retry skips. Ticks when "
@@ -402,17 +402,17 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     ``method="mtp"`` so a future tree-MTP variant or a different model
     family (Qwen3.6 vs 3.5) lands cleanly without renaming:
 
-    * ``rapid_mlx_spec_decode_attempts_total`` — Number of MTP draft
+    * ``qmlx_spec_decode_attempts_total`` — Number of MTP draft
       proposals the generator made. Bumped once per
       ``mtp_generate_step`` outer-loop verify iteration.
-    * ``rapid_mlx_spec_decode_accepts_total`` — Subset of attempts
+    * ``qmlx_spec_decode_accepts_total`` — Subset of attempts
       that the verify backbone pass accepted (after
       ``min(1, p_target/p_draft)`` at temp>0 or exact-match at
       temp=0). Always ``<= attempts``.
-    * ``rapid_mlx_spec_decode_tokens_saved_total`` — Cumulative bonus
+    * ``qmlx_spec_decode_tokens_saved_total`` — Cumulative bonus
       tokens emitted from draft acceptance. Equals ``accepts`` for
       chain MTP; tree MTP would let this exceed ``accepts``.
-    * ``rapid_mlx_spec_decode_accept_ratio`` — ``accepts / attempts``
+    * ``qmlx_spec_decode_accept_ratio`` — ``accepts / attempts``
       as a gauge (0.0 when attempts==0, never NaN). The lossless
       contract surface — dashboards alert on this dropping below 0.80
       for Qwen3.5-9B-w4 at temp=0.
@@ -431,28 +431,28 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     try:
         from ..spec_decode.mtp import get_global_counter
     except ImportError:
-        # spec_decode.mtp is part of the rapid-mlx package and should
+        # spec_decode.mtp is part of the qmlx package and should
         # always be importable. The defensive catch keeps /metrics
         # rendering robust in case the package is partially installed
         # (e.g. mid-upgrade, stale .pyc) — emit zero-valued series so
         # dashboards don't break.
         return [
-            "# HELP rapid_mlx_spec_decode_attempts_total MTP draft "
+            "# HELP qmlx_spec_decode_attempts_total MTP draft "
             "proposals (R15-P1 #302).",
-            "# TYPE rapid_mlx_spec_decode_attempts_total counter",
-            'rapid_mlx_spec_decode_attempts_total{family="qwen3.5",method="mtp"} 0',
-            "# HELP rapid_mlx_spec_decode_accepts_total MTP drafts "
+            "# TYPE qmlx_spec_decode_attempts_total counter",
+            'qmlx_spec_decode_attempts_total{family="qwen3.5",method="mtp"} 0',
+            "# HELP qmlx_spec_decode_accepts_total MTP drafts "
             "accepted by the verify backbone pass.",
-            "# TYPE rapid_mlx_spec_decode_accepts_total counter",
-            'rapid_mlx_spec_decode_accepts_total{family="qwen3.5",method="mtp"} 0',
-            "# HELP rapid_mlx_spec_decode_accept_ratio MTP accepts / "
+            "# TYPE qmlx_spec_decode_accepts_total counter",
+            'qmlx_spec_decode_accepts_total{family="qwen3.5",method="mtp"} 0',
+            "# HELP qmlx_spec_decode_accept_ratio MTP accepts / "
             "attempts. 0.0 when attempts==0.",
-            "# TYPE rapid_mlx_spec_decode_accept_ratio gauge",
-            'rapid_mlx_spec_decode_accept_ratio{family="qwen3.5",method="mtp"} 0',
-            "# HELP rapid_mlx_spec_decode_tokens_saved_total Bonus "
+            "# TYPE qmlx_spec_decode_accept_ratio gauge",
+            'qmlx_spec_decode_accept_ratio{family="qwen3.5",method="mtp"} 0',
+            "# HELP qmlx_spec_decode_tokens_saved_total Bonus "
             "tokens emitted from accepted MTP drafts (cumulative).",
-            "# TYPE rapid_mlx_spec_decode_tokens_saved_total counter",
-            'rapid_mlx_spec_decode_tokens_saved_total{family="qwen3.5",method="mtp"} 0',
+            "# TYPE qmlx_spec_decode_tokens_saved_total counter",
+            'qmlx_spec_decode_tokens_saved_total{family="qwen3.5",method="mtp"} 0',
         ]
 
     snapshot = get_global_counter().snapshot()
@@ -486,14 +486,14 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     out: list[str] = []
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_attempts_total",
+            "qmlx_spec_decode_attempts_total",
             "counter",
             (
                 "MTP draft proposals (R15-P1 #302, mlx-lm PR #990). "
                 "Bumped once per mtp_generate_step verify iteration. "
-                "Pair with rapid_mlx_spec_decode_accepts_total to "
+                "Pair with qmlx_spec_decode_accepts_total to "
                 "compute the accept ratio (also surfaced as "
-                "rapid_mlx_spec_decode_accept_ratio)."
+                "qmlx_spec_decode_accept_ratio)."
             ),
             int(snapshot.attempts),
             labels=common_labels,
@@ -501,11 +501,11 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_accepts_total",
+            "qmlx_spec_decode_accepts_total",
             "counter",
             (
                 "MTP drafts accepted by the verify backbone pass. "
-                "Always <= rapid_mlx_spec_decode_attempts_total. The "
+                "Always <= qmlx_spec_decode_attempts_total. The "
                 "lossless contract surface — under the chain MTP "
                 "variant a low ratio is a speedup signal, not a "
                 "correctness one (tokens stay byte-identical to the "
@@ -517,7 +517,7 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_accept_ratio",
+            "qmlx_spec_decode_accept_ratio",
             "gauge",
             (
                 "accepts / attempts. 0.0 when no attempts (Prometheus "
@@ -530,11 +530,11 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_tokens_saved_total",
+            "qmlx_spec_decode_tokens_saved_total",
             "counter",
             (
                 "Cumulative bonus tokens emitted from accepted MTP "
-                "drafts. Equals rapid_mlx_spec_decode_accepts_total "
+                "drafts. Equals qmlx_spec_decode_accepts_total "
                 "under chain MTP (one accept = one bonus token); a "
                 "future tree MTP variant would let this exceed "
                 "accepts."
@@ -561,7 +561,7 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
 
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_park_total",
+            "qmlx_spec_decode_park_total",
             "counter",
             (
                 "MTP rounds where the EV depth controller picked K=0 "
@@ -591,12 +591,12 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     # observed is absent from the series — Prometheus will treat that
     # as a zero for ``rate()``, which is what we want.
     out.append(
-        "# HELP rapid_mlx_spec_decode_k_chosen_total MTP rounds by "
+        "# HELP qmlx_spec_decode_k_chosen_total MTP rounds by "
         "controller-selected draft depth K (0=park, 1=chain-of-1, "
         "2+=chain-of-K). Emitted as a per-K counter so a dashboard "
         'can compute K-share as k_chosen{k="N"} / sum(k_chosen).'
     )
-    out.append("# TYPE rapid_mlx_spec_decode_k_chosen_total counter")
+    out.append("# TYPE qmlx_spec_decode_k_chosen_total counter")
     for k_val in sorted(k_hist.keys()):
         k_labels = {"family": family, "method": "mtp", "k": str(int(k_val))}
         label_str = ",".join(
@@ -604,7 +604,7 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             for name, val in k_labels.items()
         )
         out.append(
-            f"rapid_mlx_spec_decode_k_chosen_total{{{label_str}}} {int(k_hist[k_val])}"
+            f"qmlx_spec_decode_k_chosen_total{{{label_str}}} {int(k_hist[k_val])}"
         )
     if not k_hist:
         # Emit a zero-valued K=0 row so the metric is discoverable in
@@ -615,11 +615,11 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             f'{name}="{_escape_label_value(str(val))}"'
             for name, val in k_labels.items()
         )
-        out.append(f"rapid_mlx_spec_decode_k_chosen_total{{{label_str}}} 0")
+        out.append(f"qmlx_spec_decode_k_chosen_total{{{label_str}}} 0")
 
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_k_chosen_rounds_total",
+            "qmlx_spec_decode_k_chosen_rounds_total",
             "counter",
             (
                 "Total MTP rounds observed by the EV depth controller. "
@@ -643,18 +643,18 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
     Four counters + one gauge, all labeled ``family="qwen3.5|qwen3.6"``
     (or the alias verbatim when present) and ``method="dflash"``:
 
-    * ``rapid_mlx_spec_decode_dflash_attempts_total`` — DFlash block
+    * ``qmlx_spec_decode_dflash_attempts_total`` — DFlash block
       proposals (bumped once per outer-loop verify iteration).
-    * ``rapid_mlx_spec_decode_dflash_accepts_total`` — Blocks where at
+    * ``qmlx_spec_decode_dflash_accepts_total`` — Blocks where at
       least one position was accepted. Always ``<= attempts``.
-    * ``rapid_mlx_spec_decode_dflash_tokens_saved_total`` — Cumulative
+    * ``qmlx_spec_decode_dflash_tokens_saved_total`` — Cumulative
       bonus tokens emitted from accepted prefixes. For a fully-accepted
       block of size B this bumps by ``B - 1``; a partial accept of
       ``k`` positions bumps by ``max(0, k - 1)``.
-    * ``rapid_mlx_spec_decode_dflash_accept_ratio`` — ``accepts /
+    * ``qmlx_spec_decode_dflash_accept_ratio`` — ``accepts /
       attempts`` gauge. 0.0 when attempts==0; the lossless contract
       surface.
-    * ``rapid_mlx_spec_decode_dflash_block_size`` — Observable block
+    * ``qmlx_spec_decode_dflash_block_size`` — Observable block
       size (default 16). Surfaced as a gauge so a future "block size 4
       prototype" run is distinguishable from the production "block
       size 16" config without re-deploying.
@@ -665,26 +665,26 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
         # Defensive: same rationale as MTP — keep /metrics rendering
         # robust during partial install / mid-upgrade.
         return [
-            "# HELP rapid_mlx_spec_decode_dflash_attempts_total "
+            "# HELP qmlx_spec_decode_dflash_attempts_total "
             "DFlash block proposals (R15-P1 #313).",
-            "# TYPE rapid_mlx_spec_decode_dflash_attempts_total counter",
-            'rapid_mlx_spec_decode_dflash_attempts_total{family="qwen3.5",method="dflash"} 0',
-            "# HELP rapid_mlx_spec_decode_dflash_accepts_total "
+            "# TYPE qmlx_spec_decode_dflash_attempts_total counter",
+            'qmlx_spec_decode_dflash_attempts_total{family="qwen3.5",method="dflash"} 0',
+            "# HELP qmlx_spec_decode_dflash_accepts_total "
             "DFlash blocks where at least one position was accepted.",
-            "# TYPE rapid_mlx_spec_decode_dflash_accepts_total counter",
-            'rapid_mlx_spec_decode_dflash_accepts_total{family="qwen3.5",method="dflash"} 0',
-            "# HELP rapid_mlx_spec_decode_dflash_accept_ratio "
+            "# TYPE qmlx_spec_decode_dflash_accepts_total counter",
+            'qmlx_spec_decode_dflash_accepts_total{family="qwen3.5",method="dflash"} 0',
+            "# HELP qmlx_spec_decode_dflash_accept_ratio "
             "DFlash accepts / attempts. 0.0 when attempts==0.",
-            "# TYPE rapid_mlx_spec_decode_dflash_accept_ratio gauge",
-            'rapid_mlx_spec_decode_dflash_accept_ratio{family="qwen3.5",method="dflash"} 0',
-            "# HELP rapid_mlx_spec_decode_dflash_tokens_saved_total "
+            "# TYPE qmlx_spec_decode_dflash_accept_ratio gauge",
+            'qmlx_spec_decode_dflash_accept_ratio{family="qwen3.5",method="dflash"} 0',
+            "# HELP qmlx_spec_decode_dflash_tokens_saved_total "
             "Cumulative bonus tokens from accepted DFlash prefixes.",
-            "# TYPE rapid_mlx_spec_decode_dflash_tokens_saved_total counter",
-            'rapid_mlx_spec_decode_dflash_tokens_saved_total{family="qwen3.5",method="dflash"} 0',
-            "# HELP rapid_mlx_spec_decode_dflash_block_size "
+            "# TYPE qmlx_spec_decode_dflash_tokens_saved_total counter",
+            'qmlx_spec_decode_dflash_tokens_saved_total{family="qwen3.5",method="dflash"} 0',
+            "# HELP qmlx_spec_decode_dflash_block_size "
             "Active DFlash drafter block size (paper default 16).",
-            "# TYPE rapid_mlx_spec_decode_dflash_block_size gauge",
-            'rapid_mlx_spec_decode_dflash_block_size{family="qwen3.5",method="dflash"} 16',
+            "# TYPE qmlx_spec_decode_dflash_block_size gauge",
+            'qmlx_spec_decode_dflash_block_size{family="qwen3.5",method="dflash"} 16',
         ]
 
     snapshot = get_global_counter().snapshot()
@@ -694,14 +694,14 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
     out: list[str] = []
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_dflash_attempts_total",
+            "qmlx_spec_decode_dflash_attempts_total",
             "counter",
             (
                 "DFlash block proposals (R15-P1 #313, arxiv 2410.04097). "
                 "Bumped once per dflash_generate_step verify iteration. "
-                "Pair with rapid_mlx_spec_decode_dflash_accepts_total to "
+                "Pair with qmlx_spec_decode_dflash_accepts_total to "
                 "compute the accept ratio (also surfaced as "
-                "rapid_mlx_spec_decode_dflash_accept_ratio)."
+                "qmlx_spec_decode_dflash_accept_ratio)."
             ),
             int(snapshot.attempts),
             labels=common_labels,
@@ -709,7 +709,7 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_dflash_accepts_total",
+            "qmlx_spec_decode_dflash_accepts_total",
             "counter",
             (
                 "DFlash blocks where at least one position was accepted "
@@ -724,7 +724,7 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_dflash_accept_ratio",
+            "qmlx_spec_decode_dflash_accept_ratio",
             "gauge",
             (
                 "accepts / attempts. 0.0 when no attempts (Prometheus "
@@ -737,7 +737,7 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_dflash_tokens_saved_total",
+            "qmlx_spec_decode_dflash_tokens_saved_total",
             "counter",
             (
                 "Cumulative bonus tokens emitted from accepted DFlash "
@@ -751,7 +751,7 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_spec_decode_dflash_block_size",
+            "qmlx_spec_decode_dflash_block_size",
             "gauge",
             (
                 "Active DFlash drafter block size. Defaults to 16 (paper "
@@ -768,7 +768,7 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
 def _render_ubc_evict_counters() -> list[str]:
     """Render the Defect 4 UBC eviction counter.
 
-    Single counter (``rapid_mlx_ubc_evicted_bytes_total{path_kind=
+    Single counter (``qmlx_ubc_evicted_bytes_total{path_kind=
     "safetensors"}``) — cumulative bytes that the macOS UBC eviction
     helper has asked the kernel to discard via ``msync(MS_INVALIDATE)``.
     Non-zero only on Darwin; Linux / Windows builds report a flat 0
@@ -778,8 +778,8 @@ def _render_ubc_evict_counters() -> list[str]:
     the counter state (same convention as ``_mxfp4_moe_guardrail``).
     On import error we synthesize an all-zero block so ``/metrics``
     always exposes the series — operators alerting on
-    ``rapid_mlx_ubc_evicted_bytes_total > 0`` would otherwise see
-    "no data" between rapid-mlx restarts if the helper module ever
+    ``qmlx_ubc_evicted_bytes_total > 0`` would otherwise see
+    "no data" between qmlx restarts if the helper module ever
     failed to import.
     """
     try:
@@ -788,10 +788,10 @@ def _render_ubc_evict_counters() -> list[str]:
         return render_prometheus_lines()
     except Exception:
         return [
-            "# HELP rapid_mlx_ubc_evicted_bytes_total "
+            "# HELP qmlx_ubc_evicted_bytes_total "
             "Cumulative bytes evicted from the macOS UBC by the Defect 4 helper.",
-            "# TYPE rapid_mlx_ubc_evicted_bytes_total counter",
-            'rapid_mlx_ubc_evicted_bytes_total{path_kind="safetensors"} 0',
+            "# TYPE qmlx_ubc_evicted_bytes_total counter",
+            'qmlx_ubc_evicted_bytes_total{path_kind="safetensors"} 0',
         ]
 
 
@@ -814,17 +814,17 @@ def _render_mxfp4_moe_guardrail_counters() -> list[str]:
         # Counters never decrease but they may legitimately be missing
         # if the guardrail module fails to import — surface a 0-valued
         # series so dashboards still see the metric name and operators
-        # can alert on rapid_mlx_mxfp4_moe_distributed_warnings_total
+        # can alert on qmlx_mxfp4_moe_distributed_warnings_total
         # > 0 regardless of import state.
         return [
-            "# HELP rapid_mlx_mxfp4_moe_distributed_warnings_total "
+            "# HELP qmlx_mxfp4_moe_distributed_warnings_total "
             "Load-time warnings for MoE+MXFP4+multi-device cliff (mlx#3402).",
-            "# TYPE rapid_mlx_mxfp4_moe_distributed_warnings_total counter",
-            "rapid_mlx_mxfp4_moe_distributed_warnings_total 0",
-            "# HELP rapid_mlx_nvfp4_moe_warnings_total "
+            "# TYPE qmlx_mxfp4_moe_distributed_warnings_total counter",
+            "qmlx_mxfp4_moe_distributed_warnings_total 0",
+            "# HELP qmlx_nvfp4_moe_warnings_total "
             "Load-time warnings for MoE+NVFP4 dynamic-range loss (mlx#2962).",
-            "# TYPE rapid_mlx_nvfp4_moe_warnings_total counter",
-            "rapid_mlx_nvfp4_moe_warnings_total 0",
+            "# TYPE qmlx_nvfp4_moe_warnings_total counter",
+            "qmlx_nvfp4_moe_warnings_total 0",
         ]
 
 
@@ -832,12 +832,12 @@ def _render_turboquant_metrics(cfg: Any) -> list[str]:
     """Render the R15 Phase 4 TurboQuant metrics block.
 
     Three series:
-      * ``rapid_mlx_turboquant_mode{mode="k8v4|v4|disabled"}`` gauge —
+      * ``qmlx_turboquant_mode{mode="k8v4|v4|disabled"}`` gauge —
         set once at serve boot to the active TurboQuant mode.
-      * ``rapid_mlx_turboquant_skipped_total{reason="sliding-window|mla|other"}``
+      * ``qmlx_turboquant_skipped_total{reason="sliding-window|mla|other"}``
         counter — incremented when a load lands on a model the skip
         list flags as incompatible.
-      * ``rapid_mlx_turboquant_fused_kernel{status="available|fallback"}``
+      * ``qmlx_turboquant_fused_kernel{status="available|fallback"}``
         gauge — set once at serve boot to whether the vendored Metal
         kernel compiled. ``fallback`` means callers run the pure-MLX
         reference path; observed numerical output is identical (1e-4
@@ -874,14 +874,14 @@ def _render_turboquant_metrics(cfg: Any) -> list[str]:
         mode = "disabled"
 
     out.append(
-        "# HELP rapid_mlx_turboquant_mode Active TurboQuant compression "
+        "# HELP qmlx_turboquant_mode Active TurboQuant compression "
         "mode (R15 Phase 4). One series per mode label; value is 1 for "
         "the active mode and 0 for the others."
     )
-    out.append("# TYPE rapid_mlx_turboquant_mode gauge")
+    out.append("# TYPE qmlx_turboquant_mode gauge")
     for candidate in ("disabled", "v4", "k8v4"):
         active = 1 if mode == candidate else 0
-        out.append(f'rapid_mlx_turboquant_mode{{mode="{candidate}"}} {active}')
+        out.append(f'qmlx_turboquant_mode{{mode="{candidate}"}} {active}')
 
     # Skip-list counter: emit one series per known reason even when the
     # underlying counter is zero so dashboards don't flip to "no data"
@@ -889,30 +889,30 @@ def _render_turboquant_metrics(cfg: Any) -> list[str]:
     # ``turboquant_skip_counters`` so the engine load path can bump it
     # via ``record_turboquant_skip(reason)``.
     out.append(
-        "# HELP rapid_mlx_turboquant_skipped_total Cumulative model "
+        "# HELP qmlx_turboquant_skipped_total Cumulative model "
         "loads where TurboQuant was requested but the skip list "
         "(sliding-window, MLA, other) forced a fall-back to FP16 KV."
     )
-    out.append("# TYPE rapid_mlx_turboquant_skipped_total counter")
+    out.append("# TYPE qmlx_turboquant_skipped_total counter")
     for reason in ("sliding-window", "mla", "other"):
         count = int(turboquant_skip_counters.get(reason, 0))
-        out.append(f'rapid_mlx_turboquant_skipped_total{{reason="{reason}"}} {count}')
+        out.append(f'qmlx_turboquant_skipped_total{{reason="{reason}"}} {count}')
 
     # Fused-kernel availability. Cached at module import-time on the
     # first call so /metrics doesn't pay the import cost on every
     # scrape.
     status = _resolve_fused_kernel_status()
     out.append(
-        "# HELP rapid_mlx_turboquant_fused_kernel Status of the vendored "
+        "# HELP qmlx_turboquant_fused_kernel Status of the vendored "
         "TurboQuant fused Metal kernel — ``available`` means decode runs "
         "on the fused path, ``fallback`` means the pure-MLX reference "
         "path is in use (functional, slower)."
     )
-    out.append("# TYPE rapid_mlx_turboquant_fused_kernel gauge")
+    out.append("# TYPE qmlx_turboquant_fused_kernel gauge")
     for candidate in ("available", "fallback"):
         active = 1 if status == candidate else 0
         out.append(
-            f'rapid_mlx_turboquant_fused_kernel{{status="{candidate}"}} {active}'
+            f'qmlx_turboquant_fused_kernel{{status="{candidate}"}} {active}'
         )
     return out
 
@@ -1021,23 +1021,23 @@ def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
     offered = int(_coerce_number(hm.get("prompt_tokens_offered")))
     out.extend(
         _fmt_metric(
-            "rapid_mlx_prompt_tokens_offered_total",
+            "qmlx_prompt_tokens_offered_total",
             "counter",
             (
                 "Cumulative prompt tokens OFFERED across admitted requests "
                 "(Sigma num_prompt_tokens). Honest sibling of "
-                "rapid_mlx_prompt_tokens_total, counted exactly once per "
+                "qmlx_prompt_tokens_total, counted exactly once per "
                 "scheduled request at batch-install time."
             ),
             _cache_counter_accumulator.advance(
-                "rapid_mlx_prompt_tokens_offered_total", offered
+                "qmlx_prompt_tokens_offered_total", offered
             ),
         )
     )
     computed = int(_coerce_number(hm.get("prompt_tokens_computed")))
     out.extend(
         _fmt_metric(
-            "rapid_mlx_prompt_tokens_computed_total",
+            "qmlx_prompt_tokens_computed_total",
             "counter",
             (
                 "Cumulative prompt tokens the model actually forwarded "
@@ -1045,7 +1045,7 @@ def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
                 "offered - computed is the KV that was reused."
             ),
             _cache_counter_accumulator.advance(
-                "rapid_mlx_prompt_tokens_computed_total", computed
+                "qmlx_prompt_tokens_computed_total", computed
             ),
         )
     )
@@ -1054,69 +1054,69 @@ def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
     if not isinstance(reused, dict):
         reused = {}
     out.append(
-        "# HELP rapid_mlx_prompt_tokens_reused_total Cumulative prompt "
+        "# HELP qmlx_prompt_tokens_reused_total Cumulative prompt "
         "tokens served from an actually-installed KV cache, split by the "
         "source the KV came from. The first token-level view of disk "
         "restores (source=disk)."
     )
-    out.append("# TYPE rapid_mlx_prompt_tokens_reused_total counter")
+    out.append("# TYPE qmlx_prompt_tokens_reused_total counter")
     for source in ("memory", "disk"):
         raw = int(_coerce_number(reused.get(source)))
         monotonic = _cache_counter_accumulator.advance(
-            f"rapid_mlx_prompt_tokens_reused_total|{source}", raw
+            f"qmlx_prompt_tokens_reused_total|{source}", raw
         )
         out.append(
-            f'rapid_mlx_prompt_tokens_reused_total{{source="{source}"}} {monotonic}'
+            f'qmlx_prompt_tokens_reused_total{{source="{source}"}} {monotonic}'
         )
 
     prefill_kind = hm.get("prefill_kind")
     if not isinstance(prefill_kind, dict):
         prefill_kind = {}
     out.append(
-        "# HELP rapid_mlx_prefill_kind_total Admitted requests by prefill "
+        "# HELP qmlx_prefill_kind_total Admitted requests by prefill "
         "kind: cold (no cache), extend (partial prefix reused + tail "
         "re-prefilled), exact (whole prompt reused)."
     )
-    out.append("# TYPE rapid_mlx_prefill_kind_total counter")
+    out.append("# TYPE qmlx_prefill_kind_total counter")
     for kind in ("cold", "extend", "exact"):
         raw = int(_coerce_number(prefill_kind.get(kind)))
         monotonic = _cache_counter_accumulator.advance(
-            f"rapid_mlx_prefill_kind_total|{kind}", raw
+            f"qmlx_prefill_kind_total|{kind}", raw
         )
-        out.append(f'rapid_mlx_prefill_kind_total{{kind="{kind}"}} {monotonic}')
+        out.append(f'qmlx_prefill_kind_total{{kind="{kind}"}} {monotonic}')
 
     kv_restore = hm.get("kv_restore_result")
     if not isinstance(kv_restore, dict):
         kv_restore = {}
     out.append(
-        "# HELP rapid_mlx_kv_restore_total Disk KV restore attempts by "
+        "# HELP qmlx_kv_restore_total Disk KV restore attempts by "
         "result; hit means a checkpoint prefix was found, verified, and "
         "installed."
     )
-    out.append("# TYPE rapid_mlx_kv_restore_total counter")
+    out.append("# TYPE qmlx_kv_restore_total counter")
     for result in ("hit", "miss"):
         raw = int(_coerce_number(kv_restore.get(result)))
         monotonic = _cache_counter_accumulator.advance(
-            f"rapid_mlx_kv_restore_total|{result}", raw
+            f"qmlx_kv_restore_total|{result}", raw
         )
-        out.append(f'rapid_mlx_kv_restore_total{{result="{result}"}} {monotonic}')
+        out.append(f'qmlx_kv_restore_total{{result="{result}"}} {monotonic}')
 
     match = hm.get("prefix_cache_match")
     if not isinstance(match, dict):
         match = {}
     out.append(
-        "# HELP rapid_mlx_prefix_cache_match_total In-memory prefix-cache "
+        "# HELP qmlx_prefix_cache_match_total In-memory prefix-cache "
         "lookups by match type (issue #2). Sourced from the cache's "
         "_last_match_type at fetch time."
     )
-    out.append("# TYPE rapid_mlx_prefix_cache_match_total counter")
+    out.append("# TYPE qmlx_prefix_cache_match_total counter")
     for match_type in ("exact", "prefix", "supersequence", "lcp", "miss"):
         raw = int(_coerce_number(match.get(match_type)))
-        out.append(f'rapid_mlx_prefix_cache_match_total{{type="{match_type}"}} {raw}')
+        out.append(f'qmlx_prefix_cache_match_total{{type="{match_type}"}} {raw}')
 
     out.extend(
         _render_histogram(
-            "rapid_mlx_ttft_seconds",
+            "qmlx_ttft_seconds",
             (
                 "Time to first token in seconds (first_token_time - "
                 "arrival_time). Fixed-bucket histogram."
@@ -1126,7 +1126,7 @@ def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
     )
     out.extend(
         _render_histogram(
-            "rapid_mlx_decode_tokens_per_second",
+            "qmlx_decode_tokens_per_second",
             (
                 "Pure decode throughput: (num_output_tokens - 1) / "
                 "(t_last_token - first_token_time), outputs of >=2 tokens "
@@ -1147,7 +1147,7 @@ def _render_prometheus(cfg: Any) -> str:
     # Lets dashboards/alerts filter by version without a separate label.
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_build_info",
+            "qmlx_build_info",
             "gauge",
             "Build info as constant 1 (version/model carried in labels).",
             1,
@@ -1224,7 +1224,7 @@ def _render_prometheus(cfg: Any) -> str:
     # ---- Scheduler counters & gauges -----------------------------------
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_requests_processed_total",
+            "qmlx_requests_processed_total",
             "counter",
             "Cumulative requests that have completed processing.",
             int(_coerce_number(stats.get("num_requests_processed"))),
@@ -1232,7 +1232,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_prompt_tokens_total",
+            "qmlx_prompt_tokens_total",
             "counter",
             "Cumulative prompt tokens consumed across all requests.",
             int(_coerce_number(stats.get("total_prompt_tokens"))),
@@ -1240,7 +1240,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_completion_tokens_total",
+            "qmlx_completion_tokens_total",
             "counter",
             "Cumulative completion tokens generated across all requests.",
             int(_coerce_number(stats.get("total_completion_tokens"))),
@@ -1248,7 +1248,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_requests_running",
+            "qmlx_requests_running",
             "gauge",
             "Requests currently in the running batch.",
             int(_coerce_number(stats.get("num_running"))),
@@ -1256,7 +1256,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_requests_waiting",
+            "qmlx_requests_waiting",
             "gauge",
             "Requests queued and waiting for a batch slot.",
             int(_coerce_number(stats.get("num_waiting"))),
@@ -1264,7 +1264,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_steps_executed_total",
+            "qmlx_steps_executed_total",
             "counter",
             "Cumulative scheduler steps executed since engine start.",
             int(_coerce_number(stats.get("steps_executed"))),
@@ -1272,7 +1272,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_uptime_seconds",
+            "qmlx_uptime_seconds",
             "gauge",
             "Engine uptime in seconds.",
             round(_coerce_number(stats.get("uptime_seconds")), 3),
@@ -1285,17 +1285,17 @@ def _render_prometheus(cfg: Any) -> str:
     for stat_key, metric_name, help_text in (
         (
             "metal_active_memory_gb",
-            "rapid_mlx_metal_active_memory_bytes",
+            "qmlx_metal_active_memory_bytes",
             "Active Metal memory in bytes.",
         ),
         (
             "metal_peak_memory_gb",
-            "rapid_mlx_metal_peak_memory_bytes",
+            "qmlx_metal_peak_memory_bytes",
             "Peak Metal memory in bytes.",
         ),
         (
             "metal_cache_memory_gb",
-            "rapid_mlx_metal_cache_memory_bytes",
+            "qmlx_metal_cache_memory_bytes",
             "Metal allocator cache in bytes.",
         ),
     ):
@@ -1328,22 +1328,22 @@ def _render_prometheus(cfg: Any) -> str:
         for raw_key, metric_name, help_text in (
             (
                 "hits",
-                "rapid_mlx_prefix_cache_hits_total",
+                "qmlx_prefix_cache_hits_total",
                 "Prefix-cache lookups that hit a cached entry.",
             ),
             (
                 "misses",
-                "rapid_mlx_prefix_cache_misses_total",
+                "qmlx_prefix_cache_misses_total",
                 "Prefix-cache lookups that missed.",
             ),
             (
                 "evictions",
-                "rapid_mlx_prefix_cache_evictions_total",
+                "qmlx_prefix_cache_evictions_total",
                 "Prefix-cache entries evicted by the LRU policy.",
             ),
             (
                 "tokens_saved",
-                "rapid_mlx_prefix_cache_tokens_saved_total",
+                "qmlx_prefix_cache_tokens_saved_total",
                 "Prompt tokens skipped thanks to prefix-cache hits.",
             ),
             (
@@ -1358,7 +1358,7 @@ def _render_prometheus(cfg: Any) -> str:
                 # surface for cache-load corruption beyond grepping
                 # ``[cache_persist] SKIPPED`` log lines.
                 "load_skipped",
-                "rapid_mlx_prefix_cache_load_skipped_total",
+                "qmlx_prefix_cache_load_skipped_total",
                 (
                     "Prefix-cache entries rejected at disk-load by the "
                     "per-entry integrity guard (R10-D format-pin: magic, "
@@ -1379,7 +1379,7 @@ def _render_prometheus(cfg: Any) -> str:
                 # caught at save (good) or at load (bad — means another
                 # path skipped the verify).
                 "save_drift_drops",
-                "rapid_mlx_prefix_cache_save_drift_drops_total",
+                "qmlx_prefix_cache_save_drift_drops_total",
                 (
                     "Prefix-cache entries dropped at disk-save by the "
                     "post-write self-verify pass (R12-T1: save_uuid or "
@@ -1399,7 +1399,7 @@ def _render_prometheus(cfg: Any) -> str:
                 # leak. A steadily-climbing rate on a hybrid model is the
                 # EXPECTED, healthy signal that the leak fix is engaged.
                 "non_trimmable_skips",
-                "rapid_mlx_prefix_cache_non_trimmable_skips_total",
+                "qmlx_prefix_cache_non_trimmable_skips_total",
                 (
                     "Prefix-cache store calls dropped because the cache "
                     "carried a non-trimmable recurrent-state layer "
@@ -1415,7 +1415,7 @@ def _render_prometheus(cfg: Any) -> str:
 
         # ---- R7-M1: prefix-cache cap + current-usage gauges ----------
         # Dogfood-088 (Talia r2) flagged that operators tuning the
-        # ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` env override had NO
+        # ``QMLX_PREFIX_CACHE_MAX_BYTES`` env override had NO
         # Prometheus surface to verify the cap was actually honored
         # at runtime — they could see ``evictions_total`` tick but
         # couldn't graph "how close are we to cap?" or "did our env
@@ -1423,13 +1423,13 @@ def _render_prometheus(cfg: Any) -> str:
         # exposing the same byte values the LRU evict-until-fits loop
         # in MemoryAwarePrefixCache.store() compares against:
         #
-        #   * ``rapid_mlx_prefix_cache_cap_bytes`` — the resolved
+        #   * ``qmlx_prefix_cache_cap_bytes`` — the resolved
         #     ceiling from ``MemoryCacheConfig.compute_memory_limit``
         #     (env > programmatic > heuristic > 8 GiB fallback).
         #     Gauge, not counter, because the value is set once at
         #     cache init and reflects current config, not cumulative
         #     work.
-        #   * ``rapid_mlx_prefix_cache_current_bytes`` — the cache's
+        #   * ``qmlx_prefix_cache_current_bytes`` — the cache's
         #     live ledger of how many bytes are pinned by entries.
         #     Pair with cap_bytes to compute utilization headroom
         #     (1 - current/cap) in Prometheus or Grafana without
@@ -1442,11 +1442,11 @@ def _render_prometheus(cfg: Any) -> str:
         # already consume.
         lines.extend(
             _fmt_metric(
-                "rapid_mlx_prefix_cache_cap_bytes",
+                "qmlx_prefix_cache_cap_bytes",
                 "gauge",
                 (
                     "Prefix-cache memory ceiling in bytes (resolved from "
-                    "RAPID_MLX_PREFIX_CACHE_MAX_BYTES env override, "
+                    "QMLX_PREFIX_CACHE_MAX_BYTES env override, "
                     "programmatic max_memory_mb, or the heuristic "
                     "fraction-of-RAM default)."
                 ),
@@ -1455,11 +1455,11 @@ def _render_prometheus(cfg: Any) -> str:
         )
         lines.extend(
             _fmt_metric(
-                "rapid_mlx_prefix_cache_current_bytes",
+                "qmlx_prefix_cache_current_bytes",
                 "gauge",
                 (
                     "Prefix-cache memory currently pinned by cached entries, "
-                    "in bytes. Compare to rapid_mlx_prefix_cache_cap_bytes "
+                    "in bytes. Compare to qmlx_prefix_cache_cap_bytes "
                     "for headroom; the cache evicts LRU entries to stay "
                     "below the cap."
                 ),
@@ -1470,8 +1470,8 @@ def _render_prometheus(cfg: Any) -> str:
     # ---- R15-P1 radix-tree prefix-cache index (task #303) -------------
     # Radix counters live inside the same ``cache_stats`` dict, nested
     # under ``"radix"``. They are emitted under the
-    # ``rapid_mlx_prefix_cache_radix_*`` namespace so the legacy
-    # ``rapid_mlx_prefix_cache_*`` series stay byte-identical for
+    # ``qmlx_prefix_cache_radix_*`` namespace so the legacy
+    # ``qmlx_prefix_cache_*`` series stay byte-identical for
     # dashboards. All counters here are process-monotonic — the radix
     # never resets its cumulative counters on ``clear()`` (see
     # ``RadixStats`` doc) — so the sticky accumulator is not required.
@@ -1483,27 +1483,27 @@ def _render_prometheus(cfg: Any) -> str:
         for raw_key, metric_name, help_text in (
             (
                 "hits",
-                "rapid_mlx_prefix_cache_radix_hits_total",
+                "qmlx_prefix_cache_radix_hits_total",
                 "Prefix-cache radix-index lookups that resolved to a stored entry.",
             ),
             (
                 "misses",
-                "rapid_mlx_prefix_cache_radix_misses_total",
+                "qmlx_prefix_cache_radix_misses_total",
                 "Prefix-cache radix-index lookups that resolved to no entry.",
             ),
             (
                 "inserts",
-                "rapid_mlx_prefix_cache_radix_inserts_total",
+                "qmlx_prefix_cache_radix_inserts_total",
                 "Prefix-cache radix-index inserts (one per cache store).",
             ),
             (
                 "removes",
-                "rapid_mlx_prefix_cache_radix_removes_total",
+                "qmlx_prefix_cache_radix_removes_total",
                 "Prefix-cache radix-index removes (LRU evict + explicit remove).",
             ),
             (
                 "deduped_prefix_bytes_saved",
-                "rapid_mlx_prefix_cache_radix_deduped_bytes_total",
+                "qmlx_prefix_cache_radix_deduped_bytes_total",
                 (
                     "Cumulative wire-format bytes that the radix index "
                     "collapsed into shared prefix nodes — i.e. the on-disk "
@@ -1524,17 +1524,17 @@ def _render_prometheus(cfg: Any) -> str:
         for raw_key, metric_name, help_text in (
             (
                 "node_count",
-                "rapid_mlx_prefix_cache_radix_nodes",
+                "qmlx_prefix_cache_radix_nodes",
                 "Live count of radix-tree nodes (one per shared/unique token edge).",
             ),
             (
                 "entry_count",
-                "rapid_mlx_prefix_cache_radix_entries",
+                "qmlx_prefix_cache_radix_entries",
                 "Live count of terminal nodes (== entries the radix indexes).",
             ),
             (
                 "max_depth",
-                "rapid_mlx_prefix_cache_radix_max_depth",
+                "qmlx_prefix_cache_radix_max_depth",
                 "Deepest path through the radix (longest stored sequence).",
             ),
         ):
@@ -1550,7 +1550,7 @@ def _render_prometheus(cfg: Any) -> str:
         # Floats pass through ``_fmt_metric`` unchanged.
         lines.extend(
             _fmt_metric(
-                "rapid_mlx_prefix_cache_radix_lookup_p50_seconds",
+                "qmlx_prefix_cache_radix_lookup_p50_seconds",
                 "gauge",
                 "p50 lookup latency over the last 256 radix queries, in seconds.",
                 float(_coerce_number(radix_stats.get("lookup_p50_seconds"))),
@@ -1558,7 +1558,7 @@ def _render_prometheus(cfg: Any) -> str:
         )
         lines.extend(
             _fmt_metric(
-                "rapid_mlx_prefix_cache_radix_lookup_p99_seconds",
+                "qmlx_prefix_cache_radix_lookup_p99_seconds",
                 "gauge",
                 "p99 lookup latency over the last 256 radix queries, in seconds.",
                 float(_coerce_number(radix_stats.get("lookup_p99_seconds"))),
@@ -1581,7 +1581,7 @@ def _render_prometheus(cfg: Any) -> str:
     # increment, so the sticky accumulator is not required.
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_pflash_bypass_total",
+            "qmlx_pflash_bypass_total",
             "counter",
             (
                 "Requests where PFlash compression engaged and the "
@@ -1592,7 +1592,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_pflash_compressed_tokens_total",
+            "qmlx_pflash_compressed_tokens_total",
             "counter",
             (
                 "Cumulative prompt tokens dropped by PFlash compression "
@@ -1603,7 +1603,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
 
     # ---- Cancellation observability (M-01) -----------------------------
-    # ``rapid_mlx_requests_processed_total`` deliberately excludes aborted
+    # ``qmlx_requests_processed_total`` deliberately excludes aborted
     # requests, so when fifty clients disconnect mid-stream the operator-
     # facing series stays at zero with no way to distinguish "model idle"
     # from "every request bailed". The total counter below ticks once per
@@ -1618,12 +1618,12 @@ def _render_prometheus(cfg: Any) -> str:
     # treatment) so dashboards never flip to "no data" after a deploy.
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_requests_cancelled_total",
+            "qmlx_requests_cancelled_total",
             "counter",
             (
                 "Cumulative requests aborted via the scheduler abort path "
                 "(client disconnect, explicit cancel route, timeout). "
-                "Disjoint from rapid_mlx_requests_processed_total which "
+                "Disjoint from qmlx_requests_processed_total which "
                 "only counts completed requests."
             ),
             int(_coerce_number(stats.get("num_requests_cancelled"))),
@@ -1631,10 +1631,10 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_requests_cancelled_via_disconnect_total",
+            "qmlx_requests_cancelled_via_disconnect_total",
             "counter",
             (
-                "Subset of rapid_mlx_requests_cancelled_total attributed "
+                "Subset of qmlx_requests_cancelled_total attributed "
                 "to client disconnect (force-abort fired from the "
                 "disconnect_guard streaming-route helper)."
             ),
@@ -1667,7 +1667,7 @@ def _render_prometheus(cfg: Any) -> str:
     # OrderedDict count was AT limit, not over it).
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_metal_cap_violations_total",
+            "qmlx_metal_cap_violations_total",
             "counter",
             (
                 "Requests rejected at admission because Metal active "
@@ -1684,12 +1684,12 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_prefix_cache_pressure_evictions_total",
+            "qmlx_prefix_cache_pressure_evictions_total",
             "counter",
             (
                 "Prefix-cache entries evicted by the Metal-pressure "
                 "trigger (D-METAL-PFX). Disjoint from "
-                "rapid_mlx_prefix_cache_evictions_total which counts "
+                "qmlx_prefix_cache_evictions_total which counts "
                 "LRU-on-capacity evictions performed by the cache "
                 "itself."
             ),
@@ -1709,7 +1709,7 @@ def _render_prometheus(cfg: Any) -> str:
         kv_ckpt_stats = {}
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_kv_checkpoint_writes_total",
+            "qmlx_kv_checkpoint_writes_total",
             "counter",
             (
                 "Cumulative disk-backed KV checkpoints written at 256-tok "
@@ -1721,7 +1721,7 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_kv_checkpoint_loads_total",
+            "qmlx_kv_checkpoint_loads_total",
             "counter",
             (
                 "Cumulative disk-backed KV checkpoint reloads through "
@@ -1734,11 +1734,11 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_kv_checkpoint_bytes",
+            "qmlx_kv_checkpoint_bytes",
             "gauge",
             (
                 "Live total bytes across every committed disk-backed KV "
-                "checkpoint under ~/.cache/rapid-mlx/kv_checkpoints/ "
+                "checkpoint under ~/.cache/qmlx/kv_checkpoints/ "
                 "(R15 #296). Gauge, not counter, because the value "
                 "drops on oldest-first eviction."
             ),
@@ -1747,19 +1747,19 @@ def _render_prometheus(cfg: Any) -> str:
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_kv_checkpoint_evictions_total",
+            "qmlx_kv_checkpoint_evictions_total",
             "counter",
             (
                 "Cumulative oldest-first evictions performed against the "
                 "disk-backed KV checkpoint root because the byte total "
-                "crossed RAPID_MLX_KV_CHECKPOINT_MAX_BYTES (R15 #296)."
+                "crossed QMLX_KV_CHECKPOINT_MAX_BYTES (R15 #296)."
             ),
             int(_coerce_number(kv_ckpt_stats.get("evictions"))),
         )
     )
     lines.extend(
         _fmt_metric(
-            "rapid_mlx_kv_checkpoint_hook_errors_total",
+            "qmlx_kv_checkpoint_hook_errors_total",
             "counter",
             (
                 "Cumulative unexpected exceptions caught by the scheduler's "
@@ -1807,15 +1807,15 @@ def _render_prometheus(cfg: Any) -> str:
     restore_rejects = {reason: 0 for reason in RESTORE_REJECT_REASONS}
     restore_rejects.update(raw_rejects)
     lines.append(
-        "# HELP rapid_mlx_kv_restore_reject_total Disk-KV checkpoint "
+        "# HELP qmlx_kv_restore_reject_total Disk-KV checkpoint "
         "restores looked up but refused a validation guard (and re-"
         "prefilled instead), by reason (R15-P4 / issue #10)."
     )
-    lines.append("# TYPE rapid_mlx_kv_restore_reject_total counter")
+    lines.append("# TYPE qmlx_kv_restore_reject_total counter")
     for reason in sorted(restore_rejects):
         count = int(_coerce_number(restore_rejects.get(reason)))
         lines.append(
-            f"rapid_mlx_kv_restore_reject_total{{reason="
+            f"qmlx_kv_restore_reject_total{{reason="
             f'"{_escape_label_value(str(reason))}"}} {count}'
         )
 

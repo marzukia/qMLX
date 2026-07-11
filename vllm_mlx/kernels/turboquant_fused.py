@@ -8,7 +8,7 @@ compiled handle at module scope.
 
 The two public helpers — :func:`fused_quantize_v4` and
 :func:`fused_dequant_v4_fp16` — match the V-side TurboQuant encode /
-decode contract; :func:`fused_quantize_k8` adds the rapid-mlx K-side
+decode contract; :func:`fused_quantize_k8` adds the qmlx K-side
 symmetric uniform path for the K8V4 mix.
 
 All three return ``None`` when Metal compilation fails so the caller
@@ -128,7 +128,7 @@ def is_metal_available() -> bool:
     """Return True when Metal compilation will work on this host.
 
     Used by the metrics route to surface the
-    ``rapid_mlx_turboquant_fused_kernel{status}`` gauge at serve boot.
+    ``qmlx_turboquant_fused_kernel{status}`` gauge at serve boot.
     """
     try:
         return mx.default_device() == mx.gpu and mx.metal.is_available()

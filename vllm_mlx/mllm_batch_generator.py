@@ -61,7 +61,7 @@ class MLLMBatchRequest:
     top_p: float = 0.9
     # OpenAI-spec penalties (#512) — wired into mlx-lm's
     # ``make_logits_processors`` inside ``_step``. ``repetition_penalty`` is
-    # a rapid-mlx extension (mlx-lm-native semantics); ``presence_penalty``
+    # a qmlx extension (mlx-lm-native semantics); ``presence_penalty``
     # and ``frequency_penalty`` follow the OpenAI spec. Defaults match the
     # neutral values that ``make_logits_processors`` treats as "disabled"
     # so the homogeneous-default fast path stays a no-op.

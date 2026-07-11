@@ -1,20 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Background check for newer ``rapid-mlx`` releases on GitHub.
+"""Background check for newer ``qmlx`` releases on GitHub.
 
-Surfaces a one-line warning at the top of ``rapid-mlx models``,
-``rapid-mlx serve`` and ``rapid-mlx chat`` when the installed version
+Surfaces a one-line warning at the top of ``qmlx models``,
+``qmlx serve`` and ``qmlx chat`` when the installed version
 is at least 2 patch versions behind the latest GitHub release. Designed
 to fail completely silently on network / parse / sandbox errors —
 staleness warnings should never break the CLI.
 
-Cache: ``~/.cache/rapid-mlx/version_check.json`` with 24h TTL. Network
-fetch is opt-out via ``RAPID_MLX_DISABLE_VERSION_CHECK=1`` or any
+Cache: ``~/.cache/qmlx/version_check.json`` with 24h TTL. Network
+fetch is opt-out via ``QMLX_DISABLE_VERSION_CHECK=1`` or any
 non-interactive context (``CI=1``, missing TTY).
 
 Behaviour matrix:
 
   installed = 0.6.14, latest = 0.6.16 (2 patch behind)
-    → warns, suggests ``rapid-mlx upgrade``
+    → warns, suggests ``qmlx upgrade``
 
   installed = 0.6.16, latest = 0.6.16 (current)
     → silent
@@ -49,7 +49,7 @@ MIN_LAG_PATCH = 2
 
 def _cache_path() -> Path:
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base) / "rapid-mlx" / "version_check.json"
+    return Path(base) / "qmlx" / "version_check.json"
 
 
 def _disabled() -> bool:
@@ -65,7 +65,7 @@ def _disabled() -> bool:
     # qMLX fork: no release cadence and no wish to nag users toward the
     # upstream project, so the version check is disabled outright.
     return True
-    if os.environ.get("RAPID_MLX_DISABLE_VERSION_CHECK"):
+    if os.environ.get("QMLX_DISABLE_VERSION_CHECK"):
         return True
     if os.environ.get("CI"):
         return True
@@ -136,7 +136,7 @@ def _fetch_latest_from_github() -> str | None:
 
 def _installed_version() -> str | None:
     try:
-        return pkg_version("rapid-mlx")
+        return pkg_version("qmlx")
     except PackageNotFoundError:
         return None
 
@@ -189,8 +189,8 @@ def staleness_warning() -> str | None:
         return None
 
     return (
-        f"⚠ rapid-mlx {installed_str} is behind latest {latest_str} — "
-        f"run `rapid-mlx upgrade` to pick up new model aliases / flags."
+        f"⚠ qmlx {installed_str} is behind latest {latest_str} — "
+        f"run `qmlx upgrade` to pick up new model aliases / flags."
     )
 
 
@@ -207,10 +207,10 @@ def print_staleness_warning_if_any() -> None:
 def prompt_upgrade_if_available() -> bool:
     """Interactive Y/n prompt when a newer release is on GitHub.
 
-    Designed for the top of long-lived entry points (``rapid-mlx serve``):
+    Designed for the top of long-lived entry points (``qmlx serve``):
     if the network has a newer release than what's installed, ask once
     before booting the model. On accept, dispatch the right upgrade
-    command (brew/pip/install.sh — same dispatcher as ``rapid-mlx
+    command (brew/pip/install.sh — same dispatcher as ``qmlx
     upgrade``) and return ``True`` so the caller can exit. Returns
     ``False`` when no prompt was shown (disabled, non-TTY, already
     current, dev build, network down) or the user declined.
@@ -258,7 +258,7 @@ def prompt_upgrade_if_available() -> bool:
 
         info = detect_install_method()
         print(
-            f"\nA newer rapid-mlx is available: {latest_str} "
+            f"\nA newer qmlx is available: {latest_str} "
             f"(current: {installed_str})."
         )
         print(f"  Upgrade command: {info.upgrade_command}")
@@ -290,14 +290,14 @@ def prompt_upgrade_if_available() -> bool:
         # running server and only an error message.
         print(
             f"\nUpgrade exited with code {result.returncode}; "
-            f"continuing with rapid-mlx {installed_str}.\n"
+            f"continuing with qmlx {installed_str}.\n"
         )
         return False
     except Exception:  # noqa: BLE001 — never break the CLI
         return False
 
 
-# --- install-method detection (used by ``rapid-mlx upgrade``) -----------
+# --- install-method detection (used by ``qmlx upgrade``) -----------
 
 
 class InstallInfo:
@@ -330,14 +330,14 @@ class InstallInfo:
 
 
 def detect_install_method() -> InstallInfo:
-    """Detect how rapid-mlx was installed and return the right upgrade command.
+    """Detect how qmlx was installed and return the right upgrade command.
 
     Detection order:
-      1. brew — ``rapid-mlx`` realpath under ``/Cellar/rapid-mlx``,
+      1. brew — ``qmlx`` realpath under ``/Cellar/qmlx``,
          ``/opt/homebrew/`` (macOS) or ``/home/linuxbrew/`` (Linux brew)
-         triggers ``brew upgrade raullenchai/rapid-mlx/rapid-mlx``.
+         triggers ``brew upgrade raullenchai/qmlx/qmlx``.
       2. install.sh — binary under ``~/.local/bin`` (or realpath under
-         the install.sh venv at ``~/.rapid-mlx/``) triggers a re-run of
+         the install.sh venv at ``~/.qmlx/``) triggers a re-run of
          the install.sh script.
       3. pip (default) — uses ``sys.executable -m pip install --upgrade``
          so the upgrade lands in the same env that's currently running
@@ -345,24 +345,24 @@ def detect_install_method() -> InstallInfo:
     """
     import shutil
 
-    binary = shutil.which("rapid-mlx")
+    binary = shutil.which("qmlx")
     if binary:
         normalized = os.path.realpath(binary)
-        brew_markers = ("/Cellar/rapid-mlx", "/opt/homebrew/", "/home/linuxbrew/")
+        brew_markers = ("/Cellar/qmlx", "/opt/homebrew/", "/home/linuxbrew/")
         if any(m in normalized for m in brew_markers):
             return InstallInfo(
                 method="brew",
-                upgrade_command="brew upgrade raullenchai/rapid-mlx/rapid-mlx",
-                upgrade_argv=["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"],
+                upgrade_command="brew upgrade raullenchai/qmlx/qmlx",
+                upgrade_argv=["brew", "upgrade", "raullenchai/qmlx/qmlx"],
                 binary_path=binary,
             )
-        # install.sh creates ``~/.rapid-mlx`` (venv) and symlinks the
+        # install.sh creates ``~/.qmlx`` (venv) and symlinks the
         # entry point into ``~/.local/bin``. Match either side: the
         # symlink path (binary) for fresh installs, the venv root
         # (normalized) for installs where ``~/.local/bin`` was overridden.
         local_bin = str(Path.home() / ".local" / "bin")
-        rapid_mlx_dir = str(Path.home() / ".rapid-mlx")
-        if binary.startswith(local_bin) or normalized.startswith(rapid_mlx_dir):
+        qmlx_dir = str(Path.home() / ".qmlx")
+        if binary.startswith(local_bin) or normalized.startswith(qmlx_dir):
             install_sh_pipe = (
                 "curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash"
             )
@@ -378,14 +378,14 @@ def detect_install_method() -> InstallInfo:
 
     return InstallInfo(
         method="pip",
-        upgrade_command=f"{sys.executable} -m pip install --upgrade rapid-mlx",
+        upgrade_command=f"{sys.executable} -m pip install --upgrade qmlx",
         upgrade_argv=[
             sys.executable,
             "-m",
             "pip",
             "install",
             "--upgrade",
-            "rapid-mlx",
+            "qmlx",
         ],
         binary_path=binary,
     )

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-DeepSeek V3 tool call parser for rapid-mlx (D-DSV31, R12-5).
+DeepSeek V3 tool call parser for qmlx (D-DSV31, R12-5).
 
 Targets the DeepSeek-V3 "function-typed, JSON-fenced" tool-call body
 shape, emitted by the upstream V3 chat template and by every checkpoint

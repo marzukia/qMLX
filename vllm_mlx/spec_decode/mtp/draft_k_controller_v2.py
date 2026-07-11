@@ -382,7 +382,7 @@ class DepthController:
         self.round_count = 0
         # Per-K round histogram, keyed by the K actually consumed by the
         # target forward. Populated by ``record`` and read by the
-        # Prometheus renderer (``rapid_mlx_spec_decode_k_chosen_*``).
+        # Prometheus renderer (``qmlx_spec_decode_k_chosen_*``).
         # Kept as a dict rather than a list so a future max_k lift needs
         # no schema migration on the metrics side.
         self.k_histogram: dict[int, int] = {}

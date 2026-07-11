@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Process-death observability for rapid-mlx servers.
+"""Process-death observability for qmlx servers.
 
 Installs a signal handler chain + ``faulthandler`` so the operator can tell
 the difference between
@@ -137,7 +137,7 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
     # "table of contents" entry that points readers at the stderr dump.
     try:
         logger.warning(
-            "rapid-mlx received signal %s; thread stacks follow (faulthandler)",
+            "qmlx received signal %s; thread stacks follow (faulthandler)",
             name,
         )
     except Exception:  # pragma: no cover — defensive
@@ -326,7 +326,7 @@ def install_signal_observability(
         # second call is a no-op once enabled. We send the dump to stderr
         # so it lands in the same stream operators tail with the server
         # log; redirecting stderr to the log file (the typical
-        # ``rapid-mlx serve ... 2>&1 | tee server.log`` shape) captures
+        # ``qmlx serve ... 2>&1 | tee server.log`` shape) captures
         # it for post-mortem.
         try:
             faulthandler.enable(file=sys.stderr, all_threads=True)
@@ -363,7 +363,7 @@ def install_signal_observability(
                 # ValueError for invalid signals on platform; OSError
                 # for permission issues. Skip and continue with the rest.
                 logger.debug(
-                    "could not install rapid-mlx handler for %s: %r",
+                    "could not install qmlx handler for %s: %r",
                     _signal_name(sig),
                     exc,
                 )
@@ -371,7 +371,7 @@ def install_signal_observability(
             _prior_handlers[sig] = prior
             installed_any = True
             logger.debug(
-                "rapid-mlx signal handler installed for %s (prior=%r)",
+                "qmlx signal handler installed for %s (prior=%r)",
                 _signal_name(sig),
                 prior,
             )

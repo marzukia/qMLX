@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Gradio Chatbot Interface for rapid-mlx.
+Gradio Chatbot Interface for qmlx.
 
-A multimodal chat interface that connects to the rapid-mlx server
+A multimodal chat interface that connects to the qmlx server
 and supports text, images, and video files.
 
 Usage:
     # First start the server with a multimodal model:
-    rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+    qmlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 
     # Then run this app:
-    rapid-mlx-chat
+    qmlx-chat
 
     # Or with custom settings:
-    rapid-mlx-chat --server-url http://localhost:8000 --port 7860
+    qmlx-chat --server-url http://localhost:8000 --port 7860
 """
 
 import argparse
@@ -27,9 +27,9 @@ except ImportError:
 
     print(
         "Error: gradio is required for the chat UI.\n"
-        "Install it with: pip install 'rapid-mlx[chat]'\n"
+        "Install it with: pip install 'qmlx[chat]'\n"
         "\n"
-        "The rapid-mlx-chat command requires the [chat] extra which\n"
+        "The qmlx-chat command requires the [chat] extra which\n"
         "includes gradio and pytz. It is not installed by default to\n"
         "keep the base package small."
     )
@@ -120,7 +120,7 @@ def create_chat_function(server_url: str, max_tokens: int, temperature: float):
     Create the chat function for Gradio ChatInterface.
 
     Args:
-        server_url: URL of the rapid-mlx server
+        server_url: URL of the qmlx server
         max_tokens: Maximum tokens to generate
         temperature: Sampling temperature
 
@@ -249,7 +249,7 @@ def create_chat_function(server_url: str, max_tokens: int, temperature: float):
             return result["choices"][0]["message"]["content"]
 
         except requests.exceptions.ConnectionError:
-            return "Error: Cannot connect to server. Make sure rapid-mlx is running."
+            return "Error: Cannot connect to server. Make sure qmlx is running."
         except requests.exceptions.Timeout:
             return "Error: Timeout - server took too long to respond."
         except Exception as e:
@@ -261,28 +261,28 @@ def create_chat_function(server_url: str, max_tokens: int, temperature: float):
 def main():
     """Run the Gradio app."""
     parser = argparse.ArgumentParser(
-        description="Gradio Multimodal Chat Interface for rapid-mlx",
+        description="Gradio Multimodal Chat Interface for qmlx",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     # Start with default settings
-    rapid-mlx-chat
+    qmlx-chat
 
     # Connect to a different server
-    rapid-mlx-chat --server-url http://localhost:9000
+    qmlx-chat --server-url http://localhost:9000
 
     # Create a public share link
-    rapid-mlx-chat --share
+    qmlx-chat --share
 
-Note: Make sure the rapid-mlx server is running with a multimodal model:
-    rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+Note: Make sure the qmlx server is running with a multimodal model:
+    qmlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
         """,
     )
     parser.add_argument(
         "--server-url",
         type=str,
         default="http://localhost:8000",
-        help="URL of the rapid-mlx server (default: http://localhost:8000)",
+        help="URL of the qmlx server (default: http://localhost:8000)",
     )
     parser.add_argument(
         "--port",
@@ -314,7 +314,7 @@ Note: Make sure the rapid-mlx server is running with a multimodal model:
     )
     args = parser.parse_args()
 
-    print(f"Connecting to rapid-mlx server at: {args.server_url}")
+    print(f"Connecting to qmlx server at: {args.server_url}")
     print(f"Starting Gradio interface on port: {args.port}")
 
     if args.text_only:
@@ -355,7 +355,7 @@ Note: Make sure the rapid-mlx server is running with a multimodal model:
                 return result["choices"][0]["message"]["content"]
             except requests.exceptions.ConnectionError:
                 return (
-                    "Error: Cannot connect to server. Make sure rapid-mlx is running."
+                    "Error: Cannot connect to server. Make sure qmlx is running."
                 )
             except requests.exceptions.Timeout:
                 return "Error: Timeout - server took too long to respond."

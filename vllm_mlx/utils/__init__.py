@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Utility modules for rapid-mlx."""
+"""Utility modules for qmlx."""
 
 from .tokenizer import load_model_with_fallback
 

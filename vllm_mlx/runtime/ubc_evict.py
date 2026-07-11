@@ -376,9 +376,9 @@ def render_prometheus_lines() -> list[str]:
     stats = snapshot()
     evicted = int(stats.get("ubc_evicted_bytes_total", 0))
     return [
-        f"# HELP rapid_mlx_ubc_evicted_bytes_total {_UBC_EVICTED_HELP}",
-        "# TYPE rapid_mlx_ubc_evicted_bytes_total counter",
-        f'rapid_mlx_ubc_evicted_bytes_total{{path_kind="safetensors"}} {evicted}',
+        f"# HELP qmlx_ubc_evicted_bytes_total {_UBC_EVICTED_HELP}",
+        "# TYPE qmlx_ubc_evicted_bytes_total counter",
+        f'qmlx_ubc_evicted_bytes_total{{path_kind="safetensors"}} {evicted}',
     ]
 
 

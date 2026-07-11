@@ -52,7 +52,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Supported TurboQuant compression modes. Order matters for the
-# Prometheus ``rapid_mlx_turboquant_mode`` gauge — the string value is
+# Prometheus ``qmlx_turboquant_mode`` gauge — the string value is
 # the label.
 TURBOQUANT_MODES: tuple[str, ...] = ("v4", "k8v4")
 DEFAULT_TURBOQUANT_MODE = "v4"
@@ -104,7 +104,7 @@ def turboquant_scheduler_kwargs(args: Any) -> dict[str, Any]:
 
     Systematic invariant (#969): every user-facing entrypoint that owns
     a ``--kv-cache-turboquant*`` argparse surface MUST route the parsed
-    values through this helper so the primary ``rapid-mlx serve`` path
+    values through this helper so the primary ``qmlx serve`` path
     and the standalone ``python -m vllm_mlx.server`` path stay in
     lock-step. Prior to the fix, ``server.py`` accepted the flags but
     silently dropped them at the ``SchedulerConfig(...)`` construction
@@ -244,7 +244,7 @@ def is_incompatible_with_turboquant(
        servers that haven't loaded the HF config yet).
 
     The reason string is the Prometheus label value emitted on the
-    ``rapid_mlx_turboquant_skipped_total`` counter.
+    ``qmlx_turboquant_skipped_total`` counter.
     """
     # 1. Alias hints.
     if alias_metadata:
@@ -731,7 +731,7 @@ def fused_kernel_status() -> str:
     """Return ``"available"`` or ``"fallback"`` for the metrics gauge.
 
     Called once at serve boot (so the
-    ``rapid_mlx_turboquant_fused_kernel{status}`` gauge is stable for
+    ``qmlx_turboquant_fused_kernel{status}`` gauge is stable for
     the lifetime of the process).
     """
     try:

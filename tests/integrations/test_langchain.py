@@ -1,4 +1,4 @@
-"""Thorough LangChain test suite against local rapid-mlx server."""
+"""Thorough LangChain test suite against local qmlx server."""
 
 import os
 import sys
@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 import httpx as _httpx
 
-# ``results`` is read by the ``rapid-mlx bench --tier harness`` path
+# ``results`` is read by the ``qmlx bench --tier harness`` path
 # (``vllm_mlx/agents/testing.py::_run_specific_tests`` does
 # ``getattr(mod, "results", {})`` after ``spec.loader.exec_module``).
 # It MUST be defined at module level so the harness can pick it up — PR
@@ -18,7 +18,7 @@ results: dict[str, str] = {}
 
 
 def _is_guided_extra_required_error(exc: BaseException) -> bool:
-    """Return true for rapid-mlx's structured-output capability error."""
+    """Return true for qmlx's structured-output capability error."""
     response = getattr(exc, "response", None)
     if response is None:
         return False
@@ -35,7 +35,7 @@ def _is_guided_extra_required_error(exc: BaseException) -> bool:
 
 
 def _is_ok_result(value: str) -> bool:
-    return value == "PASS" or value == "SKIP: rapid-mlx[guided] not installed"
+    return value == "PASS" or value == "SKIP: qmlx[guided] not installed"
 
 
 def _run_tests() -> None:
@@ -45,7 +45,7 @@ def _run_tests() -> None:
     from langchain_openai import ChatOpenAI
     from pydantic import BaseModel, Field
 
-    base_url = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+    base_url = os.environ.get("QMLX_BASE_URL", "http://localhost:8000/v1")
     try:
         model_id = _httpx.get(f"{base_url}/models", timeout=5).json()["data"][0]["id"]
     except Exception:
@@ -180,7 +180,7 @@ def _run_tests() -> None:
         results["6_structured"] = "PASS"
     except Exception as e:
         if _is_guided_extra_required_error(e):
-            message = "SKIP: rapid-mlx[guided] not installed"
+            message = "SKIP: qmlx[guided] not installed"
             print(message)
             results["6_structured"] = message
         else:
@@ -201,7 +201,7 @@ def _run_tests() -> None:
 
 # Run the battery in two cases:
 #   1. Direct invocation: ``python tests/integrations/test_langchain.py``
-#   2. Harness load: ``rapid-mlx bench --tier harness`` calls
+#   2. Harness load: ``qmlx bench --tier harness`` calls
 #      ``importlib.util.spec_from_file_location`` then ``exec_module``.
 # Skip under pytest collection so ``pytest tests/integrations/...`` sweeps
 # can import the module without triggering live API calls — restores the

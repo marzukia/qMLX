@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-DeepSeek V3.1 tool call parser for rapid-mlx.
+DeepSeek V3.1 tool call parser for qmlx.
 
 Targets the V3.1 "thinking-channel" tool-call body shape:
 

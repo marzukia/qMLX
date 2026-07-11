@@ -34,7 +34,7 @@ class DFlashUnavailable(RuntimeError):  # noqa: N818 — domain-specific error n
 
 @dataclass(frozen=True)
 class EligibilityReport:
-    """Structured eligibility result. Used by ``rapid-mlx info <alias>``
+    """Structured eligibility result. Used by ``qmlx info <alias>``
     to render a per-gate status table without re-checking each gate."""
 
     alias: str | None
@@ -133,12 +133,12 @@ def check(profile: AliasProfile, alias: str | None = None) -> None:
     if eligible:
         suffix = (
             f"Eligible aliases today: {', '.join(eligible)}. Run "
-            "`rapid-mlx info <alias>` to inspect per-alias DFlash status."
+            "`qmlx info <alias>` to inspect per-alias DFlash status."
         )
     else:
         suffix = (
             "No aliases currently pass every DFlash gate. Run "
-            "`rapid-mlx info <alias>` to inspect per-alias DFlash status."
+            "`qmlx info <alias>` to inspect per-alias DFlash status."
         )
     raise DFlashUnavailable(f"{header}:\n  - {bullet}\n\n{suffix}")
 
@@ -147,7 +147,7 @@ def have_runtime() -> bool:
     """Return True iff mlx-vlm 0.5.0+ DFlash hooks are importable.
 
     Kept fast (no actual import on success path) so it's cheap to call
-    in CLI startup and in ``rapid-mlx info`` rendering. Result is
+    in CLI startup and in ``qmlx info`` rendering. Result is
     cached by ``importlib`` after first call.
     """
     try:

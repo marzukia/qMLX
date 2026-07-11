@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Community-submitted benchmark database (`rapid-mlx bench --submit`).
+"""Community-submitted benchmark database (`qmlx bench --submit`).
 
 Layered to keep the privacy surface auditable:
 

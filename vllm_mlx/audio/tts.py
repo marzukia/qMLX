@@ -403,7 +403,7 @@ class TTSEngine:
 
         * ``wav`` → scipy (always available with the audio extra).
         * ``flac`` / ``ogg`` / ``opus`` → ``soundfile`` (libsndfile
-          ≥1.0). Always shipped via ``rapid-mlx[audio]``.
+          ≥1.0). Always shipped via ``qmlx[audio]``.
         * ``mp3`` → ``soundfile`` when libsndfile ≥1.1 (the version
           that bundled the LAME-backed MP3 writer). Older builds raise
           ``LibsndfileError`` which the caller surfaces as a 400 with
@@ -451,7 +451,7 @@ class TTSEngine:
             raise UnsupportedAudioFormatError(
                 requested=fmt,
                 supported=["wav", "pcm"],
-                hint="Install with: pip install 'rapid-mlx[audio]'",
+                hint="Install with: pip install 'qmlx[audio]'",
             ) from e
 
         # Map our OpenAI-style ``response_format`` values onto the

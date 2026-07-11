@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Scheduler for rapid-mlx continuous batching.
+Scheduler for qmlx continuous batching.
 
 This module provides a Scheduler class that manages request scheduling
 using mlx-lm's BatchGenerator for efficient continuous batching.
@@ -189,7 +189,7 @@ class SchedulerConfig:
     # the disk module; the default 256 matches MLX-LM's ``KVCache.step``
     # so the on-disk shape lines up with the in-memory shape on reload.
     # The disk cap is resolved at runtime via
-    # ``RAPID_MLX_KV_CHECKPOINT_MAX_BYTES`` so a single field on the
+    # ``QMLX_KV_CHECKPOINT_MAX_BYTES`` so a single field on the
     # SchedulerConfig is enough — see
     # :mod:`vllm_mlx.runtime.disk_kv_checkpoint`.
     kv_disk_checkpoint_interval: int = 256
@@ -2541,7 +2541,7 @@ class Scheduler:
         # prompt the request bypasses the prefix-cache fetch + store
         # paths entirely (positional-fiction safety; see comment block
         # near ``compress_request_tokens``). That bypass is correct but
-        # silences ``rapid_mlx_prefix_cache_*`` on PFlash-always tiers
+        # silences ``qmlx_prefix_cache_*`` on PFlash-always tiers
         # (e.g. verified-tier aliases), making /metrics look frozen at
         # ``hits=0/misses=1``. These two counters let operators see
         # PFlash is doing meaningful work even when the cache series
@@ -2556,7 +2556,7 @@ class Scheduler:
         self.honest_metrics = HonestMetrics()
         # Cancellation observability (M-01). ``num_requests_processed``
         # deliberately excludes aborted requests, so operators staring at
-        # ``rapid_mlx_requests_processed_total = 0`` after fifty bailed-
+        # ``qmlx_requests_processed_total = 0`` after fifty bailed-
         # out clients can't tell whether the route is broken, the model
         # is idle, or every caller is disconnecting before EOS. The total
         # counter increments inside ``abort_request`` the moment a
@@ -2573,7 +2573,7 @@ class Scheduler:
         # D-METAL-CAP observability. Increments once per request that
         # ``add_request`` rejected because Metal active memory already
         # exceeded the soft cap. Surfaced as
-        # ``rapid_mlx_metal_cap_violations_total`` so operators can see
+        # ``qmlx_metal_cap_violations_total`` so operators can see
         # ``--gpu-memory-utilization`` is doing meaningful work
         # (pre-fix, the cap was silently violated and there was no
         # series to alert on).
@@ -2582,7 +2582,7 @@ class Scheduler:
         # entry that was evicted by the Metal-pressure trigger (separate
         # series from the LRU-capacity evictions reported by the cache
         # itself). Surfaced as
-        # ``rapid_mlx_prefix_cache_pressure_evictions_total``.
+        # ``qmlx_prefix_cache_pressure_evictions_total``.
         self.num_prefix_cache_pressure_evictions = 0
         # D-METAL-CAP: once-per-process WARNING gate. The log noise of
         # a sustained over-cap admit storm would otherwise drown the
@@ -2782,17 +2782,17 @@ class Scheduler:
                 top_k=sampling_params.top_k,
             )
         # Codex round-2 BLOCKER #3 fix: read the env-var BEFORE the cache
-        # lookup so that flipping ``RAPID_MLX_DISABLE_FUSED_SAMPLER`` in a
+        # lookup so that flipping ``QMLX_DISABLE_FUSED_SAMPLER`` in a
         # long-lived process can disable the fast path on the next request
         # without us serving a stale cached fused sampler. The disabled
         # state is folded into the cache key so the two branches don't
         # collide either.
         # Codex round-5 NIT: accept a small set of truthy values so operators
-        # who set ``RAPID_MLX_DISABLE_FUSED_SAMPLER=true`` (the more natural
+        # who set ``QMLX_DISABLE_FUSED_SAMPLER=true`` (the more natural
         # form for a boolean knob) actually get the fast path disabled,
         # instead of silently leaving it on.
         _fused_disabled = os.environ.get(
-            "RAPID_MLX_DISABLE_FUSED_SAMPLER", "0"
+            "QMLX_DISABLE_FUSED_SAMPLER", "0"
         ).strip().lower() in ("1", "true", "yes", "on")
         key = (
             sampling_params.temperature,
@@ -2814,7 +2814,7 @@ class Scheduler:
         # (mlx-lm already short-circuits to argmax), is top-k-only with no
         # nucleus cut (mlx-lm uses a cheaper partition primitive there),
         # or whenever the operator sets
-        # ``RAPID_MLX_DISABLE_FUSED_SAMPLER=1`` as an escape hatch.
+        # ``QMLX_DISABLE_FUSED_SAMPLER=1`` as an escape hatch.
         if not _fused_disabled and is_fused_top_p_eligible(
             temperature=sampling_params.temperature,
             top_p=sampling_params.top_p,
@@ -3972,7 +3972,7 @@ class Scheduler:
                 "(gpu_memory_utilization=%.2f) — rejecting new "
                 "request %s with backpressure. Further violations "
                 "will be tracked by "
-                "rapid_mlx_metal_cap_violations_total only.",
+                "qmlx_metal_cap_violations_total only.",
                 active / 1e9,
                 reserved_kv / 1e9,
                 projected_kv / 1e9,
@@ -4020,7 +4020,7 @@ class Scheduler:
         Metal allocated. This helper surfaces a second, always-on
         trigger so the pressure counter ticks whenever the cache's
         own memory ledger crosses the same configured fraction of
-        its OWN budget (driven by ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES``
+        its OWN budget (driven by ``QMLX_PREFIX_CACHE_MAX_BYTES``
         when set, or the heuristic 20%-of-RAM default otherwise).
 
         Returns ``0`` when no memory-aware cache is configured or it
@@ -4834,7 +4834,7 @@ class Scheduler:
             # no-op" on chat-length outputs (#470). We bump the OpenAI-spec
             # ones to 4096 — enough to cover the vast majority of chat
             # responses without bloating per-request arrays. Repetition
-            # penalty stays at mlx-lm's default 20 since it's a rapid-mlx
+            # penalty stays at mlx-lm's default 20 since it's a qmlx
             # extension (not OpenAI-spec) and is documented as multiplicative
             # over a rolling window.
             sp = request.sampling_params
@@ -5364,7 +5364,7 @@ class Scheduler:
             cap's ``metal_pressure_evict_fraction`` ceiling. Only enforced
             when a Metal cap is resolved (cap>0); otherwise skipped.
 
-        Every reject bumps ``rapid_mlx_kv_checkpoint_restore_rejects_total``
+        Every reject bumps ``qmlx_kv_checkpoint_restore_rejects_total``
         with a ``reason`` label via ``disk_kv_checkpoint.record_restore_reject``.
         """
         # Disk (SSD) KV-restore hit-rate accounting (issue #10 follow-up).
@@ -5422,7 +5422,7 @@ class Scheduler:
                 # Gated to deep prompts, best-effort, never breaks admission.
                 try:
                     if len(prompt_ids) >= 2000 and os.environ.get(
-                        "RAPID_MLX_KV_RESTORE_DIVERGENCE_LOG", "1"
+                        "QMLX_KV_RESTORE_DIVERGENCE_LOG", "1"
                     ) not in ("0", "false", "False"):
                         _nd = _dkc.get_content_index().nearest_divergence(prompt_ids)
                         if _nd is not None:
@@ -5475,7 +5475,7 @@ class Scheduler:
                 return
 
             # (a2) MODEL IDENTITY. ``lookup`` matches purely on token content
-            # across the shared ~/.cache/rapid-mlx/kv_checkpoints/ root, so a
+            # across the shared ~/.cache/qmlx/kv_checkpoints/ root, so a
             # checkpoint written by a DIFFERENT model (or a re-quantized build
             # of this one) that happens to share a prompt prefix — e.g. a common
             # system prompt — would otherwise be loaded into this model and
@@ -5577,10 +5577,10 @@ class Scheduler:
                 # Memory-headroom guard: OFF by default. It over-estimated the
                 # transient dequant footprint and sat well below the physical
                 # limit, rejecting restores that actually fit. Opt back in with
-                # RAPID_MLX_ENABLE_HEADROOM_GUARD=1 (pending a rework that sizes
+                # QMLX_ENABLE_HEADROOM_GUARD=1 (pending a rework that sizes
                 # the estimate honestly).
                 if (est_bytes > 0 and active + est_bytes > ceiling
-                        and os.environ.get("RAPID_MLX_ENABLE_HEADROOM_GUARD")):
+                        and os.environ.get("QMLX_ENABLE_HEADROOM_GUARD")):
                     _dkc.record_restore_reject("memory_headroom")
                     logger.info(
                         "[kv_restore] request=%s REJECT reason=memory_headroom "
@@ -5807,7 +5807,7 @@ class Scheduler:
         # exposes ``extract_cache(e)``; older builds expose the same
         # method directly on ``batch_gen.active_batch``. Walking both
         # surfaces keeps this hook portable across the mlx-lm versions
-        # rapid-mlx supports.
+        # qmlx supports.
         batch = getattr(self, "batch_generator", None)
         if batch is None:
             return
