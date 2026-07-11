@@ -41,6 +41,10 @@ The result: a follow-up question on a 130,000-token conversation goes from a mul
 
 Alpha. It runs one model (Qwen3.5-122B-A10B) on one class of machine (M3 Ultra, 96GB+ unified). Qwen-first, and honest about what is built and what is not. Decode slows gradually with context because the dense-attention layers re-read a growing KV each token, but there is no cliff: it stays usable well past 100k tokens on this hardware. Windowed attention to flatten that curve further is on the roadmap.
 
+## Known limitations
+
+- **Interrupting a cold prefill discards it.** A client disconnect or cancel during a long cold prefill (before the first generated token) aborts the request at 0 tokens and throws the prefill work away, so re-sending the same prompt cold-prefills again. Disk restore only helps once a prompt boundary has been checkpointed, so an interrupt-heavy workload pays a full re-prefill per interrupt. Checkpointing partial prefills at chunk boundaries so interrupted prefills retry warm is tracked in [#12](https://github.com/marzukia/qMLX/issues/12).
+
 ## Install
 
 ```sh
