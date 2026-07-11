@@ -1,8 +1,5 @@
 <div align="center">
-
-[![qMLX](assets/qmlx-light.png#gh-light-mode-only)](https://qmlx.mrzk.io)
-[![qMLX](assets/qmlx-dark.png#gh-dark-mode-only)](https://qmlx.mrzk.io)
-
+  <a href="https://qmlx.mrzk.io"><img src="assets/qmlx-favicon.png" alt="qMLX" width="120"></a>
 </div>
 
 <p align="center">
@@ -14,6 +11,7 @@
 <p align="center">
   <a href="https://qmlx.mrzk.io">Website</a> &middot;
   <a href="https://github.com/marzukia/qMLX#readme">Docs</a> &middot;
+  <a href="https://mrzk.io">Blog</a> &middot;
   <a href="https://charted.mrzk.io">charted</a>
 </p>
 
