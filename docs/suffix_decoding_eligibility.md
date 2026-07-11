@@ -8,7 +8,7 @@
 > Prefer the unified form for new usage:
 >
 > ```bash
-> rapid-mlx serve gemma-4-12b-4bit \
+> qmlx serve gemma-4-12b-4bit \
 >   --speculative-config '{"method":"suffix","num_speculative_tokens":8}'
 > ```
 
@@ -23,7 +23,7 @@ high-overlap, for example:
 - agent loops that emit repeated scaffolding across many turns.
 
 Leave it off for ordinary chat, diverse prose, low-overlap JSONL, and
-unknown traffic mixes. Rapid-MLX does not infer the user's workload yet;
+unknown traffic mixes. qMLX does not infer the user's workload yet;
 future adaptive gating may sample early acceptance rates per request, but
 that is not implemented today.
 

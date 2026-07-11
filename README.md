@@ -10,7 +10,7 @@
 <p align="center">
   <strong>Keeping a hybrid 122B warm on a Mac.</strong>
   <br>
-  <em>A Qwen-specialised fork of <a href="https://github.com/raullenchai/Rapid-MLX">Rapid-MLX</a> for long-context serving of hybrid MoE models on Apple Silicon.</em>
+  <em>A Qwen-specialised fork of <a href="https://github.com/raullenchai/Rapid-MLX">qMLX</a> for long-context serving of hybrid MoE models on Apple Silicon.</em>
 </p>
 
 <p align="center">
@@ -53,7 +53,7 @@ uv add qmlx-serve
 
 Or `pip install qmlx-serve`. The PyPI name is `qmlx-serve` because the exact
 `qmlx` is blocked as too similar to `mlx`; the import package is still
-`vllm_mlx` and the CLI is still `rapid-mlx`.
+`vllm_mlx` and the CLI is still `qmlx`.
 
 From source:
 
@@ -66,7 +66,7 @@ pip install -e .
 ## Serving
 
 ```sh
-rapid-mlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
+qmlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
   --text-only --host 0.0.0.0 --port 8095 --max-num-seqs 1 \
   --enable-prefix-cache --prefix-cache-index radix \
   --enable-disk-kv-restore --kv-disk-checkpoint-interval 256
@@ -93,4 +93,4 @@ Forked from [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). T
 
 ## Notes
 
-The package is still imported as `vllm_mlx` and the CLI is still `rapid-mlx`; those are kept as functional identifiers for compatibility. `rapid_mlx_*` metric names, `RAPID_MLX_*` env vars, and the `~/.cache/rapid-mlx/` cache path are unchanged for the same reason.
+The package is still imported as `vllm_mlx` and the CLI is still `qmlx`; those are kept as functional identifiers for compatibility. `rapid_mlx_*` metric names, `RAPID_MLX_*` env vars, and the `~/.cache/rapid-mlx/` cache path are unchanged for the same reason.

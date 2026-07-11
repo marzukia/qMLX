@@ -7,21 +7,21 @@ downloads the model on first run (~2.5 GB for the default `qwen3.5-4b-4bit`), an
 drops you into a REPL.
 
 ```bash
-rapid-mlx chat                  # defaults to qwen3.5-4b-4bit
-rapid-mlx chat qwen3.5-9b-4bit       # a larger model (5 GB)
-rapid-mlx chat --think          # surface chain-of-thought reasoning
+qmlx chat                  # defaults to qwen3.5-4b-4bit
+qmlx chat qwen3.5-9b-4bit       # a larger model (5 GB)
+qmlx chat --think          # surface chain-of-thought reasoning
 ```
 
 In-REPL: `/help`, `/reset`, `/save <path>`, `/model <alias>`, `/exit`. Type
 `"""` on its own line to start/end a multi-line block. See the
-[CLI reference](../reference/cli.md#rapid-mlx-chat) for all flags.
+[CLI reference](../reference/cli.md#qmlx-chat) for all flags.
 
 ## Option 2: OpenAI-Compatible Server
 
 Start the server:
 
 ```bash
-rapid-mlx serve qwen3.5-4b-4bit --port 8000
+qmlx serve qwen3.5-4b-4bit --port 8000
 ```
 
 Use with the OpenAI Python SDK:
@@ -74,17 +74,17 @@ print(message.content[0].text)
 A browser-based chat UI ships in the optional `[chat]` extra:
 
 ```bash
-pip install 'rapid-mlx[chat]'
-# Then launch — see `rapid-mlx help` for the UI entry point in your install.
+pip install 'qmlx-serve[chat]'
+# Then launch — see `qmlx help` for the UI entry point in your install.
 ```
 
 ## Multimodal Models
 
 For image / video understanding, use a VLM (requires the `[vision]` extra —
-`pip install 'rapid-mlx[vision]'`):
+`pip install 'qmlx-serve[vision]'`):
 
 ```bash
-rapid-mlx serve gemma-4-26b-4bit --mllm --port 8000
+qmlx serve gemma-4-26b-4bit --mllm --port 8000
 ```
 
 ```python
@@ -108,7 +108,7 @@ chain-of-thought into a separate `reasoning_content` field, leaving `content`
 clean.
 
 ```bash
-rapid-mlx serve qwen3.5-9b-4bit --port 8000   # qwen3 reasoning parser auto-detected
+qmlx serve qwen3.5-9b-4bit --port 8000   # qwen3 reasoning parser auto-detected
 ```
 
 ```python
@@ -126,7 +126,7 @@ Generate text embeddings for semantic search and RAG (install the
 `[embeddings]` extra first):
 
 ```bash
-rapid-mlx serve qwen3.5-4b-4bit --embedding-model mlx-community/multilingual-e5-small-mlx
+qmlx serve qwen3.5-4b-4bit --embedding-model mlx-community/multilingual-e5-small-mlx
 ```
 
 ```python
@@ -142,13 +142,13 @@ Tool/function calling is on by default for supported model families (Qwen3.x,
 GLM-4.7, GPT-OSS, Llama, Mistral, etc.) — the right parser is auto-detected:
 
 ```bash
-rapid-mlx serve qwen3.5-9b-4bit --port 8000
+qmlx serve qwen3.5-9b-4bit --port 8000
 ```
 
 If you need to pin the parser manually:
 
 ```bash
-rapid-mlx serve devstral-24b-4bit \
+qmlx serve devstral-24b-4bit \
   --enable-auto-tool-choice --tool-call-parser hermes
 ```
 
@@ -161,5 +161,5 @@ rapid-mlx serve devstral-24b-4bit \
 - [Embeddings Guide](../guides/embeddings.md) - Text embeddings
 - [Reasoning Models](../guides/reasoning.md) - Thinking models
 - [Tool Calling](../guides/tool-calling.md) - Function calling
-- [SDK Compatibility Notes](../guides/sdk-compat.md) - Where rapid-mlx deviates from OpenAI/Anthropic specs
+- [SDK Compatibility Notes](../guides/sdk-compat.md) - Where qmlx deviates from OpenAI/Anthropic specs
 - [Supported Models](../reference/models.md) - Available models

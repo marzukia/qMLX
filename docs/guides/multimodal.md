@@ -1,6 +1,6 @@
 # Multimodal Models (Images & Video)
 
-rapid-mlx supports vision-language models for image and video understanding.
+qmlx supports vision-language models for image and video understanding.
 
 ## Supported Models
 
@@ -17,7 +17,7 @@ rapid-mlx supports vision-language models for image and video understanding.
 ## Starting a Multimodal Server
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
+qmlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --port 8000
 ```
 
 Models with "VL", "Vision", or "mllm" in the name are auto-detected as multimodal.
@@ -227,17 +227,17 @@ Tested on Apple M4 Max with 128 GB unified memory.
 
 ### Running Benchmarks
 
-The shipped `rapid-mlx bench` is text-only. Multi-resolution image and video
+The shipped `qmlx bench` is text-only. Multi-resolution image and video
 benches live in the dev-only `scripts/` directory (source checkout only). For
 a quick text-only sanity bench against a VLM, you can still run:
 
 ```bash
-rapid-mlx bench qwen3-vl-4b-4bit
+qmlx bench qwen3-vl-4b-4bit
 ```
 
 ## MLLM Cache
 
-rapid-mlx includes a prefix cache system for multimodal models that can significantly speed up repeated requests with the same images.
+qmlx includes a prefix cache system for multimodal models that can significantly speed up repeated requests with the same images.
 
 ### How It Works
 
@@ -249,10 +249,10 @@ The cache uses content-based hashing (similar to LMCache) to identify identical 
 
 ```bash
 # Enable with default settings (512 MB max)
-rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --enable-mllm-cache
+qmlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit --enable-mllm-cache
 
 # With custom memory limit
-rapid-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit \
+qmlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit \
     --enable-mllm-cache \
     --mllm-cache-max-mb 1024
 ```
@@ -307,8 +307,8 @@ For an interactive multimodal session, start a server and use any OpenAI-
 compatible web UI (Open WebUI, LibreChat, etc.) pointed at it:
 
 ```bash
-rapid-mlx serve qwen3-vl-4b-4bit --mllm --port 8000
+qmlx serve qwen3-vl-4b-4bit --mllm --port 8000
 ```
 
-The shipped `rapid-mlx chat` REPL is text-only. The optional Gradio web UI
-(`pip install 'rapid-mlx[chat]'`) supports image / video uploads.
+The shipped `qmlx chat` REPL is text-only. The optional Gradio web UI
+(`pip install 'qmlx-serve[chat]'`) supports image / video uploads.

@@ -19,7 +19,7 @@ maintained project, so please be patient with fix timelines.
 
 ## Scope notes
 
-qMLX inherits Rapid-MLX's server surface. It is intended to run on trusted
+qMLX inherits qMLX's server surface. It is intended to run on trusted
 networks; the server has no authentication of its own. Binding it to a
 public interface is not a supported configuration, and reports that amount
 to "the server is reachable" will be closed. Issues in the disk KV

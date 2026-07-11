@@ -1,6 +1,6 @@
 # Contributing to qMLX
 
-qMLX is a small, focused fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Its scope is deliberately narrow: disk KV checkpoint and restore for hybrid recurrent plus attention MoE models (Qwen3.5-122B-A10B first), honest phase-split metrics, and the eviction and divergence-logging work that supports them. Contributions that fit that scope are welcome. General Rapid-MLX features, new model families, and broad serving improvements are better sent upstream.
+qMLX is a small, focused fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Its scope is deliberately narrow: disk KV checkpoint and restore for hybrid recurrent plus attention MoE models (Qwen3.5-122B-A10B first), honest phase-split metrics, and the eviction and divergence-logging work that supports them. Contributions that fit that scope are welcome. General qMLX features, new model families, and broad serving improvements are better sent upstream.
 
 ## Scope check before you start
 
@@ -34,12 +34,12 @@ pip install pytest ruff
 
 **Requirements:** Python 3.11+, macOS with Apple Silicon. The disk-restore path is developed and tested on an M3 Ultra; most unit tests run on any Apple Silicon Mac without a model download.
 
-The package is still imported as `vllm_mlx` and the CLI is still `rapid-mlx`. The `rapid_mlx_*` metric names, `RAPID_MLX_*` environment variables, and the `~/.cache/rapid-mlx/` cache path are also unchanged. These are kept on purpose for compatibility; please do not rename them in a PR.
+The package is still imported as `vllm_mlx` and the CLI is still `qmlx`. The `rapid_mlx_*` metric names, `RAPID_MLX_*` environment variables, and the `~/.cache/rapid-mlx/` cache path are also unchanged. These are kept on purpose for compatibility; please do not rename them in a PR.
 
 To run a dev server against the model this fork targets:
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
+qmlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
   --text-only --max-num-seqs 1 \
   --enable-prefix-cache --prefix-cache-index radix \
   --enable-disk-kv-restore
@@ -86,4 +86,4 @@ PR_VALIDATE_NO_DEEPSEEK=1 PR_VALIDATE_NO_STRESS=1 \
 
 ## Licensing of contributions
 
-qMLX's original work is MIT licensed; inherited Rapid-MLX code remains Apache-2.0 (see LICENSE, LICENSE-APACHE, and NOTICE). By submitting a PR you agree your contribution is licensed under the MIT License.
+qMLX's original work is MIT licensed; inherited qMLX code remains Apache-2.0 (see LICENSE, LICENSE-APACHE, and NOTICE). By submitting a PR you agree your contribution is licensed under the MIT License.

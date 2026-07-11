@@ -335,9 +335,9 @@ Repository = "https://github.com/marzukia/qMLX"
 mlx = "vllm_mlx.plugin:mlx_platform_plugin"
 
 [project.scripts]
-rapid-mlx = "vllm_mlx.cli:main"
-rapid-mlx-chat = "vllm_mlx.gradio_app:main"
-rapid-mlx-bench = "vllm_mlx.benchmark:main"
+qmlx = "vllm_mlx.cli:main"
+qmlx-chat = "vllm_mlx.gradio_app:main"
+qmlx-bench = "vllm_mlx.benchmark:main"
 # Deprecated pre-rename aliases — kept so existing users' scripts/muscle
 # memory keep working. Prefer the rapid-mlx* commands above.
 vllm-mlx = "vllm_mlx.cli:main"

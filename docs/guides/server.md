@@ -1,6 +1,6 @@
 # OpenAI-Compatible Server
 
-rapid-mlx provides a FastAPI server with full OpenAI API compatibility.
+qmlx provides a FastAPI server with full OpenAI API compatibility.
 Continuous batching is on by default; `--continuous-batching` is accepted as
 a no-op for back-compat.
 
@@ -9,10 +9,10 @@ a no-op for back-compat.
 ### Default
 
 ```bash
-rapid-mlx serve qwen3.5-4b-4bit --port 8000
+qmlx serve qwen3.5-4b-4bit --port 8000
 ```
 
-Short aliases (see `rapid-mlx models`) work everywhere a model name is
+Short aliases (see `qmlx models`) work everywhere a model name is
 accepted. Full HuggingFace repo IDs (`mlx-community/...`) work too.
 
 ### With Paged Cache
@@ -20,7 +20,7 @@ accepted. Full HuggingFace repo IDs (`mlx-community/...`) work too.
 Memory-efficient caching for production / shared system prompts:
 
 ```bash
-rapid-mlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
+qmlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 ```
 
 ## Server Options
@@ -42,7 +42,7 @@ rapid-mlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
 | `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
+| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'qmlx-serve[embeddings]'`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
 
@@ -129,7 +129,7 @@ Returns server status.
 POST /v1/messages
 ```
 
-Anthropic-compatible endpoint that allows tools like Claude Code and OpenCode to connect directly to rapid-mlx. Internally it translates Anthropic requests to OpenAI format, runs inference through the engine, and converts the response back to Anthropic format.
+Anthropic-compatible endpoint that allows tools like Claude Code and OpenCode to connect directly to qmlx. Internally it translates Anthropic requests to OpenAI format, runs inference through the engine, and converts the response back to Anthropic format.
 
 Capabilities:
 - Non-streaming and streaming responses (SSE)
@@ -407,11 +407,11 @@ Stop reasons:
 
 #### Using with Claude Code
 
-Point Claude Code directly at your rapid-mlx server:
+Point Claude Code directly at your qmlx server:
 
 ```bash
 # Start the server
-rapid-mlx serve mlx-community/Qwen3-Coder-Next-235B-A22B-4bit \
+qmlx serve mlx-community/Qwen3-Coder-Next-235B-A22B-4bit \
   --continuous-batching \
   --enable-auto-tool-choice \
   --tool-call-parser hermes
@@ -512,7 +512,7 @@ Per-request fields in `requests`:
 Enable OpenAI-compatible tool calling with `--enable-auto-tool-choice`:
 
 ```bash
-rapid-mlx serve mlx-community/Devstral-Small-2507-4bit \
+qmlx serve mlx-community/Devstral-Small-2507-4bit \
   --enable-auto-tool-choice \
   --tool-call-parser mistral
 ```
@@ -565,10 +565,10 @@ For models that show their thinking process (Qwen3, DeepSeek-R1), use `--reasoni
 
 ```bash
 # Qwen3 models
-rapid-mlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
+qmlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
 
 # DeepSeek-R1 models
-rapid-mlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parser deepseek_r1
+qmlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parser deepseek_r1
 ```
 
 The API response includes a `reasoning` field with the model's thought process:
@@ -693,17 +693,17 @@ Control streaming behavior with `--stream-interval`:
 
 ```bash
 # Smooth streaming
-rapid-mlx serve model --continuous-batching --stream-interval 1
+qmlx serve model --continuous-batching --stream-interval 1
 
 # Batched streaming (better for high-latency networks)
-rapid-mlx serve model --continuous-batching --stream-interval 5
+qmlx serve model --continuous-batching --stream-interval 5
 ```
 
 ## Open WebUI Integration
 
 ```bash
-# 1. Start rapid-mlx server
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
+# 1. Start qmlx server
+qmlx serve mlx-community/Llama-3.2-3B-Instruct-4bit --port 8000
 
 # 2. Start Open WebUI
 docker run -d -p 3000:8080 \
@@ -719,7 +719,7 @@ docker run -d -p 3000:8080 \
 
 ### With systemd
 
-Create `/etc/systemd/system/rapid-mlx.service`:
+Create `/etc/systemd/system/qmlx.service`:
 
 ```ini
 [Unit]
@@ -728,7 +728,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
+ExecStart=/usr/local/bin/qmlx serve mlx-community/Qwen3-0.6B-8bit \
   --continuous-batching --use-paged-cache --port 8000
 Restart=always
 
@@ -737,8 +737,8 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable rapid-mlx
-sudo systemctl start rapid-mlx
+sudo systemctl enable qmlx
+sudo systemctl start qmlx
 ```
 
 ### Authentication and bind→auth ordering
@@ -760,10 +760,10 @@ future refactor can't silently reopen it.
 On a multi-tenant box, the strongest closure of the bind→auth race is
 to let an external supervisor (launchd, systemd, or a parent process)
 bind the listening socket and validate the auth secret **before**
-`execve`-ing into `rapid-mlx`. That way the only process holding the
+`execve`-ing into `qmlx`. That way the only process holding the
 fd at any point is one with auth in place.
 
-`rapid-mlx serve <alias> --listen-fd N` adopts the inherited fd
+`qmlx serve <alias> --listen-fd N` adopts the inherited fd
 instead of binding fresh. `--host` and `--port` are ignored when
 `--listen-fd` is set.
 
@@ -792,9 +792,9 @@ os.set_inheritable(3, True)
 if src_fd != 3:
     s.close()
 os.execvpe(
-    "rapid-mlx",
+    "qmlx",
     [
-        "rapid-mlx", "serve", "qwen3.5-4b-4bit",
+        "qmlx", "serve", "qwen3.5-4b-4bit",
         "--api-key", os.environ["RAPID_MLX_API_KEY"],
         "--listen-fd", "3",
     ],
@@ -811,7 +811,7 @@ at the argparse layer.
 For production with 50+ concurrent users:
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
+qmlx serve mlx-community/Qwen3-0.6B-8bit \
   --continuous-batching \
   --use-paged-cache \
   --api-key your-secret-key \

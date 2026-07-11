@@ -1,6 +1,6 @@
 # Audio Support
 
-rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:
+qmlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:
 
 - **STT (Speech-to-Text)**: Whisper, Parakeet
 - **TTS (Text-to-Speech)**: Kokoro, Chatterbox, VibeVoice, VoxCPM, Dia
@@ -8,7 +8,7 @@ rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy
 
 ## Supported Aliases (R10-C1)
 
-`rapid-mlx serve <alias>` recognizes the audio alias surface below and routes the request to the audio engines (skipping the text-LM loader). Both the short alias and the full HuggingFace id work — pasting a full HF id from `mlx-community/...` of an audio model takes the audio path automatically.
+`qmlx serve <alias>` recognizes the audio alias surface below and routes the request to the audio engines (skipping the text-LM loader). Both the short alias and the full HuggingFace id work — pasting a full HF id from `mlx-community/...` of an audio model takes the audio path automatically.
 
 | Alias | Type | HuggingFace id |
 | --- | --- | --- |
@@ -26,19 +26,19 @@ rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy
 | `parakeet` / `parakeet-tdt-0.6b` | STT | `mlx-community/parakeet-tdt-0.6b-v2` |
 | `parakeet-v3` / `parakeet-tdt-0.6b-v3` | STT | `mlx-community/parakeet-tdt-0.6b-v3` |
 
-Run `rapid-mlx models` to see the full live list (the section header reads "Audio models" with `[audio:tts]` / `[audio:stt]` tags).
+Run `qmlx models` to see the full live list (the section header reads "Audio models" with `[audio:tts]` / `[audio:stt]` tags).
 
-Audio engines load lazily on the first `/v1/audio/*` request — `rapid-mlx serve` returns as soon as the FastAPI app is bound, with no boot-time weight download.
+Audio engines load lazily on the first `/v1/audio/*` request — `qmlx serve` returns as soon as the FastAPI app is bound, with no boot-time weight download.
 
 ### TTS quick start
 
 ```bash
 # Boot the server with Kokoro
-rapid-mlx serve kokoro
+qmlx serve kokoro
 # Synthesize speech (OpenAI-compatible)
 curl -s http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model": "kokoro", "input": "Hello from rapid-mlx", "voice": "af_heart"}' \
+  -d '{"model": "kokoro", "input": "Hello from qmlx", "voice": "af_heart"}' \
   --output hello.wav
 ```
 
@@ -46,7 +46,7 @@ curl -s http://localhost:8000/v1/audio/speech \
 
 ```bash
 # Boot with Whisper
-rapid-mlx serve whisper-large-v3
+qmlx serve whisper-large-v3
 # Transcribe (OpenAI-compatible)
 curl -s http://localhost:8000/v1/audio/transcriptions \
   -F "model=whisper-large-v3" \
@@ -57,7 +57,7 @@ If `mlx-audio` is missing, the boot guard exits with rc=2 and the install hint:
 
 ```
 error: model 'kokoro' is an audio alias and requires the optional `mlx-audio` dependency (shipped with the [audio] extra).
-Install with: pip install 'rapid-mlx[audio]'
+Install with: pip install 'qmlx-serve[audio]'
 ```
 
 ## Installation
@@ -83,7 +83,7 @@ brew install espeak-ng
 Or install all audio dependencies at once:
 
 ```bash
-pip install rapid-mlx[audio]
+pip install qmlx-serve[audio]
 python -m spacy download en_core_web_sm
 brew install espeak-ng  # macOS, for non-English languages
 ```

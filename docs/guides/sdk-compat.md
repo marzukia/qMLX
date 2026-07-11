@@ -1,6 +1,6 @@
 # SDK Compatibility Notes
 
-This page collects small but important details about how rapid-mlx's
+This page collects small but important details about how qmlx's
 OpenAI-compatible and Anthropic-compatible surfaces deviate from — or
 sit slightly outside of — the upstream specifications. None of these
 break common SDK usage in practice, but each has tripped at least one
@@ -17,7 +17,7 @@ back to the upstream issue list.
 ## L-01 — Anthropic SDK `base_url` must NOT include `/v1`
 
 When configuring the official [Anthropic Python SDK][anthropic-sdk]
-(or any port that follows the same URL conventions) against rapid-mlx,
+(or any port that follows the same URL conventions) against qmlx,
 point it at the server root, **not** the `/v1` prefix.
 
 The SDK appends `/v1/messages` (or `/v1/messages/count_tokens`) to
@@ -51,7 +51,7 @@ client = Anthropic(
 )
 ```
 
-This is a property of the Anthropic SDK itself, not rapid-mlx — the
+This is a property of the Anthropic SDK itself, not qmlx — the
 same rule applies when pointing the SDK at any custom Messages-API
 backend. The OpenAI SDK has the opposite convention and **does**
 require the `/v1` suffix (it does not append a versioned segment).
@@ -69,7 +69,7 @@ See also:
 ## L-03 — Streaming `delta.reasoning_content` is a non-standard OpenAI key
 
 When you run a reasoning model (Qwen3, DeepSeek-R1, phi-4-mini-reasoning,
-VibeThinker, etc.) with `stream=true`, rapid-mlx emits an extra key in
+VibeThinker, etc.) with `stream=true`, qmlx emits an extra key in
 each SSE chunk's delta:
 
 ```json
@@ -90,7 +90,7 @@ The official OpenAI Chat Completions streaming schema only defines
 `delta.reasoning_content`.
 
 For us this is intentional: it mirrors the non-stream
-`message.reasoning_content` field that rapid-mlx already adds (also
+`message.reasoning_content` field that qmlx already adds (also
 non-standard, but widely adopted by other reasoning-model providers
 like DeepSeek and Together AI). Keeping the field name identical
 across streaming and non-streaming makes client code symmetric.
@@ -135,7 +135,7 @@ When `include_usage` is `true`, OpenAI sends a **dedicated trailer
 chunk** after `finish_reason` is set, with an empty `choices` array
 and a populated `usage` object — followed by `data: [DONE]`.
 
-rapid-mlx currently does two things at once:
+qmlx currently does two things at once:
 
 1. **Always** embeds `usage` directly into the last content chunk
    (the one that carries `finish_reason`), **regardless** of whether
@@ -159,7 +159,7 @@ rapid-mlx currently does two things at once:
   will accept the trailer chunk fine, so opting in is the
   forward-compatible workaround.
 
-Example of safe consumption (works on rapid-mlx today *and* on a
+Example of safe consumption (works on qmlx today *and* on a
 spec-strict future):
 
 ```python

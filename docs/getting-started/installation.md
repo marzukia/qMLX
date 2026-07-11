@@ -8,51 +8,28 @@
 ## Install with uv (recommended)
 
 ```bash
-uv tool install rapid-mlx@latest
+uv tool install qmlx-serve@latest
 ```
 
 One command, isolated tool venv, no Python-version juggling — uv finds (or
 installs) the right Python automatically. Upgrade later with
-`uv tool upgrade rapid-mlx`. If you don't have uv yet, install it first:
+`uv tool upgrade qmlx`. If you don't have uv yet, install it first:
 `curl -LsSf https://astral.sh/uv/install.sh | sh`.
-
-## One-liner install script
-
-```bash
-curl -fsSL https://raullenchai.github.io/Rapid-MLX/install.sh | bash
-```
-
-Auto-installs Python if needed, then `pipx install rapid-mlx`. Good fallback
-if you don't want to install `uv` first.
-
-## Install with Homebrew
-
-```bash
-brew tap raullenchai/rapid-mlx
-brew trust raullenchai/rapid-mlx
-brew install rapid-mlx
-```
-
-All three steps are required. Homebrew 4.x refuses one-shot installs from
-third-party taps with `Refusing to load formula ... from untrusted tap` —
-the `brew trust` line is what marks the tap as trusted. Tap + trust are
-both per-machine and persist across upgrades; `brew upgrade rapid-mlx`
-after the first install works directly.
 
 ## Install with pip
 
 ```bash
-pip install rapid-mlx
+pip install qmlx-serve
 ```
 
 If `python3 --version` reports 3.9 (macOS default), install a newer Python
-first: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`.
+first: `brew install python@3.12` then `python3.12 -m pip install qmlx-serve`.
 
 ### From source (for development)
 
 ```bash
-git clone https://github.com/raullenchai/Rapid-MLX.git
-cd Rapid-MLX
+git clone https://github.com/marzukia/qMLX.git
+cd qMLX
 pip install -e .
 ```
 
@@ -62,25 +39,25 @@ The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
 
 | Extra | Install | Adds |
 |---|---|---|
-| `vision` | `pip install 'rapid-mlx[vision]'` | mlx-vlm + opencv + torch (~322 MB) for VLMs (Gemma 4, Qwen-VL, video) |
-| `audio` | `pip install 'rapid-mlx[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
-| `embeddings` | `pip install 'rapid-mlx[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
-| `chat` | `pip install 'rapid-mlx[chat]'` | Gradio web UI (~150 MB) |
-| `guided` | `pip install 'rapid-mlx[guided]'` | outlines (~80 MB) for schema-constrained JSON |
-| `all` | `pip install 'rapid-mlx[all]'` | Everything above (~1.1 GB) |
+| `vision` | `pip install 'qmlx-serve[vision]'` | mlx-vlm + opencv + torch (~322 MB) for VLMs (Gemma 4, Qwen-VL, video) |
+| `audio` | `pip install 'qmlx-serve[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
+| `embeddings` | `pip install 'qmlx-serve[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
+| `chat` | `pip install 'qmlx-serve[chat]'` | Gradio web UI (~150 MB) |
+| `guided` | `pip install 'qmlx-serve[guided]'` | outlines (~80 MB) for schema-constrained JSON |
+| `all` | `pip install 'qmlx-serve[all]'` | Everything above (~1.1 GB) |
 
 ## Verify Installation
 
 ```bash
 # Check CLI
-rapid-mlx --help
-rapid-mlx version
+qmlx --help
+qmlx version
 
 # Self-diagnostic (works without downloading a model)
-rapid-mlx doctor
+qmlx doctor
 
 # Smallest interactive smoke test (downloads ~2.5 GB on first run)
-rapid-mlx chat qwen3.5-4b-4bit
+qmlx chat qwen3.5-4b-4bit
 ```
 
 ## Troubleshooting
@@ -103,7 +80,7 @@ huggingface-cli login
 
 Use a smaller quantized model:
 ```bash
-rapid-mlx serve qwen3.5-4b-4bit
+qmlx serve qwen3.5-4b-4bit
 ```
 
 ### `Refusing to load formula ... from untrusted tap`
@@ -122,5 +99,5 @@ Pre-tap it once, then retry:
 brew tap homebrew/core --force   # ~1.3 GB, one-time
 brew tap raullenchai/rapid-mlx
 brew trust raullenchai/rapid-mlx
-brew install rapid-mlx
+brew install qmlx-serve
 ```

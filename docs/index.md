@@ -4,7 +4,7 @@
 
 ## What is vLLM-MLX?
 
-rapid-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
+qmlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 
 - **[MLX](https://github.com/ml-explore/mlx)**: Apple's ML framework with unified memory and Metal kernels
 - **[mlx-lm](https://github.com/ml-explore/mlx-lm)**: Optimized LLM inference with KV cache and quantization
@@ -27,7 +27,7 @@ rapid-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 
 ### Getting Started
 - [Installation](getting-started/installation.md)
-- [Quick Start](getting-started/quickstart.md) — including `rapid-mlx chat` for an instant REPL
+- [Quick Start](getting-started/quickstart.md) — including `qmlx chat` for an instant REPL
 
 ### User Guides
 - [OpenAI-Compatible Server](guides/server.md)
