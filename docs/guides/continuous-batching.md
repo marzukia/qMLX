@@ -7,7 +7,7 @@ for back-compat but is a no-op.
 ## Default Behaviour
 
 ```bash
-rapid-mlx serve qwen3.5-4b-4bit
+qmlx serve qwen3.5-4b-4bit
 ```
 
 ## With Paged Cache
@@ -15,7 +15,7 @@ rapid-mlx serve qwen3.5-4b-4bit
 For memory-efficient prefix sharing:
 
 ```bash
-rapid-mlx serve qwen3.5-4b-4bit --use-paged-cache
+qmlx serve qwen3.5-4b-4bit --use-paged-cache
 ```
 
 ## How It Works
@@ -65,10 +65,10 @@ Control token delivery with `--stream-interval`:
 
 ```bash
 # Every token (smoothest)
-rapid-mlx serve model --stream-interval 1
+qmlx serve model --stream-interval 1
 
 # Batch tokens (better for high-latency)
-rapid-mlx serve model --stream-interval 5
+qmlx serve model --stream-interval 5
 ```
 
 | Value | Behavior |
@@ -83,13 +83,13 @@ For large models, the prefix cache can consume significant memory. The memory-aw
 
 ```bash
 # Auto-detect (uses 20% of available RAM)
-rapid-mlx serve model
+qmlx serve model
 
 # Explicit limit
-rapid-mlx serve model --cache-memory-mb 2048
+qmlx serve model --cache-memory-mb 2048
 
 # Custom percentage
-rapid-mlx serve model --cache-memory-percent 0.10
+qmlx serve model --cache-memory-percent 0.10
 ```
 
 | Option | Description |
@@ -164,7 +164,7 @@ python tests/test_prefix_cache.py
 ## Production Setup
 
 ```bash
-rapid-mlx serve qwen3.5-9b-4bit \
+qmlx serve qwen3.5-9b-4bit \
   --use-paged-cache \
   --port 8000
 ```

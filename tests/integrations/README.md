@@ -1,9 +1,9 @@
 # Integration tests
 
-End-to-end tests that exercise Rapid-MLX from a real client library.
+End-to-end tests that exercise qMLX from a real client library.
 
 These are **not** run as part of `pytest tests/` because they need a running
-Rapid-MLX server on `http://localhost:8000` and a loaded model — the fixtures
+qMLX server on `http://localhost:8000` and a loaded model — the fixtures
 `skip` cells when no server is reachable, so a naïve `pytest tests/` still
 comes out green.
 
@@ -103,7 +103,7 @@ for operator scope call in the PR body).
 Start the server first (positional model arg — never `--model`):
 
 ```bash
-rapid-mlx serve qwen3.5-4b-4bit \
+qmlx serve qwen3.5-4b-4bit \
     --tool-call-parser hermes --enable-auto-tool-choice
 ```
 
@@ -111,7 +111,7 @@ Then run either matrix or a specific deep file. **Strict mode requires
 one family shard per booted server** — the ``_guard_family_matches_server``
 autouse fixture in ``conftest.py`` fails cells that ask for a family the
 running server doesn't serve. In practice this means: pick the family
-that matches your ``rapid-mlx serve`` alias and shard the other two into
+that matches your ``qmlx serve`` alias and shard the other two into
 separate server boots (or CI jobs).
 
 ```bash
@@ -226,7 +226,7 @@ execution, so the LLM's output never touches the host process (codex
 CodeActAgent parses `<execute_ipython>` / `<execute_bash>` text-action
 tags from plain-text LLM output, NOT via OpenAI tool_calls, so
 R1-Distill drives it successfully (same pattern as Aider). ONE family
-still `XFAIL`s: gpt-oss + OpenHands. The rapid-mlx wire-level bug PR
+still `XFAIL`s: gpt-oss + OpenHands. The qmlx wire-level bug PR
 #1051 fixed (harmony parser channel-scoping of user-supplied `stop=...`
 so analysis-channel CoT can no longer trigger a premature stop) has
 landed on `main` (commit `e7e4668a`, v0.10.3) and is pinned at the unit
@@ -237,7 +237,7 @@ channel) does not emit the `<execute_bash>` / `<execute_ipython>`
 text-action XML tags that CodeActAgent parses. OpenHands treats the
 reply as an empty `MessageAction` → prompts for user input → EOFError
 on non-interactive stdin → 300 s wall-clock timeout, `add.py` never
-rewritten. This is an upstream OpenHands parser gap, not a rapid-mlx
+rewritten. This is an upstream OpenHands parser gap, not a qmlx
 bug (see `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON` block); filed
 as an informational note in OpenHands issue
 [#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167).
@@ -257,7 +257,7 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 | Qwen 3.6 | `qwen3.6-35b-8bit` (MoE, 3 B active) | ~15 s | 11.32 s + ~3 s aider + ~32 s openhands | 14 PASS / 0 XFAIL |
 | Gemma 4 | `gemma-4-31b-4bit` (dense) | ~10 s | 17.45 s + ~7 s aider + ~48 s openhands | 14 PASS / 0 XFAIL |
 | DeepSeek | `deepseek-r1-32b-4bit` (R1-distilled Qwen 32B, dense) | ~18 s | 191.29 s + ~22 s aider + ~72 s openhands | 5 PASS / 9 XFAIL (9 arch-XFAIL R1-Distill tool-call gap; OpenHands passes because it parses text-action tags, not tool_calls) |
-| gpt-oss | `gpt-oss-120b-mxfp4-q8` (MoE) | ~15 s | 14.61 s + ~3 s aider + XFAIL openhands | 13 PASS / 1 XFAIL (OpenHands XFAIL — gpt-oss harmony format vs CodeActAgent text-action parser mismatch, upstream OpenHands [#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167); rapid-mlx wire-level harmony parser bug fixed in #1051) |
+| gpt-oss | `gpt-oss-120b-mxfp4-q8` (MoE) | ~15 s | 14.61 s + ~3 s aider + XFAIL openhands | 13 PASS / 1 XFAIL (OpenHands XFAIL — gpt-oss harmony format vs CodeActAgent text-action parser mismatch, upstream OpenHands [#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167); qmlx wire-level harmony parser bug fixed in #1051) |
 
 > **Aider row added post-pilot 2026-07-07.** The pilot times above are the
 > 12-cell subset (aider was structural XFAIL). Re-running with the real
@@ -284,7 +284,7 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 > the harness 300 s wall-clock timeout — reason is the harmony-format
 > vs CodeActAgent text-action-parser mismatch documented in the
 > paragraph above and pinned in
-> `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON`, not a rapid-mlx bug.
+> `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON`, not a qmlx bug.
 > Empirical rerun of the other three families under the harness digest
 > fix (this PR) deferred to CI.
 
@@ -319,7 +319,7 @@ final channel) does not emit `<execute_bash>` / `<execute_ipython>`
 text-action XML tags that OpenHands' CodeActAgent parses; upstream
 OpenHands parser gap tracked at
 [All-Hands-AI/OpenHands#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167).
-The rapid-mlx wire-level harmony bug that used to underlie this cell is
+The qmlx wire-level harmony bug that used to underlie this cell is
 fixed in PR #1051 (see `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON`).
 · **XFAIL (Ultra)** = Hy3 (`hy3-preview-4bit`) is 166 GB / ~156 GB peak,
 single-node-infeasible in per-PR CI under G11 (like DeepSeek V4-Flash);
@@ -348,7 +348,7 @@ reasoning-only per DeepSeek's own paper (arXiv 2501.12948 §2.3.3), and
 distillation into Qwen 32B lost the base model's tool-emission
 behavior. The refusal
 `"I cannot provide the current weather in Tokyo as I cannot access the get_weather tool."`
-reproduces deterministically at both quant levels — not a rapid-mlx
+reproduces deterministically at both quant levels — not a qmlx
 parser bug, not a quant artifact. Text-only cells (CodexCLI +
 ClaudeCode) and smolagents' code-execution routing PASS on the same
 booted server, proving the wire is healthy. Full tool-trained coverage
@@ -378,6 +378,6 @@ Model is auto-detected from the running server (`/v1/models` endpoint).
 Run all agent tests automatically via:
 
 ```bash
-rapid-mlx agents hermes --test
-rapid-mlx agents                    # list all supported agents
+qmlx agents hermes --test
+qmlx agents                    # list all supported agents
 ```

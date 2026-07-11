@@ -4,31 +4,31 @@
 
 | Command | Description |
 |---------|-------------|
-| `rapid-mlx serve` | Start OpenAI-compatible server |
-| `rapid-mlx chat` | Interactive chat REPL with a model |
-| `rapid-mlx bench` | Run performance benchmarks |
-| `rapid-mlx models` | List available model aliases |
-| `rapid-mlx info` | Show the per-model profile for an alias or repo |
-| `rapid-mlx pull` | Download a model into the HuggingFace cache |
-| `rapid-mlx rm` | Remove a cached model |
-| `rapid-mlx ps` | List running rapid-mlx servers |
-| `rapid-mlx agents` | List, configure, and test agent integrations |
-| `rapid-mlx doctor` | Run self-diagnostic / regression harness |
-| `rapid-mlx telemetry` | Manage anonymous usage telemetry (opt-in) |
-| `rapid-mlx upgrade` | Upgrade rapid-mlx (brew / pip / install.sh) |
-| `rapid-mlx version` | Show version number |
-| `rapid-mlx help <cmd>` | Show help for a subcommand |
+| `qmlx serve` | Start OpenAI-compatible server |
+| `qmlx chat` | Interactive chat REPL with a model |
+| `qmlx bench` | Run performance benchmarks |
+| `qmlx models` | List available model aliases |
+| `qmlx info` | Show the per-model profile for an alias or repo |
+| `qmlx pull` | Download a model into the HuggingFace cache |
+| `qmlx rm` | Remove a cached model |
+| `qmlx ps` | List running qmlx servers |
+| `qmlx agents` | List, configure, and test agent integrations |
+| `qmlx doctor` | Run self-diagnostic / regression harness |
+| `qmlx telemetry` | Manage anonymous usage telemetry (opt-in) |
+| `qmlx upgrade` | Upgrade qmlx (brew / pip / install.sh) |
+| `qmlx version` | Show version number |
+| `qmlx help <cmd>` | Show help for a subcommand |
 
-Run `rapid-mlx <cmd> --help` for the full flag list of any subcommand.
+Run `qmlx <cmd> --help` for the full flag list of any subcommand.
 
-## `rapid-mlx serve`
+## `qmlx serve`
 
 Start the OpenAI-compatible API server.
 
 ### Usage
 
 ```bash
-rapid-mlx serve <model> [options]
+qmlx serve <model> [options]
 ```
 
 ### Options
@@ -55,7 +55,7 @@ rapid-mlx serve <model> [options]
 | `--default-temperature` | Default temperature when not specified in request | None |
 | `--default-top-p` | Default top_p when not specified in request | None |
 | `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
+| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'qmlx-serve[embeddings]'`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (e.g. `hermes`, `llama`, `deepseek`, `deepseek_v31`, `glm47`, `gemma4`, `minimax`, `kimi`, `harmony`, `qwen3_coder_xml`). Auto-detected from the model name; explicit flag overrides. | auto |
 
@@ -63,62 +63,62 @@ rapid-mlx serve <model> [options]
 
 ```bash
 # Default — continuous batching is on by default; short aliases work
-rapid-mlx serve qwen3.5-4b-4bit
+qmlx serve qwen3.5-4b-4bit
 
 # A larger general-purpose model (5 GB)
-rapid-mlx serve qwen3.5-9b-4bit --port 8000
+qmlx serve qwen3.5-9b-4bit --port 8000
 
 # Paged KV cache (memory-efficient prefix sharing)
-rapid-mlx serve qwen3.5-9b-4bit --use-paged-cache --port 8000
+qmlx serve qwen3.5-9b-4bit --use-paged-cache --port 8000
 
 # With MCP tools
-rapid-mlx serve qwen3.5-9b-4bit --mcp-config mcp.json
+qmlx serve qwen3.5-9b-4bit --mcp-config mcp.json
 
 # Multimodal (vision) model — requires the [vision] extra
-rapid-mlx serve gemma-4-26b-4bit --mllm
+qmlx serve gemma-4-26b-4bit --mllm
 
 # Reasoning model — parser is auto-detected, but you can pin it
-rapid-mlx serve qwen3.5-9b-4bit --reasoning-parser qwen3
+qmlx serve qwen3.5-9b-4bit --reasoning-parser qwen3
 
 # DeepSeek reasoning model
-rapid-mlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
+qmlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
 
 # Tool calling with Mistral/Devstral
-rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser hermes
+qmlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser hermes
 
 # DFlash speculative decoding (single-user, single supported alias)
-rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}' --port 8000
+qmlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}' --port 8000
 
 # DDTree speculative decoding (experimental, single-user)
-rapid-mlx serve qwen3.5-9b-8bit --speculative-config '{"method":"ddtree"}' --port 8000
+qmlx serve qwen3.5-9b-8bit --speculative-config '{"method":"ddtree"}' --port 8000
 
 # MTP fixed-K parity bench mode
-rapid-mlx serve <mtp-eligible-qwen-checkpoint> \
+qmlx serve <mtp-eligible-qwen-checkpoint> \
   --speculative-config '{"method":"mtp","num_speculative_tokens":1,"disable_auto_k":true}'
 
 # SuffixDecoding for explicit high-overlap workloads
-rapid-mlx serve gemma-4-12b-4bit \
+qmlx serve gemma-4-12b-4bit \
   --speculative-config '{"method":"suffix","num_speculative_tokens":8}'
 
 # API key authentication
-rapid-mlx serve qwen3.5-9b-4bit --api-key your-secret-key
+qmlx serve qwen3.5-9b-4bit --api-key your-secret-key
 
 # Production setup with security options
-rapid-mlx serve qwen3.5-9b-4bit \
+qmlx serve qwen3.5-9b-4bit \
   --api-key your-secret-key \
   --rate-limit 60 \
   --timeout 120
 
 # Audio models (requires the [audio] extra) — see docs/guides/audio.md
-rapid-mlx serve kokoro                    # TTS via /v1/audio/speech
-rapid-mlx serve whisper-large-v3          # STT via /v1/audio/transcriptions
-rapid-mlx serve parakeet                  # English STT (NVIDIA Parakeet)
-rapid-mlx serve mlx-community/Kokoro-82M-bf16   # Full HF id also routes to audio
+qmlx serve kokoro                    # TTS via /v1/audio/speech
+qmlx serve whisper-large-v3          # STT via /v1/audio/transcriptions
+qmlx serve parakeet                  # English STT (NVIDIA Parakeet)
+qmlx serve mlx-community/Kokoro-82M-bf16   # Full HF id also routes to audio
 ```
 
 #### Audio aliases (R10-C1)
 
-Pass any of the audio aliases listed in `rapid-mlx models` (the "Audio models" section) to serve the audio-only `/v1/audio/*` endpoints. The audio path skips the text-LM loader entirely — engines load lazily on the first request. See the [audio guide](../guides/audio.md) for the full TTS / STT alias matrix and quickstart examples.
+Pass any of the audio aliases listed in `qmlx models` (the "Audio models" section) to serve the audio-only `/v1/audio/*` endpoints. The audio path skips the text-LM loader entirely — engines load lazily on the first request. See the [audio guide](../guides/audio.md) for the full TTS / STT alias matrix and quickstart examples.
 
 ### Security
 
@@ -144,14 +144,14 @@ curl http://localhost:8000/v1/models \
   -H "Authorization: Bearer your-secret-key"
 ```
 
-## `rapid-mlx bench`
+## `qmlx bench`
 
 Run a built-in performance benchmark against a model.
 
 ### Usage
 
 ```bash
-rapid-mlx bench <model> [options]
+qmlx bench <model> [options]
 ```
 
 ### Common Options
@@ -165,28 +165,28 @@ rapid-mlx bench <model> [options]
 | `--use-paged-cache` | Use paged KV cache layout | off |
 | `--kv-cache-quantization` | Quantize prefix cache entries | off |
 
-Run `rapid-mlx bench --help` for the full list (memory limits, batch sizes, etc.).
+Run `qmlx bench --help` for the full list (memory limits, batch sizes, etc.).
 
 ### Examples
 
 ```bash
 # Quick LLM benchmark using a short alias
-rapid-mlx bench qwen3.5-4b-4bit
+qmlx bench qwen3.5-4b-4bit
 
 # Bench a vision-language model by full HF repo
-rapid-mlx bench mlx-community/Qwen3-VL-8B-Instruct-4bit
+qmlx bench mlx-community/Qwen3-VL-8B-Instruct-4bit
 ```
 
-## `rapid-mlx chat`
+## `qmlx chat`
 
 Spawn (or attach to) a server and start an interactive REPL with a model. This
 is a terminal chat — not a web UI. (For the Gradio web UI, install the optional
-`[chat]` extra: `pip install 'rapid-mlx[chat]'`.)
+`[chat]` extra: `pip install 'qmlx-serve[chat]'`.)
 
 ### Usage
 
 ```bash
-rapid-mlx chat [model] [options]
+qmlx chat [model] [options]
 ```
 
 ### Options
@@ -211,17 +211,17 @@ rapid-mlx chat [model] [options]
 
 ```bash
 # Fastest path — defaults to qwen3.5-4b-4bit, spawns its own server
-rapid-mlx chat
+qmlx chat
 
 # A reasoning model with thinking surfaced
-rapid-mlx chat qwen3.5-9b-4bit --think
+qmlx chat qwen3.5-9b-4bit --think
 
 # Attach to a server you're already running on :8000
-rapid-mlx serve qwen3.5-27b-4bit --port 8000 &
-rapid-mlx chat --port 8000
+qmlx serve qwen3.5-27b-4bit --port 8000 &
+qmlx chat --port 8000
 
 # Pin a system prompt
-rapid-mlx chat qwen3.5-4b-4bit --system "You are a terse, friendly Mac shell tutor."
+qmlx chat qwen3.5-4b-4bit --system "You are a terse, friendly Mac shell tutor."
 ```
 
 In-REPL slash commands: `/help`, `/reset` (alias `/clear`), `/model <alias>`,

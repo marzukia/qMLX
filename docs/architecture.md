@@ -1,4 +1,4 @@
-# Rapid-MLX System Architecture
+# qMLX System Architecture
 
 ## Overview
 

@@ -46,11 +46,11 @@ Tencent's **Hunyuan 3** is a 295B-parameter Mixture-of-Experts model
 | `hy3-preview-4bit` | `mlx-community/Hy3-preview-4bit` | ~166 GB | ~156 GB | M3 Ultra 256 GB |
 
 ```bash
-rapid-mlx serve hy3-preview-4bit
+qmlx serve hy3-preview-4bit
 ```
 
 The alias carries a `min_memory_gb: 192` floor. Before the 166 GB
-download begins, rapid-mlx checks your machine's total unified memory and
+download begins, qmlx checks your machine's total unified memory and
 prints a loud warning if it is below the floor:
 
 ```
@@ -60,12 +60,12 @@ prints a loud warning if it is below the floor:
    kernel-panic on macOS < 15.2, issue #324) before the first token
    generates.
    Recommended: pick a Tier-1 alias sized for this machine
-   (`rapid-mlx models` for the full list). Proceeding anyway…
+   (`qmlx models` for the full list). Proceeding anyway…
 ```
 
 The warning never aborts (an operator with an unusual allocator setup can
 still opt in), but on any non-Ultra Mac you should pick a smaller alias
-instead — `rapid-mlx models` lists every alias with its size. Hy3's tool
+instead — `qmlx models` lists every alias with its size. Hy3's tool
 calling and reasoning are exercised in CI without booting the model via
 an offline parser-level integration test; real-inference coverage runs in
 the weekly Golden Path job on M3 Ultra hardware.
@@ -110,7 +110,7 @@ the weekly Golden Path job on M3 Ultra hardware.
 
 ## Model Detection
 
-rapid-mlx auto-detects multimodal models by name patterns:
+qmlx auto-detects multimodal models by name patterns:
 - Contains "VL", "Vision", "vision"
 - Contains "llava", "idefics", "paligemma"
 - Contains "pixtral", "molmo", "deepseek-vl"
@@ -121,13 +121,13 @@ rapid-mlx auto-detects multimodal models by name patterns:
 ### From HuggingFace
 
 ```bash
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
+qmlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
 ```
 
 ### Local Path
 
 ```bash
-rapid-mlx serve /path/to/local/model
+qmlx serve /path/to/local/model
 ```
 
 ## Finding Models

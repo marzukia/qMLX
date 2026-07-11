@@ -1,6 +1,6 @@
 # MCP & Tool Calling
 
-rapid-mlx supports the Model Context Protocol (MCP) for integrating external tools with LLMs.
+qmlx supports the Model Context Protocol (MCP) for integrating external tools with LLMs.
 
 ## How Tool Calling Works
 
@@ -51,7 +51,7 @@ Create `mcp.json`:
 ### 2. Start Server with MCP
 
 ```bash
-rapid-mlx serve qwen3.5-4b-4bit --mcp-config mcp.json
+qmlx serve qwen3.5-4b-4bit --mcp-config mcp.json
 ```
 
 ### 3. Verify MCP Status
@@ -224,11 +224,11 @@ python examples/mcp_chat.py
 
 ## Supported Tool Formats
 
-rapid-mlx supports 12 tool call parsers covering all major model families. See [Tool Calling](tool-calling.md) for the full list of parsers, aliases, and examples.
+qmlx supports 12 tool call parsers covering all major model families. See [Tool Calling](tool-calling.md) for the full list of parsers, aliases, and examples.
 
 ## Security
 
-rapid-mlx includes security measures to prevent command injection attacks via MCP servers.
+qmlx includes security measures to prevent command injection attacks via MCP servers.
 
 ### Command Whitelist
 
@@ -301,7 +301,7 @@ set_validator(validator)
 
 ## Tool Execution Sandboxing
 
-Beyond command validation, rapid-mlx provides runtime sandboxing for tool executions:
+Beyond command validation, qmlx provides runtime sandboxing for tool executions:
 
 ### Sandbox Features
 

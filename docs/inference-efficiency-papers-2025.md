@@ -31,7 +31,7 @@ Low-relevance papers (multi-GPU-only, CUDA-specific, MPC-focused, etc.) have bee
 
 ## Priority Implementation List (Top 20)
 
-Ranked by: (1) Apple Silicon relevance = High, (2) expected impact on rapid-mlx, (3) implementation feasibility (training-free, Python/MLX-friendly, single-device).
+Ranked by: (1) Apple Silicon relevance = High, (2) expected impact on qmlx, (3) implementation feasibility (training-free, Python/MLX-friendly, single-device).
 
 | Rank | Paper | Conference | Technique | Expected Gain | Effort | Status |
 |------|-------|------------|-----------|---------------|--------|--------|
@@ -75,7 +75,7 @@ Z. Zhong et al. (CMU) | [arXiv](https://arxiv.org/abs/2411.04975) | [Project](ht
 > Model-free speculative decoding using suffix trees built from past outputs; exploits repetitive patterns in agentic workloads.
 > Expected improvement: Up to 5.3x; 2.8x faster than EAGLE-2/3 on agentic benchmarks
 > Apple Silicon relevance: High -- no draft model memory needed
-> Rapid-MLX status: exposed only as an explicit flag. Local deep benches
+> qMLX status: exposed only as an explicit flag. Local deep benches
 > showed gains on Gemma 4 high-overlap copy/code/tool-XML traffic, but
 > regressions on GPT-OSS and Qwen3.6, so it is not a general-purpose
 > accelerator.

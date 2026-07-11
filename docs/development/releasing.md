@@ -1,8 +1,8 @@
-# Releasing rapid-mlx
+# Releasing qmlx
 
 This page documents the **end-to-end release flow** and the **safety nets** that catch the common failure modes.
 
-The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs added 30+ new model aliases (`granite4-tiny-4bit`, `smollm3-3b-4bit`, `deepseek-v4-flash-8bit`, `qwen3.6-*`, etc), but no version was bumped — leaving brew/PyPI users with a stale `rapid-mlx models` list. The safety nets below are designed to make that exact failure impossible to repeat without explicit human override.
+The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs added 30+ new model aliases (`granite4-tiny-4bit`, `smollm3-3b-4bit`, `deepseek-v4-flash-8bit`, `qwen3.6-*`, etc), but no version was bumped — leaving brew/PyPI users with a stale `qmlx models` list. The safety nets below are designed to make that exact failure impossible to repeat without explicit human override.
 
 ## Quick reference
 
@@ -52,11 +52,11 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
 3. **`auto-release.yml` fires** (~30s) — verifies the commit, checks the tag doesn't already exist, builds a CHANGELOG from `git log <prev-tag>..HEAD`, creates the GitHub Release.
 
-4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment), polls PyPI until the version is queryable, computes the tarball SHA256, dispatches an `update-formula` event to `raullenchai/homebrew-rapid-mlx`.
+4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment), polls PyPI until the version is queryable, computes the tarball SHA256, dispatches an `update-formula` event to `raullenchai/homebrew-qmlx`.
 
-5. **The tap repo's workflow** (in `homebrew-rapid-mlx`) updates `Formula/rapid-mlx.rb` `url` + `sha256` + commits.
+5. **The tap repo's workflow** (in `homebrew-qmlx`) updates `Formula/rapid-mlx.rb` `url` + `sha256` + commits.
 
-6. **Verify**: `brew update && brew upgrade rapid-mlx` should pull in the new version.
+6. **Verify**: `brew update && brew upgrade qmlx` should pull in the new version.
 
 The sequence is hands-off after step 2.
 
@@ -84,7 +84,7 @@ To bypass (pure refactor, no user-visible change): add the
 
 ### `_version_check.py` — warn end users on stale local installs
 
-`rapid-mlx models` (and any other entrypoint that calls `print_staleness_warning_if_any()`) prints a one-line warning when:
+`qmlx models` (and any other entrypoint that calls `print_staleness_warning_if_any()`) prints a one-line warning when:
 - installed version is `>= 2 patch` versions behind the latest GitHub release
 - and the same major.minor (no cross-minor nag)
 - and stderr is a TTY (no nag in pipes / CI)
@@ -134,7 +134,7 @@ chore: bump version to X.Y.Z
 
 ### The boundary
 
-Every gate falls on one side of a single hard rule: **does the gate require running model inference (`rapid-mlx serve` + a real model load)?**
+Every gate falls on one side of a single hard rule: **does the gate require running model inference (`qmlx serve` + a real model load)?**
 
 - **No** → CI runs it automatically (every PR or every bump PR)
 - **Yes** → M3 local, manually, before pushing the bump commit
@@ -152,7 +152,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 | G5 | `make stress` — 8 scenarios | **M3** | `make release-check-m3` | concurrent-batching regressions |
 | G6 | Live-server fix-path repro | **M3** | `make release-check-m3` | fix doesn't ship to user-visible path |
 | G7 | SDK integration (anthropic / pydantic_ai / smolagents) | **M3** | `make release-check-m3` | router-level breakage unit tests miss |
-| G7b | Agent harness layer — Part A: `rapid-mlx bench <model> --tier harness` (single command, sweeps codex/opencode/hermes/aider/langchain Chat Completions); Part B: `/v1/responses` curl + SSE probe | **M3** | `make release-check-m3` | live-server harness regressions on Chat Completions (OpenCode tool-call parser, Hermes 62-tool stress, Codex profile shape, Aider streaming/text-edit format, LangChain 6-test suite incl. structured output) + Codex-only `/v1/responses` route regressions (the `AgentTestRunner` only knows Chat Completions, so the shim needs its own probe) |
+| G7b | Agent harness layer — Part A: `qmlx bench <model> --tier harness` (single command, sweeps codex/opencode/hermes/aider/langchain Chat Completions); Part B: `/v1/responses` curl + SSE probe | **M3** | `make release-check-m3` | live-server harness regressions on Chat Completions (OpenCode tool-call parser, Hermes 62-tool stress, Codex profile shape, Aider streaming/text-edit format, LangChain 6-test suite incl. structured output) + Codex-only `/v1/responses` route regressions (the `AgentTestRunner` only knows Chat Completions, so the shim needs its own probe) |
 | G8a | Parser microbench (×10k iters) | CI | `ci.yml` lint (ubuntu) | >10× parser regression |
 | G8b | End-to-end perf bench (tok/s baseline) | **M3** | `make release-check-m3` | KV-cache / hot-path perf regressions |
 | G9 | 10-sequential latency | **M3** | `make release-check-m3` | tok/s stability degradation |
@@ -175,11 +175,11 @@ make release-check-m3              # uses MODEL=qwen3.5-9b-4bit (default)
 MODEL=qwen3.6-27b-4bit make release-check-m3   # override
 ```
 
-Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `rapid-mlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G7b (agent harness layer: a single `rapid-mlx bench <model> --tier harness` sweep across codex / opencode / hermes / aider / langchain) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
+Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `qmlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G7b (agent harness layer: a single `qmlx bench <model> --tier harness` sweep across codex / opencode / hermes / aider / langchain) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
 
 G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach. Split in two parts so each is honestly scoped:
 
-- **Part A** — `rapid-mlx agents codex / opencode / hermes / aider / langchain --test`. Smoke-tests `/v1/chat/completions` parser/router behavior for the five first-class harnesses. `AgentTestRunner` (`vllm_mlx/agents/testing.py`) only knows the Chat Completions endpoint today, so this part does **not** exercise `/v1/responses`.
+- **Part A** — `qmlx agents codex / opencode / hermes / aider / langchain --test`. Smoke-tests `/v1/chat/completions` parser/router behavior for the five first-class harnesses. `AgentTestRunner` (`vllm_mlx/agents/testing.py`) only knows the Chat Completions endpoint today, so this part does **not** exercise `/v1/responses`.
 - **Part B** — direct curl probes against `/v1/responses` (one non-stream, one SSE). Verifies the Codex-CLI shim added in v0.7.10 is reachable and emits at minimum `response.created` and `response.completed` in the right order. Part B is the only thing in the entire CI + M3 gauntlet that actually touches the Responses route at request time. If you change the route's event sequence, Part B is what catches it.
 
 The remaining seven profiles (`goose`, `openhands`, `cline`, `openclaude`, `pydanticai`, `smolagents`, `generic`) are intentionally not in Part A:

@@ -56,7 +56,7 @@
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
+| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'qmlx-serve[embeddings]'`) | None |
 
 ### Speculative Decoding Options
 
@@ -142,13 +142,13 @@ Create `mcp.json`:
 ### Development (Single User)
 
 ```bash
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
+qmlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
 ```
 
 ### Production (Multiple Users)
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
+qmlx serve mlx-community/Qwen3-0.6B-8bit \
   --continuous-batching \
   --use-paged-cache \
   --api-key your-secret-key \
@@ -159,7 +159,7 @@ rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
 ### With Tool Calling
 
 ```bash
-rapid-mlx serve mlx-community/Devstral-Small-2507-4bit \
+qmlx serve mlx-community/Devstral-Small-2507-4bit \
   --enable-auto-tool-choice \
   --tool-call-parser mistral \
   --continuous-batching
@@ -168,7 +168,7 @@ rapid-mlx serve mlx-community/Devstral-Small-2507-4bit \
 ### With MCP Tools
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-4B-4bit \
+qmlx serve mlx-community/Qwen3-4B-4bit \
   --mcp-config mcp.json \
   --enable-auto-tool-choice \
   --tool-call-parser qwen \
@@ -178,7 +178,7 @@ rapid-mlx serve mlx-community/Qwen3-4B-4bit \
 ### Reasoning Model
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-8B-4bit \
+qmlx serve mlx-community/Qwen3-8B-4bit \
   --reasoning-parser qwen3 \
   --continuous-batching
 ```
@@ -186,7 +186,7 @@ rapid-mlx serve mlx-community/Qwen3-8B-4bit \
 ### With Embeddings
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-4B-4bit \
+qmlx serve mlx-community/Qwen3-4B-4bit \
   --embedding-model mlx-community/multilingual-e5-small-mlx \
   --continuous-batching
 ```
@@ -194,7 +194,7 @@ rapid-mlx serve mlx-community/Qwen3-4B-4bit \
 ### High Throughput
 
 ```bash
-rapid-mlx serve mlx-community/Qwen3-0.6B-8bit \
+qmlx serve mlx-community/Qwen3-0.6B-8bit \
   --continuous-batching \
   --stream-interval 5 \
   --max-num-seqs 256

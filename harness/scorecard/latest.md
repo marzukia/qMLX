@@ -1,4 +1,4 @@
-# Rapid-MLX Benchmark Scorecard
+# qMLX Benchmark Scorecard
 
 _Generated: 2026-04-16T07:10:38_
 

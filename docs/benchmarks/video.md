@@ -2,9 +2,9 @@
 
 ## Running Video Benchmarks
 
-The shipped `rapid-mlx bench` subcommand benches text generation only. The
+The shipped `qmlx bench` subcommand benches text generation only. The
 video benchmarks below were collected with the dev-only scripts under
-`scripts/` (not packaged with `pip install rapid-mlx`) — clone the repo to
+`scripts/` (not packaged with `pip install qmlx-serve`) — clone the repo to
 reproduce them. The numbers shown here are kept as a reference data point.
 
 ## Results - Qwen3-VL-8B-Instruct-4bit (M4 Max, 128GB)

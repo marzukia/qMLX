@@ -7,7 +7,7 @@
 ## Upstream
 
 qMLX is a fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) by
-[raullenchai](https://github.com/raullenchai) and the Rapid-MLX contributors.
+[raullenchai](https://github.com/raullenchai) and the qMLX contributors.
 The base engine, the OpenAI and Anthropic API surface, the MLX serving path,
 and most of the code in this repository are their work. See NOTICE for
 licence attribution.

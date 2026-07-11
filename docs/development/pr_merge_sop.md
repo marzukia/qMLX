@@ -174,7 +174,7 @@ If the diff touches `vllm_mlx/parsers/`, `vllm_mlx/reasoning/`, `vllm_mlx/routes
 
 ```bash
 # in one shell:
-rapid-mlx serve qwen3.5-4b-4bit
+qmlx serve qwen3.5-4b-4bit
 # in another:
 curl -s http://localhost:8000/anthropic/v1/messages \
   -H 'content-type: application/json' \
@@ -262,7 +262,7 @@ Everything else is automated. The `pr_validate` scorecard comment is the single 
 - **Bench data unreliability** — `scripts/bench_suffix_decoding_integrated.py` needs the reliability gates from PR #284 (decode-time floor, TPS ceiling). Older bench data without `raw_runs` field is suspect.
 - **Cache contamination** — disk-persisted prefix cache (`~/.cache/rapid-mlx/prefix_cache/`) can replay cached generations and pin TPS to bogus values. Bench tools must pass `--disable-prefix-cache`.
 - **Hybrid models** (`is_hybrid=True`: Qwen3.5/3.6, Qwopus, Nemotron, Granite4) cannot use spec-decode / suffix-decode. Trust the gate.
-- **Background processes block GPU** — orphaned `rapid-mlx serve` from prior sessions can hang pytest. `pkill -f "vllm_mlx.cli serve"` before benches.
+- **Background processes block GPU** — orphaned `qmlx serve` from prior sessions can hang pytest. `pkill -f "vllm_mlx.cli serve"` before benches.
 - **Auto-deploy blast radius** — merging to main with version bump = instant PyPI + Homebrew release. External PR review must include the Step 7 supply-chain audit before merge.
 - **Squash-suffix trap** — GitHub's default squash-merge appends `(#NN)` to the subject, breaking `auto-release.yml`'s regex. Always pass `--subject` to `gh pr merge` for bump PRs. `release-preflight.yml` PF-1 catches this pre-merge.
 - **`skip-version-bump` label refire** — adding the label after `version-check.yml` has already failed does NOT auto-re-run the workflow (the label-add event isn't a `pull_request` event the bypass step listens to). Either close+reopen the PR or push a commit to refire. Memory: `gotcha_skip_version_bump_label_after_run`.
@@ -278,6 +278,6 @@ The following items are agreed-good but not yet implemented; tracked in [#320](h
 - GitHub Actions SHA-pinning enforcement when workflows change.
 - PR-time transitive-dep audit (currently only release-time).
 - Per-PR install-size delta comment (`du -sh` site-packages diff vs main).
-- Per-PR `rapid-mlx bench --tier smoke` (or equivalent quick model-validation) as a required CI check, gated by an `inference-touching` auto-label.
+- Per-PR `qmlx bench --tier smoke` (or equivalent quick model-validation) as a required CI check, gated by an `inference-touching` auto-label.
 - `claude-code-security-review` action on PRs touching auth / parsers / serialization paths.
 - Quarterly "review-of-the-review" sampling (re-review 10 random merged PRs to score whether codex missed material issues).

@@ -38,11 +38,11 @@ What we explicitly do **not** want:
 
 | File | Owns |
 |---|---|
-| `state.py` | `~/.rapid-mlx/telemetry-client-id`, `~/.rapid-mlx/telemetry-consent.yaml`, kill switch precedence (`--no-telemetry` > `RAPID_MLX_TELEMETRY=0` > file > default OFF). No env-var force-on (CI would skew aggregates). |
+| `state.py` | `~/.qmlx/telemetry-client-id`, `~/.qmlx/telemetry-consent.yaml`, kill switch precedence (`--no-telemetry` > `RAPID_MLX_TELEMETRY=0` > file > default OFF). No env-var force-on (CI would skew aggregates). |
 | `consent.py` | First-run prompt, schema-version-aware re-prompt. |
 | `schema.py` | `TelemetryPayload` envelope, `PlatformInfo` / `SessionPayload` / `RequestPayload` / `ErrorPayload` dataclasses, `sample_preview_payload()`. `SCHEMA_VERSION = 1`. |
 | `redact.py` | Bucket primitives (`bucket_tokens`, `bucket_ttft_ms`, `bucket_tps`, `bucket_memory_gb`), `normalize_model_path` (passes `org/name`, redacts local paths), `hash_flag_names` (names only, never values), `fingerprint_traceback` (16-hex of `class_name + basename:func:lineno`, no message text, no module path), `platform_info` (chip + memory rounded to GB + OS major.minor + python major.minor). |
-| `cli.py:3133` | `rapid-mlx telemetry {status,enable,disable,preview,reset}` subcommand. |
+| `cli.py:3133` | `qmlx telemetry {status,enable,disable,preview,reset}` subcommand. |
 
 Phase 1 has **no event call sites** — `is_enabled()` exists, but
 nothing calls it to actually emit. The package compiles, has tests,
@@ -54,7 +54,7 @@ and ships dark.
 |---|---|
 | Worker handler `src/index.js` (165 LOC) | POST `/v1/events`, validates `schema_version == 1`, body cap 256 KB, batch cap 100 events, 50ms CPU cap, stamps `received_at`. Writes one NDJSON object per batch to R2 key `events/YYYY/MM/DD/HH/<rand12>.ndjson`. |
 | Privacy invariants pinned by `test/worker.test.js` | (1) does not read `CF-Connecting-IP` / `X-Forwarded-For` / `X-Real-IP` / UA; (2) does not forward any request header to R2; (3) rejects `schema_version != 1`; (4) "do not log bodies" is code-review-only. |
-| `wrangler.toml` | `r2_buckets.binding = "EVENTS"`, `bucket_name = "rapid-mlx-telemetry-events"`, `[observability] enabled = true`. |
+| `wrangler.toml` | `r2_buckets.binding = "EVENTS"`, `bucket_name = "qmlx-telemetry-events"`, `[observability] enabled = true`. |
 | Deploy state | **Blocked**. Per memory `project_telemetry_worker_deploy_blocked.md`: existing OAuth token lacks R2 + Workers scopes. Either re-auth `wrangler login` interactively in user shell, or mint a scoped API token (Workers Scripts:Edit, Account R2:Edit). |
 
 ### 2.3 rapidmlx.com infrastructure — already serves *other* workloads
@@ -74,7 +74,7 @@ Three Cloudflare-attached surfaces in production today:
 security postures (share-tunnel intentionally sees client IP to
 fingerprint abuse; telemetry must never see IP). Different deploy
 cadences. Different blast radius if a route is misconfigured. Keep
-`rapid-mlx-telemetry` as its own Worker, attached to its own subdomain.
+`qmlx-telemetry` as its own Worker, attached to its own subdomain.
 
 ## 3 · Phase 2 client work
 
@@ -224,7 +224,7 @@ The original blocker is fully captured in memory
 # Authorization headers):
 cd ~/work/Rapid-MLX-telemetry-worker
 npx wrangler login       # browser opens, grants Workers + R2
-npx wrangler r2 bucket create rapid-mlx-telemetry-events --location enam
+npx wrangler r2 bucket create qmlx-telemetry-events --location enam
 npx wrangler deploy
 ```
 
@@ -310,9 +310,9 @@ Once a parquet is built, ship it as a static artifact:
 - **Versioning**: `profile-v1` is the schema. Bump to `v2` when the
   column set changes incompatibly.
 
-`rapid-mlx suggest` (future CLI subcommand) reads the JSON, intersects
+`qmlx suggest` (future CLI subcommand) reads the JSON, intersects
 with `aliases.json`, and emits a ranked list. This is the
-"rapid-mlx-flavored whichllm" the user described — but powered by
+"qmlx-flavored whichllm" the user described — but powered by
 **real measurements** instead of spec-sheet algebra.
 
 ## 6 · Privacy + security posture (must stay true)
@@ -332,24 +332,24 @@ breaks the deal we made when we asked them to opt in.
 5. **No exception messages, no module paths.** `fingerprint_traceback`
    hashes class name + `basename:func:lineno` only.
 6. **No IP, no UA in stored event payloads.** The client DOES send a
-   self-identifying `User-Agent: rapid-mlx/<version>` header — without
+   self-identifying `User-Agent: qmlx/<version>` header — without
    it, Cloudflare's bot manager rejects the request with HTTP 403 before
    it reaches the Worker. The contract is that neither the IP nor the
    UA is written into the R2 object body: the IP is SHA-256'd into a
    rate-limit KV key and discarded, the UA is read for transport
    attribution and then dropped on the floor. Pinned at the Worker
    layer (vitest tests in
-   `Rapid-MLX-telemetry-worker/test/worker.test.js`).
+   `qMLX-telemetry-worker/test/worker.test.js`).
 7. **No header forwarding.** Worker never copies a request header
    into the R2 object body.
 8. **Opaque rotatable identity.** `client_id` is a local UUID4. User
-   can `rm ~/.rapid-mlx/telemetry-client-id` to rotate or replace it
+   can `rm ~/.qmlx/telemetry-client-id` to rotate or replace it
    with the all-zero UUID to anonymize while still contributing.
 9. **No env-var force-on.** CI agents cannot silently opt in. This is
    asymmetric with the kill-switch on purpose: hostile defaults
    matter more than hostile sites.
 
-Audit-friendly defaults: `rapid-mlx telemetry preview` already exists
+Audit-friendly defaults: `qmlx telemetry preview` already exists
 and prints exactly what a future event would look like, so a security
 reviewer can grep the binary's actual wire shape without strace.
 
@@ -368,7 +368,7 @@ reviewer can grep the binary's actual wire shape without strace.
 - Deploy Worker to `telemetry.rapidmlx.com` (Path A from §4.2).
 - Wire `session_start` + `session_end` only — no request events yet.
   Lowest-risk surface to validate the end-to-end pipeline.
-- Land `rapid-mlx telemetry status` reporting last-flush success/fail.
+- Land `qmlx telemetry status` reporting last-flush success/fail.
 
 **Phase 2.2 (2 weeks):**
 - Wire `request` event in `routes/chat.py`.
@@ -377,7 +377,7 @@ reviewer can grep the binary's actual wire shape without strace.
 
 **Phase 3 (deferred):**
 - Publish `golden.rapidmlx.com/profile-v1.{parquet,json}`.
-- Build `rapid-mlx suggest` CLI subcommand that reads it.
+- Build `qmlx suggest` CLI subcommand that reads it.
 - Browser-side hook into chat.rapidmlx.com Big-AGI splash to
   recommend an alias based on `WebGPU.getAdapter()` chip hint.
 
@@ -412,7 +412,7 @@ reviewer can grep the binary's actual wire shape without strace.
 |---|---|
 | Keep telemetry Worker separate from `rapidserver` | Different security posture (IP/UA discipline) + different blast radius |
 | `urllib` over `httpx` | No new dependency on the consent-gated path |
-| Daemon thread, not asyncio | Works inside both `rapid-mlx serve` (async) and `rapid-mlx chat` (sync) without coupling |
+| Daemon thread, not asyncio | Works inside both `qmlx serve` (async) and `qmlx chat` (sync) without coupling |
 | Lossy queue (drop oldest) | Telemetry must never grow unbounded; a stuck Worker should not crash the CLI |
 | Three event types, one envelope | Schema simplicity; one Worker code path; one R2 directory; one aggregation query |
 | Bucketed numerics | Soft-fingerprint resistance + cheap aggregation |
@@ -440,7 +440,7 @@ Parsers + scheduler + loader call `emit.error(...)`.
 
 ## Appendix B · Reusable patterns this lands
 
-- `transport.py` — first opt-in HTTPS phone-home in rapid-mlx. The
+- `transport.py` — first opt-in HTTPS phone-home in qmlx. The
   retry + silent-fail shape is reusable for any future low-stakes
   outbound (model-popularity beacon, "phone home from share session",
   etc).
@@ -460,11 +460,11 @@ Golden Profile is the **measured** counterpart. Same use case as
 whichllm's speed column ("what should I run?"), entirely different
 underlying data. Two integration paths once Golden Profile exists:
 
-1. **Internal**: `rapid-mlx suggest` reads
+1. **Internal**: `qmlx suggest` reads
    `https://golden.rapidmlx.com/profile-v1.json` and ranks
    `aliases.json` entries. No new ranking logic — Golden Profile
    already carries TPS, the ranker is `argmax`.
-2. **External**: ship a `--source rapid-mlx-golden` flag for whichllm
+2. **External**: ship a `--source qmlx-golden` flag for whichllm
    that swaps its Apple-Silicon speed predictions for our real
    measurements. PR upstream once `golden.rapidmlx.com` is live + has
    a month of data.

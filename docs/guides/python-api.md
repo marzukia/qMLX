@@ -5,7 +5,7 @@ Use the OpenAI-compatible server via any OpenAI client library.
 ## Start Server
 
 ```bash
-rapid-mlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
+qmlx serve mlx-community/Llama-3.2-3B-Instruct-4bit
 ```
 
 ## Basic Usage
@@ -64,7 +64,7 @@ print(response.choices[0].message.tool_calls)
 
 ## Engine API (Advanced)
 
-For embedding rapid-mlx in your own application:
+For embedding qmlx in your own application:
 
 ```python
 from vllm_mlx.engine import BatchedEngine

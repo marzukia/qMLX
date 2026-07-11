@@ -1,13 +1,13 @@
 # Codex CLI
 
-Use [OpenAI's Codex CLI](https://github.com/openai/codex) with rapid-mlx
+Use [OpenAI's Codex CLI](https://github.com/openai/codex) with qmlx
 as the local backend. Codex is a Rust-based coding agent that talks to
-the OpenAI Responses API (`POST /v1/responses`); rapid-mlx implements
+the OpenAI Responses API (`POST /v1/responses`); qmlx implements
 that endpoint as a stateless shim — every Codex turn re-sends the full
 conversation history, so no response-store layer is needed on the
 server side.
 
-Requires **rapid-mlx >= 0.7.10**.
+Requires **qmlx >= 0.7.10**.
 
 ## TL;DR
 
@@ -15,11 +15,11 @@ Requires **rapid-mlx >= 0.7.10**.
 # 1. Install Codex CLI
 brew install codex   # or: npm install -g @openai/codex
 
-# 2. Start rapid-mlx with a strong-enough model
-rapid-mlx serve qwen3.6-35b-4bit --port 8000
+# 2. Start qmlx with a strong-enough model
+qmlx serve qwen3.6-35b-4bit --port 8000
 
 # 3. Point Codex at the local server
-rapid-mlx agents codex --setup     # writes ~/.codex/config.toml for you
+qmlx agents codex --setup     # writes ~/.codex/config.toml for you
 
 # 4. Run Codex
 codex                              # interactive
@@ -42,15 +42,15 @@ recommended.
 
 ## Manual config
 
-If `rapid-mlx agents codex --setup` didn't fit your layout (e.g. you
+If `qmlx agents codex --setup` didn't fit your layout (e.g. you
 already have a `~/.codex/config.toml`), the relevant block is:
 
 ```toml
-model = "default"            # or any rapid-mlx alias
-model_provider = "rapid-mlx"
+model = "default"            # or any qmlx alias
+model_provider = "qmlx"
 
-[model_providers.rapid-mlx]
-name = "Rapid-MLX (local)"
+[model_providers.qmlx]
+name = "qMLX (local)"
 base_url = "http://localhost:8000/v1"
 ```
 
@@ -64,8 +64,8 @@ indirection**, not as an inline literal — Codex's `--strict-config`
 rejects `api_key = "..."` as an unknown field. Use `env_key` instead:
 
 ```toml
-[model_providers.rapid-mlx]
-name = "Rapid-MLX (local)"
+[model_providers.qmlx]
+name = "qMLX (local)"
 base_url = "http://localhost:8000/v1"
 env_key = "RAPID_MLX_API_KEY"
 ```
@@ -86,7 +86,7 @@ actually started the server with, instead of 404'ing on the name
 mismatch. The response's `model` field carries the loaded model's name
 (consistent with the Anthropic-compat route).
 
-This means: **whatever model you start `rapid-mlx serve` with is what
+This means: **whatever model you start `qmlx serve` with is what
 Codex will talk to**, regardless of what Codex thinks it's talking to.
 
 ## What's mapped, what's not
@@ -114,7 +114,7 @@ nothing more.
   (openai/codex#3841 confirms it's not implemented client-side), so the
   400 is a safety net for any other client that tries.
 - `reasoning.effort` → ignored. Set thinking on the server with
-  `rapid-mlx serve --enable-thinking` instead.
+  `qmlx serve --enable-thinking` instead.
 - `input_image` → dropped. Codex doesn't send images.
 - Non-function tool types (`web_search`, `code_interpreter`,
   `image_generation`, `file_search`, `computer_use`) → dropped. Codex
@@ -139,9 +139,9 @@ You should see a `response` object with an `output` array containing a
 
 ## Codex CLI versions
 
-Verified against **Codex CLI 0.136.0** on **rapid-mlx 0.7.12+** with
+Verified against **Codex CLI 0.136.0** on **qmlx 0.7.12+** with
 Qwen3.5-9B and Qwen3.6-27B. Codex 0.135 → 0.136 reshaped the request
-in three ways that earlier rapid-mlx releases mishandled:
+in three ways that earlier qmlx releases mishandled:
 
 - the per-turn instruction channel switched from `system` to the new
   Responses-API `developer` role,
@@ -150,27 +150,27 @@ in three ways that earlier rapid-mlx releases mishandled:
 - the agent loop terminates silently if the `function_call` item is
   missing — no error, no partial output, just a closed stream.
 
-If you're on rapid-mlx **< 0.7.12** with a recent Codex, you may see
+If you're on qmlx **< 0.7.12** with a recent Codex, you may see
 "stream disconnected before completion" or a turn that ends with no
-visible output. Upgrade with `rapid-mlx upgrade`.
+visible output. Upgrade with `qmlx upgrade`.
 
 ## Troubleshooting
 
 **Codex says "stream closed before response.completed"** — this should
-not happen on rapid-mlx >= 0.7.12 with Codex 0.136. If it does, the
+not happen on qmlx >= 0.7.12 with Codex 0.136. If it does, the
 engine likely crashed mid-generation; check the server logs.
 Re-running the query usually works.
 
-**Codex 404s on `/v1/responses`** — you're on rapid-mlx < 0.7.10.
-Upgrade with `rapid-mlx upgrade` (or `pip install -U rapid-mlx`).
+**Codex 404s on `/v1/responses`** — you're on qmlx < 0.7.10.
+Upgrade with `qmlx upgrade` (or `pip install -U qmlx`).
 
-**Codex turn ends with no output** — on rapid-mlx 0.7.10–0.7.11 with
+**Codex turn ends with no output** — on qmlx 0.7.10–0.7.11 with
 Codex 0.136, tool-call XML was filtered before the parser ran and the
 agent loop saw zero items. Fixed in 0.7.12.
 
 **Tool calls don't apply** — make sure `--enable-auto-tool-choice` is
 passed when starting the server, and that the model's tool parser is
-auto-detected correctly (`rapid-mlx serve ... --log-level DEBUG` shows
+auto-detected correctly (`qmlx serve ... --log-level DEBUG` shows
 it during boot).
 
 **Codex hangs** — first run prompts for sandbox permissions

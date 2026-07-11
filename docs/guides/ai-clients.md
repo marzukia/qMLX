@@ -1,12 +1,12 @@
 # AI Client Compatibility
 
-Rapid-MLX is compatible with any AI client that supports the OpenAI API
+qMLX is compatible with any AI client that supports the OpenAI API
 or Anthropic Messages API. This guide catalogs known-compatible clients,
 provides configuration examples, and tracks community-reported results.
 
 ## API Compatibility Surface
 
-Rapid-MLX exposes two primary interfaces:
+qMLX exposes two primary interfaces:
 
 | API | Endpoints | Use Case |
 |-----|-----------|----------|
@@ -32,7 +32,7 @@ Most OpenAI-compatible clients need three values:
 ```
 Base URL:  http://localhost:8000/v1
 API Key:   not-needed (or any non-empty string if required)
-Model:     default (or the model ID from rapid-mlx models)
+Model:     default (or the model ID from qmlx models)
 ```
 
 For Anthropic-compatible clients, leave off the `/v1` path:
@@ -69,7 +69,7 @@ These clients have been verified through automated integration tests
 | Client | Type | Setup | Status | Notes |
 |--------|------|-------|--------|-------|
 | [Aider](https://aider.chat) | CLI | `OPENAI_API_BASE=http://localhost:8000/v1 aider --model openai/default` | Verified | Architect mode, edit-and-commit |
-| [OpenCode](https://github.com/sst/opencode) | TUI | `rapid-mlx agents opencode --setup` | Compatible | Claude Code-like terminal UX |
+| [OpenCode](https://github.com/sst/opencode) | TUI | `qmlx agents opencode --setup` | Compatible | Claude Code-like terminal UX |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | CLI | `ANTHROPIC_BASE_URL=http://localhost:8000 claude` | Compatible | Uses Anthropic `/v1/messages` |
 | [Cursor](https://cursor.com) | IDE | Settings > Models > OpenAI Base URL: `http://localhost:8000/v1` | Compatible | Agent/composer mode uses tool calling |
 | [Continue.dev](https://continue.dev) | IDE Extension | `~/.continue/config.yaml` `apiBase: http://localhost:8000/v1` | Compatible | VS Code / JetBrains |
@@ -85,7 +85,7 @@ These clients have been verified through automated integration tests
 ## Clients to Test
 
 The following clients support OpenAI-compatible APIs but have not yet been
-verified against Rapid-MLX. If you have Apple Silicon and can test one,
+verified against qMLX. If you have Apple Silicon and can test one,
 see [Testing Methodology](#testing-methodology).
 
 - **CrewAI** (Framework) — `OPENAI_API_BASE=http://localhost:8000/v1`
@@ -100,12 +100,12 @@ see [Testing Methodology](#testing-methodology).
 - **Windsurf** (IDE) — Settings > OpenAI Base URL
 - **Zed** (IDE) — `assistant.openai_api_url: "http://localhost:8000/v1"` in settings
 
-Clients with a `rapid-mlx agents` profile (pre-built config, no automated tests yet):
+Clients with a `qmlx agents` profile (pre-built config, no automated tests yet):
 
-- **codex** (CLI) — `rapid-mlx agents codex --setup`
-- **Goose** (CLI) — `rapid-mlx agents goose --setup`
-- **OpenHands** (Web/Docker) — `rapid-mlx agents openhands --setup`
-- **OpenClaude** (CLI) — `rapid-mlx agents openclaude --setup`
+- **codex** (CLI) — `qmlx agents codex --setup`
+- **Goose** (CLI) — `qmlx agents goose --setup`
+- **OpenHands** (Web/Docker) — `qmlx agents openhands --setup`
+- **OpenClaude** (CLI) — `qmlx agents openclaude --setup`
 
 ## Testing Methodology
 
@@ -114,10 +114,10 @@ To contribute a compatibility report for a new client:
 1. **Start the server** on a model appropriate for your Mac's RAM:
    ```bash
    # 16 GB Mac
-   rapid-mlx serve qwen3.5-4b-4bit --port 8000
+   qmlx serve qwen3.5-4b-4bit --port 8000
 
    # 24-32 GB Mac
-   rapid-mlx serve qwen3.5-9b-4bit --port 8000
+   qmlx serve qwen3.5-9b-4bit --port 8000
    ```
 
 2. **Verify the server is reachable:**
@@ -163,7 +163,7 @@ To contribute a compatibility report for a new client:
 
 **Client requires an API key but won't accept "not-needed":**
 Try an arbitrary non-empty string. Some clients reject the literal
-string `not-needed`; use `sk-local` or `rapid-mlx` instead.
+string `not-needed`; use `sk-local` or `qmlx` instead.
 
 **Tool calling does not work:**
 - Ensure `--enable-auto-tool-choice` is set on the server
@@ -179,15 +179,15 @@ string `not-needed`; use `sk-local` or `rapid-mlx` instead.
 - If the client requires a specific model ID from the list endpoint,
   the `/v1/models` response returns the loaded model's ID
 
-## Rapid-MLX agents CLI
+## qMLX agents CLI
 
-Rapid-MLX ships a built-in agent manager that can auto-configure
+qMLX ships a built-in agent manager that can auto-configure
 several popular coding agents:
 
 ```bash
-rapid-mlx agents              # List all supported agents
-rapid-mlx agents <name> --setup  # Auto-configure an agent
-rapid-mlx agents hermes --test   # Run the Hermes agent test suite
+qmlx agents              # List all supported agents
+qmlx agents <name> --setup  # Auto-configure an agent
+qmlx agents hermes --test   # Run the Hermes agent test suite
 ```
 
 Currently supported profiles (in `vllm_mlx/agents/profiles/`):

@@ -1,12 +1,12 @@
-# Rapid-MLX Doctor — regression harness
+# qMLX Doctor — regression harness
 
-A four-tier "code health checkup" for Rapid-MLX:
+A four-tier "code health checkup" for qMLX:
 
 ```
-rapid-mlx doctor smoke       # ~2 min,  no model         — pre-commit
-rapid-mlx doctor check       # ~15 min, qwen3.5-35b-8bit      — pre-PR / big change
-rapid-mlx doctor full        # ~2-3 hr, 3 models         — pre-release / refactor
-rapid-mlx doctor benchmark   # overnight, all models     — periodic / promo material
+qmlx doctor smoke       # ~2 min,  no model         — pre-commit
+qmlx doctor check       # ~15 min, qwen3.5-35b-8bit      — pre-PR / big change
+qmlx doctor full        # ~2-3 hr, 3 models         — pre-release / refactor
+qmlx doctor benchmark   # overnight, all models     — periodic / promo material
 ```
 
 Pick the smallest tier that catches the kind of regression you're worried
@@ -25,12 +25,12 @@ it needs `tests/`, `harness/`, and `pyproject.toml`):
 
 ```bash
 # Pre-commit — no model required
-make smoke                            # or: rapid-mlx doctor smoke
+make smoke                            # or: qmlx doctor smoke
 
 # Pre-PR — boots qwen3.5-35b-8bit, runs API + perf checks, diffs vs baseline.
 # 35B 8-bit is the smallest model we trust to ~never err on the eval
-# suite, so failures cleanly attribute to rapid-mlx bugs.
-HF_HUB_CACHE=... make check           # or: rapid-mlx doctor check
+# suite, so failures cleanly attribute to qmlx bugs.
+HF_HUB_CACHE=... make check           # or: qmlx doctor check
 
 # Pre-release — three models + all 12 agent profiles
 HF_HUB_CACHE=... make full
@@ -74,7 +74,7 @@ Designed to be invoked from a pre-commit hook or `make` target.
 | `repo_layout` | Sanity-check `pyproject.toml`, `aliases.json`, `agents/profiles/` |
 | `imports` | Import lightweight modules — catches syntax errors fast |
 | `ruff` | Lint (binary or `python -m ruff`, gracefully skips if neither) |
-| `cli_sanity` | `rapid-mlx --help / models / agents` actually run |
+| `cli_sanity` | `qmlx --help / models / agents` actually run |
 | `pytest` | Full unit suite (~45s, ~2070 tests) excluding `tests/integrations/` and `test_event_loop.py` |
 
 ### `check` (~15 min, qwen3.5-35b-8bit)
@@ -84,7 +84,7 @@ MoE so decode is fast despite the 35B param count), runs API + perf
 checks, diffs against `harness/baselines/check-qwen3.5-35b.json`.
 
 Why 35B-8bit and not a smaller 4-bit model: validation needs the model
-itself to ~never err so a failure cleanly attributes to a rapid-mlx
+itself to ~never err so a failure cleanly attributes to a qmlx
 bug rather than quant noise / small-model flakiness. 4B at 4-bit was
 the old default and made bug triage ambiguous.
 
@@ -115,7 +115,7 @@ also runs all 12 agent profiles' auto-generated test plans.
 Override the model list:
 
 ```bash
-rapid-mlx doctor full --models qwen3.5-35b-8bit,qwen3.6-35b-4bit
+qmlx doctor full --models qwen3.5-35b-8bit,qwen3.6-35b-4bit
 ```
 
 ### `benchmark` (overnight, all local models)
@@ -125,10 +125,10 @@ scorecard markdown:
 
 ```bash
 # Auto-discovers models in HF_HUB_CACHE / $HF_HOME/hub / ~/.cache/huggingface / ~/.lmstudio
-HF_HUB_CACHE=... rapid-mlx doctor benchmark
+HF_HUB_CACHE=... qmlx doctor benchmark
 
 # Or be explicit (forces inclusion even if cache probe misses):
-rapid-mlx doctor benchmark --models qwen3.5-35b-8bit,qwen3.6-35b-4bit
+qmlx doctor benchmark --models qwen3.5-35b-8bit,qwen3.6-35b-4bit
 ```
 
 Output:
@@ -179,10 +179,10 @@ Baseline file shape:
 
 ```bash
 # Record a fresh baseline (after intentional perf change, or first time)
-HF_HUB_CACHE=... rapid-mlx doctor check --update-baselines
+HF_HUB_CACHE=... qmlx doctor check --update-baselines
 
 # Same for full tier — writes a baseline per model in --models
-HF_HUB_CACHE=... rapid-mlx doctor full --update-baselines
+HF_HUB_CACHE=... qmlx doctor full --update-baselines
 ```
 
 `--update-baselines` is the only path that writes to `harness/baselines/`.
@@ -191,7 +191,7 @@ catch a real regression masquerading as "just a metric change". Workflow:
 
 ```bash
 # 1. Record what you see now
-rapid-mlx doctor check --update-baselines
+qmlx doctor check --update-baselines
 
 # 2. Inspect the diff
 git diff harness/baselines/
