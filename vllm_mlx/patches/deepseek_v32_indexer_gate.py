@@ -74,7 +74,7 @@ Concurrency note
 ----------------
 The shared-topk thread runs through per-attention-instance attributes
 (``self_attn._shared_topk_indices``). Concurrent forward passes on the same
-model instance would race on these attributes. rapid-mlx's engine serializes
+model instance would race on these attributes. qmlx's engine serializes
 forward passes per model (one event loop, one model_runner per process), so
 this is fine in production. The model.__call__ wrapper clears each shared
 layer's attribute IMMEDIATELY before the layer runs so stale values from a
@@ -368,21 +368,21 @@ def install_deepseek_v32_indexer_gate() -> None:
         # patched callables (which would self-reference and either
         # infinite-loop in the wrappers or leak originals through a
         # subsequent uninstall — codex finding #2 on PR #967 round 3).
-        if not getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False):
-            ds._RAPID_MLX_ORIG_ATTN_CALL = ds.DeepseekV32Attention.__call__
-            ds._RAPID_MLX_ORIG_DECODER_INIT = ds.DeepseekV32DecoderLayer.__init__
-            ds._RAPID_MLX_ORIG_INDEXER_CALL = ds.Indexer.__call__
-            ds._RAPID_MLX_ORIG_MODEL_CALL = ds.DeepseekV32Model.__call__
-            ds._RAPID_MLX_ORIG_FROM_DICT = glm.ModelArgs.from_dict
+        if not getattr(ds, "_QMLX_INDEXER_GATE_INSTALLED", False):
+            ds._QMLX_ORIG_ATTN_CALL = ds.DeepseekV32Attention.__call__
+            ds._QMLX_ORIG_DECODER_INIT = ds.DeepseekV32DecoderLayer.__init__
+            ds._QMLX_ORIG_INDEXER_CALL = ds.Indexer.__call__
+            ds._QMLX_ORIG_MODEL_CALL = ds.DeepseekV32Model.__call__
+            ds._QMLX_ORIG_FROM_DICT = glm.ModelArgs.from_dict
 
         # Always copy from the stash into this module's globals so a later
         # ``uninstall_deepseek_v32_indexer_gate()`` from a freshly-loaded
         # module instance still restores the true upstream callables.
-        _orig_attn_call = ds._RAPID_MLX_ORIG_ATTN_CALL
-        _orig_decoder_init = ds._RAPID_MLX_ORIG_DECODER_INIT
-        _orig_indexer_call = ds._RAPID_MLX_ORIG_INDEXER_CALL
-        _orig_model_call = ds._RAPID_MLX_ORIG_MODEL_CALL
-        _orig_from_dict = ds._RAPID_MLX_ORIG_FROM_DICT
+        _orig_attn_call = ds._QMLX_ORIG_ATTN_CALL
+        _orig_decoder_init = ds._QMLX_ORIG_DECODER_INIT
+        _orig_indexer_call = ds._QMLX_ORIG_INDEXER_CALL
+        _orig_model_call = ds._QMLX_ORIG_MODEL_CALL
+        _orig_from_dict = ds._QMLX_ORIG_FROM_DICT
 
         # Re-entry guard: if a previous module instance already installed
         # the gate on the upstream classes, mark this instance as
@@ -390,7 +390,7 @@ def install_deepseek_v32_indexer_gate() -> None:
         # wrappers would call the old wrappers as "originals" → infinite
         # delegation). The captured originals above are the un-patched
         # callables, so uninstall still works.
-        if getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False):
+        if getattr(ds, "_QMLX_INDEXER_GATE_INSTALLED", False):
             _INSTALLED = True
             return
 
@@ -644,7 +644,7 @@ def install_deepseek_v32_indexer_gate() -> None:
         ds.Indexer.__call__ = _patched_indexer_call
         ds.DeepseekV32Model.__call__ = _patched_model_call
         glm.ModelArgs.from_dict = _patched_from_dict
-        ds._RAPID_MLX_INDEXER_GATE_INSTALLED = True
+        ds._QMLX_INDEXER_GATE_INSTALLED = True
         _INSTALLED = True
         logger.debug("[deepseek_v32_indexer_gate] installed")
 
@@ -677,7 +677,7 @@ def uninstall_deepseek_v32_indexer_gate() -> None:
             ds.DeepseekV32Model.__call__ = _orig_model_call
         if _orig_from_dict is not None:
             glm.ModelArgs.from_dict = _orig_from_dict
-        ds._RAPID_MLX_INDEXER_GATE_INSTALLED = False
+        ds._QMLX_INDEXER_GATE_INSTALLED = False
         _INSTALLED = False
         _orig_attn_call = None
         _orig_decoder_init = None

@@ -112,7 +112,7 @@ _LANE_SUBMODULES: dict[str, str] = {
 _KOKORO_EXTRA_DEP = "misaki"
 _KOKORO_EXTRA_HINT = (
     "Kokoro TTS requires the optional `misaki` G2P package, which is "
-    "not installed. Reinstall with `pip install 'rapid-mlx[audio]'` "
+    "not installed. Reinstall with `pip install 'qmlx[audio]'` "
     "to pull every audio dep, or `pip install misaki` for a "
     "minimal Kokoro-only install."
 )
@@ -135,7 +135,7 @@ _KOKORO_EXTRA_HINT = (
 # Cost: STT dry-run is ~1 s on M2 (mostly model-load); TTS Kokoro
 # dry-run is ~2 s. Gated behind the ``deep`` probe-depth setting so
 # operators on tight cold-start budgets can opt out via
-# ``RAPID_MLX_AUDIO_PROBE_DEPTH=shallow``. Default is ``deep`` —
+# ``QMLX_AUDIO_PROBE_DEPTH=shallow``. Default is ``deep`` —
 # the goal of D-CAPABILITIES-DETECTION is to catch backend defects
 # at boot, not at first user request.
 
@@ -415,7 +415,7 @@ def _raise_503(verdict: _Verdict) -> None:
     detail = verdict.reason or "mlx-audio is not available"
     raise HTTPException(
         status_code=503,
-        detail=(f"{detail}. Install with: pip install 'rapid-mlx[audio]'"),
+        detail=(f"{detail}. Install with: pip install 'qmlx[audio]'"),
     )
 
 
@@ -460,8 +460,8 @@ require_mlx_audio = require_mlx_audio_tts
 # from ``vllm_mlx.cli.serve_command`` when the operator asks the server to
 # serve a vision alias on a base install missing the ``[vision]`` extra.
 # Audio aliases (``kokoro``, ``whisper-large-v3``, ``parakeet``, ...) had
-# no equivalent guard — ``rapid-mlx serve kokoro`` on a fresh
-# ``pip install rapid-mlx`` would boot, print the startup banner, and
+# no equivalent guard — ``qmlx serve kokoro`` on a fresh
+# ``pip install qmlx`` would boot, print the startup banner, and
 # only crash on the FIRST audio request (a 503 envelope from the
 # in-route probe). That looked like "successful boot, broken
 # inference" instead of the obvious "you need the [audio] extra".
@@ -476,7 +476,7 @@ require_mlx_audio = require_mlx_audio_tts
 #: Canonical install-hint copy — shared with the route probes via
 #: :func:`_raise_503` so a torn install reports the same one-liner
 #: whether the operator hit it at boot or mid-request.
-AUDIO_EXTRA_INSTALL_HINT = "Install with: pip install 'rapid-mlx[audio]'"
+AUDIO_EXTRA_INSTALL_HINT = "Install with: pip install 'qmlx[audio]'"
 
 
 # Known audio alias surface — kept narrow on purpose. The list is
@@ -560,7 +560,7 @@ def require_audio_or_exit(model_name: str) -> None:
 
     Exits ``2`` (argparse usage-error code) with the canonical install
     hint on stderr. ``vllm_mlx.cli.serve_command`` calls this after
-    embedding + vision guards so a single ``rapid-mlx serve`` command
+    embedding + vision guards so a single ``qmlx serve`` command
     that requests audio-only sees the audio hint, not the (irrelevant)
     embedding/vision one.
     """

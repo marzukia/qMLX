@@ -26,7 +26,7 @@ Why this lives at the ASGI layer (not a FastAPI ``Depends`` or
        :func:`vllm_mlx.utils.json_depth.json_nesting_depth_exceeds`)
        to measure structural depth.
     4. Reject with the OpenAI-shaped 400 envelope if depth exceeds
-       ``RAPID_MLX_MAX_BODY_DEPTH`` (default 64).
+       ``QMLX_MAX_BODY_DEPTH`` (default 64).
     5. Otherwise, replay the buffered body to the downstream app via
        a synthetic ``receive`` so Pydantic still sees the original
        bytes.
@@ -209,12 +209,12 @@ def _is_jsonish_content_type(headers, path: str | None) -> bool:
 async def _send_400_depth(send, *, max_depth: int) -> None:
     """Emit the OpenAI-shaped 400 envelope for a depth-cap rejection.
 
-    Shape matches the rest of the rapid-mlx 400 surface
+    Shape matches the rest of the qmlx 400 surface
     (``middleware/exception_handlers.py::_decode_error_response``) so
     SDKs that key on ``error.code`` / ``error.type`` handle this gate
     the same as a malformed-JSON 400.
 
-    The message names the env knob explicitly (``RAPID_MLX_MAX_BODY_DEPTH``)
+    The message names the env knob explicitly (``QMLX_MAX_BODY_DEPTH``)
     so an operator running into this on a legitimate payload knows
     exactly which lever to turn. No bytes from the request body are
     reflected — the only depth-determined field is the cap integer,
@@ -225,7 +225,7 @@ async def _send_400_depth(send, *, max_depth: int) -> None:
             "error": {
                 "message": (
                     f"Request body JSON nesting depth exceeds the {max_depth}-level "
-                    "server cap (set via RAPID_MLX_MAX_BODY_DEPTH)."
+                    "server cap (set via QMLX_MAX_BODY_DEPTH)."
                 ),
                 "type": "invalid_request_error",
                 "code": "request_body_too_deep",
@@ -250,7 +250,7 @@ async def _send_400_depth(send, *, max_depth: int) -> None:
 
 
 class RequestBodyDepthMiddleware:
-    """ASGI middleware enforcing :data:`RAPID_MLX_MAX_BODY_DEPTH`.
+    """ASGI middleware enforcing :data:`QMLX_MAX_BODY_DEPTH`.
 
     Runs AFTER :class:`RequestBodyLimitMiddleware` (so a giant body is
     bounced for size before we try to parse it) but BEFORE FastAPI's

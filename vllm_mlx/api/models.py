@@ -427,7 +427,7 @@ def _validate_seed(v) -> int | None:
     accepted and folded to the backend's uint32 PRNG key range in
     ``make_seeded_sampler`` via a deterministic ``seed & 0xFFFFFFFF``
     bit-fold. Same input value always maps to the same backend key, so
-    reproducibility is preserved within rapid-mlx (OpenAI's spec only
+    reproducibility is preserved within qmlx (OpenAI's spec only
     promises within-engine determinism — "we cannot guarantee
     determinism across model versions or backends"). Codex round-6
     BLOCKING fix on the original ``le=0xFFFFFFFF`` Field bound that
@@ -476,7 +476,7 @@ def _validate_seed(v) -> int | None:
 #
 # The set mirrors OpenAI's public docs (gpt-5/o-series spec): ``minimal``
 # was added Aug 2025 alongside ``low``/``medium``/``high``; ``none`` is
-# the rapid-mlx-specific "suppress thinking entirely" alias that the
+# the qmlx-specific "suppress thinking entirely" alias that the
 # desktop UI surfaces, kept here so SDK clients that learned it don't
 # 400. Anthropic Claude's ``thinking.type`` enum is intentionally NOT
 # included — that's a different surface (the Anthropic adapter handles
@@ -637,10 +637,10 @@ def _scrub_nonfinite_sampling_raw(data):
 # single-machine ("Yuki posture") users who never set the env var.
 #
 # Contract:
-#   * ``RAPID_MLX_MAX_GENERATION_TOKENS`` unset / blank / non-positive
+#   * ``QMLX_MAX_GENERATION_TOKENS`` unset / blank / non-positive
 #     → no enforcement. Identical behaviour to pre-fix; the body-bytes
 #     cap remains the only generic DoS gate.
-#   * ``RAPID_MLX_MAX_GENERATION_TOKENS=N`` with positive int N → reject
+#   * ``QMLX_MAX_GENERATION_TOKENS=N`` with positive int N → reject
 #     at parse time when ``max_tokens`` (after the
 #     ``max_completion_tokens``/``max_tokens`` normalization on the
 #     OpenAI side) exceeds N.
@@ -656,7 +656,7 @@ def _scrub_nonfinite_sampling_raw(data):
 #     process. Cost is one ``os.environ.get`` per request — negligible.
 
 
-_MAX_GEN_TOKENS_ENV = "RAPID_MLX_MAX_GENERATION_TOKENS"
+_MAX_GEN_TOKENS_ENV = "QMLX_MAX_GENERATION_TOKENS"
 
 
 def _resolve_max_generation_tokens_ceiling() -> int | None:
@@ -1147,7 +1147,7 @@ class ToolDefinition(BaseModel):
                 "matching ^[a-zA-Z0-9_-]{1,64}$ (per OpenAI spec)."
             )
         # D-TOOL-RECUR: reject a ``function.parameters`` (JSON Schema)
-        # whose structural nesting exceeds ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``
+        # whose structural nesting exceeds ``QMLX_MAX_TOOL_SCHEMA_DEPTH``
         # (default 64). Pre-fix, a client could ship a ~1000-deep
         # nested ``parameters`` schema (~10 KB JSON) and crash the
         # worker with HTTP 500 inside
@@ -1174,7 +1174,7 @@ class ToolDefinition(BaseModel):
                 raise ValueError(
                     f"function.parameters JSON nesting depth exceeds the "
                     f"{cap}-level server cap (set via "
-                    "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH)."
+                    "QMLX_MAX_TOOL_SCHEMA_DEPTH)."
                 )
         return self
 
@@ -1626,7 +1626,7 @@ class ChatCompletionRequest(BaseModel):
     # ``uint32`` ``mx.random.key`` is applied in ``make_seeded_sampler``
     # via a deterministic ``seed & 0xFFFFFFFF`` bit-fold: same input
     # value always maps to the same backend key, so reproducibility is
-    # preserved within rapid-mlx. (OpenAI's spec only promises within-
+    # preserved within qmlx. (OpenAI's spec only promises within-
     # engine determinism — "we cannot guarantee determinism across
     # model versions or backends".) Codex round-6 BLOCKING fix on the
     # original ``Field(ge=0, le=0xFFFFFFFF)`` bound that 422'd valid
@@ -2379,7 +2379,7 @@ class ModelInfo(BaseModel):
     id: str
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))
-    owned_by: str = "rapid-mlx"
+    owned_by: str = "qmlx"
 
     # ---- Rapid-MLX vendor extensions (additive; OpenAI clients
     # ignore unknown fields) ------------------------------------
@@ -2440,7 +2440,7 @@ class ModelInfo(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     # F-K-CAPABILITIES-OMIT-AUDIO: per-lane audio backend status
     # surfaced when the deep audio probe has been run
-    # (``RAPID_MLX_AUDIO_DEEP_PROBE=1``). ``None`` means the deep
+    # (``QMLX_AUDIO_DEEP_PROBE=1``). ``None`` means the deep
     # probe never ran on this server, so we can't make any claim
     # about lane health beyond what ``capabilities`` already says.
     # ``{"stt": "ok", "tts": "degraded", ...}`` callers can read to
@@ -2569,7 +2569,7 @@ class AudioSpeechRequest(BaseModel):
     route declared ``input: str = ""`` as a bare query parameter, so
     JSON bodies were silently dropped and an empty/missing ``input``
     collapsed into the generic 500 ``No audio generated`` envelope
-    (the engine looped over an empty phoneme list and rapid-mlx's
+    (the engine looped over an empty phoneme list and qmlx's
     chunk-collector raised). Both shapes are CLIENT errors and should
     surface a 400 with ``param="input"`` so callers can fix their
     request payload without an opaque 500 round-trip.

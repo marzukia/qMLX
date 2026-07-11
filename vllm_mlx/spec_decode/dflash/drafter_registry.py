@@ -133,7 +133,7 @@ def register_dflash_drafter(alias: str, drafter_hf_path: str) -> None:
 def list_registered_aliases() -> list[str]:
     """Return all alias names with a bound DFlash drafter (sorted).
 
-    Used by diagnostic / ``rapid-mlx info`` surfaces to enumerate
+    Used by diagnostic / ``qmlx info`` surfaces to enumerate
     DFlash-eligible aliases without round-tripping every alias through
     the detect helper.
     """

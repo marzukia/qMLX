@@ -6,11 +6,11 @@ Continue.dev (VS Code and JetBrains extension) reads its config from
 entries under the top-level ``models`` key, each one describing a
 provider + base URL + model id. Pointing one of those entries at
 ``http://127.0.0.1:8000/v1`` is all that's required for Continue to
-route chat at the local rapid-mlx server.
+route chat at the local qmlx server.
 
 We append (rather than replace) the entry so a user with several
 Continue models configured keeps all of them — we just add one tagged
-``rapid-mlx`` and make it the default. On a re-run we de-dupe by name
+``qmlx`` and make it the default. On a re-run we de-dupe by name
 so we don't keep stacking copies.
 """
 
@@ -29,9 +29,9 @@ _CONFIG_DIR = Path.home() / ".continue"
 _CONFIG_FILENAME = "config.json"
 
 # Name we use for the model entry we insert. A user who already has a
-# model named ``rapid-mlx`` on a re-run gets it updated in place rather
+# model named ``qmlx`` on a re-run gets it updated in place rather
 # than duplicated.
-_MODEL_ENTRY_NAME = "rapid-mlx"
+_MODEL_ENTRY_NAME = "qmlx"
 
 
 def detect() -> bool:
@@ -39,7 +39,7 @@ def detect() -> bool:
 
     Detection is deliberately permissive — a user might have installed
     the extension but not opened it (no ``config.json`` yet) and we
-    still want ``rapid-mlx launch continue-dev`` to succeed by creating
+    still want ``qmlx launch continue-dev`` to succeed by creating
     the file. The minimum signal is the ``~/.continue/`` directory,
     which Continue mkdir's on extension activation.
     """
@@ -63,7 +63,7 @@ def write_or_patch_config(
     api_key: str = "sk-noop",
     config_path: Path | None = None,
 ) -> Path:
-    """Insert (or update) a ``rapid-mlx`` model entry in Continue's
+    """Insert (or update) a ``qmlx`` model entry in Continue's
     config, then promote it to the default model.
 
     Shape of the inserted entry:
@@ -71,14 +71,14 @@ def write_or_patch_config(
     .. code-block:: json
 
        {
-         "title": "rapid-mlx",
+         "title": "qmlx",
          "provider": "openai",
          "model": "<model>",
          "apiBase": "<server_url>/v1",
          "apiKey": "<api_key>"
        }
 
-    On a re-run, an existing entry with ``title == "rapid-mlx"`` is
+    On a re-run, an existing entry with ``title == "qmlx"`` is
     overwritten in place (so the user's preserved index in the models
     list stays stable) instead of being appended a second time.
 

@@ -2,7 +2,7 @@
 """OpenAI Responses API endpoint — /v1/responses.
 
 Stateless shim that lets Codex CLI (and any other Responses-API client)
-talk to rapid-mlx as if it were OpenAI. Translates Responses → Chat,
+talk to qmlx as if it were OpenAI. Translates Responses → Chat,
 runs inference through the existing engine, translates back into the
 seven SSE events Codex CLI parses (``response.created``,
 ``response.output_item.added``, ``response.output_text.delta``,
@@ -297,7 +297,7 @@ async def create_response(request: Request):
             status_code=400,
             detail=(
                 "previous_response_id is not supported by this server — "
-                "rapid-mlx is a stateless Responses API shim. Re-send the "
+                "qmlx is a stateless Responses API shim. Re-send the "
                 "full conversation history in the `input` field each turn."
             ),
         )
@@ -453,7 +453,7 @@ async def create_response(request: Request):
             # regardless of whether [guided] is installed (the
             # constrained-decoding path is buffered-only on this
             # surface), so telling a strict+stream caller to
-            # ``pip install rapid-mlx[guided]`` would be
+            # ``pip install qmlx[guided]`` would be
             # misleading — installing the extra still wouldn't
             # let them use strict+stream on /v1/responses. Naming
             # the actual escape hatches first (drop stream=true,
@@ -488,13 +488,13 @@ async def create_response(request: Request):
                 # ``strict_stream_unsupported`` gate above already
                 # rejects streaming on this surface, so we know we
                 # are about to take the non-stream branch. The
-                # disable flag ``RAPID_MLX_STRICT_JSON_SCHEMA=off``
+                # disable flag ``QMLX_STRICT_JSON_SCHEMA=off``
                 # restores the legacy silent-pass-through behavior.
                 if not strict_enforcement_enabled():
                     logger.warning(
                         "Strict json_schema on /v1/responses requested "
                         "without [guided] AND "
-                        "RAPID_MLX_STRICT_JSON_SCHEMA=off — falling "
+                        "QMLX_STRICT_JSON_SCHEMA=off — falling "
                         "through to prompt-injection only."
                     )
                 else:
@@ -575,7 +575,7 @@ async def create_response(request: Request):
                 )
 
         # #448 — translate the OpenAI ``reasoning_effort`` knob into
-        # rapid-mlx's native controls. MUST run BEFORE the tool auto-
+        # qmlx's native controls. MUST run BEFORE the tool auto-
         # disable below so a ``reasoning_effort="none"`` request registers
         # its enable_thinking preference first (the tool auto-disable then
         # no-ops on it) and a graded value lands its reasoning_max_tokens
@@ -665,7 +665,7 @@ async def create_response(request: Request):
             _ctx_messages = _prepare_messages_for_context_check(engine, openai_request)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        # rapid-mlx#280 (codex MED on PR #893 review): thread the
+        # qmlx#280 (codex MED on PR #893 review): thread the
         # resolved ``enable_thinking`` so the prompt-token estimate
         # matches what the engine actually generates. The R12-T1F /
         # R12-T2F auto-disable above mutates
@@ -934,7 +934,7 @@ async def _non_stream(
                             "constrained decoding failed: "
                             f"{type(guided_err).__name__}. Investigate "
                             "the server logs and the "
-                            "rapid_mlx_response_format_strict_violations_total "
+                            "qmlx_response_format_strict_violations_total "
                             "metric."
                         ),
                         "type": "api_error",
@@ -992,7 +992,7 @@ async def _non_stream(
                                 "constrained decoding failed: "
                                 f"{type(guided_err).__name__}. Investigate "
                                 "the server logs and the "
-                                "rapid_mlx_response_format_strict_violations_total "
+                                "qmlx_response_format_strict_violations_total "
                                 "metric."
                             ),
                             "type": "api_error",
@@ -1076,7 +1076,7 @@ async def _non_stream(
             # instead of a deterministic ``422 json_schema_violation``.
             # Centralized helper shared with chat.py keeps the gate
             # logic from drifting between the two surfaces.
-            # rapid-mlx#280: thread the resolved ``enable_thinking`` so
+            # qmlx#280: thread the resolved ``enable_thinking`` so
             # the repair-prompt fit check renders the way the engine
             # will. ``repair_kwargs`` carries the same value because it
             # is a copy of ``chat_kwargs`` (see line above); resolving
@@ -1311,7 +1311,7 @@ async def _non_stream(
     # support guided generation, the unconstrained path has its own
     # post-decode validator + repair retry block ABOVE (gated by
     # ``strict_enforcement_enabled()`` at line ~937), and the
-    # ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` escape hatch correctly
+    # ``QMLX_STRICT_JSON_SCHEMA=off`` escape hatch correctly
     # short-circuits that block. Without the ``supports_guided_generation``
     # gate here, the disable flag was effectively ignored — the
     # non-guided branch logged "falling through to prompt-injection
@@ -1336,7 +1336,7 @@ async def _non_stream(
                             f"did not validate against the supplied schema ({err}). "
                             "This indicates the constrained-decoding path silently "
                             "degraded; investigate the server logs and the "
-                            "rapid_mlx_response_format_strict_violations_total metric."
+                            "qmlx_response_format_strict_violations_total metric."
                         ),
                         "type": "api_error",
                         "code": "strict_schema_violation",
@@ -1408,7 +1408,7 @@ async def _non_stream(
     # render ``output_text`` blocks (rather than walking ``status`` +
     # ``usage.output_tokens_details.reasoning_tokens``) get the literal
     # cue in-band. Opt out via
-    # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``. The Responses
+    # ``QMLX_REASONING_CUTOFF_NOTICE=disabled``. The Responses
     # surface intentionally does NOT run
     # ``_rescue_silent_drop_from_reasoning`` (this endpoint never
     # carried the issue#569 silent-drop pre-history), so the helper sees

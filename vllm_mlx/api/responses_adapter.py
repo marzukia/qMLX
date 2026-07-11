@@ -773,7 +773,7 @@ def _build_reasoning_output_item(
         {"type":"reasoning","id":"rs_<hex>",
          "summary":[{"type":"summary_text","text":"..."}]}
 
-    rapid-mlx does not run a separate summarization model — the
+    qmlx does not run a separate summarization model — the
     ``summary_text`` carries the raw reasoning chain-of-thought
     verbatim. Large reasoning blobs are chunk-capped at the engine
     level via ``reasoning_max_tokens`` (upstream vLLM PR #20859),

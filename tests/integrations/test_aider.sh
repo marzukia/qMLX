@@ -1,8 +1,8 @@
 #!/bin/bash
-# Aider CLI integration harness against a running `rapid-mlx serve`.
+# Aider CLI integration harness against a running `qmlx serve`.
 #
 # What it proves:
-#   1. Aider's REPL can connect to rapid-mlx's OpenAI-compatible endpoint.
+#   1. Aider's REPL can connect to qmlx's OpenAI-compatible endpoint.
 #   2. Aider's SEARCH/REPLACE edit-and-write pipeline actually rewrites a
 #      local file the way we asked ("fix the bug in add.py — add, not
 #      subtract").
@@ -20,7 +20,7 @@
 #
 # ``--base-url`` takes the full ``http[s]://host:port/v1`` URL and is the
 # preferred form — it lets the Python wrapper pass whatever URL the
-# ``rapid_mlx_server`` fixture is actually pointed at (which may be
+# ``qmlx_server`` fixture is actually pointed at (which may be
 # non-localhost in CI shards or a remote-serve run). ``--port`` is kept
 # for standalone local invocations and defaults host to ``127.0.0.1``.
 #
@@ -152,14 +152,14 @@ PYEOF
 # 5 s timeout catches "operator forgot to boot serve" instantly instead
 # of eating the 300 s aider timeout.
 if ! curl -sS -m 5 "$BASE_URL/models" >/dev/null 2>&1; then
-    echo "ERROR: rapid-mlx server not reachable at $BASE_URL" >&2
+    echo "ERROR: qmlx server not reachable at $BASE_URL" >&2
     exit 1
 fi
 
 # Aider needs LiteLLM's ``openai/`` prefix to route through the
 # OpenAI-compatible chat completions path — without it LiteLLM tries
 # to pick a provider from the alias string and fails on non-canonical
-# rapid-mlx aliases.
+# qmlx aliases.
 LITELLM_MODEL="openai/${MODEL}"
 
 echo "[test_aider.sh] model=$MODEL base_url=$BASE_URL timeout=${TIMEOUT}s"

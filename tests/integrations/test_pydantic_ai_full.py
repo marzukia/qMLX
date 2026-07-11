@@ -1,4 +1,4 @@
-"""Thorough PydanticAI test suite against local rapid-mlx server."""
+"""Thorough PydanticAI test suite against local qmlx server."""
 
 import asyncio
 import os
@@ -9,7 +9,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-_BASE = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+_BASE = os.environ.get("QMLX_BASE_URL", "http://localhost:8000/v1")
 try:
     MODEL_ID = _httpx.get(f"{_BASE}/models", timeout=5).json()["data"][0]["id"]
 except Exception:
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     try:
         # PydanticAI defaults max_tokens to ~1024; on verbose 4B-class models the
         # second turn can spill past that. Raise the cap so the SDK contract test
-        # checks rapid-mlx behaviour, not PydanticAI's default ceiling.
+        # checks qmlx behaviour, not PydanticAI's default ceiling.
         agent = Agent(model, model_settings={"max_tokens": 2048})
         r1 = agent.run_sync("My name is Bob. Remember this.")
         r2 = agent.run_sync("What is my name?", message_history=r1.all_messages())

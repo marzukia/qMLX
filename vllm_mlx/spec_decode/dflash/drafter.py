@@ -11,9 +11,9 @@ Three concrete pieces live in this module:
 1. :class:`BlockDiffusionDrafter` — the per-block ``Protocol`` consumed
    by :mod:`vllm_mlx.spec_decode.dflash.generator` and ...verifier.
    This per-block contract is the **0.10 interface** — the standardized
-   DFlash integration that pairs with rapid-mlx's own
+   DFlash integration that pairs with qmlx's own
    generator/verifier. It is NOT what mlx-vlm 0.6.3's DFlash drafter
-   actually exposes (see #3 below); the rapid-mlx generator/verifier
+   actually exposes (see #3 below); the qmlx generator/verifier
    pair around this Protocol remains scaffolding until the BatchedEngine
    integration lands.
 2. :class:`StubBlockDiffusionDrafter` — deterministic, MLX-allocation-
@@ -28,7 +28,7 @@ Three concrete pieces live in this module:
    model's captured hidden states as input (it is a hidden-state
    conditioned diffusion model), so a per-block adapter cannot satisfy
    it without owning the verify forward too. Rather than re-implement
-   the full DFlash control flow in rapid-mlx (the previous adapter at
+   the full DFlash control flow in qmlx (the previous adapter at
    this site tried and silently broke on any real call — the bench
    could never produce a number), this class delegates the whole loop
    to mlx-vlm's reference implementation and surfaces accept-rate /
@@ -39,7 +39,7 @@ Why the architecture split
 --------------------------
 
 The :class:`BlockDiffusionDrafter` Protocol describes "what an ideal
-per-block drafter looks like" from rapid-mlx's BatchedEngine point of
+per-block drafter looks like" from qmlx's BatchedEngine point of
 view — one ``draft_block`` call returns the next block's candidate
 tokens, the verifier owns the rest. Today that contract is satisfied
 ONLY by the stub: the production mlx-vlm drafter cannot fit it because
@@ -272,7 +272,7 @@ class MlxVlmDFlashDriver:
     :class:`BlockDiffusionDrafter` Protocol above) cannot synthesize
     those hidden states; the verifier forward owns them, and the
     drafter's first call needs the prefill hidden state. Wiring this
-    into rapid-mlx's own verifier/generator pair would require
+    into qmlx's own verifier/generator pair would require
     re-implementing mlx-vlm's :func:`_dflash_rounds` control flow —
     explicitly out of scope for 0.9.
 

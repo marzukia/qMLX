@@ -156,7 +156,7 @@ def _build_app(
                 ModelInfo(
                     id=served_model_name,
                     created=int(time.time()),
-                    owned_by="rapid-mlx",
+                    owned_by="qmlx",
                 )
             ]
         )

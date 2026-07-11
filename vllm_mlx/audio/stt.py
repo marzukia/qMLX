@@ -51,7 +51,7 @@ DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"
 #
 # Gating (both must be true for the guard to run):
 #   * The engine kwarg ``enable_vad_pretrim`` (default ``True``).
-#   * The env override ``RAPID_MLX_STT_VAD_PRETRIM`` is not one of
+#   * The env override ``QMLX_STT_VAD_PRETRIM`` is not one of
 #     ``{"0", "false", "no", "off"}`` (case-insensitive).
 #
 # If the VAD model fails to load (missing extras, network error, etc.),
@@ -121,7 +121,7 @@ _VAD_LOAD_LOCK = threading.Lock()
 # failure (warns), sets ``model._processor = None``, and the first
 # transcription request 500s with ``ValueError: Processor not found``.
 #
-# Fix at the rapid-mlx integration layer: after ``load_model`` returns,
+# Fix at the qmlx integration layer: after ``load_model`` returns,
 # if the model is Whisper and ``_processor`` is None, manually attach a
 # ``WhisperProcessor`` loaded from the OpenAI counterpart repo (which
 # ships every processor file the tokenizer wrapper needs). The fallback
@@ -184,7 +184,7 @@ class _VADTrimResult:
 
 
 def _vad_pretrim_disabled_by_env() -> bool:
-    """Return ``True`` if ``RAPID_MLX_STT_VAD_PRETRIM`` opts out.
+    """Return ``True`` if ``QMLX_STT_VAD_PRETRIM`` opts out.
 
     Truthy defaults ("", "1", "true", "yes", "on") leave the guard on;
     only the explicit disable strings turn it off. This matches the
@@ -192,7 +192,7 @@ def _vad_pretrim_disabled_by_env() -> bool:
     ``scripts/pr_validate/context.py``) — inverted here because the
     default is on.
     """
-    val = os.environ.get("RAPID_MLX_STT_VAD_PRETRIM", "").strip().lower()
+    val = os.environ.get("QMLX_STT_VAD_PRETRIM", "").strip().lower()
     return val in {"0", "false", "no", "off"}
 
 
@@ -241,7 +241,7 @@ def _get_vad_model() -> Any | None:
             _VAD_IMPORT_UNAVAILABLE = True
             logger.warning(
                 "VAD pre-trim disabled: mlx_audio.vad not importable (%s). "
-                "Install rapid-mlx[audio] to enable the anti-hallucination "
+                "Install qmlx[audio] to enable the anti-hallucination "
                 "guard for pure-silence clips (#961).",
                 e,
             )
@@ -482,7 +482,7 @@ class STTEngine:
                 clips with trailing/leading silence get trimmed to the
                 speech span (Whisper hallucinates less on shorter
                 inputs). Set to ``False`` to preserve pre-fix behaviour
-                — or set the env ``RAPID_MLX_STT_VAD_PRETRIM=0`` for a
+                — or set the env ``QMLX_STT_VAD_PRETRIM=0`` for a
                 run-wide override. Non-Whisper engines (Parakeet, etc.)
                 are unaffected regardless of this flag.
         """

@@ -4,7 +4,7 @@
 Fires at most once per machine, only when:
 
 - The user has never been prompted (``get_consent_state`` returns None).
-- ``RAPID_MLX_TELEMETRY`` is not set (env var already determines state,
+- ``QMLX_TELEMETRY`` is not set (env var already determines state,
   no need to ask).
 - ``--no-telemetry`` is not set on this run.
 - ``stdin`` is a tty (we are not in a pipe / CI / daemon-spawn).
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sys
 
-from vllm_mlx import __version__ as _rapid_mlx_version  # noqa: N811
+from vllm_mlx import __version__ as _qmlx_version  # noqa: N811
 from vllm_mlx.telemetry.state import (
     ENV_VAR,
     client_id_path,
@@ -100,10 +100,10 @@ ABOUT YOUR IP:
   key is sha256(IP), the raw IP is discarded the same request).
 
 You can see the exact bytes that would leave your machine right now:
-  rapid-mlx telemetry preview
+  qmlx telemetry preview
 
 You can pause, resume, or reset your identity anytime:
-  rapid-mlx telemetry {{status,disable,enable,reset}}
+  qmlx telemetry {{status,disable,enable,reset}}
 
 To force-disable in scripts or CI: set {env}=0.
 """
@@ -155,7 +155,7 @@ def maybe_prompt_for_consent(
         if not sys.stdout.isatty():
             return False
 
-        version = _rapid_mlx_version
+        version = _qmlx_version
         print()
         print(
             _DISCLOSURE.format(
@@ -164,7 +164,7 @@ def maybe_prompt_for_consent(
             )
         )
         print(
-            "Contribute anonymous telemetry to make rapid-mlx better "
+            "Contribute anonymous telemetry to make qmlx better "
             "for everyone? [y/N]  ",
             end="",
             flush=True,
@@ -178,7 +178,7 @@ def maybe_prompt_for_consent(
             print()
             return False
         consent = answer in ("y", "yes")
-        record_consent(consent, rapid_mlx_version=version)
+        record_consent(consent, qmlx_version=version)
         # From here on, consent IS persisted to disk. The flag must
         # survive any subsequent print failure so the CLI knows not to
         # emit lifecycle telemetry for the argv that ran before the
@@ -188,18 +188,18 @@ def maybe_prompt_for_consent(
             print()
             print(
                 "Thank you for contributing. "
-                "rapid-mlx will get measurably better because you said yes."
+                "qmlx will get measurably better because you said yes."
             )
             print(
-                "Audit anytime: `rapid-mlx telemetry status` / `... preview`. "
-                "Stop anytime: `rapid-mlx telemetry disable`."
+                "Audit anytime: `qmlx telemetry status` / `... preview`. "
+                "Stop anytime: `qmlx telemetry disable`."
             )
         else:
             print()
             print(
                 "Got it -- telemetry stays off and we will not ask again. "
                 "You can always opt in later with "
-                "`rapid-mlx telemetry enable`,"
+                "`qmlx telemetry enable`,"
             )
             print(f"or delete {consent_path()} to be re-prompted.")
         print()

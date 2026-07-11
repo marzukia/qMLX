@@ -19,7 +19,7 @@ via ``cli._build_benchmark_context``, runs one cold prefill with
 PFlash off and one with PFlash on, and reports both TTFT numbers and
 the delta. Output is single-line JSON so a CI runner can consume it.
 
-This module is opt-in; nothing in the default ``rapid-mlx`` flow
+This module is opt-in; nothing in the default ``qmlx`` flow
 imports it. It exists so a maintainer running the replication run has
 a single command to invoke.
 """

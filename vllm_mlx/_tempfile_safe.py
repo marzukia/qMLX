@@ -1,12 +1,12 @@
-"""Guaranteed-cleanup tempfile helper for rapid-mlx.
+"""Guaranteed-cleanup tempfile helper for qmlx.
 
-Fix for GH #719: ``rapid-mlx chat`` was leaking one zero-byte
-``rapid-mlx-chat-*.log`` per invocation (3496+ stragglers reported
+Fix for GH #719: ``qmlx chat`` was leaking one zero-byte
+``qmlx-chat-*.log`` per invocation (3496+ stragglers reported
 on a single dev machine). The root cause was the documented Python
 anti-pattern::
 
     log_path = tempfile.NamedTemporaryFile(
-        prefix="rapid-mlx-chat-", suffix=".log", delete=False,
+        prefix="qmlx-chat-", suffix=".log", delete=False,
     ).name
 
 This creates the file on disk and returns just the path. Because

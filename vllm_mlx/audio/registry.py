@@ -20,7 +20,7 @@ every callsite the SAME lookup contract:
 * :func:`is_audio_name` — boolean form, used by ``serve_command`` to
   decide whether to fork into audio-mode.
 * :func:`list_audio_aliases` — ordered alias listing for the
-  ``rapid-mlx models`` table.
+  ``qmlx models`` table.
 
 The registry is the ONLY place a new audio model lands. The route
 alias tables (``STT_MODEL_ALIASES`` / ``TTS_MODEL_ALIASES``) are now
@@ -50,7 +50,7 @@ class AudioAliasEntry:
     * ``alias`` — the registry key (short alias name, lowercase).
     * ``type`` — ``"tts"`` (text -> speech) or ``"stt"``
       (speech -> text). Drives the route binding decision in
-      ``serve_command`` and the capability tag in ``rapid-mlx models``.
+      ``serve_command`` and the capability tag in ``qmlx models``.
     * ``hf_id`` — the HuggingFace repo id the audio engine should
       load. Always single-slash org/name shape. Verified at registry
       introduction time via the HF API.
@@ -62,7 +62,7 @@ class AudioAliasEntry:
     * ``languages`` — STT-only; ``"multilingual"`` or a comma-separated
       ISO list. ``None`` for TTS entries.
     * ``notes`` — free-form operator-facing description (shown in
-      ``rapid-mlx info <alias>``).
+      ``qmlx info <alias>``).
     """
 
     alias: str
@@ -161,7 +161,7 @@ def _load_registry() -> dict[str, AudioAliasEntry]:
 
     _REGISTRY = entries
     # Reverse index keyed on the lowercased HF id so ``serve_command``
-    # can route a request like ``rapid-mlx serve mlx-community/Kokoro-
+    # can route a request like ``qmlx serve mlx-community/Kokoro-
     # 82M-bf16`` directly back to its registry entry (HF id case varies
     # across mlx-community uploads).
     _HF_ID_INDEX.clear()
@@ -180,7 +180,7 @@ def resolve_audio_alias(name: str | None) -> AudioAliasEntry | None:
     2. Reverse HF-id lookup (case-insensitive) — ``mlx-community/
        Kokoro-82M-bf16`` returns the ``kokoro`` entry so audio-mode
        fires for full HF ids of audio models too. This is critical
-       because users (and `rapid-mlx pull mlx-community/Kokoro-82M-bf16`
+       because users (and `qmlx pull mlx-community/Kokoro-82M-bf16`
        output) routinely paste the full HF id into ``serve``.
 
     Non-audio names (text aliases, vision aliases, unknown HF ids)
@@ -222,7 +222,7 @@ def is_audio_name(name: str | None) -> bool:
 def list_audio_aliases() -> list[AudioAliasEntry]:
     """Return all audio aliases, sorted by name.
 
-    Used by ``rapid-mlx models`` to render the audio section of the
+    Used by ``qmlx models`` to render the audio section of the
     alias table. The sort is alphabetical so the ``kokoro*`` /
     ``whisper*`` / ``parakeet*`` groups cluster together visually.
     """

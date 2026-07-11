@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pure-Python WebSocket reverse tunnel for ``rapid-mlx share``.
+"""Pure-Python WebSocket reverse tunnel for ``qmlx share``.
 
 Connects to the rapidserver Worker (defaults to
 ``wss://rapidserver.quicksilverpro.io/up``), receives HTTP requests
 reverse-multiplexed over a single WebSocket, forwards them to the
-local ``rapid-mlx serve`` on ``127.0.0.1``, and streams responses back.
+local ``qmlx serve`` on ``127.0.0.1``, and streams responses back.
 
 Replaces the prior frpc binary + control-plane control flow: the
-rapid-mlx process is now end-to-end Python — no external binary
+qmlx process is now end-to-end Python — no external binary
 download, no cross-account control-plane HTTP call, no operator-side
 relay server.
 
 Topology recap:
 
-    rapid-mlx share (this module)  ─WSS─▶  rapidserver Worker  ◀─HTTPS─  chat frontend
+    qmlx share (this module)  ─WSS─▶  rapidserver Worker  ◀─HTTPS─  chat frontend
                                           │  (Cloudflare edge,    │      (BCG /app/
                                           │   ``rapidserver.       │      fetch)
                                           │   quicksilverpro.io``) │
@@ -60,8 +60,8 @@ try:
     import websockets
 except ImportError as exc:  # pragma: no cover — declared as install dep
     raise ImportError(
-        "rapid-mlx share requires the ``websockets`` package "
-        "(it ships in rapid-mlx core deps; pip install websockets if missing)"
+        "qmlx share requires the ``websockets`` package "
+        "(it ships in qmlx core deps; pip install websockets if missing)"
     ) from exc
 
 log = logging.getLogger(__name__)
@@ -226,7 +226,7 @@ class TunnelClient:
 
         t = threading.Thread(
             target=_entry,
-            name="rapid-mlx-share-ws-tunnel",
+            name="qmlx-share-ws-tunnel",
             daemon=True,
         )
         t.start()
@@ -395,7 +395,7 @@ def wait_for_public_url(
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "rapid-mlx-share",
+            "User-Agent": "qmlx-share",
             "Authorization": f"Bearer {bearer}",
         },
     )

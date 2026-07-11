@@ -1,10 +1,10 @@
-"""Open WebUI E2E test against rapid-mlx.
+"""Open WebUI E2E test against qmlx.
 
 Tests:
   1. Register a test user (ENABLE_SIGNUP=true)
   2. Login → get JWT
-  3. GET /api/models → verify rapid-mlx models appear
-  4. POST /api/chat/completions → chat through Open WebUI proxy to rapid-mlx
+  3. GET /api/models → verify qmlx models appear
+  4. POST /api/chat/completions → chat through Open WebUI proxy to qmlx
 """
 
 import json

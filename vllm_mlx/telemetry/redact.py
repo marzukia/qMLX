@@ -190,7 +190,7 @@ def fingerprint_traceback(exc: BaseException) -> str:
         # frame.filename is an absolute path — strip the directory part
         # to avoid leaking the user's home. We keep the basename + the
         # function name + line number, which is enough to identify the
-        # site without revealing where rapid-mlx is installed.
+        # site without revealing where qmlx is installed.
         basename = Path(frame.filename).name
         parts.append(f"{basename}:{frame.name}:{frame.lineno}")
     digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()

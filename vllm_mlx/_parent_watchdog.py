@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Parent-PID watchdog for embedded ``rapid-mlx serve`` children.
+"""Parent-PID watchdog for embedded ``qmlx serve`` children.
 
 Problem (rapid-desktop issue #449)
 ----------------------------------
 
-Desktop apps that spawn ``rapid-mlx serve`` as a subprocess hold a 20-30 GB
+Desktop apps that spawn ``qmlx serve`` as a subprocess hold a 20-30 GB
 model weight in unified memory. When the parent (Rapid-MLX Desktop, ``rapid``
 CLI wrapper, ...) is killed with SIGKILL — macOS app hang force-quit, kernel
 OOM kill, panic, ``kill -9`` from a watchdog — the kernel re-parents the
@@ -23,7 +23,7 @@ Mitigation
 ----------
 
 The supervisor passes its own PID as ``--watchdog-ppid`` (or
-``RAPID_MLX_WATCHDOG_PPID`` env). A background thread polls
+``QMLX_WATCHDOG_PPID`` env). A background thread polls
 ``os.getppid()`` every ``interval`` seconds. When the live PPID stops
 matching the expected one — POSIX guarantees the child is re-parented
 the instant its parent dies, so on macOS/Linux the live PPID flips to 1
@@ -66,13 +66,13 @@ logger = logging.getLogger(__name__)
 # with ``rapid-desktop/Sources/Rapid/Server/ServerManager.swift``'s
 # ``serveEnvironmentAdditions`` writer. The CLI ``--watchdog-ppid``
 # flag wins when both are set.
-ENV_VAR = "RAPID_MLX_WATCHDOG_PPID"
+ENV_VAR = "QMLX_WATCHDOG_PPID"
 
 
 def resolve_expected_ppid(cli_value: int | None) -> int | None:
     """Resolve the expected parent PID from CLI flag + env var.
 
-    Precedence: ``--watchdog-ppid`` (CLI) > ``RAPID_MLX_WATCHDOG_PPID`` (env).
+    Precedence: ``--watchdog-ppid`` (CLI) > ``QMLX_WATCHDOG_PPID`` (env).
 
     Returns ``None`` if neither source supplied a positive integer
     (the watchdog is a no-op in that case — there is no expected parent
@@ -115,7 +115,7 @@ def _default_on_orphan(expected_ppid: int, observed_ppid: int) -> None:
     # was deliberately set to ERROR), and the user-visible "why did my
     # server vanish" answer must reach stderr unconditionally.
     msg = (
-        f"[rapid-mlx] parent watchdog: expected PPID {expected_ppid} but "
+        f"[qmlx] parent watchdog: expected PPID {expected_ppid} but "
         f"observed PPID {observed_ppid} (parent died, re-parented to "
         f"launchd/init); shutting down to release model weights and port"
     )
@@ -193,7 +193,7 @@ def install_parent_watchdog(
     expected_ppid:
         The PID the supervisor expects to be our parent. Pass the result
         of :func:`resolve_expected_ppid` to honour both ``--watchdog-ppid``
-        and ``RAPID_MLX_WATCHDOG_PPID``. ``None`` (or any value ``<= 1``)
+        and ``QMLX_WATCHDOG_PPID``. ``None`` (or any value ``<= 1``)
         is a no-op so the helper is safe to call unconditionally from
         ``serve_command``.
     interval:
@@ -234,7 +234,7 @@ def install_parent_watchdog(
     stop_event = threading.Event()
     thread = threading.Thread(
         target=_watchdog_loop,
-        name="rapid-mlx-parent-watchdog",
+        name="qmlx-parent-watchdog",
         args=(expected_ppid, max(0.1, float(interval)), callback, stop_event),
         daemon=True,
     )
@@ -242,6 +242,6 @@ def install_parent_watchdog(
     # graceful-shutdown caller that wants to disarm the watchdog before
     # an intentional execve) can stop the loop without waiting for the
     # next poll interval.
-    thread._rapid_mlx_stop_event = stop_event  # type: ignore[attr-defined]
+    thread._qmlx_stop_event = stop_event  # type: ignore[attr-defined]
     thread.start()
     return thread

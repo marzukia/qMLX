@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Paged KV Cache Manager for rapid-mlx.
+Paged KV Cache Manager for qmlx.
 
 This module implements block-based paged KV cache management following vLLM's
 architecture (vllm/v1/core/block_pool.py), adapted for MLX on Apple Silicon.
@@ -64,7 +64,7 @@ def compute_block_hash(
     else:
         # Use fixed seed for reproducibility (in-memory only, recomputed
         # every run — value is arbitrary)
-        hasher.update(b"rapid-mlx-root")
+        hasher.update(b"qmlx-root")
 
     # Include token content
     hasher.update(bytes(str(tuple(token_ids)), "utf-8"))

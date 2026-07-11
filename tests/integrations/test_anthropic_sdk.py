@@ -1,11 +1,11 @@
-"""Anthropic SDK against rapid-mlx /v1/messages endpoint."""
+"""Anthropic SDK against qmlx /v1/messages endpoint."""
 
 import os
 
 import httpx as _httpx
 from anthropic import Anthropic
 
-_BASE = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+_BASE = os.environ.get("QMLX_BASE_URL", "http://localhost:8000/v1")
 try:
     MODEL_ID = _httpx.get(f"{_BASE}/models", timeout=5).json()["data"][0]["id"]
 except Exception:

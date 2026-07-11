@@ -17,8 +17,8 @@ The public API the CLI / scheduler hooks into is intentionally tiny:
 
 * :class:`MTPAcceptCounter` — process-local counter of attempts /
   accepts / tokens-saved. Surfaced via
-  ``rapid_mlx_spec_decode_*_total`` and
-  ``rapid_mlx_spec_decode_accept_ratio`` in
+  ``qmlx_spec_decode_*_total`` and
+  ``qmlx_spec_decode_accept_ratio`` in
   :mod:`vllm_mlx.routes.metrics`.
 * :func:`detect_mtp_eligibility` — returns
   :class:`MTPEligibility` for a given HF-style ``config.json`` dict.

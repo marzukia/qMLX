@@ -1,5 +1,5 @@
 """
-LibreChat E2E test against rapid-mlx via Docker.
+LibreChat E2E test against qmlx via Docker.
 
 Pipeline:
   1. Register a fresh test user via /api/auth/register
@@ -7,7 +7,7 @@ Pipeline:
   3. GET /api/endpoints → confirm Rapid-MLX appears under custom endpoints
   4. POST /api/ask/custom (or whatever the chat endpoint is) → verify response
 
-Pass = LibreChat successfully proxies a chat through to rapid-mlx and returns
+Pass = LibreChat successfully proxies a chat through to qmlx and returns
 an answer that contains the expected substring.
 """
 

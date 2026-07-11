@@ -34,7 +34,7 @@ def backup_existing(path: Path) -> Path | None:
     """Copy ``path`` to ``path.bak.<unix-ts>`` if it exists; return the
     backup path (or ``None`` when the original didn't exist yet).
 
-    A unique timestamp suffix means a user who runs ``rapid-mlx launch
+    A unique timestamp suffix means a user who runs ``qmlx launch
     cline`` twice in the same session gets *two* recoverable backups
     rather than one overwriting the other. The backup is the FULL byte
     content of the original — not a JSON re-serialisation — so a config

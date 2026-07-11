@@ -355,7 +355,7 @@ def log_kv_cache_decision(
     ``resolve_kv_cache_dtype`` decided — without it, a downgrade from
     int4 to bf16 looks like a perf regression. Always logged at INFO so
     it survives in default deployments. Also prints to stdout for
-    parity with the existing CLI banners (operators run ``rapid-mlx
+    parity with the existing CLI banners (operators run ``qmlx
     serve`` in foreground much more often than they ``journalctl`` it).
     """
     msg = f"KV cache dtype: {decision.dtype} — {decision.reason}"

@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-MCP (Model Context Protocol) client support for rapid-mlx.
+MCP (Model Context Protocol) client support for qmlx.
 
-This module provides integration with MCP servers, allowing the rapid-mlx server
+This module provides integration with MCP servers, allowing the qmlx server
 to discover and execute tools from external MCP servers.
 
 Example usage:

@@ -6,7 +6,7 @@ mlx-vlm 0.5.0+ implements DFlash: drafter loading
 (``_dflash_rounds``), and hidden-state capture on Qwen3.5/3.6 language
 models. We don't vendor any of that — we *call into* it from
 ``BatchedEngine._step``. This module is the import boundary so the
-mlx-vlm dependency stays optional (``pip install rapid-mlx[dflash]``).
+mlx-vlm dependency stays optional (``pip install qmlx[dflash]``).
 
 Public surface:
   - ``DFlashRuntime`` — handle owning the drafter + the call adapter
@@ -68,7 +68,7 @@ class DFlashRuntime:
 def load_runtime(drafter_repo: str, kind: str = "dflash") -> DFlashRuntime:
     """Lazy-import mlx-vlm's drafter loader and return a ``DFlashRuntime``.
 
-    The mlx-vlm import is deferred to call time so installing rapid-mlx
+    The mlx-vlm import is deferred to call time so installing qmlx
     without the ``[dflash]`` extras leaves the CLI / unit tests working;
     only users who actually enable DFlash ever touch the
     mlx-vlm code path.
@@ -76,7 +76,7 @@ def load_runtime(drafter_repo: str, kind: str = "dflash") -> DFlashRuntime:
     if not have_runtime():
         raise RuntimeError(
             "DFlash runtime not available — mlx-vlm 0.5.0+ is required. "
-            "Install with: pip install 'rapid-mlx[dflash]'"
+            "Install with: pip install 'qmlx[dflash]'"
         )
     # Import here, not at module top, so the optional dep stays optional.
     from mlx_vlm.speculative.drafters import load_drafter

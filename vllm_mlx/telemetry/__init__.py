@@ -16,7 +16,7 @@ Public API:
 - ``is_enabled`` — the single decision point. Returns False unless the
   user opted in AND no kill switch is active.
 - ``get_consent_state`` — full record (consent bool, when prompted,
-  which version prompted them) for ``rapid-mlx telemetry status``.
+  which version prompted them) for ``qmlx telemetry status``.
 - ``record_consent`` — persist a yes/no answer.
 - ``reset_state`` — wipe both consent + client-id files.
 - ``maybe_prompt_for_consent`` — first-run interactive prompt; safe to

@@ -52,15 +52,15 @@ What the guardrail does at load time:
    make the first successful backend the *global* group. A
    warning-only guardrail must never mutate engine state.
 4. On the full three-tuple match, log a loud WARNING with the issue
-   link and bump ``rapid_mlx_mxfp4_moe_distributed_warnings_total``.
+   link and bump ``qmlx_mxfp4_moe_distributed_warnings_total``.
 5. On a MoE + NVFP4 match (any device count — mlx#2962 dynamic-range
    loss bites even single-device), log a separate WARNING and bump
-   ``rapid_mlx_nvfp4_moe_warnings_total``.
+   ``qmlx_nvfp4_moe_warnings_total``.
 
 Process-local counters mirror the pattern already used by
 ``api/response_format_metrics.py`` — hand-rolled module-level ints
 behind a ``threading.Lock`` rather than ``prometheus_client``, so we
-keep the metrics surface uniform with the rest of rapid-mlx and avoid
+keep the metrics surface uniform with the rest of qmlx and avoid
 the global default registry that fights multi-engine tests.
 
 Counters never decrease for the lifetime of the process. Tests use
@@ -108,7 +108,7 @@ class GuardrailSignal:
 def _detect_quant_format(hf_path: str | None) -> str | None:
     """Best-effort quant-format detection from the HF path string.
 
-    rapid-mlx's ``aliases.json`` names mxfp4 / nvfp4 variants with the
+    qmlx's ``aliases.json`` names mxfp4 / nvfp4 variants with the
     quant token embedded in the alias and the HF path (e.g.
     ``mlx-community/MiniMax-M2.7-4bit-mxfp4``). That naming convention
     is the single load-time signal we trust — parsing every model's
@@ -391,12 +391,12 @@ def render_prometheus_lines() -> list[str]:
     mxfp4 = int(stats.get("mxfp4_moe_distributed_warnings_total", 0))
     nvfp4 = int(stats.get("nvfp4_moe_warnings_total", 0))
     return [
-        f"# HELP rapid_mlx_mxfp4_moe_distributed_warnings_total {_MXFP4_MOE_HELP}",
-        "# TYPE rapid_mlx_mxfp4_moe_distributed_warnings_total counter",
-        f"rapid_mlx_mxfp4_moe_distributed_warnings_total {mxfp4}",
-        f"# HELP rapid_mlx_nvfp4_moe_warnings_total {_NVFP4_MOE_HELP}",
-        "# TYPE rapid_mlx_nvfp4_moe_warnings_total counter",
-        f"rapid_mlx_nvfp4_moe_warnings_total {nvfp4}",
+        f"# HELP qmlx_mxfp4_moe_distributed_warnings_total {_MXFP4_MOE_HELP}",
+        "# TYPE qmlx_mxfp4_moe_distributed_warnings_total counter",
+        f"qmlx_mxfp4_moe_distributed_warnings_total {mxfp4}",
+        f"# HELP qmlx_nvfp4_moe_warnings_total {_NVFP4_MOE_HELP}",
+        "# TYPE qmlx_nvfp4_moe_warnings_total counter",
+        f"qmlx_nvfp4_moe_warnings_total {nvfp4}",
     ]
 
 

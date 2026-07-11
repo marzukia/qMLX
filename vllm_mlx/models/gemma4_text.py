@@ -110,7 +110,7 @@ def is_gemma4_model(model_path: str | Path) -> bool:
     but ``snapshot_download`` validates/fetches the ENTIRE model tree
     (all safetensors shards, tokenizer files, generation config), which
     for an 8-bit 35B model is ~35 GB of Xet-protocol revalidation on
-    every cold ``rapid-mlx serve`` start. Switch to ``hf_hub_download``
+    every cold ``qmlx serve`` start. Switch to ``hf_hub_download``
     targeting ``config.json`` directly: a ~5 KB file, validated against
     the existing HF cache. This was the root cause of stress_e2e_bench
     server-boot timeouts on large models in PR #600 validation.
@@ -223,7 +223,7 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
 
     # Build the language model. As of 0.10.1 we vendor the Gemma 4 text
     # classes (~50 KB, ~1200 lines) directly under
-    # `vllm_mlx/models/gemma4_vendored/` so a fresh `pip install rapid-mlx`
+    # `vllm_mlx/models/gemma4_vendored/` so a fresh `pip install qmlx`
     # boots Gemma 4 out of the box — no `[vision]` extra required.
     # Previously we imported from `mlx_vlm.models.gemma4.*`, but that
     # required either promoting mlx-vlm to a core dep (~+483 MB transitive

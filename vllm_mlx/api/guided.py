@@ -129,7 +129,7 @@ class GuidedGenerator:
         if not HAS_OUTLINES:
             raise ImportError(
                 "outlines is required for guided generation. "
-                "Install with: pip install 'rapid-mlx[guided]'"
+                "Install with: pip install 'qmlx[guided]'"
             )
 
         self._model = model

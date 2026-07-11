@@ -19,9 +19,9 @@ from pathlib import Path
 from . import _common
 
 # Cursor's per-OS user settings dir. We probe both macOS (Apple
-# Silicon-first; the rapid-mlx target platform) and Linux (a small but
+# Silicon-first; the qmlx target platform) and Linux (a small but
 # growing fraction of Cursor users since the official Linux build
-# shipped). Windows isn't supported by rapid-mlx and so isn't probed.
+# shipped). Windows isn't supported by qmlx and so isn't probed.
 _CONFIG_DIR_MAC = Path.home() / "Library" / "Application Support" / "Cursor" / "User"
 _CONFIG_DIR_LINUX = Path.home() / ".config" / "Cursor" / "User"
 
@@ -80,7 +80,7 @@ def write_or_patch_config(
     api_key: str = "sk-noop",
     config_path: Path | None = None,
 ) -> Path:
-    """Patch Cursor's ``settings.json`` to point at the local rapid-mlx
+    """Patch Cursor's ``settings.json`` to point at the local qmlx
     OpenAI-compatible server.
 
     Keys we own — Cursor reads dotted top-level keys exactly like VS

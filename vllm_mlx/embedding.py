@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Canonical install-hint copy. Shared between the CLI startup probe
 # (H-08) and the ``/v1/embeddings`` route guard (H-09) so the user sees
 # the same actionable line no matter which surface tripped the guard.
-EMBEDDINGS_EXTRA_INSTALL_HINT = "Install with: pip install 'rapid-mlx[embeddings]'"
+EMBEDDINGS_EXTRA_INSTALL_HINT = "Install with: pip install 'qmlx[embeddings]'"
 
 
 def mlx_embeddings_available() -> bool:

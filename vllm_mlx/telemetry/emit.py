@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
-from vllm_mlx import __version__ as _rapid_mlx_version  # noqa: N811
+from vllm_mlx import __version__ as _qmlx_version  # noqa: N811
 from vllm_mlx.telemetry.queue import TelemetryQueue
 from vllm_mlx.telemetry.redact import (
     bucket_tokens,
@@ -215,7 +215,7 @@ def _envelope(event: str) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "client_id": get_or_create_client_id(),
         "session_id": session_id(),
-        "rapid_mlx_version": _rapid_mlx_version,
+        "qmlx_version": _qmlx_version,
         "event": event,
         "timestamp": _utc_now_iso(),
         "platform": {

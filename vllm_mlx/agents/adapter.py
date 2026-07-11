@@ -105,7 +105,7 @@ def get_setup_instructions(
     )
     if profile.recommended_models:
         lines.append("```bash")
-        cmd = f"rapid-mlx serve {serve_model}"
+        cmd = f"qmlx serve {serve_model}"
         if len(profile.recommended_models) > 1:
             cmd += "  # or any model below"
         lines.append(cmd)
@@ -117,7 +117,7 @@ def get_setup_instructions(
                 lines.append(f"- `{m}`")
     else:
         lines.append("```bash")
-        lines.append("rapid-mlx serve <MODEL>")
+        lines.append("qmlx serve <MODEL>")
         lines.append("```")
 
     lines.append("")

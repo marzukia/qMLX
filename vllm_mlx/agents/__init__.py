@@ -137,7 +137,7 @@ def load_profiles(profiles_dir: Path | str | None = None):
             logger.warning(f"Failed to load profile {yaml_file.name}: {e}")
 
     # Also load from user's custom profiles directory
-    user_profiles = Path(os.path.expanduser("~/.rapid-mlx/agents"))
+    user_profiles = Path(os.path.expanduser("~/.qmlx/agents"))
     if user_profiles.exists() and user_profiles != search_dir:
         for yaml_file in sorted(user_profiles.glob("*.yaml")):
             try:

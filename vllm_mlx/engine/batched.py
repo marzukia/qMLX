@@ -209,10 +209,10 @@ def _run_dispatch_mtp_inject(
 # Codex round-G BLOCKING #3: hard cap on the executor-side MTP
 # dispatch call. Sidecar loads that touch HF Hub / large safetensor
 # reads can wedge on a slow network or a stuck DNS lookup; without a
-# timeout, ``rapid-mlx serve --speculative-config '{"method":"mtp",
+# timeout, ``qmlx serve --speculative-config '{"method":"mtp",
 # "model":"<hf-repo>"}'`` boot can block indefinitely. Default 600s covers slow
 # 4-16GB assistant downloads on a typical residential connection; an
-# ops override lives at ``RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC`` for
+# ops override lives at ``QMLX_MTP_DISPATCH_TIMEOUT_SEC`` for
 # corp networks with mandatory proxies. Set to ``0`` to opt out of
 # the timeout (matches pre-round-G behaviour — not recommended).
 _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT = 600.0
@@ -221,7 +221,7 @@ _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT = 600.0
 def _get_mtp_dispatch_timeout_sec() -> float | None:
     """Return the bounded timeout for ``_run_dispatch_mtp_inject``.
 
-    Reads ``RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC`` env var; falls back
+    Reads ``QMLX_MTP_DISPATCH_TIMEOUT_SEC`` env var; falls back
     to :data:`_MTP_DISPATCH_TIMEOUT_SEC_DEFAULT` (600s). Returning
     ``None`` disables the timeout (an explicit ``0`` in the env,
     for ops that want to preserve pre-round-G behaviour on locked-
@@ -230,7 +230,7 @@ def _get_mtp_dispatch_timeout_sec() -> float | None:
     """
     import os as _os
 
-    raw = _os.environ.get("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC")
+    raw = _os.environ.get("QMLX_MTP_DISPATCH_TIMEOUT_SEC")
     if raw is None:
         return _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT
     try:
@@ -238,7 +238,7 @@ def _get_mtp_dispatch_timeout_sec() -> float | None:
     except ValueError:
         logger.warning(
             "[MTP-vendored] could not parse "
-            "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=%r as a float; "
+            "QMLX_MTP_DISPATCH_TIMEOUT_SEC=%r as a float; "
             "using default %.0fs.",
             raw,
             _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT,
@@ -248,7 +248,7 @@ def _get_mtp_dispatch_timeout_sec() -> float | None:
         # Explicit opt-out (0 or negative). Log INFO so ops-audit
         # trails know the boot ran without the safety net.
         logger.info(
-            "[MTP-vendored] RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=%r "
+            "[MTP-vendored] QMLX_MTP_DISPATCH_TIMEOUT_SEC=%r "
             "disables the executor-side dispatch timeout.",
             raw,
         )
@@ -289,7 +289,7 @@ def _log_mtp_dispatch_timeout(timeout_sec: float) -> None:
         "shared executor is left intact; the orphan mutation risk "
         "is scoped to the caller's choice to keep the process "
         "alive past this abort. Bump the timeout via "
-        "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=<seconds> or set it "
+        "QMLX_MTP_DISPATCH_TIMEOUT_SEC=<seconds> or set it "
         "to 0 to opt out of the safety net.",
         timeout_sec,
     )
@@ -440,7 +440,7 @@ def _apply_mtp_dispatch(
             "sidecar path, corp proxy blocking huggingface.co, or "
             "a very large assistant checkpoint on a slow link. "
             "Bump the timeout with "
-            "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=<seconds>, or set "
+            "QMLX_MTP_DISPATCH_TIMEOUT_SEC=<seconds>, or set "
             "it to 0 to disable the timeout entirely. Refusing to "
             "boot with an in-flight dispatch that could complete "
             "after the server accepts requests."
@@ -2595,7 +2595,7 @@ class BatchedEngine(BaseEngine):
         if not self.supports_guided_generation:
             raise RuntimeError(
                 "Guided generation not available. "
-                "Install with: pip install 'rapid-mlx[guided]'"
+                "Install with: pip install 'qmlx[guided]'"
             )
 
         if not self._loaded:

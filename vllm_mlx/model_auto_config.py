@@ -62,7 +62,7 @@ class ModelConfig:
     # Qwen3.5 / Qwen3.6 aliases whose JSON declares ``is_hybrid=false``
     # still got promoted to hybrid at boot because ``make_cache()``
     # returns linear-attention layers — re-enabling the throttle +
-    # prefix-boundary snapshot path that wedges ``rapid-mlx serve
+    # prefix-boundary snapshot path that wedges ``qmlx serve
     # qwen3.5-4b-4bit`` with ``metal::malloc`` Resource-limit (499000)
     # errors. Default ``False`` preserves the legacy safety-net behaviour
     # for aliases / serve targets that haven't opted into the explicit
@@ -102,7 +102,7 @@ class ModelConfig:
     turboquant_tier: str = "unknown"
 
     # DFlash block-diffusion speculative decoding eligibility (#264).
-    # Mirrors ``AliasProfile.supports_dflash`` so ``rapid-mlx info`` can
+    # Mirrors ``AliasProfile.supports_dflash`` so ``qmlx info`` can
     # call out the DFlash opt-in path in the ``Spec decode`` row instead
     # of mis-leading the user with ``(no MTP/drafter trained)`` when an
     # alias has the DFlash drafter registered. 0.9.1 dogfood found the
@@ -425,7 +425,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
     # and silently break tool calls. Pin to the safer ``hermes`` fallback.
     # Smoke test (PR #715 batch): Nanbeige4.1-3B emits autonomous
     # ``<think>...</think>`` blocks on every response — verified by a
-    # local ``rapid-mlx serve nanbeige4.1-3b-4bit`` + chat completion
+    # local ``qmlx serve nanbeige4.1-3b-4bit`` + chat completion
     # where the assistant content opened with ``<think>\n...`` despite
     # no template-level injection. Use ``deepseek_r1`` reasoning parser
     # (same "model decides" contract as VibeThinker / DeepSeek-R1
@@ -764,7 +764,7 @@ def _classify_deepseek_template_name(s: str) -> str | None:
     # legacy parser. With the classifier returning ``"v3"`` but auto-
     # detect picking ``"deepseek"``, the two layers contradicted:
     #
-    #   * ``rapid-mlx serve deepseek-ai/DeepSeek-V4`` would silently bind
+    #   * ``qmlx serve deepseek-ai/DeepSeek-V4`` would silently bind
     #     the legacy parser even though the classifier "knew" V4 should
     #     be V3-family. The two answers disagreed and there was no
     #     warning surface.
@@ -1046,9 +1046,9 @@ def enrich_model_config(cfg: ModelConfig | None, model: Any) -> ModelConfig:
 #
 #   Level 2 — ``format_profile_table(model_path, cfg)`` returns a
 #             multi-line ASCII table. Emitted only when verbose logging is
-#             on (server --verbose, or RAPID_MLX_PROFILE=1 env var).
+#             on (server --verbose, or QMLX_PROFILE=1 env var).
 #
-#   Level 3 — ``rapid-mlx info <model>`` CLI subcommand wraps
+#   Level 3 — ``qmlx info <model>`` CLI subcommand wraps
 #             ``detect_model_config`` + ``format_profile_table`` so a user
 #             can see capabilities without launching a server.
 
@@ -1166,7 +1166,7 @@ def _arch_label(cfg: "ModelConfig") -> str:
 
 
 def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
-    """Format the ``Suffix tier`` row for ``rapid-mlx info``.
+    """Format the ``Suffix tier`` row for ``qmlx info``.
 
     AGENT/STRUCTURED — surface the peak workload speedup (the reason the
     tier was assigned). AVOID — surface the worst-regressing workload so
@@ -1185,7 +1185,7 @@ def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
         # ``supports_spec_decode=False`` covers two cases: hybrid arches
         # (Mamba / linear-attention — the runtime gates spec decode off)
         # and dense models where no MTP/drafter checkpoint is registered.
-        # Surfacing the right reason is load-bearing for ``rapid-mlx info``
+        # Surfacing the right reason is load-bearing for ``qmlx info``
         # — 0.9.0 dogfood found we were reporting ``hybrid arch`` for
         # pure-attention Qwen3.5/3.6 dense aliases, which contradicts the
         # ``Architecture: pure attention`` row two lines above.
@@ -1281,7 +1281,7 @@ def format_profile_summary(model_path: str, cfg: "ModelConfig | None") -> str:
 
 def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
     """Multi-line ASCII capability table for verbose startup output and
-    the ``rapid-mlx info`` CLI command (Level 2 + Level 3).
+    the ``qmlx info`` CLI command (Level 2 + Level 3).
 
     Width is fixed at 64 cols so it renders cleanly in terminal logs.
     Note: Unicode check/cross marks count as 1 char each (no double-width).

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Performance Benchmark for rapid-mlx.
+Performance Benchmark for qmlx.
 
 Measures key performance metrics for LLM and MLLM (Multimodal Language Model) inference:
 - Time to First Token (TTFT)
@@ -48,7 +48,7 @@ except ImportError:
 try:
     from PIL import Image
 except ImportError:
-    Image = None  # Only needed for image benchmarks; ships with rapid-mlx[vision]
+    Image = None  # Only needed for image benchmarks; ships with qmlx[vision]
 import numpy as np
 import requests
 from tabulate import tabulate
@@ -686,7 +686,7 @@ def download_test_image(url: str, timeout: int = 30) -> "Image.Image":
             "Image benchmarks require Pillow, which is included in the "
             "optional vision dependencies.\n"
             "Install with:\n"
-            "    pip install 'rapid-mlx[vision]'"
+            "    pip install 'qmlx[vision]'"
         )
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -836,7 +836,7 @@ def run_mllm_benchmark(
     except ImportError as e:
         raise ImportError(
             "Vision benchmarks require the optional `mlx-vlm` dependency.\n"
-            "Install it with: pip install 'rapid-mlx[vision]'"
+            "Install it with: pip install 'qmlx[vision]'"
         ) from e
 
     from vllm_mlx.optimizations import detect_hardware
@@ -1028,7 +1028,7 @@ def create_test_video(
     if cv2 is None:
         raise ImportError(
             "opencv-python is required for video benchmarks. "
-            "Install with: pip install 'rapid-mlx[vision]'"
+            "Install with: pip install 'qmlx[vision]'"
         )
     temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     temp_file.close()
@@ -1104,7 +1104,7 @@ def get_video_info(video_path: str) -> dict:
     if cv2 is None:
         raise ImportError(
             "opencv-python is required for video benchmarks. "
-            "Install with: pip install 'rapid-mlx[vision]'"
+            "Install with: pip install 'qmlx[vision]'"
         )
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -1478,20 +1478,20 @@ def main():
         epilog="""
 Examples:
     # LLM benchmark
-    rapid-mlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit
-    rapid-mlx-bench --model mlx-community/Llama-3.2-3B-Instruct-4bit --prompts 10
+    qmlx-bench --model mlx-community/Llama-3.2-1B-Instruct-4bit
+    qmlx-bench --model mlx-community/Llama-3.2-3B-Instruct-4bit --prompts 10
 
     # MLLM image benchmark (auto-detected)
-    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit
-    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --quick
+    qmlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit
+    qmlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --quick
 
     # MLLM video benchmark
-    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video
-    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --quick
-    rapid-mlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --video-url https://example.com/video.mp4
+    qmlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video
+    qmlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --quick
+    qmlx-bench --model mlx-community/Qwen3-VL-4B-Instruct-3bit --video --video-url https://example.com/video.mp4
 
     # Force MLLM mode
-    rapid-mlx-bench --model custom-vision-model --mllm
+    qmlx-bench --model custom-vision-model --mllm
         """,
     )
     parser.add_argument(

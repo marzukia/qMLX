@@ -21,7 +21,7 @@ router = APIRouter()
 # Task #292: conditional audio-route registration.
 #
 # Pre-fix the router was unconditionally ``include_router``'d on every
-# ``rapid-mlx serve <text-only-model>`` install (Bo R13/R14 fuzz wave).
+# ``qmlx serve <text-only-model>`` install (Bo R13/R14 fuzz wave).
 # Hitting ``/v1/audio/transcriptions`` on a text-only server then either
 # 500'd (no audio engine loaded → engine.load() crashes inside the
 # handler) or returned a misleading ``model_not_found`` envelope — the
@@ -65,7 +65,7 @@ def audio_routes_should_register(
     * The loaded ``model_name`` resolves to a registered audio alias
       (per :func:`vllm_mlx.audio.registry.is_audio_name`).
     * The loaded ``model_alias`` resolves to a registered audio alias —
-      covers ``rapid-mlx serve kokoro --served-model-name foo`` where
+      covers ``qmlx serve kokoro --served-model-name foo`` where
       ``model_name`` is the served alias and ``model_alias`` is the
       short-form audio alias.
 
@@ -103,7 +103,7 @@ def audio_routes_should_register(
 # registering the canonical handlers. Stamping a dedicated attribute on
 # the FastAPI app instead lets the helper key off its OWN prior call
 # rather than any string-shaped collision.
-_AUDIO_REGISTRATION_SENTINEL = "_rapid_mlx_audio_routes_registered"
+_AUDIO_REGISTRATION_SENTINEL = "_qmlx_audio_routes_registered"
 
 
 def register_audio_routes(app) -> bool:
@@ -159,7 +159,7 @@ _tts_engine = None
 # inlined here and the boot path in ``serve_command`` had no resolver
 # at all — short aliases like ``whisper-1`` 404'd at HF before reaching
 # the audio engine. The registry is the SINGLE place a new audio
-# model lands; ``rapid-mlx models`` and the boot guard read from the
+# model lands; ``qmlx models`` and the boot guard read from the
 # same JSON file.
 #
 # We freeze a snapshot here at import time so the route's hot path
@@ -1482,7 +1482,7 @@ def _allowed_voices_for(model_name: str) -> list[str]:
     # falls back to in :meth:`TTSEngine.get_voices`) so callers
     # passing a HF id we don't have a voice list for can still drive
     # the engine. Rejecting here would prematurely close the door on
-    # third-party engines mlx-audio supports but rapid-mlx doesn't
+    # third-party engines mlx-audio supports but qmlx doesn't
     # ship metadata for.
     return ["default"]
 
@@ -1666,7 +1666,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             status_code=503,
             detail=(
                 f"mlx-audio import failed at runtime: {e}. "
-                "Install with: pip install 'rapid-mlx[audio]'"
+                "Install with: pip install 'qmlx[audio]'"
             ),
         )
     except Exception as e:

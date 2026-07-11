@@ -143,7 +143,7 @@
     out[pos * dim + elem] = (half)result;
 
 // >>> kernel: tq_fused_quantize_k8
-    // rapid-mlx extension (Apache-2.0): per-coordinate symmetric uniform
+    // qmlx extension (Apache-2.0): per-coordinate symmetric uniform
     // quant for the K side of the K8V4 mix. Reuses the V4 preamble:
     // L2 norm → unit normalize → randomized Hadamard rotate. After
     // rotation each coord is approximately N(0, 1/sqrt(dim)), so a

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``rapid-mlx jlens`` — read a model's internal "draft" with the Jacobian lens.
+"""``qmlx jlens`` — read a model's internal "draft" with the Jacobian lens.
 
 The Jacobian lens (J-lens) linearly transports a residual-stream vector at an
 intermediate layer into the final-layer basis and decodes it with the model's
@@ -50,13 +50,13 @@ class UnsupportedArchitectureError(Exception):
 def _prefetch_via_mirror(model_path: str) -> bool:
     """R2-first prefetch for HF-style repos; no-op otherwise.
 
-    Every other rapid-mlx command that materializes weights (``serve``,
+    Every other qmlx command that materializes weights (``serve``,
     ``chat``, ``pull``, ``bench``) routes the initial download through
     :func:`vllm_mlx._mirror.download_with_mirror_fallback` so users get
     the R2 mirror (edge-cached, resumable, no HF rate limits) with a
     per-file HF fallback. ``jlens`` bypassed that pipeline in PR #1039
     and went straight to ``mlx_lm.load`` → ``snapshot_download``, so a
-    first-time ``rapid-mlx jlens qwen3-1.7b "..."`` pulled every shard
+    first-time ``qmlx jlens qwen3-1.7b "..."`` pulled every shard
     from HuggingFace directly. This helper closes that gap while
     preserving mlx_lm.load's own fallback:
 
@@ -378,7 +378,7 @@ def render_text(result, model_label):
     jl = result["jlens_by_layer"]
     out = []
     out.append("")
-    out.append(f"rapid-mlx jlens · {model_label} · {result['prompt']!r}")
+    out.append(f"qmlx jlens · {model_label} · {result['prompt']!r}")
     if result.get("completion"):
         out.append(f"  model continues → {result['completion']!r}")
     out.append(f"  [{result['transport']}]  {n} layers")
@@ -453,7 +453,7 @@ def render_verbose(result, model_label):
 
 
 def jlens_command(args):
-    """Entry point for ``rapid-mlx jlens``."""
+    """Entry point for ``qmlx jlens``."""
     if getattr(args, "step", 1) < 1:
         print(f"\n  Error: --step must be a positive integer (got {args.step}).\n")
         sys.exit(2)

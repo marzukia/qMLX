@@ -19,7 +19,7 @@ The design choice (option a in the R12-4 design doc):
        ``param=response_format.json_schema``, ``details`` carrying the
        failing path / expected / got).
 
-The disable flag ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` (default ``on``)
+The disable flag ``QMLX_STRICT_JSON_SCHEMA=off`` (default ``on``)
 short-circuits step 3+ — strict requests fall through to the legacy
 prompt-injection behavior. Operators who rely on the pre-R12-4
 silent-pass-through behavior get the legacy code path back without
@@ -40,18 +40,18 @@ logger = logging.getLogger(__name__)
 # Environment-variable feature flags
 # ---------------------------------------------------------------------------
 
-_DISABLE_FLAG = "RAPID_MLX_STRICT_JSON_SCHEMA"
-_REPAIR_FLAG = "RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR"
+_DISABLE_FLAG = "QMLX_STRICT_JSON_SCHEMA"
+_REPAIR_FLAG = "QMLX_STRICT_JSON_SCHEMA_REPAIR"
 
 # Values that disable a feature flag (matches the
-# ``RAPID_MLX_AUTO_PULL`` / ``RAPID_MLX_PROFILE_VERBOSE`` convention).
+# ``QMLX_AUTO_PULL`` / ``QMLX_PROFILE_VERBOSE`` convention).
 _OFF_VALUES = {"0", "off", "false", "no", "disable", "disabled"}
 
 
 def strict_enforcement_enabled() -> bool:
     """Return ``True`` iff post-generate strict enforcement should run.
 
-    Default: enabled. The env var ``RAPID_MLX_STRICT_JSON_SCHEMA=off``
+    Default: enabled. The env var ``QMLX_STRICT_JSON_SCHEMA=off``
     (``0`` / ``false`` / ``no`` / ``disable`` / ``disabled`` are also
     accepted as falsy) short-circuits enforcement so requests fall
     through to the legacy prompt-injection-only behavior.
@@ -68,7 +68,7 @@ def repair_retry_enabled() -> bool:
     """Return ``True`` iff the single auto-repair retry should run.
 
     Default: enabled. The env var
-    ``RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR=off`` disables ONLY the
+    ``QMLX_STRICT_JSON_SCHEMA_REPAIR=off`` disables ONLY the
     retry; the post-decode validation + 422 envelope still runs (so
     strict mode remains hard-contract; only the retry is skipped).
     Useful for cost-sensitive deployments that prefer to fail fast.

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``rapid-mlx launch`` subcommand wiring.
+"""``qmlx launch`` subcommand wiring.
 
 This module exposes:
 
@@ -9,10 +9,10 @@ This module exposes:
 
 The subcommand has three argv shapes:
 
-* ``rapid-mlx launch list`` — print the supported clients + detection
+* ``qmlx launch list`` — print the supported clients + detection
   matrix. No state mutated.
-* ``rapid-mlx launch <client>`` — patch the named client's config.
-* ``rapid-mlx launch --all`` — patch every *detected* client.
+* ``qmlx launch <client>`` — patch the named client's config.
+* ``qmlx launch --all`` — patch every *detected* client.
 
 All shapes accept the same set of orthogonal flags (``--model``,
 ``--server-url``, ``--start-server``, ``--port``, ``--dry-run``). The
@@ -20,9 +20,9 @@ positional ``<client>`` and ``--all`` are mutually exclusive — argparse
 isn't aware of this because we accept either, but :func:`launch_command`
 fails fast with a clear error.
 
-``--start-server`` spawns ``rapid-mlx serve <model> --port <port>`` in
-the background and writes the PID to ``~/.rapid-mlx/launch.pid`` so a
-later ``kill $(cat ~/.rapid-mlx/launch.pid)`` shuts it down cleanly.
+``--start-server`` spawns ``qmlx serve <model> --port <port>`` in
+the background and writes the PID to ``~/.qmlx/launch.pid`` so a
+later ``kill $(cat ~/.qmlx/launch.pid)`` shuts it down cleanly.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from . import ADAPTERS
 # Where we drop the PID of a ``--start-server`` subprocess. Pulled out
 # so tests can monkeypatch it to a tmp_path and assert the file's
 # contents without polluting the dev's real home dir.
-PID_FILE = Path.home() / ".rapid-mlx" / "launch.pid"
+PID_FILE = Path.home() / ".qmlx" / "launch.pid"
 
 
 def _print_list() -> int:
@@ -66,7 +66,7 @@ def _resolve_default_model() -> str:
 
     Precedence:
 
-    * ``RAPID_MLX_DEFAULT_MODEL`` env var (lets the operator pin one)
+    * ``QMLX_DEFAULT_MODEL`` env var (lets the operator pin one)
     * the built-in ``qwen3.5-4b-4bit`` (same default the chat REPL uses
       — a tiny, fast, well-MHI'd model that fits 24 GB Macs).
 
@@ -75,25 +75,25 @@ def _resolve_default_model() -> str:
     cut this static default is sufficient (and matches what the README
     quickstart tells users to pull).
     """
-    return os.environ.get("RAPID_MLX_DEFAULT_MODEL") or "qwen3.5-4b-4bit"
+    return os.environ.get("QMLX_DEFAULT_MODEL") or "qwen3.5-4b-4bit"
 
 
 def _start_server_background(model: str, port: int) -> int:
-    """Spawn ``rapid-mlx serve <model> --port <port>`` detached.
+    """Spawn ``qmlx serve <model> --port <port>`` detached.
 
     Writes the child PID to :data:`PID_FILE` so a later ``kill $(cat
-    ~/.rapid-mlx/launch.pid)`` shuts it down. We don't wait for
+    ~/.qmlx/launch.pid)`` shuts it down. We don't wait for
     readiness — the launch command's whole point is "configure the
     client now, model load can happen in the background" — but we DO
-    fail fast if the spawn itself fails (e.g. ``rapid-mlx`` not on
+    fail fast if the spawn itself fails (e.g. ``qmlx`` not on
     PATH).
 
-    Returns the child PID. The parent rapid-mlx process exits after
+    Returns the child PID. The parent qmlx process exits after
     detaching; the child becomes a session leader (``start_new_session``)
     so a closing terminal doesn't SIGHUP the serve.
     """
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    cmd = ["rapid-mlx", "serve", model, "--port", str(port)]
+    cmd = ["qmlx", "serve", model, "--port", str(port)]
     # ``start_new_session=True`` is the POSIX-portable replacement for
     # setsid() — detaches the child from the parent's controlling
     # terminal so a Ctrl-C on the parent doesn't propagate.
@@ -109,7 +109,7 @@ def _start_server_background(model: str, port: int) -> int:
 
 
 def launch_command(args: argparse.Namespace) -> None:
-    """Argparse entry point for ``rapid-mlx launch``.
+    """Argparse entry point for ``qmlx launch``.
 
     Handles three subcommands by inspecting ``args.client`` and
     ``args.all``:
@@ -135,7 +135,7 @@ def launch_command(args: argparse.Namespace) -> None:
     if not args.all and not args.client:
         print(
             "launch: missing client name (or pass --all). "
-            "Try `rapid-mlx launch list` to see supported clients.",
+            "Try `qmlx launch list` to see supported clients.",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -146,7 +146,7 @@ def launch_command(args: argparse.Namespace) -> None:
         if not targets:
             print(
                 "launch: no supported clients detected on this machine. "
-                "Run `rapid-mlx launch list` to see what's checked.",
+                "Run `qmlx launch list` to see what's checked.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -165,7 +165,7 @@ def launch_command(args: argparse.Namespace) -> None:
     # ``args.model`` from e.g. ``qwen3.5-4b-4bit`` to
     # ``mlx-community/Qwen3.5-4B-MLX-4bit`` before dispatching to us —
     # but the IDE clients should request the short alias from
-    # rapid-mlx (the server's ``/v1/models`` advertises the alias, and
+    # qmlx (the server's ``/v1/models`` advertises the alias, and
     # request-side resolution accepts both), so we restore it here.
     # Same pattern as ``share_command`` in ``vllm_mlx/share/cli.py``.
     original_alias = getattr(args, "_original_alias", None)
@@ -180,7 +180,7 @@ def launch_command(args: argparse.Namespace) -> None:
             installed = adapter.detect()
             print(f"[dry-run] {name}: detected={installed} would-patch={path}")
         if args.start_server:
-            print(f"[dry-run] would spawn: rapid-mlx serve {model} --port {args.port}")
+            print(f"[dry-run] would spawn: qmlx serve {model} --port {args.port}")
         return
 
     # Real patch path. Track per-client success so we can exit non-zero
@@ -219,14 +219,14 @@ def launch_command(args: argparse.Namespace) -> None:
             )
         else:
             pid = _start_server_background(model, args.port)
-            print(f"  Started: rapid-mlx serve {model} --port {args.port} (pid {pid})")
+            print(f"  Started: qmlx serve {model} --port {args.port} (pid {pid})")
             print(f"  PID file: {PID_FILE}")
 
     if succeeded:
         print(
             "\nNow ready: open "
             + " / ".join(succeeded)
-            + " and it'll route through rapid-mlx."
+            + " and it'll route through qmlx."
         )
     if failures:
         sys.exit(1)
@@ -250,11 +250,11 @@ def register(subparsers) -> None:
 
     p = subparsers.add_parser(
         "launch",
-        help="One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
+        help="One-shot bootstrap: patch IDE/agent client config to use qmlx",
         description=(
             "Detect an IDE client (Cline, Claude Code, Continue, Cursor) "
             "and write/patch its local config to route at the local "
-            "rapid-mlx server. Use `rapid-mlx launch list` to see what's "
+            "qmlx server. Use `qmlx launch list` to see what's "
             "supported on this machine."
         ),
     )
@@ -277,15 +277,15 @@ def register(subparsers) -> None:
         type=str,
         default=None,
         help=(
-            "Model alias the client will request from rapid-mlx "
-            "(default: $RAPID_MLX_DEFAULT_MODEL or qwen3.5-4b-4bit)."
+            "Model alias the client will request from qmlx "
+            "(default: $QMLX_DEFAULT_MODEL or qwen3.5-4b-4bit)."
         ),
     )
     p.add_argument(
         "--server-url",
         type=str,
         default="http://127.0.0.1:8000",
-        help="rapid-mlx server URL the client will route at (default: http://127.0.0.1:8000)",
+        help="qmlx server URL the client will route at (default: http://127.0.0.1:8000)",
     )
     p.add_argument(
         "--port",
@@ -300,8 +300,8 @@ def register(subparsers) -> None:
         "--start-server",
         action="store_true",
         help=(
-            "Also spawn `rapid-mlx serve <model> --port <port>` in the "
-            "background, writing the pid to ~/.rapid-mlx/launch.pid."
+            "Also spawn `qmlx serve <model> --port <port>` in the "
+            "background, writing the pid to ~/.qmlx/launch.pid."
         ),
     )
     p.add_argument(

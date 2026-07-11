@@ -3,7 +3,7 @@
 
 Persona-3 ("Ollama switcher") feedback (2026-05): running
 
-    rapid-mlx chat qwen3-coder-4bit
+    qmlx chat qwen3-coder-4bit
 
 against an alias that wasn't yet cached silently kicked off a 41.8 GB
 download with no ``[Y/n]`` prompt. The download itself ran fine, but
@@ -11,7 +11,7 @@ because the spawned ``serve`` subprocess captured stdout to a logfile,
 the user saw a blank screen and assumed the CLI was hung.
 
 This module is the user-visible safety net. It is intentionally
-self-contained (no rapid-mlx imports) so it stays cheap to import from
+self-contained (no qmlx imports) so it stays cheap to import from
 ``cli.main()`` on every invocation.
 
 Public API:
@@ -29,10 +29,10 @@ Design choices:
   upstream of the size estimate.
 * The threshold defaults to 10 GiB. Anything under that is too small
   to warrant interrupting the user's flow.
-* The env override (``RAPID_MLX_AUTO_PULL=1``) is the documented escape
+* The env override (``QMLX_AUTO_PULL=1``) is the documented escape
   hatch for non-interactive CI usage and ``--yes``-style workflows.
 * Non-TTY stdin → auto-confirm. Scripts that pipe input into
-  ``rapid-mlx`` must not deadlock on a missing terminal.
+  ``qmlx`` must not deadlock on a missing terminal.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ _WEIGHT_SUFFIXES: tuple[str, ...] = (
 )
 
 # Suffixes treated as cache-proving by ``is_repo_cached``. mlx-lm's
-# high-level loader (the path rapid-mlx serve takes) only globs
+# high-level loader (the path qmlx serve takes) only globs
 # ``model*.safetensors`` — see ``mlx_lm/utils.py:316``.
 #
 # Codex round-4 BLOCKING #2 trimmed this list to ``.safetensors`` only:
@@ -184,7 +184,7 @@ def _is_model_weight_filename(name: str) -> bool:
     ``glob.glob(str(model_path / "model*.safetensors"))``. Adapter /
     sidecar files (``adapter.safetensors``, LoRA fine-tunes,
     ``embeddings.safetensors``, etc.) DON'T match this pattern and
-    aren't loaded by rapid-mlx's text path — so they must NOT count
+    aren't loaded by qmlx's text path — so they must NOT count
     as cache-proof either. Codex round-5 BLOCKING #2.
 
     Case sensitivity (Codex round-6 BLOCKING #1): the glob is case-
@@ -428,7 +428,7 @@ def confirm_or_abort(
     estimated_bytes: int | None,
     *,
     threshold_bytes: int = 10 * 1024**3,  # 10 GiB
-    auto_yes_env: str = "RAPID_MLX_AUTO_PULL",
+    auto_yes_env: str = "QMLX_AUTO_PULL",
     logfile_hint: str | None = None,
 ) -> bool:
     """Interactive gate before a large model download begins.
@@ -486,7 +486,7 @@ def confirm_or_abort(
         print(f"    Download progress will appear in {logfile_hint}; tail it to watch.")
     print()
     # Default Y — the user explicitly invoked a subcommand on a specific
-    # alias ("rapid-mlx serve qwen…", "rapid-mlx share gemma…"); intent
+    # alias ("qmlx serve qwen…", "qmlx share gemma…"); intent
     # to use that model is clear. Pressing Enter shouldn't punish them
     # with an abort. Ctrl-C still cancels.
     try:
@@ -498,7 +498,7 @@ def confirm_or_abort(
 
     if answer in {"n", "no"}:
         print(
-            f"  Aborted. Use 'rapid-mlx pull {repo_id}' to download separately, "
+            f"  Aborted. Use 'qmlx pull {repo_id}' to download separately, "
             f"or set {auto_yes_env}=1 to skip this prompt."
         )
         sys.exit(1)

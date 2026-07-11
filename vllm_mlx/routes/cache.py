@@ -60,7 +60,7 @@ _NOT_IMPLEMENTED_DETAIL = {
 
 # H-02: sandbox-escape 403 envelope. The underlying
 # ``InvalidExportPathError`` carries the caller-supplied path AND the
-# fully resolved sandbox root (``/Users/<username>/.cache/rapid-mlx/
+# fully resolved sandbox root (``/Users/<username>/.cache/qmlx/
 # cache_exports``). Echoing either to an unauthenticated caller leaks
 # the operator's home dir + username. Same treatment as the #756 501
 # envelope: generic wire message, full detail goes to the server log.
@@ -87,8 +87,8 @@ class ExportRequest(BaseModel):
     destination: str | None = Field(
         default=None,
         description=(
-            "Path under RAPID_MLX_CACHE_EXPORT_DIR (default "
-            "~/.cache/rapid-mlx/cache_exports/). May be relative (resolved "
+            "Path under QMLX_CACHE_EXPORT_DIR (default "
+            "~/.cache/qmlx/cache_exports/). May be relative (resolved "
             "against the sandbox root) or absolute (must resolve inside "
             "the sandbox). Omit to use the sandbox root itself."
         ),
@@ -145,7 +145,7 @@ def _resolve_or_400(caller_path: str | None) -> Path:
 
     H-02: ``InvalidExportPathError`` carries the caller-supplied path AND
     the resolved sandbox root (which expands to ``/Users/<USERNAME>/.cache
-    /rapid-mlx/cache_exports`` on macOS). Both stay in the server log via
+    /qmlx/cache_exports`` on macOS). Both stay in the server log via
     ``logger.warning`` — only the sanitized envelope reaches the wire.
     """
     try:
@@ -266,7 +266,7 @@ async def cache_info(path: str | None = None):
 
     H-12: pre-fix this handler echoed the resolved sandbox root back to
     the caller in a top-level ``"path"`` field. ``str(root)`` expands to
-    ``/Users/<USERNAME>/.cache/rapid-mlx/cache_exports/<sub>`` on macOS
+    ``/Users/<USERNAME>/.cache/qmlx/cache_exports/<sub>`` on macOS
     — same operator home-dir / username disclosure that H-02 fixed on
     the 403 envelope. Same treatment here: keep the resolved root in
     the server log only, omit it from the wire envelope. Callers that
@@ -278,7 +278,7 @@ async def cache_info(path: str | None = None):
 
     # Codex r1 follow-up: log at DEBUG (not INFO) so the resolved root
     # only lands in operator logs when the operator explicitly opts in
-    # (RAPID_MLX_LOG_LEVEL=DEBUG or equivalent). Routine 200 traffic
+    # (QMLX_LOG_LEVEL=DEBUG or equivalent). Routine 200 traffic
     # carries no path on the wire AND no path in the default log stream
     # — but the breadcrumb is still there for ops who need to debug a
     # peer-sync issue. Sibling concern: H-02's logger.warning on the

@@ -129,7 +129,7 @@ def _resolve_inner_text_model(model: Any) -> Any:
     * The inner ``gemma4_text.Model`` itself (test path — has
       ``.args`` + ``.model`` directly).
     * A fake shell with just ``.args`` + ``.model`` (test path).
-    * A ``rapid-mlx``-wrapped ``LanguageModel`` (from mlx-vlm's
+    * A ``qmlx``-wrapped ``LanguageModel`` (from mlx-vlm's
       Gemma 4 loader — the shape ``models/gemma4_text.py``'s
       ``Gemma4TextWrapper`` produces at boot): ``.language_model``
       carries ``.model`` and ``.config`` but NO ``.args``. The
@@ -144,7 +144,7 @@ def _resolve_inner_text_model(model: Any) -> Any:
         # Straight case — inner already exposes .args + .model.
         if hasattr(lm, "args") and hasattr(lm, "model"):
             return lm
-        # rapid-mlx / mlx-vlm shape — carries .config in place of .args.
+        # qmlx / mlx-vlm shape — carries .config in place of .args.
         # Alias so downstream code keeps its ``inner.args.<field>``
         # reads working unmodified. Safe because .args is not already
         # used by mlx-vlm's LanguageModel for anything else.

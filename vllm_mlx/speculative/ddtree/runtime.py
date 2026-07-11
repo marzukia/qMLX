@@ -2,7 +2,7 @@
 """DDTree runtime boundary.
 
 The first DDTree integration deliberately treats ``dtree_mlx`` as an
-optional external runtime. That keeps the rapid-mlx MVP small and lets us
+optional external runtime. That keeps the qmlx MVP small and lets us
 validate correctness/performance before deciding whether to vendor or
 reimplement the tree verifier.
 """
@@ -87,7 +87,7 @@ def _install_qwen35_split_prefill_patch(generator: Any) -> None:
     adapter = getattr(target, "adapter", None)
     if getattr(adapter, "family", None) != "qwen3_5":
         return
-    if getattr(target, "_rapid_mlx_split_prefill_patch", False):
+    if getattr(target, "_qmlx_split_prefill_patch", False):
         return
     original = getattr(target, "forward_with_hidden_states", None)
     if original is None:
@@ -141,7 +141,7 @@ def _install_qwen35_split_prefill_patch(generator: Any) -> None:
         return original(inputs, cache, layer_ids, return_rollback_records)
 
     target.forward_with_hidden_states = forward_with_split_prefill
-    target._rapid_mlx_split_prefill_patch = True
+    target._qmlx_split_prefill_patch = True
 
 
 def _prepare_draft_model_for_dtree(draft_model: str) -> str:
@@ -249,7 +249,7 @@ def _patched_draft_dir(source: Path) -> Path:
 
     root = Path(
         os.environ.get(
-            "RAPID_MLX_DDTREE_PATCH_CACHE", "~/.cache/rapid-mlx/ddtree-drafts"
+            "QMLX_DDTREE_PATCH_CACHE", "~/.cache/qmlx/ddtree-drafts"
         )
     ).expanduser()
     digest = hashlib.sha1(str(source.resolve()).encode("utf-8")).hexdigest()[:16]

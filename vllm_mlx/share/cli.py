@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``rapid-mlx share <alias>`` — start a serve + open a public tunnel.
+"""``qmlx share <alias>`` — start a serve + open a public tunnel.
 
 Orchestration shape:
 
   1. Validate alias (cheap fail-fast before booting the engine).
   2. Pick a free local port + generate a fresh 24-byte bearer key.
-  3. Spawn ``rapid-mlx serve`` in a child process pointing at that port.
+  3. Spawn ``qmlx serve`` in a child process pointing at that port.
   4. Wait for /healthz to come back ready, then auth-gate /v1/models.
   5. Open a WebSocket to the rapidserver Worker (defaults to
      ``wss://rapidserver.quicksilverpro.io/up``). The Worker mints a
@@ -18,7 +18,7 @@ Orchestration shape:
      WS tunnel thread.
   8. On exit, close the WS first (cheap) then terminate serve.
 
-State lives in ``~/.cache/rapid-mlx/share/`` — pid + serve log only.
+State lives in ``~/.cache/qmlx/share/`` — pid + serve log only.
 Key + URL are NOT persisted: each invocation issues a new key
 (per user's "new key every share" preference) and a new session.
 
@@ -51,14 +51,14 @@ from .._completion import alias_completer
 from . import warning, ws_tunnel
 
 # Pulled out so the routing-shape audit (tests/test_no_out_of_band_routing.py)
-# sees one clean RAPID_MLX_* string literal that lives in the
-# ALLOWED_RAPID_MLX_ENV_VARS allowlist — inlining the name into an
-# f-string error message would yield "RAPID_MLX_SHARE_PORT must be an…"
+# sees one clean QMLX_* string literal that lives in the
+# ALLOWED_QMLX_ENV_VARS allowlist — inlining the name into an
+# f-string error message would yield "QMLX_SHARE_PORT must be an…"
 # which is NOT on the allowlist and tripwires the audit.
-_PORT_ENV_VAR = "RAPID_MLX_SHARE_PORT"
-# Same out-of-band-routing carve-out as ``RAPID_MLX_SHARE_PORT`` — see
-# ``ALLOWED_RAPID_MLX_ENV_VARS`` in ``tests/test_no_out_of_band_routing.py``.
-_CHAT_FRONTEND_ENV_VAR = "RAPID_MLX_CHAT_FRONTEND"
+_PORT_ENV_VAR = "QMLX_SHARE_PORT"
+# Same out-of-band-routing carve-out as ``QMLX_SHARE_PORT`` — see
+# ``ALLOWED_QMLX_ENV_VARS`` in ``tests/test_no_out_of_band_routing.py``.
+_CHAT_FRONTEND_ENV_VAR = "QMLX_CHAT_FRONTEND"
 # QuickSilver hosts the splash-protocol chat frontend at
 # ``rapid-pro.quicksilverpro.io`` (CF Pages, Big-AGI static export + splash
 # injector that seeds the OpenAI vendor with our relay). Big-AGI ships
@@ -76,7 +76,7 @@ _DEFAULT_CHAT_FRONTEND = "https://rapid-pro.quicksilverpro.io"
 def _resolve_chat_frontend(flag_value: str | None) -> str | None:
     """Resolve the chat-frontend URL from the CLI flag and env var.
 
-    Precedence: ``--chat-frontend`` > ``$RAPID_MLX_CHAT_FRONTEND`` >
+    Precedence: ``--chat-frontend`` > ``$QMLX_CHAT_FRONTEND`` >
     built-in default (``https://rapid-pro.quicksilverpro.io``). An explicit
     empty string at either layer disables the one-click chat link
     entirely — useful when the user is wiring up an OpenAI-compatible
@@ -235,7 +235,7 @@ def _pick_port(preferred: int) -> int:
 
 
 def _resolve_served_model_name(port: int, api_key: str) -> str | None:
-    """Read the model id rapid-mlx serve is exposing via /v1/models.
+    """Read the model id qmlx serve is exposing via /v1/models.
 
     The CLI accepts a short alias (``qwen3.5-4b-4bit``) but the OpenAI
     endpoint only recognises the full HF model id
@@ -303,14 +303,14 @@ def _verify_auth_gate(port: int, api_key: str) -> bool:
 
     /healthz is unauthenticated by design (load-balancers need it). On a
     busy host another local process can race us to the same port and
-    answer /healthz while having nothing to do with rapid-mlx — and the
+    answer /healthz while having nothing to do with qmlx — and the
     tunnel would happily forward to it. We require an authenticated
     /v1/models 200 with the freshly-generated bearer before requesting a
     tunnel: only our serve has that key, so a 200 here means we're
     pointing the tunnel at our own process.
 
     Codex round-2 BLOCKING: a process started WITHOUT auth (any other
-    OpenAI-compatible server, or a rapid-mlx serve without --api-key)
+    OpenAI-compatible server, or a qmlx serve without --api-key)
     returns 200 for every bearer header — so this gate would silently
     accept it. To make the proof meaningful we also send a known-bad
     key first: if THAT returns 200, the endpoint isn't auth-gated and
@@ -361,14 +361,14 @@ def _spawn_serve(
     log_path: Path,
     extra_args: list[str],
 ) -> subprocess.Popen[bytes]:
-    # Use sys.executable + ``-m`` instead of the ``rapid-mlx`` script so
+    # Use sys.executable + ``-m`` instead of the ``qmlx`` script so
     # the share command works inside editable installs and CI environments
     # where the entrypoint script may not be on PATH.
     # ``--host 127.0.0.1`` is load-bearing here: without it serve binds
     # 0.0.0.0 and the bearer-key-gated API becomes reachable from anyone
     # on the user's LAN, not just through the frp tunnel as intended.
     #
-    # The bearer key is passed via ``RAPID_MLX_API_KEY`` env var, NOT
+    # The bearer key is passed via ``QMLX_API_KEY`` env var, NOT
     # argv. ``ps`` exposes argv to every local user — landing the key
     # there leaks the secret that gates the public tunnel. The env var
     # is only visible to the owning process (and root). (DeepSeek
@@ -388,21 +388,21 @@ def _spawn_serve(
         *extra_args,
     ]
     env = dict(os.environ)
-    env["RAPID_MLX_API_KEY"] = api_key
+    env["QMLX_API_KEY"] = api_key
     # Parent-PID watchdog (rapid-desktop #449 sibling fix). A SIGKILL
-    # of ``rapid-mlx share`` (the supervisor) re-parents the spawned
+    # of ``qmlx share`` (the supervisor) re-parents the spawned
     # ``serve`` to launchd / init; without this stamp the child would
     # outlive the frp tunnel teardown and keep the bearer-gated port
     # bound. The watchdog inside the child checks ``os.getppid()`` and
     # exits the moment it stops matching this PID.
     #
     # Direct assignment (NOT setdefault). Codex r2 MAJOR: a stale
-    # ``RAPID_MLX_WATCHDOG_PPID`` inherited from a grandparent
+    # ``QMLX_WATCHDOG_PPID`` inherited from a grandparent
     # supervisor would otherwise be forwarded into the child, and the
     # child would compare against the WRONG PID (the grandparent's,
-    # not ``rapid-mlx share``'s) and self-terminate immediately. The
+    # not ``qmlx share``'s) and self-terminate immediately. The
     # spawner owns the watchdog relationship — overwrite is correct.
-    env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
+    env["QMLX_WATCHDOG_PPID"] = str(os.getpid())
     log_fp = log_path.open("ab", buffering=0)
     # Tighten permissions: log files default to umask-derived modes
     # (often 644 = world-readable). If serve ever logs the key as part
@@ -425,7 +425,7 @@ def _spawn_serve(
 
 
 def _state_dir() -> Path:
-    d = Path.home() / ".cache" / "rapid-mlx" / "share"
+    d = Path.home() / ".cache" / "qmlx" / "share"
     d.mkdir(parents=True, exist_ok=True)
     d.chmod(0o700)
     return d
@@ -438,7 +438,7 @@ def _maybe_confirm_download(alias: str) -> None:
     when the first positional argument is an HF-style repo id that isn't
     already cached. ``share`` is NOT on that list (the parent didn't add
     it; ``_GATED_COMMANDS`` lives outside this module's scope), so a
-    ``rapid-mlx share <uncached HF repo>`` invocation would silently
+    ``qmlx share <uncached HF repo>`` invocation would silently
     spawn a non-interactive child that pulls multi-GB of weights with no
     confirmation. Codex round-1 BLOCKING: replicate the same check here
     so the share entrypoint enforces the policy too.
@@ -449,11 +449,11 @@ def _maybe_confirm_download(alias: str) -> None:
     if "/" not in alias or os.path.exists(alias):
         # Not an HF-style repo id, or a local path — nothing to prompt for.
         return
-    if os.environ.get("RAPID_MLX_CHAT_SPAWN", "") == "1":
-        # Grandchild safety: a parent ``rapid-mlx`` invocation already
+    if os.environ.get("QMLX_CHAT_SPAWN", "") == "1":
+        # Grandchild safety: a parent ``qmlx`` invocation already
         # gated and set this marker. Don't re-prompt.
         return
-    env_val = os.environ.get("RAPID_MLX_AUTO_PULL", "").strip().lower()
+    env_val = os.environ.get("QMLX_AUTO_PULL", "").strip().lower()
     if env_val in {"1", "true", "yes"}:
         return
     if not sys.stdin.isatty():
@@ -475,7 +475,7 @@ def share_command(args: argparse.Namespace) -> None:
     # ``mlx-community/Qwen3.5-4B-MLX-4bit``) and the user-typed alias
     # lives on ``args._original_alias`` (e.g. ``qwen3.5-4b-4bit``). The child
     # ``serve`` subprocess re-runs alias resolution on whatever we pass
-    # it. We want the child to land the same way ``rapid-mlx serve
+    # it. We want the child to land the same way ``qmlx serve
     # qwen3.5-4b-4bit`` does — including setting ``_model_alias`` on the
     # server so the public ``/v1/models`` endpoint advertises (and
     # accepts) the short alias the user actually typed. So we forward
@@ -484,7 +484,7 @@ def share_command(args: argparse.Namespace) -> None:
     alias: str = getattr(args, "_original_alias", None) or args.model
     # Mirror the B2 download-confirmation gate that ``cli.py`` applies to
     # chat/run/serve/pull/bench — share is not on that list, so without
-    # this call a first-time ``rapid-mlx share <big-repo>`` would pull
+    # this call a first-time ``qmlx share <big-repo>`` would pull
     # multi-GB of weights with no prompt. The gate keys off
     # ``args.model`` (HF repo) because the cache lookup uses the
     # resolved id, not the typed alias.
@@ -494,7 +494,7 @@ def share_command(args: argparse.Namespace) -> None:
     # URL is a user error that should exit 2 BEFORE we spawn serve / pay
     # the model-load cost. (Same lazy-validation rationale as the
     # ``--port`` block below: keeping it out of register() avoids a
-    # broken env var crashing every other rapid-mlx subcommand at
+    # broken env var crashing every other qmlx subcommand at
     # parser-build time.) Resolved early because the CORS allowlist
     # below auto-includes whatever this resolves to.
     try:
@@ -531,8 +531,8 @@ def share_command(args: argparse.Namespace) -> None:
         extra_serve_args.append(str(args.rate_limit))
 
     api_key = secrets.token_hex(24)
-    # Port parsing is lazy on purpose: validating RAPID_MLX_SHARE_PORT at
-    # parser-build time crashes ``rapid-mlx models`` (and every other
+    # Port parsing is lazy on purpose: validating QMLX_SHARE_PORT at
+    # parser-build time crashes ``qmlx models`` (and every other
     # unrelated subcommand) when the env var is set to garbage.
     raw_port = os.environ.get(_PORT_ENV_VAR) if args.port is None else None
     try:
@@ -569,14 +569,14 @@ def share_command(args: argparse.Namespace) -> None:
     serve_log = state_dir / "serve.log"
 
     # Relay URL — defaults to the production rapidserver Worker, but
-    # operator-set ``RAPID_MLX_RELAY_URL`` overrides (self-host /
+    # operator-set ``QMLX_RELAY_URL`` overrides (self-host /
     # smoke test against ``wrangler dev``).
-    relay_url = os.environ.get("RAPID_MLX_RELAY_URL", ws_tunnel.DEFAULT_RAPIDSERVER_WSS)
+    relay_url = os.environ.get("QMLX_RELAY_URL", ws_tunnel.DEFAULT_RAPIDSERVER_WSS)
     # Refuse non-wss schemes early so a misconfigured env doesn't
     # silently fall through to a stalled handshake.
     if not (relay_url.startswith("wss://") or relay_url.startswith("ws://")):
         print(
-            f"share: RAPID_MLX_RELAY_URL must start with wss:// or ws:// "
+            f"share: QMLX_RELAY_URL must start with wss:// or ws:// "
             f"(got {relay_url!r})",
             file=sys.stderr,
         )
@@ -607,7 +607,7 @@ def share_command(args: argparse.Namespace) -> None:
     # keep their exit-0 contract since the operator chose to stop.
     serve_exit_code = 0
     try:
-        print(f"Starting rapid-mlx serve ({alias} on :{port})…", file=sys.stderr)
+        print(f"Starting qmlx serve ({alias} on :{port})…", file=sys.stderr)
         serve_proc = _spawn_serve(
             alias=alias,
             port=port,
@@ -668,13 +668,13 @@ def share_command(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
 
-        # rapid-mlx serve registers the model under its HF id, not the
+        # qmlx serve registers the model under its HF id, not the
         # short alias the user typed — so the curl example needs that
         # name to actually run. Falls back to the typed alias if the
         # /v1/models probe fails (the banner still prints).
         display_model = _resolve_served_model_name(port, api_key) or alias
         # ``flush=True`` is load-bearing: when stdout is a pipe
-        # (``rapid-mlx share … | tee``), Python block-buffers and the
+        # (``qmlx share … | tee``), Python block-buffers and the
         # banner doesn't reach the terminal until the process exits.
         print(
             warning.render(
@@ -774,14 +774,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "share",
         help="Expose a local model behind a public URL via rapidmlx.com",
         description=(
-            "Start rapid-mlx serve and open a public Cloudflare-fronted "
+            "Start qmlx serve and open a public Cloudflare-fronted "
             "URL on rapidmlx.com so you can use the model from a different "
             "device — or share it with a friend. Press Ctrl-C to stop."
         ),
     )
     p.add_argument(
         "model",
-        help="Alias to serve (same names as `rapid-mlx serve`, e.g. qwen3.5-4b-4bit)",
+        help="Alias to serve (same names as `qmlx serve`, e.g. qwen3.5-4b-4bit)",
     ).completer = alias_completer
     p.add_argument(
         "--port",
@@ -789,7 +789,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help=(
             "Local port to bind serve to (default: 8765, or "
-            "$RAPID_MLX_SHARE_PORT if set)"
+            "$QMLX_SHARE_PORT if set)"
         ),
     )
     # BooleanOptionalAction is the only way to get both ``--thinking``
@@ -814,7 +814,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         metavar="ORIGIN",
         help=(
             "Pass --cors-origins to serve. Accepts multiple values, same "
-            "shape as ``rapid-mlx serve --cors-origins``. Default: the "
+            "shape as ``qmlx serve --cors-origins``. Default: the "
             "rapidmlx chat-frontend allowlist (rapid-pro.pages.dev, "
             "rapid-pro.quicksilverpro.io, rapidmlx.com, chat.rapidmlx.com) "
             "plus whatever ``--chat-frontend`` resolves to. Pass '*' to "
@@ -829,7 +829,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         metavar="RPM",
         help=(
             "Per-client requests/minute cap forwarded to the spawned "
-            "``rapid-mlx serve``. Default: 120 (2/sec) — high enough for "
+            "``qmlx serve``. Default: 120 (2/sec) — high enough for "
             "tool-using power users and Beam-mode parallel completions, "
             "low enough that a leaked share key can't burst-DoS the "
             "publisher's M3. Set 0 to disable the cap entirely."
@@ -842,7 +842,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         metavar="URL",
         help=(
             "Override the one-click chat link printed in the share banner. "
-            "Default: https://rapid-pro.quicksilverpro.io (or $RAPID_MLX_CHAT_FRONTEND "
+            "Default: https://rapid-pro.quicksilverpro.io (or $QMLX_CHAT_FRONTEND "
             "if set). The frontend must implement the rapidmlx splash "
             "share-key protocol — point this at your own fork if you host "
             "one. Pass an empty string ('') to suppress the chat link "

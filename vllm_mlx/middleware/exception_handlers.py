@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unified FastAPI exception handlers for rapid-mlx.
+"""Unified FastAPI exception handlers for qmlx.
 
 The shapes here are the single source of truth — both
 :mod:`vllm_mlx.server` (production) and the route-level test apps under
@@ -47,7 +47,7 @@ from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
-logger = logging.getLogger("rapid_mlx.exception_handlers")
+logger = logging.getLogger("qmlx.exception_handlers")
 
 
 # ---------------------------------------------------------------------------
@@ -1039,7 +1039,7 @@ def _register_canonical_request_models() -> None:
 
 
 def install_exception_handlers(app: FastAPI) -> None:
-    """Register the rapid-mlx exception handlers on ``app``.
+    """Register the qmlx exception handlers on ``app``.
 
     Wiring is idempotent — re-registering the same exception class
     just overwrites the previous binding (FastAPI / Starlette behaviour).

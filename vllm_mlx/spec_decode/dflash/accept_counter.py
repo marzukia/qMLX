@@ -64,7 +64,7 @@ class DFlashAcceptSnapshot:
     Returned by :meth:`DFlashAcceptCounter.snapshot`. The fields are
     raw counter values; the renderer in :mod:`vllm_mlx.routes.metrics`
     converts ``attempts`` / ``accepts`` into the
-    ``rapid_mlx_spec_decode_dflash_accept_ratio`` gauge.
+    ``qmlx_spec_decode_dflash_accept_ratio`` gauge.
     """
 
     attempts: int

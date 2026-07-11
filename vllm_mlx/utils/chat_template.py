@@ -600,8 +600,8 @@ def _walk_tools_iter(tools, transform):
     An iterative walk with an explicit work stack puts the depth bound
     on the heap instead of the C stack, so the same payload finishes
     in O(N) time and O(N) memory without touching the Python recursion
-    limit. The body-depth guard (see ``RAPID_MLX_MAX_BODY_DEPTH``) and
-    the per-tool depth validator (see ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``)
+    limit. The body-depth guard (see ``QMLX_MAX_BODY_DEPTH``) and
+    the per-tool depth validator (see ``QMLX_MAX_TOOL_SCHEMA_DEPTH``)
     upstream of this walk reject payloads whose nesting is large
     enough to be a memory-pressure concern in the first place; this
     iterative walk is the structural defense-in-depth so a payload
@@ -713,7 +713,7 @@ def _baseline_sanitize_tools(tools):
     cannot hit Python's recursion limit and crash the worker with HTTP
     500 (D-TOOL-RECUR). The iterative walk is the structural fix; the
     request-time depth validator in :func:`_validate_tool_schema_depth`
-    (``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``) rejects deep payloads earlier
+    (``QMLX_MAX_TOOL_SCHEMA_DEPTH``) rejects deep payloads earlier
     with a sanitized 400.
     """
     if not tools:

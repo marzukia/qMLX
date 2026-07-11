@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # Install the per-layer Indexer gate for REAP-pruned DeepseekV32 configs
 # (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit). The hook is
 # placed HERE (and not only in vllm_mlx.model_runner) because the real
-# `rapid-mlx serve` boot path is:
+# `qmlx serve` boot path is:
 #   cli -> server -> engine.batched._start_llm -> utils.tokenizer.load_model_with_fallback
 #   -> mlx_lm.load -> mlx_lm.utils.load_model
 # None of those import model_runner, so installing the gate there alone
@@ -139,7 +139,7 @@ def _decoder_has_metaspace_replace(decoder) -> bool:
 def repair_byte_level_decoder(tokenizer) -> bool:
     """Repair a mis-configured byte-level BPE decoder in place.
 
-    Bug D-DETOK-BPE (rapid-mlx 0.7/0.8 series): every DeepSeek-R1
+    Bug D-DETOK-BPE (qmlx 0.7/0.8 series): every DeepSeek-R1
     distill on Qwen3 / Llama bases (``mlx-community/DeepSeek-R1-0528-
     Qwen3-8B-4bit``, ``DeepSeek-R1-Distill-Qwen-32B-4bit``, etc.) ships
     a ``tokenizer_config.json`` declaring ``tokenizer_class:

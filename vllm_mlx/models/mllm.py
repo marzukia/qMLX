@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 VLM_EXTRA_INSTALL_HINT = (
     "Install it with:\n"
-    "    pip install 'rapid-mlx[vision]'\n"
+    "    pip install 'qmlx[vision]'\n"
     "or directly:\n"
     "    pip install 'mlx-vlm>=0.6.3'"
 )
@@ -50,7 +50,7 @@ def mlx_vlm_available() -> bool:
     (:func:`require_mlx_vlm_or_exit`) can probe presence without
     actually importing the dependency at module top-level. ``mlx-vlm``
     lives behind the ``[vision]`` extra; a plain
-    ``pip install rapid-mlx`` will not have it.
+    ``pip install qmlx`` will not have it.
     """
     import importlib.util
 
@@ -60,8 +60,8 @@ def mlx_vlm_available() -> bool:
 def require_mlx_vlm_or_exit(model_name: str) -> None:
     """CLI-side boot guard for vision/multimodal aliases.
 
-    R-10 (PyPI 0.8.6 dogfood): a first-time ``pip install rapid-mlx``
-    user running ``rapid-mlx serve ui-tars-1.5-7b-4bit`` got a deep,
+    R-10 (PyPI 0.8.6 dogfood): a first-time ``pip install qmlx``
+    user running ``qmlx serve ui-tars-1.5-7b-4bit`` got a deep,
     confusing ImportError mid-load because ``mlx-vlm`` lives behind the
     ``[vision]`` extra. The existing :func:`_require_mlx_vlm` raises an
     actionable ``ImportError`` only after the alias has been resolved,
@@ -85,7 +85,7 @@ def require_mlx_vlm_or_exit(model_name: str) -> None:
 def _require_mlx_vlm() -> None:
     """Verify mlx-vlm is installed; raise actionable error if not.
 
-    Engine-side last-line-of-defence: ``rapid-mlx serve`` is supposed
+    Engine-side last-line-of-defence: ``qmlx serve`` is supposed
     to short-circuit at :func:`require_mlx_vlm_or_exit` before this
     runs, but library callers (``MLXMultimodalLM`` used directly,
     benchmark/eval harnesses) still need an actionable error if they
@@ -845,7 +845,7 @@ class MLXMultimodalLM:
         except ImportError:
             raise ImportError(
                 "Vision dependencies are required for multimodal inference. "
-                "Install with: pip install 'rapid-mlx[vision]'"
+                "Install with: pip install 'qmlx[vision]'"
             )
         except ValueError as e:
             # mlx_vlm raises `ValueError: Missing N parameters: vision_*`
@@ -1710,7 +1710,7 @@ class MLXMultimodalLM:
         if cache_hit and cache_entry and cache_entry.kv_cache:
             # NOTE: mlx-vlm's generate_step() has its own multimodal KV cache with prefix matching
             # (MULTIMODAL_KV_CACHE_ENABLED in mlx_vlm/utils.py). Let it handle caching.
-            # We only use rapid-mlx's cache for text-only requests (no images).
+            # We only use qmlx's cache for text-only requests (no images).
             if all_images:
                 # Pass cached KV state so mlx-vlm's generate can reuse it
                 # (skip_prompt_processing stays False — vision encoder must run)

@@ -18,14 +18,14 @@ Why a separate server (not a fork of the standard route)?
   - A separate, opt-in server is a clean blast-radius boundary: turning
     on DFlash can never break a request that doesn't use it.
 
-v1 limitations (documented in README + ``rapid-mlx info``):
+v1 limitations (documented in README + ``qmlx info``):
   - Single-user serial. Concurrent requests queue on an ``asyncio.Lock``.
   - No tool calling, MCP, embeddings, or audio in this server (the
     standard server handles those).
   - No prefix cache (per-request KV cache built fresh each call).
 
 These limitations are deliberate for v1 — the target user is someone
-running ``rapid-mlx serve qwen3.5-27b-8bit --speculative-config
+running ``qmlx serve qwen3.5-27b-8bit --speculative-config
 '{"method":"dflash"}'`` to get a ~2× speedup on code/long-form
 completions on a single Apple Silicon box.
 """
@@ -161,7 +161,7 @@ def _build_app(
                 ModelInfo(
                     id=served_model_name,
                     created=int(time.time()),
-                    owned_by="rapid-mlx",
+                    owned_by="qmlx",
                 )
             ]
         )
@@ -203,7 +203,7 @@ def _build_app(
         # Render chat messages into a single prompt string via mlx-vlm's
         # processor. We pass through the model's chat template so the
         # tokenizer-side reasoning/tool markers match what the model was
-        # trained on; no rapid-mlx-side prompt mutation happens here.
+        # trained on; no qmlx-side prompt mutation happens here.
         #
         # Resolve enable_thinking (#387). The dflash app captures its own
         # ``no_thinking`` by closure rather than going through the
@@ -675,7 +675,7 @@ def run_dflash_server(
     if not have_runtime():
         raise RuntimeError(
             "DFlash server requires mlx-vlm 0.5.0+ — install with "
-            "``pip install 'rapid-mlx[dflash]'``."
+            "``pip install 'qmlx[dflash]'``."
         )
 
     # Belt-and-suspenders eligibility re-check for programmatic callers

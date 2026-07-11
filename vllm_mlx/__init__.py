@@ -14,12 +14,12 @@ Features:
 try:
     from importlib.metadata import version as _get_version
 
-    __version__ = _get_version("rapid-mlx")
+    __version__ = _get_version("qmlx")
 except Exception:
     __version__ = "0.0.0"  # fallback for editable installs without metadata
 
 # Rebrand runtime logger names from the legacy ``vllm_mlx.*`` namespace to
-# the product-facing ``rapid_mlx.*`` namespace before any submodule has had
+# the product-facing ``qmlx.*`` namespace before any submodule has had
 # a chance to create a record. The Python package directory keeps the
 # ``vllm_mlx/`` name (renaming would touch hundreds of imports and break
 # external integrations); only what users see in log output changes. The

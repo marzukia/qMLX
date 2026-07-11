@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""User-facing tier dispatcher for ``rapid-mlx bench <model> --tier ...``.
+"""User-facing tier dispatcher for ``qmlx bench <model> --tier ...``.
 
 This module is the public surface for the four tier modes:
 
-    rapid-mlx bench <model> --tier smoke    # boot + 1 prompt
-    rapid-mlx bench <model> --tier speed    # standardized B=1 perf bench
-    rapid-mlx bench <model> --tier harness  # 5 first-class agent harnesses
-    rapid-mlx bench <model> --tier all      # smoke → speed → harness
+    qmlx bench <model> --tier smoke    # boot + 1 prompt
+    qmlx bench <model> --tier speed    # standardized B=1 perf bench
+    qmlx bench <model> --tier harness  # 5 first-class agent harnesses
+    qmlx bench <model> --tier all      # smoke → speed → harness
 
 Each invocation boots the model server exactly once (or attaches to an
 existing server when ``--base-url`` is provided), runs all tier work
@@ -82,7 +82,7 @@ def _resolve_harness_profile_timeout() -> int:
 
 
 def _resolve_harness_profiles_filter() -> tuple[str, ...] | None:
-    """Read an optional ``RAPID_MLX_HARNESS_PROFILES_FILTER`` env var.
+    """Read an optional ``QMLX_HARNESS_PROFILES_FILTER`` env var.
 
     Comma-separated list of profile names to scope the harness sweep to
     (e.g. ``"codex,aider"`` runs only those two and skips
@@ -99,13 +99,13 @@ def _resolve_harness_profiles_filter() -> tuple[str, ...] | None:
     Reading at MODULE LOAD mirrors the timeout env above so callers
     don't have to thread a kwarg through ``--tier harness``.
     """
-    raw = os.environ.get("RAPID_MLX_HARNESS_PROFILES_FILTER")
+    raw = os.environ.get("QMLX_HARNESS_PROFILES_FILTER")
     if raw is None:
         return None
     requested = tuple(name.strip() for name in raw.split(",") if name.strip())
     if not requested:
         print(
-            "  Warning: RAPID_MLX_HARNESS_PROFILES_FILTER is empty/whitespace; "
+            "  Warning: QMLX_HARNESS_PROFILES_FILTER is empty/whitespace; "
             "ignoring filter and running all profiles.",
             file=sys.stderr,
         )
@@ -115,14 +115,14 @@ def _resolve_harness_profiles_filter() -> tuple[str, ...] | None:
     invalid = tuple(name for name in requested if name not in known)
     if invalid:
         print(
-            f"  Warning: RAPID_MLX_HARNESS_PROFILES_FILTER includes "
+            f"  Warning: QMLX_HARNESS_PROFILES_FILTER includes "
             f"unknown profile(s) {invalid!r}; valid profiles are "
             f"{HARNESS_PROFILES}.",
             file=sys.stderr,
         )
     if not valid:
         print(
-            "  Warning: RAPID_MLX_HARNESS_PROFILES_FILTER matched zero "
+            "  Warning: QMLX_HARNESS_PROFILES_FILTER matched zero "
             "valid profiles; ignoring filter and running all profiles.",
             file=sys.stderr,
         )
@@ -210,7 +210,7 @@ def _resolve_base_url(base_url: str | None) -> tuple[str, int] | None:
 
     When set, the tier runner SKIPS booting its own server and runs all
     tier work against the URL the user provided. This is the gauntlet
-    path: ``release_check_m3.sh`` already booted ``rapid-mlx serve`` on
+    path: ``release_check_m3.sh`` already booted ``qmlx serve`` on
     port 8000 and just wants us to run the harness suite against it.
 
     Strips trailing ``/v1`` if the user pasted the full OpenAI base;
@@ -1135,7 +1135,7 @@ def _serve_or_attach(
             except (urllib.error.URLError, ConnectionError, OSError) as e:
                 raise RuntimeError(
                     f"--base-url {base_url} not reachable: {e}. "
-                    "Start `rapid-mlx serve <model>` on that port first, "
+                    "Start `qmlx serve <model>` on that port first, "
                     "or drop --base-url to let bench --tier boot its own."
                 )
             yield port, False, None, None
@@ -1153,7 +1153,7 @@ def _serve_or_attach(
 
         # log_path=None → DEVNULL; the user-facing tier output is the
         # interesting signal. For debugging, the user can re-run with
-        # `rapid-mlx serve <model> --port <port>` themselves. We
+        # `qmlx serve <model> --port <port>` themselves. We
         # manually drive the ctx manager (not ``with``) so we can hand
         # the active-server release into the harness session and let it
         # swap in a fresh release on each restart. The outer ``finally``

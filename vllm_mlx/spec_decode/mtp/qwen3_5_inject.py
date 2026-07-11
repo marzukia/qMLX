@@ -233,7 +233,7 @@ def inject_mtp_support(
             enable a useless/slow draft model, so the default is
             ``False`` — a missing sidecar in production now returns
             ``False`` from this function and the model is left
-            unmodified. The bench, server boot, and the rapid-mlx
+            unmodified. The bench, server boot, and the qmlx
             spec_decode pipeline MUST pass a sidecar.
 
     Returns:

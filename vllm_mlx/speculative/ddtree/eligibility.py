@@ -92,12 +92,12 @@ def check(profile: AliasProfile, alias: str | None = None) -> None:
     if eligible:
         suffix = (
             f"Eligible aliases today: {', '.join(eligible)}. Run "
-            "`rapid-mlx info <alias>` to inspect per-alias DDTree status."
+            "`qmlx info <alias>` to inspect per-alias DDTree status."
         )
     else:
         suffix = (
             "No aliases currently pass every DDTree gate. Run "
-            "`rapid-mlx info <alias>` to inspect per-alias DDTree status."
+            "`qmlx info <alias>` to inspect per-alias DDTree status."
         )
     raise DDTreeUnavailable(f"{header}:\n  - {bullet}\n\n{suffix}")
 

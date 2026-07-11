@@ -4,7 +4,7 @@ Pydantic models for OpenAI Responses API.
 
 These models define the request and response schemas for the
 OpenAI-compatible /v1/responses endpoint, enabling the official Codex CLI
-(and other Responses-API clients) to talk to rapid-mlx as a local backend.
+(and other Responses-API clients) to talk to qmlx as a local backend.
 
 This is a stateless shim: ``previous_response_id`` is not supported and
 the route returns 400 if set. Codex CLI re-sends the full conversation
@@ -75,7 +75,7 @@ class ResponsesInputItem(BaseModel):
     summary: list[dict] | None = None
     encrypted_content: str | None = None
 
-    # rapid-mlx#254 — OpenAI's Responses spec lets clients omit ``type``
+    # qmlx#254 — OpenAI's Responses spec lets clients omit ``type``
     # on plain message items: ``{"role":"user","content":"hi"}`` is the
     # canonical shape SDK docs / curl examples show. The official
     # openai-python SDK always normalizes to ``type="message"`` before
@@ -230,7 +230,7 @@ class ResponsesRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     # Yuki R6 (0.8.5 dogfood): OpenAI Responses spec defines
-    # ``truncation`` as ``"auto" | "disabled"``. rapid-mlx accepts and
+    # ``truncation`` as ``"auto" | "disabled"``. qmlx accepts and
     # echoes the requested value back on the response envelope; the
     # engine-level truncation behaviour is a no-op in this release (the
     # context-length gate already rejects oversized prompts upstream).
@@ -315,12 +315,12 @@ class ResponsesRequest(BaseModel):
     # to /v1/chat/completions.
     #
     # ``chat_template_kwargs`` is intentionally typed as a dict — the
-    # only key rapid-mlx consumes today is ``enable_thinking`` (other
+    # only key qmlx consumes today is ``enable_thinking`` (other
     # keys round-trip but no-op), and the chat surface uses the same
     # unconstrained ``dict`` shape (api/models.py line 1511) so the
     # two routes share one contract.
     chat_template_kwargs: dict | None = None
-    # ``enable_thinking`` is the rapid-mlx convenience top-level knob;
+    # ``enable_thinking`` is the qmlx convenience top-level knob;
     # the OpenAI-extension shape ``chat_template_kwargs.enable_thinking``
     # wins when both are set (see service/helpers.py
     # ``_extract_thinking_from_request`` precedence).
@@ -500,7 +500,7 @@ class ResponsesOutputItem(BaseModel):
     # reasoning — OpenAI Responses spec, output[i].type=="reasoning":
     #   {"type":"reasoning","id":"rs_...","summary":[{"type":"summary_text","text":"..."}]}
     # ``encrypted_content`` is omitted unless include=["reasoning.encrypted_content"]
-    # is requested AND the backend produces one. rapid-mlx is stateless,
+    # is requested AND the backend produces one. qmlx is stateless,
     # so the field is always absent today.
     summary: list[dict] | None = None
     encrypted_content: str | None = None

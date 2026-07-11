@@ -6,7 +6,7 @@ stars: 25700
 # Qwen Code (https://github.com/QwenLM/qwen-code) is Alibaba's fork of
 # gemini-cli — a Node CLI coding agent tuned for Qwen3.x tool-calling.
 # It speaks the OpenAI-compatible /v1/chat/completions API via a
-# baseUrl config that maps 1:1 onto rapid-mlx's default endpoint. No
+# baseUrl config that maps 1:1 onto qmlx's default endpoint. No
 # response transform needed — plain OpenAI wire.
 #
 # Config lives at ~/.qwen/settings.json (project-level ./qwen.json also
@@ -58,4 +58,4 @@ capabilities:
 known_issues:
   - "qwen-code hardcodes the OpenAI-compat `/v1` suffix — set `baseUrl` to `http://localhost:8000/v1` not the root URL."
   - "Older releases (< 1.2) had an issue where `chat_template_kwargs` was stripped before send; upgrade if you see `<think>` traces leaking into `content` on Qwen3.6."
-  - "Alibaba banned Claude Code internally over alleged backdoor risks (2026-07-03) — qwen-code + rapid-mlx is the local, source-visible alternative."
+  - "Alibaba banned Claude Code internally over alleged backdoor risks (2026-07-03) — qwen-code + qmlx is the local, source-visible alternative."

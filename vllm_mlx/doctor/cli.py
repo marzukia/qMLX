@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CLI entry point for ``rapid-mlx doctor`` — pure env-health probe.
+"""CLI entry point for ``qmlx doctor`` — pure env-health probe.
 
 Doctor is now strictly about answering "is my install / environment broken?".
 Model-validation tiers (smoke / check / full / benchmark) moved to
-``rapid-mlx bench --tier ...`` in PRs #1-#3 of the doctor refactor series;
+``qmlx bench --tier ...`` in PRs #1-#3 of the doctor refactor series;
 this PR rips out the dispatch and leaves only the env-health surface.
 
 Output is modelled on ``hermes doctor``: sections of one-line ✓/⚠/✗ probes,
@@ -38,18 +38,18 @@ def doctor_command(args: Any) -> None:
 
     ``args`` is the argparse namespace from ``vllm_mlx.cli``. We only read
     ``args.verbose`` (and reject the removed positional ``tier`` argument
-    with a clear pointer to ``rapid-mlx bench --tier ...``).
+    with a clear pointer to ``qmlx bench --tier ...``).
     """
     # Hard removal: PRs #1-#3 deprecated the tier subcommands; this PR closes
-    # the door. If a user still types ``rapid-mlx doctor smoke`` they hit
+    # the door. If a user still types ``qmlx doctor smoke`` they hit
     # this branch and get pointed at the replacement.
     legacy_tier = getattr(args, "tier", None)
     if legacy_tier in _REMOVED_TIERS:
         print(
-            f"rapid-mlx doctor {legacy_tier!s} was removed in 0.7.22.\n"
-            f"Use:  rapid-mlx bench <model> --tier {legacy_tier}\n"
+            f"qmlx doctor {legacy_tier!s} was removed in 0.7.22.\n"
+            f"Use:  qmlx bench <model> --tier {legacy_tier}\n"
             "Doctor is now a pure environment-health check; "
-            "model-validation tiers live in `rapid-mlx bench`.",
+            "model-validation tiers live in `qmlx bench`.",
             file=sys.stderr,
         )
         sys.exit(2)

@@ -12,7 +12,7 @@ environments depend on this.
 
 #: Literal sentinel surfaced to ``content`` on ``finish_reason="length"``
 #: when generation is cut short mid-think (default ON; opt out via
-#: ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``). Defined here so the
+#: ``QMLX_REASONING_CUTOFF_NOTICE=disabled``). Defined here so the
 #: ``api/responses_adapter`` can exclude it from its
 #: ``downstream_output_seen`` check (issue #858 → PR #860 follow-up)
 #: without dragging the engine into the adapter's import graph.

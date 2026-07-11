@@ -1029,7 +1029,7 @@ async def create_anthropic_message(
         # + the ``thinking`` content block as the structured truncation
         # signal, but GUI clients that only render ``text`` blocks
         # benefit from the literal cue surfacing in ``content`` too.
-        # Opt out via ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``.
+        # Opt out via ``QMLX_REASONING_CUTOFF_NOTICE=disabled``.
         # See helper docstring for the full predicate set.
         final_content = _apply_reasoning_cutoff_notice(
             final_content,

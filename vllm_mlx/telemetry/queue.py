@@ -22,8 +22,8 @@ Three invariants the design pins down:
    final POST round-trip, short enough not to annoy a user on Ctrl-C.
 
 Important non-feature: there is **no asyncio integration here**. The
-queue must serve both ``rapid-mlx serve`` (async FastAPI) and
-``rapid-mlx chat`` (sync REPL) without forcing every caller into an
+queue must serve both ``qmlx serve`` (async FastAPI) and
+``qmlx chat`` (sync REPL) without forcing every caller into an
 event loop. A plain daemon thread is the lowest common denominator.
 """
 
@@ -84,7 +84,7 @@ class TelemetryQueue:
         # at exit. A latched flag turns the redundant atexit call into
         # a cheap no-op; ``start()`` clears the latch so restart works.
         self._shutdown_called = False
-        # Bookkeeping the ``rapid-mlx telemetry status`` subcommand can
+        # Bookkeeping the ``qmlx telemetry status`` subcommand can
         # surface. ``last_flush_ts`` is the monotonic clock at the last
         # _completed_ flush attempt (success or failure).
         self.events_enqueued = 0
@@ -137,7 +137,7 @@ class TelemetryQueue:
                 self._wake.clear()
             self._thread = threading.Thread(
                 target=self._loop,
-                name="rapid-mlx-telemetry",
+                name="qmlx-telemetry",
                 daemon=True,
             )
             self._thread.start()
@@ -185,7 +185,7 @@ class TelemetryQueue:
                         self._thread = None
 
     def snapshot(self) -> dict[str, int]:
-        """Cheap counters for ``rapid-mlx telemetry status``.
+        """Cheap counters for ``qmlx telemetry status``.
 
         Round 9 codex review: all counters read under the same lock
         the daemon uses to write them, so ``snapshot`` cannot observe a

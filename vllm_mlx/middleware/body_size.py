@@ -33,7 +33,7 @@ applies to a different scope — see ``_GUARDED_METHODS`` /
 (chat, completions, embeddings, models, audio, anthropic, mcp, …).
 
 The cap is read from ``ServerConfig.max_request_bytes`` at request
-time, so ``rapid-mlx serve --max-request-bytes N`` (or the env var)
+time, so ``qmlx serve --max-request-bytes N`` (or the env var)
 takes effect without restart in tests that mutate the config.
 A value of ``0`` disables the cap entirely (escape hatch for
 operators whose internal deployments have other DoS controls).
@@ -478,12 +478,12 @@ def _format_message(
         return (
             f"Request body too large: streamed {streamed or 0} bytes "
             f"exceeded the {limit}-byte server cap "
-            "(set via --max-request-bytes / RAPID_MLX_MAX_REQUEST_BYTES)"
+            "(set via --max-request-bytes / QMLX_MAX_REQUEST_BYTES)"
         )
     return (
         f"Request body too large: Content-Length {advertised} bytes "
         f"exceeds the {limit}-byte server cap "
-        "(set via --max-request-bytes / RAPID_MLX_MAX_REQUEST_BYTES)"
+        "(set via --max-request-bytes / QMLX_MAX_REQUEST_BYTES)"
     )
 
 
@@ -494,12 +494,12 @@ def _format_408_body(*, timeout: float, streamed: int) -> bytes:
     and the ``guarded_send`` rewrite path (FastAPI's body parser
     already wrote a 400 start frame — we swap it for our 408 with
     this same body). Centralising the shape keeps clients parsing
-    rapid-mlx errors against one envelope per DoS gate.
+    qmlx errors against one envelope per DoS gate.
     """
     message = (
         f"Request timed out: no body bytes received for {timeout:.1f}s "
         f"(streamed={streamed} bytes; set via "
-        "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS)"
+        "QMLX_BODY_RECEIVE_TIMEOUT_SECONDS)"
     )
     return _json.dumps(
         {
@@ -524,7 +524,7 @@ async def _send_408(
     F-072 slow-DoS gate: when no body bytes arrive within
     ``ServerConfig.body_receive_timeout_seconds``, this is the terminal
     response the client sees. Shape mirrors :func:`_send_413` so
-    callers parsing rapid-mlx errors get a consistent envelope across
+    callers parsing qmlx errors get a consistent envelope across
     DoS gates.
     """
     body = _format_408_body(timeout=timeout, streamed=streamed)

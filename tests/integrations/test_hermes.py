@@ -5,7 +5,7 @@ API. Covers chat, tool calling (single, multi-step, parallel), streaming,
 reasoning, and edge cases with many tools (Hermes injects 60+ tools).
 
 Requirements:
-    1. Rapid-MLX server running: rapid-mlx serve <MODEL> --port 8000
+    1. Rapid-MLX server running: qmlx serve <MODEL> --port 8000
     2. Hermes Agent installed: pip install hermes-agent (or from source)
     3. ~/.hermes/config.yaml pointing to localhost:8000
 
@@ -25,7 +25,7 @@ import unittest
 
 import httpx
 
-BASE_URL = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+BASE_URL = os.environ.get("QMLX_BASE_URL", "http://localhost:8000/v1")
 # Auto-detect model from server
 try:
     resp = httpx.get(f"{BASE_URL}/models", timeout=5)
@@ -108,7 +108,7 @@ def hermes_query(query, timeout_sec=120):
         # Hermes refuses to initialize when the served model's reported
         # context window is below what Hermes's full tool-rich prompt
         # needs. Surfacing this as FAIL is dishonest — it isn't a
-        # rapid-mlx regression, it's the served model being too small
+        # qmlx regression, it's the served model being too small
         # for this specific harness setup. Caller should SKIP.
         #
         # IMPORTANT: collapse whitespace before the substring check.
@@ -135,7 +135,7 @@ class HermesSkipError(unittest.SkipTest):
     """Raised by a Hermes test to signal honest unrunnable, not failure.
 
     Hermes refuses to initialize on small-context models, and there's no
-    rapid-mlx code to "fix" that — it's the harness asking for more
+    qmlx code to "fix" that — it's the harness asking for more
     context than the served model exposes. The runner maps this to
     SKIP so the gauntlet stays green where it should be.
 
@@ -479,9 +479,9 @@ def test_hermes_read_file():
 
 def test_hermes_terminal():
     """Hermes runs a shell command."""
-    out, err = hermes_query("Run 'echo rapid_mlx_hermes_test' and show me the output")
+    out, err = hermes_query("Run 'echo qmlx_hermes_test' and show me the output")
     fail_or_skip(err)
-    assert "rapid_mlx_hermes_test" in out, f"Command output missing: {out[:100]}"
+    assert "qmlx_hermes_test" in out, f"Command output missing: {out[:100]}"
     print("  Hermes terminal: OK")
 
 

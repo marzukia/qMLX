@@ -6,7 +6,7 @@ Cline lives under VS Code's global storage as a single
 provider settings — Cline routes traffic at ``openAiBaseUrl`` and
 authenticates with ``openAiApiKey`` when ``apiProvider`` is
 ``"openai"``. Pointing those three at our local server is all that
-``rapid-mlx launch cline`` has to do.
+``qmlx launch cline`` has to do.
 
 Cline's exact config schema has churned a few times across releases; we
 preserve every existing key and only touch the four we know we own,
@@ -37,7 +37,7 @@ def _candidate_settings_roots() -> list[Path]:
 
     Order is "most likely first" so :func:`current_config_path` returns
     the canonical Stable path when multiple installs coexist. macOS
-    paths come first because that's the platform rapid-mlx targets
+    paths come first because that's the platform qmlx targets
     (Apple Silicon); Linux paths follow so CI / dev containers still
     detect a configured Cline install.
     """
@@ -101,14 +101,14 @@ def write_or_patch_config(
     config_path: Path | None = None,
 ) -> Path:
     """Patch Cline's ``cline_mcp_settings.json`` to route at the local
-    rapid-mlx OpenAI-compatible server.
+    qmlx OpenAI-compatible server.
 
     Keys we own:
 
     * ``apiProvider`` → ``"openai"``
     * ``openAiBaseUrl`` → ``<server_url>/v1``
     * ``openAiApiKey`` → ``<api_key>`` (default: ``"sk-noop"``,
-      since rapid-mlx defaults to no-auth on loopback)
+      since qmlx defaults to no-auth on loopback)
     * ``openAiModelId`` → ``<model>``
 
     Every other key in the existing file is preserved verbatim — the

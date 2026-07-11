@@ -14,12 +14,12 @@ to make it importable against our installed mlx-lm 0.31.3:
    PR #990 adds it for shared-draw determinism. We wrap upstream's
    ``apply_xtc`` and override the draw with the cell when the
    ``p_draw`` slot is set, falling back to a fresh draw otherwise.
-3. The accept-rate counter (:class:`MTPAcceptCounter`) is rapid-mlx's
+3. The accept-rate counter (:class:`MTPAcceptCounter`) is qmlx's
    addition. PR #990 just prints an accept ratio at the end; we
    instead bump
    :func:`vllm_mlx.spec_decode.mtp.accept_counter.get_global_counter`
    on every attempt / accept, which surfaces through the Prometheus
-   ``rapid_mlx_spec_decode_*`` series.
+   ``qmlx_spec_decode_*`` series.
 
 Everything else — the verify / accept logic, the rollback path, the
 probabilistic-acceptance ``min(1, p_target/p_draft)`` test, the
@@ -160,7 +160,7 @@ def _make_sampler_chain(
 
 # ---------------------------------------------------------------------------
 # The vendored generator. Body mirrors PR #990 mlx_lm/generate.py:662-997
-# line-by-line; comments and rapid-mlx accept-counter hooks added.
+# line-by-line; comments and qmlx accept-counter hooks added.
 # ---------------------------------------------------------------------------
 
 

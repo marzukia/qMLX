@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shell completion helpers for the rapid-mlx CLI.
+"""Shell completion helpers for the qmlx CLI.
 
 Used by ``argcomplete`` to suggest model aliases when the user
-tab-completes on subcommands like ``rapid-mlx chat gemma-4-<TAB>``.
+tab-completes on subcommands like ``qmlx chat gemma-4-<TAB>``.
 
 Two layers of defense for the completion hot path:
 

@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Runtime log namespace rebrand: ``vllm_mlx.*`` -> ``rapid_mlx.*``.
+Runtime log namespace rebrand: ``vllm_mlx.*`` -> ``qmlx.*``.
 
 The Python package directory is still ``vllm_mlx/`` (renaming would touch
 every import in the repo and every external integration), but the product,
-PyPI distribution, and CLI are all called ``rapid-mlx``. Without this shim,
+PyPI distribution, and CLI are all called ``qmlx``. Without this shim,
 ``logging.getLogger(__name__)`` returns ``vllm_mlx.<submodule>`` and every
 log line a user copies into a bug report or LLM reads as a stale, internal
 name.
@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 
 _OLD_PREFIX = "vllm_mlx"
-_NEW_PREFIX = "rapid_mlx"
+_NEW_PREFIX = "qmlx"
 
 # Sentinel so install_log_namespace_rebrand() can detect "I already wrapped
 # the *currently active* factory". We deliberately store the wrapper
@@ -45,14 +45,14 @@ _NEW_PREFIX = "rapid_mlx"
 # the new one. A bare True/False sentinel would silently leave the new
 # foreign factory un-rebranded -- which is exactly the "wrap, don't
 # replace" promise the docstring makes.
-_INSTALLED_SENTINEL = "_rapid_mlx_log_namespace_rebrand_installed_factory"
+_INSTALLED_SENTINEL = "_qmlx_log_namespace_rebrand_installed_factory"
 
 
 def _rewrite_name(name: str) -> str:
-    """Map ``vllm_mlx[.*]`` -> ``rapid_mlx[.*]``; leave everything else alone.
+    """Map ``vllm_mlx[.*]`` -> ``qmlx[.*]``; leave everything else alone.
 
-    - Exact ``vllm_mlx`` becomes ``rapid_mlx``.
-    - ``vllm_mlx.server`` becomes ``rapid_mlx.server``.
+    - Exact ``vllm_mlx`` becomes ``qmlx``.
+    - ``vllm_mlx.server`` becomes ``qmlx.server``.
     - ``vllm_mlxfoo`` (no separator) is NOT rewritten -- defensive against any
       future logger naming collision with a different package.
     - Anything not starting with the prefix is returned as-is.
@@ -65,7 +65,7 @@ def _rewrite_name(name: str) -> str:
 
 
 def install_log_namespace_rebrand() -> None:
-    """Install a LogRecord factory that rebrands ``vllm_mlx.*`` -> ``rapid_mlx.*``.
+    """Install a LogRecord factory that rebrands ``vllm_mlx.*`` -> ``qmlx.*``.
 
     Safe to call multiple times. The idempotency check compares the *currently
     active* factory against the wrapper we last installed: if they match, do

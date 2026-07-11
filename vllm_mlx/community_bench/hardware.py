@@ -65,7 +65,7 @@ class Software:
     """``schema.json#/properties/software`` mirror."""
 
     macos: str
-    rapid_mlx: str
+    qmlx: str
     mlx: str
     python: str
 
@@ -163,7 +163,7 @@ def _macos_version() -> str:
     )
 
 
-def _rapid_mlx_version() -> str:
+def _qmlx_version() -> str:
     """`vllm_mlx.__version__` — imported lazily so the hardware
     module can be unit-tested without the full engine."""
     try:
@@ -249,7 +249,7 @@ def collect() -> tuple[Hardware, Software]:
     )
     software = Software(
         macos=_macos_version(),
-        rapid_mlx=_rapid_mlx_version(),
+        qmlx=_qmlx_version(),
         mlx=_mlx_version(),
         python=_python_version(),
     )

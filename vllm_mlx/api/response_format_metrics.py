@@ -46,7 +46,7 @@ def incr_strict_violation() -> None:
     """Increment the post-decode validation-failure counter by one.
 
     Outlines is supposed to make this unreachable — a non-zero rate on
-    ``rapid_mlx_response_format_strict_violations_total`` means the
+    ``qmlx_response_format_strict_violations_total`` means the
     constrained-decoding path silently degraded and the model emitted
     output that ``jsonschema.validate`` rejected against the user's
     schema. Operators should alert on any non-zero rate.
