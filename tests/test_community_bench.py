@@ -99,11 +99,11 @@ def test_collect_refuses_non_apple_silicon(monkeypatch) -> None:
         hardware.collect()
 
 
-def test_rapid_mlx_version_resolves() -> None:
+def test_qmlx_version_resolves() -> None:
     """The probe should at least return a string (real version or 'unknown')."""
     from vllm_mlx.community_bench import hardware
 
-    v = hardware._rapid_mlx_version()
+    v = hardware._qmlx_version()
     assert isinstance(v, str) and v
 
 
@@ -599,7 +599,7 @@ def _stub_hw_sw():
     from vllm_mlx.community_bench.hardware import Hardware, Software
 
     hw = Hardware(chip="Apple M4 Pro", ram_gb=24, cpu_cores=12, gpu_cores=20)
-    sw = Software(macos="26.5.1", rapid_mlx="0.7.6", mlx="0.31.2", python="3.12.13")
+    sw = Software(macos="26.5.1", qmlx="0.7.6", mlx="0.31.2", python="3.12.13")
     return hw, sw
 
 
@@ -704,7 +704,7 @@ def test_ask_consent_default_no() -> None:
 def test_ask_consent_eof_is_no() -> None:
     """Piped non-interactive stdin must NOT count as consent.
 
-    Running ``rapid-mlx bench --submit < /dev/null`` in CI should never
+    Running ``qmlx bench --submit < /dev/null`` in CI should never
     fire a PR off — explicit opt-in only.
     """
     from vllm_mlx.community_bench.submission import _ask_consent
@@ -731,7 +731,7 @@ def test_submit_interactive_user_cancels(tmp_path: Path) -> None:
     from vllm_mlx.community_bench.submission import submit_interactive
 
     # Real `git init` so `git rev-parse --show-toplevel` succeeds.
-    # We also wire `origin` to the canonical Rapid-MLX URL so the
+    # We also wire `origin` to the canonical qMLX URL so the
     # remote-verification guard (codex round-3 BLOCKING) accepts it.
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -859,7 +859,7 @@ def test_find_upstream_remote_accepts_fork_with_upstream(
             "remote",
             "add",
             "origin",
-            "https://github.com/some-contributor/Rapid-MLX.git",
+            "https://github.com/some-contributor/qMLX.git",
         ],
         check=True,
         capture_output=True,
@@ -953,7 +953,7 @@ def test_make_pr_via_gh_branches_from_upstream_and_uses_owner_head(
         "submitted_at": "2026-06-15T10:30:00+00:00",
         "model": {"alias": "qwen", "hf_path": "x/y"},
         "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
-        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.6", "mlx": "0.31.2"},
         "config": {"sampling": "greedy"},
         "buckets": {
             "short": {"decode_tps": {"median": 40.0}},
@@ -989,8 +989,8 @@ def test_make_pr_via_gh_branches_from_upstream_and_uses_owner_head(
 def test_find_upstream_remote_rejects_evil_github_lookalike(
     tmp_path: Path,
 ) -> None:
-    """``endswith('github.com/raullenchai/rapid-mlx')`` accepts
-    ``evilgithub.com/raullenchai/rapid-mlx``; our parser must not.
+    """``endswith('github.com/raullenchai/qmlx')`` accepts
+    ``evilgithub.com/raullenchai/qmlx``; our parser must not.
     (Codex PR #582 round-6 BLOCKING — URL spoofing.)"""
     from vllm_mlx.community_bench.submission import _find_upstream_remote
 
@@ -1024,7 +1024,7 @@ def test_submit_interactive_writes_file_then_falls_back_on_dirty_tree(
     from vllm_mlx.community_bench import submission as sub_mod
 
     # Real `git init` so `git rev-parse --show-toplevel` succeeds.
-    # We also wire `origin` to the canonical Rapid-MLX URL so the
+    # We also wire `origin` to the canonical qMLX URL so the
     # remote-verification guard (codex round-3 BLOCKING) accepts it.
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -1056,7 +1056,7 @@ def test_submit_interactive_writes_file_then_falls_back_on_dirty_tree(
             "long": {"decode_tps": {"median": 1.0}},
         },
         "config": {"sampling": "greedy"},
-        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.6", "mlx": "0.31.2"},
     }
 
     stdout = io.StringIO()
@@ -1096,7 +1096,7 @@ def test_submit_interactive_clean_tree_reaches_pr_step(
     from vllm_mlx.community_bench import submission as sub_mod
 
     # Real `git init` so `git rev-parse --show-toplevel` succeeds.
-    # We also wire `origin` to the canonical Rapid-MLX URL so the
+    # We also wire `origin` to the canonical qMLX URL so the
     # remote-verification guard (codex round-3 BLOCKING) accepts it.
     subprocess.run(
         ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
@@ -1147,7 +1147,7 @@ def test_submit_interactive_clean_tree_reaches_pr_step(
             "long": {"decode_tps": {"median": 1.0}},
         },
         "config": {"sampling": "greedy"},
-        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.6", "mlx": "0.31.2"},
     }
     rc = sub_mod.submit_interactive(
         payload, tmp_path, stdin=io.StringIO("y\n"), stdout=io.StringIO()
@@ -1215,7 +1215,7 @@ def _good_payload() -> dict:
         },
         "software": {
             "macos": "26.5.1",
-            "rapid_mlx": "0.7.6",
+            "qmlx": "0.7.6",
             "mlx": "0.31.2",
             "python": "3.12.13",
         },
@@ -1669,7 +1669,7 @@ def test_validate_rejects_empty_hf_path_in_alias_entry(
 def test_submission_make_pr_uses_repo_cwd(tmp_path, monkeypatch) -> None:
     """Regression: ``gh pr create`` must run with ``cwd=repo`` so the
     PR lands in the right checkout, not in whatever directory the
-    user happened to be in when they ran ``rapid-mlx bench --submit``.
+    user happened to be in when they ran ``qmlx bench --submit``.
     (Codex PR #582 round-2 BLOCKING.)
     """
     from vllm_mlx.community_bench import submission as sub_mod
@@ -1694,7 +1694,7 @@ def test_submission_make_pr_uses_repo_cwd(tmp_path, monkeypatch) -> None:
         "submitted_at": "2026-06-15T10:30:00+00:00",
         "model": {"alias": "x", "hf_path": "y/z"},
         "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
-        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.6", "mlx": "0.31.2"},
         "config": {"sampling": "greedy"},
         "buckets": {
             "short": {"decode_tps": {"median": 40.0}},
@@ -1737,7 +1737,7 @@ def test_state_aware_fallback_skips_already_completed_steps(tmp_path, capsys) ->
         "submitted_at": "2026-06-15T10:30:00+00:00",
         "model": {"alias": "x", "hf_path": "y/z"},
         "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
-        "software": {"rapid_mlx": "0.7.6", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.6", "mlx": "0.31.2"},
     }
     sub_path = tmp_path / "submission.json"
     sub_path.write_text("{}")
@@ -1774,7 +1774,7 @@ def test_manual_fallback_without_gh_points_at_web_ui(tmp_path, monkeypatch) -> N
         "submitted_at": "2026-06-15T10:30:00+00:00",
         "model": {"alias": "qwen3.5-9b-4bit", "hf_path": "y/z"},
         "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
-        "software": {"rapid_mlx": "0.7.13", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.13", "mlx": "0.31.2"},
     }
     sub_path = tmp_path / "submission.json"
     sub_path.write_text("{}")
@@ -1824,7 +1824,7 @@ def test_manual_fallback_without_gh_uses_fork_owner_when_origin_is_fork(
         "submitted_at": "2026-06-15T10:30:00+00:00",
         "model": {"alias": "qwen3.5-9b-4bit", "hf_path": "y/z"},
         "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
-        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.14", "mlx": "0.31.2"},
     }
     sub_path = tmp_path / "submission.json"
     sub_path.write_text("{}")
@@ -1862,7 +1862,7 @@ def test_manual_fallback_without_gh_skips_owner_when_origin_is_upstream(
         "submitted_at": "2026-06-15T10:30:00+00:00",
         "model": {"alias": "x", "hf_path": "y/z"},
         "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
-        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.14", "mlx": "0.31.2"},
     }
     sub_path = tmp_path / "submission.json"
     sub_path.write_text("{}")
@@ -1901,7 +1901,7 @@ def test_manual_fallback_compare_url_quotes_owner_and_branch(
         "submitted_at": "2026-06-15T10:30:00+00:00",
         "model": {"alias": "x", "hf_path": "y/z"},
         "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
-        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.14", "mlx": "0.31.2"},
     }
     sub_path = tmp_path / "submission.json"
     sub_path.write_text("{}")
@@ -1948,7 +1948,7 @@ def test_manual_fallback_url_encodes_alias_special_chars(tmp_path, monkeypatch) 
             "hf_path": "y/z",
         },
         "hardware": {"chip": "Apple M3 Ultra", "ram_gb": 64},
-        "software": {"rapid_mlx": "0.7.14", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.14", "mlx": "0.31.2"},
     }
     sub_path = tmp_path / "submission.json"
     sub_path.write_text("{}")
@@ -1985,7 +1985,7 @@ def test_manual_fallback_with_gh_keeps_gh_command(tmp_path, monkeypatch) -> None
         "submitted_at": "2026-06-15T10:30:00+00:00",
         "model": {"alias": "x", "hf_path": "y/z"},
         "hardware": {"chip": "Apple M4 Pro", "ram_gb": 24},
-        "software": {"rapid_mlx": "0.7.13", "mlx": "0.31.2"},
+        "software": {"qmlx": "0.7.13", "mlx": "0.31.2"},
     }
     sub_path = tmp_path / "submission.json"
     sub_path.write_text("{}")
@@ -2297,7 +2297,7 @@ def test_submit_flow_guard_consults_original_alias(monkeypatch, capsys) -> None:
     # Sanity: the bogus "not the canonical alias key" branch should NOT
     # have printed.
     assert "not the resolved HF path" not in out
-    assert "Run `rapid-mlx models`" not in out
+    assert "Run `qmlx models`" not in out
 
 
 def test_submit_flow_guard_rejects_hf_path_when_no_original_alias(

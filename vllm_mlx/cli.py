@@ -2171,7 +2171,7 @@ def serve_command(args):
     #   - tool/reasoning parsers auto-configured
     #   - CORS allow-origin warning printed
     # so the operator saw five INFO lines and a banner before the
-    # actionable ``Install with: pip install 'qmlx[dflash]'`` line,
+    # actionable ``Install with: pip install 'qmlx-serve[dflash]'`` line,
     # matching Diego's earlier ``[embeddings]`` regression shape exactly.
     # Hoist the cheap ``have_runtime()`` probe to the same boot-guard tier
     # as the other extras so the error lands FIRST. ``importlib.util.
@@ -2186,7 +2186,7 @@ def serve_command(args):
                 "\n  Error: DFlash speculative decoding "
                 '(``--speculative-config \'{"method":"dflash"}\'``) requires '
                 "mlx-vlm 0.5.0+ for the DFlash drafter hooks. Install with: "
-                "``pip install 'qmlx[dflash]'``.\n"
+                "``pip install 'qmlx-serve[dflash]'``.\n"
             )
             sys.exit(1)
 
@@ -2735,7 +2735,7 @@ def serve_command(args):
 
     # Startup summary
     print()
-    print("  🐆 Rapid-MLX")
+    print("  🐆 qMLX")
     print("  ─────────")
     features = []
     if args.enable_auto_tool_choice:
@@ -3797,7 +3797,7 @@ def _run_submit_flow(
                 )
                 print("  Install them and re-run:")
                 print()
-                print("    pip install 'qmlx[vision]'")
+                print("    pip install 'qmlx-serve[vision]'")
                 print()
                 print(
                     "  Or, if you only need text inference (smaller "
@@ -6166,7 +6166,7 @@ def _print_dflash_status(alias: str, profile) -> None:
         ),
         (
             "mlx-vlm 0.5.0+",
-            _yes(have_runtime(), "installed", "missing (need qmlx[dflash])"),
+            _yes(have_runtime(), "installed", "missing (need qmlx-serve[dflash])"),
         ),
     ]
 
@@ -6547,7 +6547,7 @@ def main():
         _version = "dev"
 
     parser = argparse.ArgumentParser(
-        description="Rapid-MLX: AI inference for Apple Silicon",
+        description="qMLX: AI inference for Apple Silicon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -6914,7 +6914,7 @@ Examples:
         help=(
             "vLLM-style speculative decoding JSON config. This frontend "
             "parses method/model/num_speculative_tokens now. DFlash "
-            "requires the qmlx[dflash] extra and is available with "
+            "requires the qmlx-serve[dflash] extra and is available with "
             '\'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
             '\'{"method":"mtp","num_speculative_tokens":3,'
@@ -7461,7 +7461,7 @@ Examples:
         help=(
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/embeddinggemma-300m-6bit). Requires the "
-            "[embeddings] extra: pip install 'qmlx[embeddings]'."
+            "[embeddings] extra: pip install 'qmlx-serve[embeddings]'."
         ),
     )
     # Parent-PID watchdog (rapid-desktop issue #449). When set, the
@@ -7629,7 +7629,7 @@ Examples:
         type=str,
         default=None,
         help=(
-            "Path to the Rapid-MLX git checkout. Defaults to the current "
+            "Path to the qMLX git checkout. Defaults to the current "
             "working directory. The --submit flow writes the JSON file and "
             "opens the PR from this checkout."
         ),
@@ -7902,7 +7902,7 @@ Examples:
         "--base-url",
         type=str,
         default="http://localhost:8000/v1",
-        help="Rapid-MLX server URL (default: http://localhost:8000/v1)",
+        help="qMLX server URL (default: http://localhost:8000/v1)",
     )
     agents_parser.add_argument(
         "--agent-version",
@@ -8235,7 +8235,7 @@ Examples:
             # ``serve_command`` can run the audio boot guard. On a
             # fresh ``pip install qmlx`` (no ``[audio]`` extra)
             # that means the operator sees a generic "unknown alias"
-            # instead of the actionable "install qmlx[audio]"
+            # instead of the actionable "install qmlx-serve[audio]"
             # hint, and on a healthy install with ``[audio]`` the
             # short alias resolves at request time inside the audio
             # routes (``TTS_MODEL_ALIASES`` / ``STT_MODEL_ALIASES``)

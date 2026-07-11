@@ -26,7 +26,7 @@ The script does NOT auto-edit aliases.json. It prints the patch the
 contributor can paste, and persists the raw bench data to
 ``evals/results/dflash_<model>.json`` for the PR record.
 
-Special: ``RAPID_MLX_DFLASH_BYPASS_MOE_GATE=1`` env var is honored so a
+Special: ``QMLX_DFLASH_BYPASS_MOE_GATE=1`` env var is honored so a
 PoC can re-verify a previously-rejected MoE alias without first having
 to land a code change.
 """
@@ -182,7 +182,7 @@ class ServerHandle:
 
 
 def start_server(model: str, port: int, dflash: bool) -> ServerHandle:
-    """Spin up ``rapid-mlx serve`` and wait for /v1/models to answer.
+    """Spin up ``qmlx serve`` and wait for /v1/models to answer.
 
     Sets ``--disable-prefix-cache`` to prevent disk-persisted cache
     entries from a prior session pinning TPS to bogus 1000+ tok/s.
@@ -444,9 +444,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logger.info("Bench DFlash: %s", args.model)
-    if os.environ.get("RAPID_MLX_DFLASH_BYPASS_MOE_GATE") == "1":
+    if os.environ.get("QMLX_DFLASH_BYPASS_MOE_GATE") == "1":
         logger.warning(
-            "  RAPID_MLX_DFLASH_BYPASS_MOE_GATE=1 — eligibility MoE gate "
+            "  QMLX_DFLASH_BYPASS_MOE_GATE=1 — eligibility MoE gate "
             "bypassed (PoC mode)"
         )
 
@@ -551,7 +551,7 @@ def main(argv: list[str] | None = None) -> int:
         else None,
         "skipped": skipped,
         "decision": decision,
-        "bypass_moe_gate": os.environ.get("RAPID_MLX_DFLASH_BYPASS_MOE_GATE") == "1",
+        "bypass_moe_gate": os.environ.get("QMLX_DFLASH_BYPASS_MOE_GATE") == "1",
         "raw_runs": {
             "base": _serialize_runs(base.raw_runs),
             "dflash": _serialize_runs(dflash.raw_runs),

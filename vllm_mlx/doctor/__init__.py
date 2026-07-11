@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Rapid-MLX Doctor — environment-health check.
+qMLX Doctor — environment-health check.
 
 ``qmlx doctor`` is a fast (≤ 5 s) self-diagnostic that answers one
 question: *is my install/env broken?*  It probes hardware, Python, packages,

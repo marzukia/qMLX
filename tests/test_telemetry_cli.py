@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pin the user-facing ``rapid-mlx telemetry ...`` subcommand surface.
+"""Pin the user-facing ``qmlx telemetry ...`` subcommand surface.
 
 Smoke-level: every action returns 0, prints something resembling its
 purpose. The deep behaviour (precedence, redaction, prompt skips) is
@@ -22,7 +22,7 @@ import pytest
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
+    monkeypatch.delenv("QMLX_TELEMETRY", raising=False)
     import vllm_mlx.telemetry.state as state
 
     importlib.reload(state)
@@ -40,7 +40,7 @@ def _run_cli(*args, env_overrides=None, home=None):
     env = os.environ.copy()
     if home is not None:
         env["HOME"] = str(home)
-    env.pop("RAPID_MLX_TELEMETRY", None)
+    env.pop("QMLX_TELEMETRY", None)
     if env_overrides:
         env.update(env_overrides)
     return subprocess.run(
@@ -125,7 +125,7 @@ def test_reset_removes_consent(fake_home):
 
 
 def test_status_with_no_action_defaults_to_status(fake_home):
-    """``rapid-mlx telemetry`` (no action) should be a friendly status,
+    """``qmlx telemetry`` (no action) should be a friendly status,
     not an argparse error — users will type the bare command first."""
     r = _run_cli("telemetry", home=fake_home)
     assert r.returncode == 0, r.stderr
@@ -184,8 +184,8 @@ def test_session_end_synchronously_drained_before_exit(fake_home):
             "models",
             home=fake_home,
             env_overrides={
-                "RAPID_MLX_TELEMETRY_DEBUG": "1",
-                "RAPID_MLX_TELEMETRY_ENDPOINT": f"http://127.0.0.1:{port}/v1/events",
+                "QMLX_TELEMETRY_DEBUG": "1",
+                "QMLX_TELEMETRY_ENDPOINT": f"http://127.0.0.1:{port}/v1/events",
             },
         )
         assert r.returncode == 0, r.stderr
@@ -230,7 +230,7 @@ def test_session_end_synchronously_drained_before_exit(fake_home):
 
 def test_telemetry_subcommand_does_not_emit_lifecycle_events(fake_home):
     """Codex round 1 caught a "phone home before silencing the phone"
-    issue: ``rapid-mlx telemetry disable`` (and ``reset``) would queue
+    issue: ``qmlx telemetry disable`` (and ``reset``) would queue
     a ``session_start`` event before the disable action ran, because
     cli.py registered the lifecycle emit for every non-None
     subcommand. The fix excludes the ``telemetry`` subcommand entirely.
@@ -244,11 +244,11 @@ def test_telemetry_subcommand_does_not_emit_lifecycle_events(fake_home):
         "disable",
         home=fake_home,
         env_overrides={
-            "RAPID_MLX_TELEMETRY_DEBUG": "1",
+            "QMLX_TELEMETRY_DEBUG": "1",
             # Force a non-routable endpoint so this test cannot
             # accidentally exercise the production collector even if
             # the kill-switch wiring regresses.
-            "RAPID_MLX_TELEMETRY_ENDPOINT": "https://127.0.0.1:1/never",
+            "QMLX_TELEMETRY_ENDPOINT": "https://127.0.0.1:1/never",
         },
     )
     assert r.returncode == 0, r.stderr
@@ -264,7 +264,7 @@ def test_env_kill_switch_via_subprocess(fake_home):
         "telemetry",
         "status",
         home=fake_home,
-        env_overrides={"RAPID_MLX_TELEMETRY": "0"},
+        env_overrides={"QMLX_TELEMETRY": "0"},
     )
     assert r.returncode == 0
     assert "env-var" in r.stdout.lower()
@@ -272,7 +272,7 @@ def test_env_kill_switch_via_subprocess(fake_home):
 
 
 def test_help_lists_telemetry_subcommand():
-    """Bare ``rapid-mlx --help`` must surface the telemetry subcommand
+    """Bare ``qmlx --help`` must surface the telemetry subcommand
     so users discover it. Regression target: someone refactors the
     subparsers and accidentally drops the registration."""
     r = subprocess.run(

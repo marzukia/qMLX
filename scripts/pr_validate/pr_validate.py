@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help=(
             "Comma-separated list of step names to drop from the pipeline. "
-            "Used by CI to skip steps that need a live ``rapid-mlx serve`` "
+            "Used by CI to skip steps that need a live ``qmlx serve`` "
             "(e.g. ``--skip-steps stress_e2e_bench``) since GitHub-hosted "
             "runners can't host real model inference. Also accepts the env "
             "var ``PR_VALIDATE_SKIP_STEPS`` for the same purpose. Unknown "

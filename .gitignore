@@ -1,6 +1,6 @@
 # Claude Code harness artifacts (worktrees, scheduled-task locks,
 # session metadata). These leak into ``git status`` on every dogfood
-# run of ``rapid-mlx bench --submit``, which refuses to open a PR
+# run of ``qmlx bench --submit``, which refuses to open a PR
 # from a dirty tree — keeping them ignored is the only reliable way
 # to land community-bench submissions from a Claude Code session.
 .claude/

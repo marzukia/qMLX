@@ -4,7 +4,7 @@ the actual bind step (R13 Sven B1 dogfood).
 
 Why this matters: process supervisors (systemd, launchd, k8s) infer
 "server started successfully" from a zero exit code. If
-``rapid-mlx serve`` collides on its port and exits 0, the supervisor
+``qmlx serve`` collides on its port and exits 0, the supervisor
 silently believes a server is running when nothing is — the symptom
 Sven reported in the R13 dogfood pass.
 

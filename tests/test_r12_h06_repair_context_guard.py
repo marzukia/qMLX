@@ -156,7 +156,7 @@ def _rate_limiter_state():
     same pytest process — codex pr_validate r1 BLOCKING flagged that
     pre-fix the responses tests in this file would silently fail or
     pass downstream tests like
-    ``test_no_routing_shaped_rapid_mlx_env_vars`` based purely on
+    ``test_no_routing_shaped_qmlx_env_vars`` based purely on
     pytest collection order. Mirrors the same fixture pattern in
     ``tests/test_response_format_json_schema_strict.py``.
     """

@@ -75,7 +75,7 @@ def _build_app(
     from ...middleware.exception_handlers import install_exception_handlers
 
     app = FastAPI(
-        title="Rapid-MLX (DDTree)",
+        title="qMLX (DDTree)",
         dependencies=[Depends(verify_api_key)],
     )
 
@@ -87,7 +87,7 @@ def _build_app(
             allow_origins=cors_origins,
             allow_credentials=not wildcard,
             allow_methods=["POST", "GET", "OPTIONS"],
-            allow_headers=["Content-Type", "Authorization", "X-Rapid-MLX-Internal"],
+            allow_headers=["Content-Type", "Authorization", "X-qMLX-Internal"],
             max_age=3600,
         )
 

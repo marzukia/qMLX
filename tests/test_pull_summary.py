@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the 0.9.7 ``rapid-mlx pull`` post-download summary line.
+"""Tests for the 0.9.7 ``qmlx pull`` post-download summary line.
 
 A ~6 GB pull that succeeds silently leaves the user wondering "did
 that actually finish, and how much disk did I just burn?". The

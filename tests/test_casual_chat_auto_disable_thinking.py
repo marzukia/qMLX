@@ -7,7 +7,7 @@ operator finding: a first-time SDK user writing
 
     client.chat.completions.create(
         model="qwen3.5-4b-4bit",   # thinking-capable
-        messages=[{"role":"user","content":"In 8 words, what is rapid-mlx?"}],
+        messages=[{"role":"user","content":"In 8 words, what is qmlx?"}],
         max_tokens=80,
     )
 
@@ -15,7 +15,7 @@ had the model burn the entire 80-token budget inside
 ``<think>...</think>`` and never emit an answer. The response
 surfaced with ``finish_reason="length"`` and ``content`` carrying
 the rescue-sentinel header followed by raw chain-of-thought — the
-exact same shape the ``rapid-mlx chat`` REPL already solves via its
+exact same shape the ``qmlx chat`` REPL already solves via its
 ``--no-think`` default.
 
 The fix mirrors the M-2 strict-json_schema gate (PR #877) and the
@@ -655,7 +655,7 @@ class TestChatRouteAutoDisableForCasualChat:
                 "model": "test-model",
                 "max_tokens": 80,
                 "messages": [
-                    {"role": "user", "content": "In 8 words, what is rapid-mlx?"}
+                    {"role": "user", "content": "In 8 words, what is qmlx?"}
                 ],
             },
         )
@@ -703,7 +703,7 @@ class TestChatRouteAutoDisableForCasualChat:
         assert engine.chat_calls[0]["kwargs"].get("enable_thinking") is False
 
     def test_casual_top_level_enable_thinking_true_preserved(self, _rate_limiter_state):
-        """Top-level rapid-mlx convenience knob is honored end-to-end
+        """Top-level qmlx convenience knob is honored end-to-end
         identically to the nested kwarg form."""
         engine = _ChatEngine(text="ok")
         client = _make_chat_client(engine)
@@ -951,7 +951,7 @@ def _responses_payload(
                 "type": "message",
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": "In 8 words, what is rapid-mlx?"}
+                    {"type": "input_text", "text": "In 8 words, what is qmlx?"}
                 ],
             }
         ],

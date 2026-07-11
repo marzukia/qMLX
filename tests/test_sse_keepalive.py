@@ -196,7 +196,7 @@ def test_disconnect_guard_custom_keepalive_factory_emits_parsed_sse_event():
 
 
 def test_disconnect_guard_keepalive_can_be_disabled():
-    """Operator escape hatch: ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0``
+    """Operator escape hatch: ``QMLX_SSE_KEEPALIVE_SECONDS=0``
     (mapped to ``keepalive_seconds=0``) must disable the heartbeat
     entirely. Otherwise an operator with generous upstream proxy
     timeouts can't opt out of the per-stream comment-line overhead."""
@@ -450,7 +450,7 @@ def test_disconnect_guard_emits_keepalive_immediately_after_first_chunk():
 
 def test_disconnect_guard_post_role_keepalive_respects_disable_knob():
     """Operator escape hatch contract: with
-    ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0`` (``keepalive_seconds=0``),
+    ``QMLX_SSE_KEEPALIVE_SECONDS=0`` (``keepalive_seconds=0``),
     the post-role-chunk keepalive emit must ALSO be suppressed.
     Otherwise an operator who explicitly opted out of heartbeats
     still pays the per-stream extra frame, contradicting the F-070

@@ -2205,7 +2205,7 @@ class TestMlxVlmImportContract:
         from mlx_vlm.utils import load
 
         # Callable check is enough — signature varies across upstream
-        # versions but rapid-mlx only invokes with the HF-path arg.
+        # versions but qmlx only invokes with the HF-path arg.
         assert callable(load)
 
     def test_diffusion_generation_family_exists_in_installed_mlx_vlm(self) -> None:
@@ -2871,7 +2871,7 @@ class TestR10Regressions:
         original_start = threading.Thread.start
 
         def _capture_start(self_t: threading.Thread) -> None:
-            if self_t.name == "rapid-mlx-diffusion-pump":
+            if self_t.name == "qmlx-diffusion-pump":
                 captured_pumps.append(self_t)
             original_start(self_t)
 
@@ -3288,7 +3288,7 @@ class TestEosTokenIdAliasingWorkaround:
     so the list doubles on every request. After 22 requests:
     3 → 6 → 12 → 24 → 48 → … → 12 581 376 ints (~3 GB heap).
 
-    rapid-mlx works around this defensively in
+    qmlx works around this defensively in
     ``_break_mlx_vlm_eos_token_id_aliasing`` (called from
     ``_worker_loop`` right after ``load()``): both lists are
     shallow-copied so they are no longer the same object. Subsequent

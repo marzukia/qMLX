@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for ``rapid-mlx bench <model> --tier smoke``.
+"""Unit tests for ``qmlx bench <model> --tier smoke``.
 
 Smoke-tier is the cheapest tier: boot the model server, send one
 prompt ("Hello, what is 2+2?"), assert the response contains "4",

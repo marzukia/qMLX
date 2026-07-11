@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for `rapid-mlx chat` (interactive REPL command)."""
+"""Tests for `qmlx chat` (interactive REPL command)."""
 
 from __future__ import annotations
 
@@ -78,9 +78,9 @@ def _fake_server(canned: list[dict]):
 
 
 def test_chat_subcommand_registered_in_cli():
-    """`rapid-mlx chat --help` exits 0 (subparser is wired)."""
+    """`qmlx chat --help` exits 0 (subparser is wired)."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "--help"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "--help"]),
         pytest.raises(SystemExit) as exc,
     ):
         cli.main()
@@ -88,7 +88,7 @@ def test_chat_subcommand_registered_in_cli():
 
 
 def test_chat_no_model_defaults_to_qwen35_4b():
-    """`rapid-mlx chat` (no model) routes chat_command with qwen3.5-4b.
+    """`qmlx chat` (no model) routes chat_command with qwen3.5-4b.
 
     Goes through the real ``cli.main()`` so a parser-wiring regression
     (e.g. dropping ``nargs='?'`` or changing the default alias) fails the
@@ -97,7 +97,7 @@ def test_chat_no_model_defaults_to_qwen35_4b():
     """
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat"]),
+        patch.object(sys, "argv", ["qmlx", "chat"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -113,10 +113,10 @@ def test_chat_no_model_defaults_to_qwen35_4b():
 
 
 def test_chat_with_alias_overrides_default():
-    """`rapid-mlx chat <alias>` uses the user-supplied alias, not the default."""
+    """`qmlx chat <alias>` uses the user-supplied alias, not the default."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "smollm3-3b-4bit"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "smollm3-3b-4bit"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -299,7 +299,7 @@ def test_chat_subcommand_accepts_legacy_no_think_flag():
     the new default (thinking off)."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "--no-think"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "--no-think"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -480,7 +480,7 @@ def test_chat_command_save_writes_markdown_file(monkeypatch, tmp_path, capsys):
         monkeypatch.setattr("builtins.input", lambda _p="": next(inputs))
         cli.chat_command(_ns_for_chat(port))
     body = out_path.read_text(encoding="utf-8")
-    assert "# rapid-mlx chat" in body
+    assert "# qmlx chat" in body
     assert "## User" in body and "hello" in body
     assert "## Assistant" in body and "Hi there!" in body
     assert "Saved" in capsys.readouterr().out
@@ -1008,8 +1008,8 @@ def test_chat_command_sigterm_handler_installed_before_spawn(monkeypatch):
         # Return a no-op proc plus a base_url that points at the fake
         # server so the rest of the REPL flow is unaffected.
         class _NoopProc:
-            _rapid_mlx_log = None
-            _rapid_mlx_log_path = None
+            _qmlx_log = None
+            _qmlx_log_path = None
 
             def poll(self):
                 return None
@@ -1060,8 +1060,8 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
     class _FakeProc:
         def __init__(self, name):
             self.name = name
-            self._rapid_mlx_log = None
-            self._rapid_mlx_log_path = None
+            self._qmlx_log = None
+            self._qmlx_log_path = None
             self._terminated = False
 
         def poll(self):
@@ -1230,7 +1230,7 @@ def test_chat_think_bumps_max_tokens_default_to_4096():
     with ``finish_reason='length'``."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b-4bit", "--think"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "qwen3.5-4b-4bit", "--think"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -1342,7 +1342,7 @@ def test_chat_port_out_of_range_rejected_by_argparse(capsys):
     """``--port 99999`` must exit via argparse with a clear message,
     not drop into the REPL."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "--port", "99999"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "--port", "99999"]),
         pytest.raises(SystemExit) as exc,
     ):
         cli.main()
@@ -1355,7 +1355,7 @@ def test_chat_port_out_of_range_rejected_by_argparse(capsys):
 def test_chat_port_zero_rejected_by_argparse(capsys):
     """Port 0 (would mean "let kernel pick") is not a valid connect target."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "--port", "0"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "--port", "0"]),
         pytest.raises(SystemExit) as exc,
     ):
         cli.main()
@@ -1366,7 +1366,7 @@ def test_chat_port_zero_rejected_by_argparse(capsys):
 def test_chat_port_nonnumeric_rejected_by_argparse(capsys):
     """Non-numeric ``--port`` value is rejected with a friendly error."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "--port", "abc"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "--port", "abc"]),
         pytest.raises(SystemExit) as exc,
     ):
         cli.main()
@@ -1401,7 +1401,7 @@ def test_chat_port_unbound_exits_with_friendly_error(capsys, monkeypatch):
         cli.chat_command(ns)
     assert exc.value.code == 1
     out = capsys.readouterr().out
-    assert "no rapid-mlx server reachable" in out
+    assert "no qmlx server reachable" in out
     assert f"127.0.0.1:{dead_port}" in out
 
 
@@ -1411,11 +1411,11 @@ def test_chat_port_unbound_exits_with_friendly_error(capsys, monkeypatch):
 
 
 def test_run_is_alias_for_chat(monkeypatch):
-    """``rapid-mlx run <model>`` must route to ``chat_command`` with the
-    same args as ``rapid-mlx chat <model>``."""
+    """``qmlx run <model>`` must route to ``chat_command`` with the
+    same args as ``qmlx chat <model>``."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "run", "qwen3.5-4b-4bit"]),
+        patch.object(sys, "argv", ["qmlx", "run", "qwen3.5-4b-4bit"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -1436,7 +1436,7 @@ def test_run_alias_accepts_chat_flags():
         patch.object(
             sys,
             "argv",
-            ["rapid-mlx", "run", "qwen3.5-4b-4bit", "--think", "--max-tokens", "1024"],
+            ["qmlx", "run", "qwen3.5-4b-4bit", "--think", "--max-tokens", "1024"],
         ),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
@@ -1525,7 +1525,7 @@ def test_chat_accepts_no_thinking_as_alias_for_no_think():
     same ``think=False`` destination as ``chat --no-think``."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "--no-thinking"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "--no-thinking"]),
         patch.object(cli, "chat_command", side_effect=captured.append),
     ):
         cli.main()
@@ -1539,7 +1539,7 @@ def test_serve_accepts_no_think_as_alias_for_no_thinking():
     captured: list = []
     with (
         patch.object(
-            sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--no-think"]
+            sys, "argv", ["qmlx", "serve", "qwen3.5-4b-4bit", "--no-think"]
         ),
         patch.object(cli, "serve_command", side_effect=captured.append),
     ):
@@ -1558,7 +1558,7 @@ def test_chat_no_thinking_hidden_from_help(capsys):
     PYTHONPATH/install state, and breaks in restricted CI runners.
     """
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "--help"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "--help"]),
         pytest.raises(SystemExit) as excinfo,
     ):
         cli.main()
@@ -1580,7 +1580,7 @@ def test_chat_no_thinking_hidden_from_help(capsys):
 
 def test_seen_tips_marker_round_trip(tmp_path, monkeypatch):
     """``_has_seen_tip`` returns False before, True after ``_mark_tip_seen``."""
-    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("QMLX_CONFIG_HOME", str(tmp_path))
     assert cli._has_seen_tip("chat_intro_codex") is False
     cli._mark_tip_seen("chat_intro_codex")
     assert cli._has_seen_tip("chat_intro_codex") is True
@@ -1591,16 +1591,16 @@ def test_seen_tips_marker_round_trip(tmp_path, monkeypatch):
 def test_seen_tips_marker_survives_corrupt_file(tmp_path, monkeypatch):
     """A corrupt marker (parse error) must be treated as 'not seen' so
     the tip re-fires once, rather than being silently hidden forever."""
-    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("QMLX_CONFIG_HOME", str(tmp_path))
     (tmp_path / "seen-tips.json").write_text("not json {{")
     assert cli._has_seen_tip("chat_intro_codex") is False
 
 
 def test_chat_banner_shown_on_first_launch_only(monkeypatch, capsys, tmp_path):
     """First chat launch shows the agents-codex tip; subsequent launches
-    do NOT. The marker file under ``RAPID_MLX_CONFIG_HOME`` records the
+    do NOT. The marker file under ``QMLX_CONFIG_HOME`` records the
     first-seen state."""
-    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("QMLX_CONFIG_HOME", str(tmp_path))
 
     # Force the TTY/NO_COLOR gate to think we're interactive (otherwise
     # the marker logic short-circuits to "skip everything").
@@ -1642,7 +1642,7 @@ def test_chat_banner_shown_on_first_launch_only(monkeypatch, capsys, tmp_path):
 def test_chat_banner_skipped_when_no_color_set(monkeypatch, capsys, tmp_path):
     """``NO_COLOR`` or non-TTY stdout: skip the marker logic AND the
     banner entirely so pipe/CI runs don't pollute the user's config."""
-    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("QMLX_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("NO_COLOR", "1")
 
     canned = [_delta("ok")]
@@ -1662,7 +1662,7 @@ def test_chat_banner_write_failure_does_not_abort(monkeypatch, tmp_path, capsys)
     """If the marker dir is unwritable (read-only FS / permission
     denied), the tip should still print and chat must continue — best
     effort only."""
-    monkeypatch.setenv("RAPID_MLX_CONFIG_HOME", str(tmp_path / "no_perm"))
+    monkeypatch.setenv("QMLX_CONFIG_HOME", str(tmp_path / "no_perm"))
 
     class _Tty(io.StringIO):
         def isatty(self):
@@ -1715,8 +1715,8 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
 
     class _FakeProc:
         def __init__(self, log_path):
-            self._rapid_mlx_log = open(log_path, "a")
-            self._rapid_mlx_log_path = str(log_path)
+            self._qmlx_log = open(log_path, "a")
+            self._qmlx_log_path = str(log_path)
 
         def poll(self):
             return 0  # already "exited"
@@ -1816,11 +1816,11 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
 
 def test_main_skips_download_gate_when_chat_spawn_env_set(monkeypatch):
     """When the chat REPL spawns its own ``serve`` subprocess, the child
-    sees ``RAPID_MLX_CHAT_SPAWN=1`` and must NOT re-run the B2 gate. A
+    sees ``QMLX_CHAT_SPAWN=1`` and must NOT re-run the B2 gate. A
     re-run would either (a) re-prompt on a TTY or (b) call the HF API
     needlessly in the child."""
-    monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.setenv("QMLX_CHAT_SPAWN", "1")
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
     calls: list[str] = []
@@ -1844,7 +1844,7 @@ def test_main_skips_download_gate_when_chat_spawn_env_set(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+        ["qmlx", "serve", "mlx-community/some-uncached-fake-7b"],
     )
     cli.main()
     assert calls == [], (
@@ -1855,8 +1855,8 @@ def test_main_skips_download_gate_when_chat_spawn_env_set(monkeypatch):
 def test_main_skips_size_estimate_in_non_tty_context(monkeypatch):
     """The B2 gate must short-circuit on TTY/env checks BEFORE calling
     ``estimate_repo_size_bytes`` — otherwise every CI run with
-    ``RAPID_MLX_AUTO_PULL=1`` pays a 5-second HF metadata round-trip."""
-    monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
+    ``QMLX_AUTO_PULL=1`` pays a 5-second HF metadata round-trip."""
+    monkeypatch.delenv("QMLX_CHAT_SPAWN", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
     calls: list[str] = []
@@ -1878,7 +1878,7 @@ def test_main_skips_size_estimate_in_non_tty_context(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+        ["qmlx", "serve", "mlx-community/some-uncached-fake-7b"],
     )
     cli.main()
 
@@ -1889,11 +1889,11 @@ def test_main_skips_size_estimate_in_non_tty_context(monkeypatch):
 
 
 def test_main_skips_size_estimate_when_auto_pull_env_set(monkeypatch):
-    """``RAPID_MLX_AUTO_PULL=1`` must short-circuit on the env check
+    """``QMLX_AUTO_PULL=1`` must short-circuit on the env check
     BEFORE ``estimate_repo_size_bytes`` — the env is the documented
     CI/unattended escape hatch and should not pay any network cost."""
-    monkeypatch.delenv("RAPID_MLX_CHAT_SPAWN", raising=False)
-    monkeypatch.setenv("RAPID_MLX_AUTO_PULL", "1")
+    monkeypatch.delenv("QMLX_CHAT_SPAWN", raising=False)
+    monkeypatch.setenv("QMLX_AUTO_PULL", "1")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
     calls: list[str] = []
@@ -1910,7 +1910,7 @@ def test_main_skips_size_estimate_when_auto_pull_env_set(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["rapid-mlx", "serve", "mlx-community/some-uncached-fake-7b"],
+        ["qmlx", "serve", "mlx-community/some-uncached-fake-7b"],
     )
     cli.main()
 
@@ -1920,7 +1920,7 @@ def test_main_skips_size_estimate_when_auto_pull_env_set(monkeypatch):
 
 
 def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
-    """``_spawn_chat_server`` must pass ``RAPID_MLX_CHAT_SPAWN=1`` to the
+    """``_spawn_chat_server`` must pass ``QMLX_CHAT_SPAWN=1`` to the
     child so the child main() bypasses the download gate."""
     captured: dict = {}
 
@@ -1969,7 +1969,7 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
     proc, base_url = cli._spawn_chat_server("qwen3.5-4b-4bit", str(log_path))
 
     assert captured["env"] is not None
-    assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
+    assert captured["env"].get("QMLX_CHAT_SPAWN") == "1"
 
 
 def test_sigterm_handler_masks_second_sigterm(monkeypatch):
@@ -1992,8 +1992,8 @@ def test_sigterm_handler_masks_second_sigterm(monkeypatch):
     cleanup_calls = {"n": 0}
 
     class _FakeProc:
-        _rapid_mlx_log = None
-        _rapid_mlx_log_path = None
+        _qmlx_log = None
+        _qmlx_log_path = None
         terminate_calls = 0
 
         def poll(self):
@@ -2070,20 +2070,20 @@ def test_sigterm_handler_masks_second_sigterm(monkeypatch):
 
 
 def test_main_pops_chat_spawn_env_so_grandchildren_do_not_inherit(monkeypatch):
-    """Codex round-2 BLOCKING #2: ``RAPID_MLX_CHAT_SPAWN=1`` must be
+    """Codex round-2 BLOCKING #2: ``QMLX_CHAT_SPAWN=1`` must be
     treated as a single-use marker. If the spawned ``serve`` itself
     forks any subprocess (HF auth helper, doctor self-probe, future
     hub plugin), that grandchild would otherwise inherit the bypass
     and skip its own download gate."""
-    monkeypatch.setenv("RAPID_MLX_CHAT_SPAWN", "1")
+    monkeypatch.setenv("QMLX_CHAT_SPAWN", "1")
     monkeypatch.setattr(cli, "serve_command", lambda *_a, **_kw: None)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["rapid-mlx", "serve", "mlx-community/some-fake-7b"],
+        ["qmlx", "serve", "mlx-community/some-fake-7b"],
     )
     cli.main()
-    assert "RAPID_MLX_CHAT_SPAWN" not in os.environ, (
+    assert "QMLX_CHAT_SPAWN" not in os.environ, (
         "main() must pop the marker so it does not leak to grandchildren; "
         "this is what makes the 'single-use' contract real."
     )
@@ -2105,8 +2105,8 @@ def test_sigterm_handler_exits_even_if_cleanup_raises(monkeypatch):
         return real_signal(signum, handler)
 
     class _RaisingProc:
-        _rapid_mlx_log = None
-        _rapid_mlx_log_path = None
+        _qmlx_log = None
+        _qmlx_log_path = None
 
         def poll(self):
             return None
@@ -2184,8 +2184,8 @@ def test_cleanup_masks_sigint_so_ctrl_c_cannot_orphan_remaining_procs(monkeypatc
     teardown_calls = {"n": 0}
 
     class _DummyProc:
-        _rapid_mlx_log = None
-        _rapid_mlx_log_path = None
+        _qmlx_log = None
+        _qmlx_log_path = None
 
         def poll(self):
             return None
@@ -2257,7 +2257,7 @@ def test_chat_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
     With ``allow_abbrev=False`` argparse must reject the ambiguous form
     instead of silently resolving it to whichever flag was added first."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "chat", "qwen3.5-4b-4bit", "--no-thi"]),
+        patch.object(sys, "argv", ["qmlx", "chat", "qwen3.5-4b-4bit", "--no-thi"]),
         pytest.raises(SystemExit),
     ):
         cli.main()
@@ -2270,7 +2270,7 @@ def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
     and the same ambiguity must be reported, not silently resolved."""
     with (
         patch.object(
-            sys, "argv", ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--no-thi"]
+            sys, "argv", ["qmlx", "serve", "qwen3.5-4b-4bit", "--no-thi"]
         ),
         pytest.raises(SystemExit),
     ):
@@ -2398,7 +2398,7 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
 
     register_in: list = _SpyList()
     with managed_tempfile_path(
-        prefix="rapid-mlx-chat-test-", suffix=".log", dir=str(tmp_path)
+        prefix="qmlx-chat-test-", suffix=".log", dir=str(tmp_path)
     ) as real_handle:
         handle = _SpyHandle(real_handle.path)
         assert real_handle.released is False
@@ -2413,7 +2413,7 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
             "spawn's signal-blocked critical section"
         )
         assert proc in register_in
-        assert getattr(proc, "_rapid_mlx_log_path", None) == handle.path
+        assert getattr(proc, "_qmlx_log_path", None) == handle.path
         # Clean up the real handle too so the surrounding context
         # exits cleanly.
         real_handle.release()

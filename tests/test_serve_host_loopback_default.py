@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``rapid-mlx serve --host`` loopback-default behavior.
+"""Tests for ``qmlx serve --host`` loopback-default behavior.
 
 Pins the v0.8.2-dogfood PortSweep-bypass fix:
 
@@ -10,7 +10,7 @@ Pins the v0.8.2-dogfood PortSweep-bypass fix:
 * ``_port_preflight_or_die`` also probes ``127.0.0.1`` when the operator
   explicitly opts into a wildcard alias. macOS lets a wildcard bind
   coexist with a more-specific loopback bind on the same port — without
-  the loopback probe, ``rapid-mlx serve --host 0.0.0.0 --port N`` would
+  the loopback probe, ``qmlx serve --host 0.0.0.0 --port N`` would
   happily start beside an ``nc -l 127.0.0.1 N`` and loopback clients
   would silently be routed to nc. This was the original PR-#142
   PortSweep gap reproduced in /tmp/v082-dogfood-findings/03-sidecar-cli.md.
@@ -69,7 +69,7 @@ def _free_loopback_port() -> int:
 
 
 def test_serve_host_default_is_loopback():
-    """``rapid-mlx serve <alias>`` (no ``--host``) binds 127.0.0.1.
+    """``qmlx serve <alias>`` (no ``--host``) binds 127.0.0.1.
 
     Regression pin for v0.8.2 dogfood finding #2 (PortSweep bypass): the
     old ``default="0.0.0.0"`` widened the bind to every interface AND
@@ -78,7 +78,7 @@ def test_serve_host_default_is_loopback():
     Changing the default to 127.0.0.1 closes both the LAN-exposure gap
     (security) and the dual-bind ambiguity (correctness).
     """
-    captured = _capture_serve_args(["rapid-mlx", "serve", "qwen3.5-4b-4bit"])
+    captured = _capture_serve_args(["qmlx", "serve", "qwen3.5-4b-4bit"])
     assert len(captured) == 1
     ns = captured[0]
     assert ns.host == "127.0.0.1", (
@@ -92,7 +92,7 @@ def test_serve_host_explicit_wildcard_is_honored():
     actually want LAN exposure (reverse proxy, deliberate dev rig).
     The default just stops being the dangerous one."""
     captured = _capture_serve_args(
-        ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--host", "0.0.0.0"]
+        ["qmlx", "serve", "qwen3.5-4b-4bit", "--host", "0.0.0.0"]
     )
     assert captured[0].host == "0.0.0.0"
 
@@ -100,17 +100,17 @@ def test_serve_host_explicit_wildcard_is_honored():
 def test_serve_host_explicit_loopback_is_honored():
     """Redundant but harmless: explicit ``--host 127.0.0.1`` passes through."""
     captured = _capture_serve_args(
-        ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--host", "127.0.0.1"]
+        ["qmlx", "serve", "qwen3.5-4b-4bit", "--host", "127.0.0.1"]
     )
     assert captured[0].host == "127.0.0.1"
 
 
 def test_serve_host_help_mentions_loopback_default(capsys):
-    """``rapid-mlx serve --help`` must document the loopback-only default
+    """``qmlx serve --help`` must document the loopback-only default
     so operators can self-diagnose ``connection refused`` from a remote
     host without spelunking the source for the changed default."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "serve", "--help"]),
+        patch.object(sys, "argv", ["qmlx", "serve", "--help"]),
         pytest.raises(SystemExit) as exc,
     ):
         cli.main()

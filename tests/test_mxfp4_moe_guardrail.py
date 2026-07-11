@@ -605,15 +605,15 @@ def test_render_prometheus_lines_exposes_both_counters():
     lines = g.render_prometheus_lines()
     body = "\n".join(lines)
 
-    assert "rapid_mlx_mxfp4_moe_distributed_warnings_total" in body
-    assert "rapid_mlx_nvfp4_moe_warnings_total" in body
+    assert "qmlx_mxfp4_moe_distributed_warnings_total" in body
+    assert "qmlx_nvfp4_moe_warnings_total" in body
     # Counter type discoverable via TYPE line — required by Prometheus
     # exposition format spec.
-    assert "# TYPE rapid_mlx_mxfp4_moe_distributed_warnings_total counter" in body
-    assert "# TYPE rapid_mlx_nvfp4_moe_warnings_total counter" in body
+    assert "# TYPE qmlx_mxfp4_moe_distributed_warnings_total counter" in body
+    assert "# TYPE qmlx_nvfp4_moe_warnings_total counter" in body
     # Values were both bumped to 1.
-    assert "rapid_mlx_mxfp4_moe_distributed_warnings_total 1" in body
-    assert "rapid_mlx_nvfp4_moe_warnings_total 1" in body
+    assert "qmlx_mxfp4_moe_distributed_warnings_total 1" in body
+    assert "qmlx_nvfp4_moe_warnings_total 1" in body
 
 
 def test_render_prometheus_lines_zero_state():
@@ -626,5 +626,5 @@ def test_render_prometheus_lines_zero_state():
     # Counters reset by the autouse fixture, so call render directly.
     lines = g.render_prometheus_lines()
     body = "\n".join(lines)
-    assert "rapid_mlx_mxfp4_moe_distributed_warnings_total 0" in body
-    assert "rapid_mlx_nvfp4_moe_warnings_total 0" in body
+    assert "qmlx_mxfp4_moe_distributed_warnings_total 0" in body
+    assert "qmlx_nvfp4_moe_warnings_total 0" in body

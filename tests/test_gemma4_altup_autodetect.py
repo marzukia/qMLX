@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pin the gemma-4 altup-projection autodetect fix.
 
-v0.7.26 release dogfood found that ``rapid-mlx serve gemma-4-e2b-4bit``
+v0.7.26 release dogfood found that ``qmlx serve gemma-4-e2b-4bit``
 crashed at first decode step with::
 
     ValueError: [quantized_matmul] The weight matrix should be uint32

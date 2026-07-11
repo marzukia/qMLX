@@ -130,7 +130,7 @@ def _install_fake_mlx_audio(monkeypatch):
 
 
 def _mount_audio_app() -> tuple[TestClient, callable]:
-    """Mount the audio router on a bare FastAPI app with the rapid-mlx
+    """Mount the audio router on a bare FastAPI app with the qmlx
     exception handlers wired in. The handlers are what turn the
     Pydantic validation error into the OpenAI envelope shape — without
     them the test would see the default FastAPI 422.
@@ -505,7 +505,7 @@ class TestSpeechCatchAllShape:
         audio_route._tts_engine = None
 
         client, restore = _mount_audio_app()
-        with caplog.at_level(logging.ERROR, logger="rapid_mlx.routes.audio"):
+        with caplog.at_level(logging.ERROR, logger="qmlx.routes.audio"):
             try:
                 r = client.post(
                     "/v1/audio/speech",
@@ -550,7 +550,7 @@ class TestSpeechCatchAllShape:
 class TestMlxAudioVersionPin:
     """The R7-H3 fix is upstream — mlx-audio 0.4.4 broke
     ``istftnet.SineGen``. Pin the dep below 0.4.4 in pyproject.toml so
-    a fresh ``pip install rapid-mlx[audio]`` doesn't pull the broken
+    a fresh ``pip install qmlx-serve[audio]`` doesn't pull the broken
     release. The test parses pyproject.toml verbatim so a future
     contributor that loosens the bound trips CI.
     """

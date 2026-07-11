@@ -15,7 +15,7 @@ single-node-infeasible; full V4-Flash Tier-1 tracked in follow-up
 issue #1041). The family-guard fixture in ``conftest.py`` still skips
 per family, so a single-family server boot runs the intended slice
 (3 cells for that family) and skips the other 9 unless
-``RAPID_MLX_MATRIX_STRICT=1`` requests hard-fail.
+``QMLX_MATRIX_STRICT=1`` requests hard-fail.
 
 Two of the three cells (``TestLangChain``, ``TestPydanticAI``) carry a
 strict architectural xfail on the DeepSeek variant — the R1-Distill
@@ -63,7 +63,7 @@ class TestLangChain:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
         try:
@@ -74,8 +74,8 @@ class TestLangChain:
             pytest.skip("langchain-openai not installed — cell deferred")
 
         llm = ChatOpenAI(
-            model=rapid_mlx_server["model_id"],
-            base_url=rapid_mlx_server["base_url"],
+            model=qmlx_server["model_id"],
+            base_url=qmlx_server["base_url"],
             api_key="not-needed",
             temperature=0.0,
             max_tokens=256,
@@ -96,7 +96,7 @@ class TestLangChain:
         assert_no_think_tag_leak(content)
         assert_no_analysis_channel_leak(content)
 
-        # Tool call — confirm the bind_tools path plumbs onto rapid-mlx.
+        # Tool call — confirm the bind_tools path plumbs onto qmlx.
         @tool
         def get_weather(city: str) -> str:
             """Get weather for a city."""
@@ -158,7 +158,7 @@ class TestPydanticAI:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
         try:
@@ -169,9 +169,9 @@ class TestPydanticAI:
             pytest.skip("pydantic-ai not installed — cell deferred")
 
         model = OpenAIChatModel(
-            model_name=rapid_mlx_server["model_id"],
+            model_name=qmlx_server["model_id"],
             provider=OpenAIProvider(
-                base_url=rapid_mlx_server["base_url"],
+                base_url=qmlx_server["base_url"],
                 api_key="not-needed",
             ),
         )
@@ -234,7 +234,7 @@ class TestSmolagents:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
         try:
@@ -265,8 +265,8 @@ class TestSmolagents:
                 return f"sunny in {city}"
 
         model = OpenAIServerModel(
-            model_id=rapid_mlx_server["model_id"],
-            api_base=rapid_mlx_server["base_url"],
+            model_id=qmlx_server["model_id"],
+            api_base=qmlx_server["base_url"],
             api_key="not-needed",
         )
         agent = ToolCallingAgent(tools=[GetWeatherTool()], model=model, max_steps=3)

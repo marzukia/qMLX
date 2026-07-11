@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""R11-G / H-08 — ``rapid-mlx serve --embedding-model`` install guard.
+"""R11-G / H-08 — ``qmlx serve --embedding-model`` install guard.
 
 H-08 (Bo r11 carry from R8-H3): the ``--embedding-model`` flag was
-advertised in ``rapid-mlx serve --help`` but ``mlx_embeddings`` lives
+advertised in ``qmlx serve --help`` but ``mlx_embeddings`` lives
 behind the ``[embeddings]`` extra. A user on a clean PyPI install ran
-``rapid-mlx serve <chat> --embedding-model X`` and got an opaque
+``qmlx serve <chat> --embedding-model X`` and got an opaque
 ``ModuleNotFoundError: mlx_embeddings`` traceback deep inside
 ``EmbeddingEngine.load``. The fix probes for the extra at flag-parse
 time and exits cleanly with an actionable install hint on stderr.
@@ -70,7 +70,7 @@ def test_load_embedding_helper_exits_2_when_extra_missing(monkeypatch, capsys):
     # pip-install command so the user can copy-paste the fix.
     assert "--embedding-model" in err
     assert "[embeddings]" in err
-    assert "pip install 'rapid-mlx[embeddings]'" in err
+    assert "pip install 'qmlx-serve[embeddings]'" in err
 
 
 def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
@@ -105,13 +105,13 @@ def test_install_hint_string_is_canonical():
     """``EMBEDDINGS_EXTRA_INSTALL_HINT`` is the canonical install
     string — both the CLI probe (H-08) AND the route guard (H-09)
     consume it. Pin the exact string so a future refactor that
-    accidentally drops the single-quotes (``rapid-mlx[embeddings]``
+    accidentally drops the single-quotes (``qmlx-serve[embeddings]``
     bare would be parsed as a shell glob in zsh) is caught.
     """
     from vllm_mlx.embedding import EMBEDDINGS_EXTRA_INSTALL_HINT
 
     assert EMBEDDINGS_EXTRA_INSTALL_HINT == (
-        "Install with: pip install 'rapid-mlx[embeddings]'"
+        "Install with: pip install 'qmlx-serve[embeddings]'"
     )
 
 

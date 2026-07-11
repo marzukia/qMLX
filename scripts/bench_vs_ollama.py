@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Benchmark Rapid-MLX against Ollama with self-managed server processes.
+"""Benchmark qMLX against Ollama with self-managed server processes.
 
 The script launches one engine at a time on a temporary localhost port, runs
 identical no-thinking deterministic workloads, then writes raw JSON and
@@ -63,7 +63,7 @@ CONCURRENT_MESSAGES = [
 
 @dataclass(frozen=True)
 class ModelPair:
-    rapid_mlx: str
+    qmlx: str
     ollama: str
 
 
@@ -79,7 +79,7 @@ class CliArgs:
     no_download: bool
     startup_timeout: float
     request_timeout: float
-    rapid_mlx_args: list[str]
+    qmlx_args: list[str]
     ollama_env: dict[str, str]
     include_embeddings: bool = False
 
@@ -121,7 +121,7 @@ def parse_env_assignment(value: str) -> tuple[str, str]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Benchmark Rapid-MLX against Ollama with managed servers."
+        description="Benchmark qMLX against Ollama with managed servers."
     )
     parser.add_argument("--model-pair", action="append", default=[])
     parser.add_argument("--runs", type=int, default=3)
@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-embeddings", action="store_true")
     parser.add_argument("--startup-timeout", type=float, default=300.0)
     parser.add_argument("--request-timeout", type=float, default=300.0)
-    parser.add_argument("--rapid-mlx-arg", action="append", default=[])
+    parser.add_argument("--qmlx-arg", action="append", default=[])
     parser.add_argument("--ollama-env", action="append", default=[])
     return parser
 
@@ -173,7 +173,7 @@ def parse_args(argv: list[str] | None = None) -> CliArgs:
         no_download=ns.no_download,
         startup_timeout=ns.startup_timeout,
         request_timeout=ns.request_timeout,
-        rapid_mlx_args=ns.rapid_mlx_arg,
+        qmlx_args=ns.qmlx_arg,
         ollama_env=ollama_env,
         include_embeddings=ns.include_embeddings,
     )
@@ -200,9 +200,9 @@ def find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def build_rapid_mlx_command(model: str, port: int, extra_args: list[str]) -> list[str]:
+def build_qmlx_command(model: str, port: int, extra_args: list[str]) -> list[str]:
     return [
-        "rapid-mlx",
+        "qmlx",
         "serve",
         model,
         "--host",
@@ -368,7 +368,7 @@ def collect_metadata() -> dict:
         "platform": platform.platform(),
         "machine": platform.machine(),
         "hardware": collect_hardware_summary(),
-        "rapid_mlx_version": run_capture(["rapid-mlx", "--version"]),
+        "qmlx_version": run_capture(["qmlx", "--version"]),
         "ollama_version": normalize_ollama_version(
             run_capture(["ollama", "--version"])
         ),
@@ -428,7 +428,7 @@ def _concurrency_sort_key(value: object) -> tuple[int, int | str]:
 
 
 def render_model_pair_table(pair_result: dict) -> str:
-    rapid = _engine_summary(pair_result, "rapid-mlx")
+    rapid = _engine_summary(pair_result, "qmlx")
     ollama = _engine_summary(pair_result, "ollama")
     rapid_stream = _nested_dict(rapid, "stream")
     ollama_stream = _nested_dict(ollama, "stream")
@@ -438,19 +438,19 @@ def render_model_pair_table(pair_result: dict) -> str:
     ollama_conc = _nested_dict(ollama, "concurrency")
 
     lines = [
-        f"## {pair_result['rapid_mlx_model']} vs {pair_result['ollama_model']}",
+        f"## {pair_result['qmlx_model']} vs {pair_result['ollama_model']}",
         "",
     ]
-    rapid_error = _engine_error(pair_result, "rapid-mlx")
+    rapid_error = _engine_error(pair_result, "qmlx")
     ollama_error = _engine_error(pair_result, "ollama")
-    rapid_workload_errors = _engine_workload_errors(pair_result, "rapid-mlx")
+    rapid_workload_errors = _engine_workload_errors(pair_result, "qmlx")
     ollama_workload_errors = _engine_workload_errors(pair_result, "ollama")
     if rapid_error:
-        lines.append(f"**Rapid-MLX error:** {rapid_error}")
+        lines.append(f"**qMLX error:** {rapid_error}")
     if ollama_error:
         lines.append(f"**Ollama error:** {ollama_error}")
     if rapid_workload_errors:
-        lines.append("**Rapid-MLX workload errors:**")
+        lines.append("**qMLX workload errors:**")
         lines.extend(
             f"- {_format_workload_error(error)}" for error in rapid_workload_errors
         )
@@ -463,7 +463,7 @@ def render_model_pair_table(pair_result: dict) -> str:
         lines.append("")
     lines.extend(
         [
-            "| Metric | Rapid-MLX | Ollama | Speedup |",
+            "| Metric | qMLX | Ollama | Speedup |",
             "|---|---:|---:|---:|",
         ]
     )
@@ -513,13 +513,13 @@ def render_markdown(result: dict) -> str:
     hardware = metadata.get("hardware") or {}
     config = result.get("config", {})
     lines = [
-        "# Rapid-MLX vs Ollama Benchmark",
+        "# qMLX vs Ollama Benchmark",
         "",
         f"- Timestamp: `{metadata.get('timestamp', '-')}`",
         f"- Git commit: `{metadata.get('git_commit', '-')}`",
         f"- Python: `{metadata.get('python', '-')}`",
         f"- Platform: `{metadata.get('platform', '-')}`",
-        f"- Rapid-MLX: `{metadata.get('rapid_mlx_version', '-')}`",
+        f"- qMLX: `{metadata.get('qmlx_version', '-')}`",
         f"- Ollama: `{metadata.get('ollama_version', '-')}`",
         "- Hardware: `"
         f"{hardware.get('chip_name') or '-'} "
@@ -572,7 +572,7 @@ def _safe_int(value: object) -> int | None:
         return None
 
 
-def parse_rapid_mlx_stream(lines: Iterable[str]) -> ParsedStream:
+def parse_qmlx_stream(lines: Iterable[str]) -> ParsedStream:
     parsed = ParsedStream()
     for raw_line in lines:
         line = raw_line.strip()
@@ -673,7 +673,7 @@ def summarize_stream_runs(runs: list[dict]) -> dict:
     }
 
 
-def build_rapid_mlx_payload(
+def build_qmlx_payload(
     model: str,
     messages: list[dict],
     max_tokens: int,
@@ -774,7 +774,7 @@ def summarize_concurrent_batch(results: list[dict], batch_elapsed_s: float) -> d
     }
 
 
-def extract_rapid_mlx_message_content(data: object) -> str:
+def extract_qmlx_message_content(data: object) -> str:
     if not isinstance(data, dict):
         return ""
     choices = data.get("choices")
@@ -800,7 +800,7 @@ def extract_ollama_message_content(data: object) -> str:
     return content if isinstance(content, str) else ""
 
 
-def _rapid_mlx_sse_has_content(line: str) -> bool:
+def _qmlx_sse_has_content(line: str) -> bool:
     if not line.startswith("data: "):
         return False
     payload_text = line[6:]
@@ -864,7 +864,7 @@ def post_json_lines(
                 continue
             lines.append(line)
             if first_content_at is None and (
-                _rapid_mlx_sse_has_content(line) or _ollama_line_has_content(line)
+                _qmlx_sse_has_content(line) or _ollama_line_has_content(line)
             ):
                 first_content_at = time.perf_counter()
     end_at = time.perf_counter()
@@ -900,13 +900,13 @@ def run_stream_once(
     timeout: float,
     headers: dict[str, str] | None = None,
 ) -> dict:
-    if engine == "rapid-mlx":
+    if engine == "qmlx":
         url = f"{base_url}/v1/chat/completions"
-        payload = build_rapid_mlx_payload(model, messages, max_tokens, stream=True)
+        payload = build_qmlx_payload(model, messages, max_tokens, stream=True)
         lines, start_at, first_content_at, end_at = post_json_lines(
             url, payload, timeout, headers=headers
         )
-        parsed = parse_rapid_mlx_stream(lines)
+        parsed = parse_qmlx_stream(lines)
     elif engine == "ollama":
         url = f"{base_url}/api/chat"
         payload = build_ollama_payload(model, messages, max_tokens, stream=True)
@@ -927,7 +927,7 @@ def run_embedding_once(
     timeout: float,
     headers: dict[str, str] | None = None,
 ) -> dict:
-    if engine == "rapid-mlx":
+    if engine == "qmlx":
         url = f"{base_url}/v1/embeddings"
         payload = {"model": model, "input": inputs}
         data, latency_ms = post_json(url, payload, timeout, headers=headers)
@@ -967,13 +967,13 @@ def run_multi_turn(
     for turn_index, user_content in enumerate(MULTI_TURN_USER_MESSAGES, start=1):
         messages.append({"role": "user", "content": user_content})
         payload_messages = [dict(message) for message in messages]
-        if engine == "rapid-mlx":
+        if engine == "qmlx":
             url = f"{base_url}/v1/chat/completions"
-            payload = build_rapid_mlx_payload(
+            payload = build_qmlx_payload(
                 model, payload_messages, max_tokens, stream=False
             )
             data, latency_ms = post_json(url, payload, timeout, headers=headers)
-            content = extract_rapid_mlx_message_content(data)
+            content = extract_qmlx_message_content(data)
         elif engine == "ollama":
             url = f"{base_url}/api/chat"
             payload = build_ollama_payload(
@@ -1099,7 +1099,7 @@ def build_workload(model: str, max_tokens: int) -> dict:
         "chat_model": model,
         "embedding_model": model,
         "chat_messages": DECODE_MESSAGES,
-        "embedding_input": ["Rapid-MLX and Ollama benchmark embedding workload."],
+        "embedding_input": ["qMLX and Ollama benchmark embedding workload."],
         "max_tokens": max_tokens,
     }
 
@@ -1304,11 +1304,11 @@ def run_engine_suite(
     return raw_runs, summary, errors
 
 
-def prepare_rapid_mlx_model(model: str, args: CliArgs) -> bool:
+def prepare_qmlx_model(model: str, args: CliArgs) -> bool:
     if args.no_download:
         return False
-    require_executable("rapid-mlx")
-    # Rapid-MLX loads/downloads models as part of server startup; there is no
+    require_executable("qmlx")
+    # qMLX loads/downloads models as part of server startup; there is no
     # separate stable download-only CLI, so the managed serve command below is
     # the prep step when downloads are allowed.
     _ = model
@@ -1325,17 +1325,17 @@ def prepare_ollama_model(model: str, args: CliArgs, env: dict[str, str]) -> bool
     return True
 
 
-def benchmark_rapid_mlx(pair: ModelPair, args: CliArgs) -> dict:
+def benchmark_qmlx(pair: ModelPair, args: CliArgs) -> dict:
     port: int | None = None
     command: list[str] = []
     process: ManagedProcess | None = None
     prepared = False
     try:
-        require_executable("rapid-mlx")
-        prepared = prepare_rapid_mlx_model(pair.rapid_mlx, args)
+        require_executable("qmlx")
+        prepared = prepare_qmlx_model(pair.qmlx, args)
         for attempt in range(1, PORT_BIND_ATTEMPTS + 1):
             port = find_free_port()
-            command = build_rapid_mlx_command(pair.rapid_mlx, port, args.rapid_mlx_args)
+            command = build_qmlx_command(pair.qmlx, port, args.qmlx_args)
             server_url = f"http://127.0.0.1:{port}"
             process = start_process(
                 command, env=offline_env_if_needed(args.no_download)
@@ -1350,21 +1350,21 @@ def benchmark_rapid_mlx(pair: ModelPair, args: CliArgs) -> dict:
                 process = None
                 if attempt == PORT_BIND_ATTEMPTS:
                     raise RuntimeError(
-                        f"rapid-mlx server failed to start after {PORT_BIND_ATTEMPTS} "
+                        f"qmlx server failed to start after {PORT_BIND_ATTEMPTS} "
                         "port attempts"
                     ) from exc
-        workload = build_workload(pair.rapid_mlx, args.max_tokens)
+        workload = build_workload(pair.qmlx, args.max_tokens)
         for _ in range(args.warmups):
             run_stream_once(
-                "rapid-mlx",
+                "qmlx",
                 server_url,
-                pair.rapid_mlx,
+                pair.qmlx,
                 DECODE_MESSAGES,
                 min(args.max_tokens, 32),
                 args.request_timeout,
             )
         raw_runs, summary, errors = run_engine_suite(
-            "rapid-mlx",
+            "qmlx",
             server_url,
             workload,
             concurrency_levels=args.concurrency,
@@ -1373,8 +1373,8 @@ def benchmark_rapid_mlx(pair: ModelPair, args: CliArgs) -> dict:
             include_embeddings=args.include_embeddings,
         )
         return build_engine_success_result(
-            "rapid-mlx",
-            pair.rapid_mlx,
+            "qmlx",
+            pair.qmlx,
             port,
             command,
             raw_runs,
@@ -1385,7 +1385,7 @@ def benchmark_rapid_mlx(pair: ModelPair, args: CliArgs) -> dict:
         )
     except Exception as exc:
         return build_engine_failure_result(
-            "rapid-mlx", pair.rapid_mlx, port, command, exc, prepared=prepared
+            "qmlx", pair.qmlx, port, command, exc, prepared=prepared
         )
     finally:
         if process:
@@ -1459,7 +1459,7 @@ def benchmark_ollama(pair: ModelPair, args: CliArgs) -> dict:
 
 
 def build_comparisons(pair_result: dict) -> dict:
-    rapid = _engine_summary(pair_result, "rapid-mlx")
+    rapid = _engine_summary(pair_result, "qmlx")
     ollama = _engine_summary(pair_result, "ollama")
     rapid_stream = _nested_dict(rapid, "stream")
     ollama_stream = _nested_dict(ollama, "stream")
@@ -1523,20 +1523,20 @@ def run_benchmark(args: CliArgs) -> dict:
             "output_dir": str(args.output_dir),
             "no_pull": args.no_pull,
             "no_download": args.no_download,
-            "rapid_mlx_args": args.rapid_mlx_args,
+            "qmlx_args": args.qmlx_args,
             "ollama_env_keys": sorted(args.ollama_env),
         },
         "model_pairs": [],
     }
     for pair in args.model_pairs:
-        print(f"\nBenchmarking {pair.rapid_mlx} vs {pair.ollama}", flush=True)
-        rapid_result = benchmark_rapid_mlx(pair, args)
+        print(f"\nBenchmarking {pair.qmlx} vs {pair.ollama}", flush=True)
+        rapid_result = benchmark_qmlx(pair, args)
         ollama_result = benchmark_ollama(pair, args)
         result["model_pairs"].append(
             pair_result := {
-                "rapid_mlx_model": pair.rapid_mlx,
+                "qmlx_model": pair.qmlx,
                 "ollama_model": pair.ollama,
-                "rapid-mlx": rapid_result,
+                "qmlx": rapid_result,
                 "ollama": ollama_result,
             }
         )

@@ -14,7 +14,7 @@ Pins the systemic R12-4 fix:
   the output against the schema after generation, attempts a single
   repair retry with a system-prompt-injected hint naming the failing
   path, and returns 422 with a structured envelope ONLY if the repair
-  also fails. The disable flag ``RAPID_MLX_STRICT_JSON_SCHEMA=off``
+  also fails. The disable flag ``QMLX_STRICT_JSON_SCHEMA=off``
   short-circuits the gate for operators who need the legacy behavior.
 
 This file specifically pins the **16 constraint families** the design
@@ -403,11 +403,11 @@ def test_strict_constraint_family_trips_422(
 
 
 def test_strict_constraint_matrix_disable_flag_returns_200_for_all(monkeypatch):
-    """With ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` every row of the
+    """With ``QMLX_STRICT_JSON_SCHEMA=off`` every row of the
     matrix returns 200 (legacy silent-pass-through). Pins the
     escape hatch operators can flip if R12-4 enforcement is too
     aggressive for their workload."""
-    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", "off")
+    monkeypatch.setenv("QMLX_STRICT_JSON_SCHEMA", "off")
     for label, schema, violating_body, _ in _CONSTRAINT_MATRIX:
         client, engine = _client(violating_body)
         resp = client.post("/v1/chat/completions", json=_payload(schema=schema))

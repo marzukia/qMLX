@@ -1,12 +1,12 @@
 #!/usr/bin/env python3.12
 # SPDX-License-Identifier: Apache-2.0
-"""Benchmark DiffusionGemma 26B-A4B-4bit on rapid-mlx's text-diffusion lane.
+"""Benchmark DiffusionGemma 26B-A4B-4bit on qmlx's text-diffusion lane.
 
 Why a separate script (not an entry in ``bench_qwen36_35b_engines.py``):
-  - mlx-lm has no diffusion path — only ``mlx-vlm`` does, and rapid-mlx
+  - mlx-lm has no diffusion path — only ``mlx-vlm`` does, and qmlx
     is a thin wrapper over ``mlx_vlm.generate.diffusion``. Cross-engine
     decode tok/s is therefore not apples-to-apples with autoregressive
-    engines; the right framing is sweeping output length on rapid-mlx
+    engines; the right framing is sweeping output length on qmlx
     alone and surfacing how diffusion behaves vs an AR baseline of
     similar parameter count.
   - DiffusionEngine serializes via ``asyncio.Lock`` (mlx-vlm requires
@@ -37,9 +37,9 @@ Median of 3 measured runs (1 warmup discarded).
 
 Usage::
 
-    # Assumes a rapid-mlx server is already running on port 18761 with
+    # Assumes a qmlx server is already running on port 18761 with
     # diffusion-gemma-26b-4bit loaded. Spawn separately::
-    #     rapid-mlx serve diffusion-gemma-26b-4bit --port 18761
+    #     qmlx serve diffusion-gemma-26b-4bit --port 18761
     python3.12 scripts/bench_diffusion_gemma.py
     python3.12 scripts/bench_diffusion_gemma.py --port 8765 --runs 5
 """

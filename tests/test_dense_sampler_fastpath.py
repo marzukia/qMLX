@@ -242,7 +242,7 @@ def test_sampler_cache_is_bounded_lru(monkeypatch):
     # Codex round-3 NIT #3: pin the escape-hatch env var so the cache
     # key's 5th element is deterministic regardless of test invocation
     # environment.
-    monkeypatch.delenv("RAPID_MLX_DISABLE_FUSED_SAMPLER", raising=False)
+    monkeypatch.delenv("QMLX_DISABLE_FUSED_SAMPLER", raising=False)
 
     sched = Scheduler.__new__(Scheduler)
     sched._sampler_cache = OrderedDict()
@@ -260,7 +260,7 @@ def test_sampler_cache_is_bounded_lru(monkeypatch):
     assert len(sched._sampler_cache) == 4, "cap must hold even under churn"
 
     # Oldest entries (temp=0.0, 0.1) are evicted. The 5th tuple element
-    # is the ``RAPID_MLX_DISABLE_FUSED_SAMPLER`` flag — False here because
+    # is the ``QMLX_DISABLE_FUSED_SAMPLER`` flag — False here because
     # we explicitly deleted the env var above.
     keys = list(sched._sampler_cache.keys())
     assert (0.0, 0.95, 0.0, 20, False) not in keys

@@ -4,8 +4,8 @@
 Codex r10-B caught that ``vllm_mlx/audio/aliases.json`` was added under
 ``vllm_mlx/audio/`` but never declared in ``[tool.setuptools.package-data]``.
 A sdist/wheel built from that state silently dropped the file — source-tree
-tests passed (the file is right there on disk), but ``pip install rapid-mlx``
-and then ``rapid-mlx serve kokoro`` would raise ``FileNotFoundError`` inside
+tests passed (the file is right there on disk), but ``pip install qmlx``
+and then ``qmlx serve kokoro`` would raise ``FileNotFoundError`` inside
 ``vllm_mlx/audio/registry.py::resolve_audio_alias`` before any audio engine
 loaded.
 

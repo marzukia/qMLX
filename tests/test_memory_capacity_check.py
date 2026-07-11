@@ -203,7 +203,7 @@ def test_never_calls_sys_exit(monkeypatch):
 
 
 def test_warning_includes_actionable_recommendations(monkeypatch, capsys):
-    """The warning must give the user a concrete next step (rapid-mlx
+    """The warning must give the user a concrete next step (qmlx
     models / --gpu-memory-utilization), not just describe the problem.
     Pins the actionability of the message."""
     _patch_size_bytes(monkeypatch, size_gb=14.0)

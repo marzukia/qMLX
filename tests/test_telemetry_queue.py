@@ -127,11 +127,11 @@ def test_shutdown_does_not_orphan_thread_for_restart_when_join_times_out():
     # too weak — pin the precise property we care about: ``start()``
     # MUST NOT spawn a sibling. Compare by object identity of the
     # daemon thread, and also count threads named
-    # ``rapid-mlx-telemetry`` directly so a name-only regression
+    # ``qmlx-telemetry`` directly so a name-only regression
     # cannot slip past.
-    before_named = [t for t in threading.enumerate() if t.name == "rapid-mlx-telemetry"]
+    before_named = [t for t in threading.enumerate() if t.name == "qmlx-telemetry"]
     q.start()
-    after_named = [t for t in threading.enumerate() if t.name == "rapid-mlx-telemetry"]
+    after_named = [t for t in threading.enumerate() if t.name == "qmlx-telemetry"]
     assert q._thread is original_thread, "start() replaced live daemon"
     assert len(after_named) == len(before_named), (
         f"start() spawned a second telemetry daemon "
@@ -141,7 +141,7 @@ def test_shutdown_does_not_orphan_thread_for_restart_when_join_times_out():
     # Release the old daemon so the test process can exit. Round 13:
     # ``shutdown()`` is now latched (no-op on second call), so wait
     # for the daemon directly via the thread reference — otherwise a
-    # stray ``rapid-mlx-telemetry`` thread would leak into
+    # stray ``qmlx-telemetry`` thread would leak into
     # ``test_concurrent_start_does_not_spawn_duplicate_daemons`` and
     # blow its name-count assertion.
     release.set()
@@ -364,7 +364,7 @@ def test_concurrent_start_does_not_spawn_duplicate_daemons():
     for t in threads:
         t.join(timeout=2.0)
 
-    named = [t for t in threading.enumerate() if t.name == "rapid-mlx-telemetry"]
+    named = [t for t in threading.enumerate() if t.name == "qmlx-telemetry"]
     assert len(named) == 1, (
         f"concurrent start() spawned {len(named)} daemons (want exactly 1)"
     )

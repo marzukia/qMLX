@@ -70,7 +70,7 @@ def _reject_non_one_n(v: int | None) -> int | None:
     """Reject ``n`` values other than ``1`` (or omitted ``None``) on
     chat/completion requests (F-155).
 
-    Rapid-MLX only generates one completion per request. Pre-fix the
+    qMLX only generates one completion per request. Pre-fix the
     route layer enforced ``n > 1`` → 400 but silently accepted
     ``n == 0`` and ``n == -1`` (HTTP 200 with one choice). Both
     forms are almost always client-side bugs — ``n=0`` is a typo for
@@ -2180,7 +2180,7 @@ class CompletionRequest(BaseModel):
     # prompt prefix saw truncated output and proceeded with
     # garbage-in-garbage-out. F-152.
     echo: bool | None = None
-    # Number of completions per prompt (legacy OpenAI). Rapid-MLX only
+    # Number of completions per prompt (legacy OpenAI). qMLX only
     # generates one completion per request — declared so Pydantic
     # stops silently dropping it; rejected with 400 in
     # ``routes/completions.py`` when ``> 1`` (mirroring the chat-route
@@ -2359,7 +2359,7 @@ class ModelInfo(BaseModel):
     """Information about an available model.
 
     The first four fields (`id`, `object`, `created`, `owned_by`) are
-    the OpenAI-canonical shape. The trailing fields are Rapid-MLX
+    the OpenAI-canonical shape. The trailing fields are qMLX
     vendor extensions surfaced so OpenAI-compatible clients that
     *also* want per-alias profile info (e.g. the rapid-desktop app
     auto-applying curated sampling defaults) don't need a separate
@@ -2381,7 +2381,7 @@ class ModelInfo(BaseModel):
     created: int = Field(default_factory=lambda: int(time.time()))
     owned_by: str = "qmlx"
 
-    # ---- Rapid-MLX vendor extensions (additive; OpenAI clients
+    # ---- qMLX vendor extensions (additive; OpenAI clients
     # ignore unknown fields) ------------------------------------
     # Curated sampling defaults that out-perform the model's
     # ``generation_config.json`` baseline on the canonical eval suite.

@@ -588,7 +588,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Rapid-MLX API",
+    title="qMLX API",
     description="OpenAI-compatible API for MLX LLM/MLLM inference on Apple Silicon",
     version="0.6.0",
     lifespan=lifespan,
@@ -682,7 +682,7 @@ _DEFAULT_CORS_METHODS: tuple[str, ...] = ("POST", "GET", "OPTIONS")
 _DEFAULT_CORS_HEADERS: tuple[str, ...] = (
     "Content-Type",
     "Authorization",
-    "X-Rapid-MLX-Internal",
+    "X-qMLX-Internal",
 )
 _DEFAULT_CORS_MAX_AGE: int = 3600
 
@@ -1658,7 +1658,7 @@ from .routes.responses import router as _responses_router
 app.include_router(_probe_router)
 app.include_router(_health_router)
 # Destructive control-plane routes (F-150 / F-151). Distinct router so the
-# ``X-Rapid-MLX-Internal: true`` gate ALSO applies when ``--api-key`` is unset.
+# ``X-qMLX-Internal: true`` gate ALSO applies when ``--api-key`` is unset.
 app.include_router(_health_admin_router)
 app.include_router(_metrics_router)
 app.include_router(_models_router)
@@ -1713,7 +1713,7 @@ def register_audio_routes_if_enabled() -> bool:
 def main():
     """Run the server."""
     parser = argparse.ArgumentParser(
-        description="Rapid-MLX OpenAI-compatible server for LLM and MLLM inference",
+        description="qMLX OpenAI-compatible server for LLM and MLLM inference",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1963,7 +1963,7 @@ Examples:
         help=(
             "Pre-load an embedding model at startup (e.g. "
             "mlx-community/all-MiniLM-L6-v2-4bit). Requires the "
-            "[embeddings] extra: pip install 'qmlx[embeddings]'."
+            "[embeddings] extra: pip install 'qmlx-serve[embeddings]'."
         ),
     )
     parser.add_argument(

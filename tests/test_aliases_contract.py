@@ -984,7 +984,7 @@ def test_aliases_with_known_broken_hf_paths_stay_fixed() -> None:
     repos that no longer exist (or never existed).
 
     Three aliases shipped with hf_paths that 404 on HuggingFace —
-    ``rapid-mlx serve <alias>`` would download-fail at first user
+    ``qmlx serve <alias>`` would download-fail at first user
     contact. Each replacement was selected by manually browsing the
     mlx-community namespace for an extant repo of the same family.
 

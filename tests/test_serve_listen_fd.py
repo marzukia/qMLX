@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``rapid-mlx serve --listen-fd`` socket activation (issue #574).
+"""Tests for ``qmlx serve --listen-fd`` socket activation (issue #574).
 
 Socket activation is the strongest closure of the bind→auth TOCTOU
 window: an external supervisor (launchd, systemd, a parent process)
 binds the listening socket, validates env + auth secret, THEN
-``execve``'s into ``rapid-mlx serve --listen-fd <N>``. By the time we
+``execve``'s into ``qmlx serve --listen-fd <N>``. By the time we
 run, there is no separate bind step that could race the auth wiring.
 
 These tests pin the public CLI contract:
@@ -53,7 +53,7 @@ def _capture_serve_args(argv: list[str]) -> list:
 def test_serve_listen_fd_parses_valid_value():
     """``--listen-fd 3`` parses and lands on ``args.listen_fd``."""
     captured = _capture_serve_args(
-        ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", "3"]
+        ["qmlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", "3"]
     )
     assert len(captured) == 1
     ns = captured[0]
@@ -63,7 +63,7 @@ def test_serve_listen_fd_parses_valid_value():
 def test_serve_listen_fd_accepts_upper_bound():
     """``--listen-fd 1023`` (SysV soft-limit ceiling) is accepted."""
     captured = _capture_serve_args(
-        ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", "1023"]
+        ["qmlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", "1023"]
     )
     assert captured[0].listen_fd == 1023
 
@@ -71,7 +71,7 @@ def test_serve_listen_fd_accepts_upper_bound():
 def test_serve_listen_fd_default_is_none():
     """Without ``--listen-fd``, ``args.listen_fd`` is ``None`` — preserves
     the existing default behavior of binding ``host``/``port`` fresh."""
-    captured = _capture_serve_args(["rapid-mlx", "serve", "qwen3.5-4b-4bit"])
+    captured = _capture_serve_args(["qmlx", "serve", "qwen3.5-4b-4bit"])
     ns = captured[0]
     assert getattr(ns, "listen_fd", "missing") is None
 
@@ -92,7 +92,7 @@ def test_serve_listen_fd_rejects_invalid(capsys, bad_value):
         patch.object(
             sys,
             "argv",
-            ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", bad_value],
+            ["qmlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", bad_value],
         ),
         pytest.raises(SystemExit) as exc,
     ):
@@ -109,7 +109,7 @@ def test_serve_listen_fd_error_message_is_specific(capsys):
         patch.object(
             sys,
             "argv",
-            ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", "2"],
+            ["qmlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", "2"],
         ),
         pytest.raises(SystemExit) as exc,
     ):
@@ -126,7 +126,7 @@ def test_serve_listen_fd_nonnumeric_message(capsys):
         patch.object(
             sys,
             "argv",
-            ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", "fd3"],
+            ["qmlx", "serve", "qwen3.5-4b-4bit", "--listen-fd", "fd3"],
         ),
         pytest.raises(SystemExit) as exc,
     ):
@@ -146,7 +146,7 @@ def _minimal_serve_ns(**overrides):
     the test stays in sync with the serve subparser. Any field the
     caller wants to override is patched on the resolved Namespace."""
     captured: list = []
-    argv = ["rapid-mlx", "serve", "qwen3.5-4b-4bit"]
+    argv = ["qmlx", "serve", "qwen3.5-4b-4bit"]
     for k, v in overrides.items():
         if k == "listen_fd":
             argv += ["--listen-fd", str(v)]
@@ -480,11 +480,11 @@ def test_serve_command_resets_stale_bind_fields_between_invocations(
 
 
 def test_serve_listen_fd_help_documents_host_port_ignored(capsys):
-    """``rapid-mlx serve --help`` must mention that ``--host``/``--port``
+    """``qmlx serve --help`` must mention that ``--host``/``--port``
     are ignored when ``--listen-fd`` is set. Operators reading the help
     text need to know the precedence without diving into source."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "serve", "--help"]),
+        patch.object(sys, "argv", ["qmlx", "serve", "--help"]),
         pytest.raises(SystemExit) as exc,
     ):
         cli.main()

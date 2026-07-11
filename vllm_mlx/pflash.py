@@ -7,7 +7,7 @@ for a large cold-prefill TTFT win. Scoring is deterministic and uses only
 new dependency.
 
 Original design + reference fork by @michaelasper on the
-``pflash-qwen36-ttft`` branch of github.com/michaelasper/Rapid-MLX
+``pflash-qwen36-ttft`` branch of github.com/michaelasper/qMLX
 (commits d7a2797 + b6089ce). See issue #287 for the discussion.
 
 This adaptation differs from the fork in three places:

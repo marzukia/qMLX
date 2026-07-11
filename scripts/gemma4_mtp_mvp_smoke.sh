@@ -12,7 +12,7 @@
 #      replacement PR-3) stacked locally.
 #   2. Google's official assistant checkpoint downloaded:
 #        huggingface-cli download google/gemma-4-12B-it-assistant \
-#          --local-dir ~/rapid-mlx-staging/gemma-4-12B-it-assistant
+#          --local-dir ~/qmlx-staging/gemma-4-12B-it-assistant
 #   3. The paired target ``mlx-community/gemma-4-12B-it-4bit`` cached.
 #   4. Server-side wiring for ``--mtp-sidecar`` — the CLI flag does
 #      NOT exist in main today. Adding the CLI arg + scheduler hookup
@@ -36,7 +36,7 @@
 # will snapshot_download it on demand.
 #
 # What this script does:
-#   1. Boots ``rapid-mlx serve --model gemma-4-12b-4bit --enable-mtp
+#   1. Boots ``qmlx serve --model gemma-4-12b-4bit --enable-mtp
 #      --spec-decode mtp --mtp-sidecar $1 --mtp-num-draft-tokens 4``
 #      and waits for the "Server ready" health probe.
 #   2. Sends a fixed prompt to /v1/chat/completions with temperature 0
@@ -50,7 +50,7 @@
 #      final text will pass this smoke; catching those regressions
 #      requires a separate SSE / event-stream contract test.
 #   5. Reports accept rate + tok/s from Prometheus
-#      ``rapid_mlx_spec_decode_*``.
+#      ``qmlx_spec_decode_*``.
 
 set -euo pipefail
 
@@ -77,25 +77,25 @@ else
   exit 2
 fi
 
-MODEL_ALIAS="${RAPID_MLX_MODEL:-gemma-4-12b-4bit}"
-PORT="${RAPID_MLX_PORT:-8990}"
+MODEL_ALIAS="${QMLX_MODEL:-gemma-4-12b-4bit}"
+PORT="${QMLX_PORT:-8990}"
 PROMPT='{"model":"'"${MODEL_ALIAS}"'","messages":[{"role":"user","content":"Explain in exactly 40 words why the sky appears blue at midday."}],"temperature":0,"max_tokens":80}'
 BASE_URL="http://127.0.0.1:${PORT}"
 
-# Locate rapid-mlx binary.
-RAPID_MLX_BIN="${RAPID_MLX_BIN:-$(command -v rapid-mlx || true)}"
-if [[ -z "${RAPID_MLX_BIN}" ]]; then
-  echo "[smoke] rapid-mlx not on PATH; falling back to .venv/bin/rapid-mlx"
-  RAPID_MLX_BIN="$(pwd)/.venv/bin/rapid-mlx"
+# Locate qmlx binary.
+QMLX_BIN="${QMLX_BIN:-$(command -v qmlx || true)}"
+if [[ -z "${QMLX_BIN}" ]]; then
+  echo "[smoke] qmlx not on PATH; falling back to .venv/bin/qmlx"
+  QMLX_BIN="$(pwd)/.venv/bin/qmlx"
 fi
-if [[ ! -x "${RAPID_MLX_BIN}" ]]; then
-  echo "[smoke] rapid-mlx binary not found. Set RAPID_MLX_BIN or activate the .venv." >&2
+if [[ ! -x "${QMLX_BIN}" ]]; then
+  echo "[smoke] qmlx binary not found. Set QMLX_BIN or activate the .venv." >&2
   exit 3
 fi
 
 # ── Preflight: --mtp-sidecar must be a recognized CLI arg ─────────────
 # Codex round-6 nit fix: this script wires ``--mtp-sidecar`` into the
-# rapid-mlx serve invocation, but that flag does NOT exist on main as
+# qmlx serve invocation, but that flag does NOT exist on main as
 # of this PR (see header docstring). Fail fast with a clear message
 # instead of letting argparse eat the flag and print an unrelated
 # usage error deep in ``WORKDIR/server_mtp.log``. The operator can
@@ -106,9 +106,9 @@ fi
 # so a build that lacks the flag doesn't leak a temp dir on every
 # expected-failure invocation.
 if [[ "${SKIP_MTP_SIDECAR_PREFLIGHT:-0}" != "1" ]]; then
-  if ! "${RAPID_MLX_BIN}" serve --help 2>&1 | grep -q -- '--mtp-sidecar'; then
+  if ! "${QMLX_BIN}" serve --help 2>&1 | grep -q -- '--mtp-sidecar'; then
     cat <<EOF >&2
-[smoke] Preflight failed: this rapid-mlx build does not advertise --mtp-sidecar.
+[smoke] Preflight failed: this qmlx build does not advertise --mtp-sidecar.
 [smoke] The smoke script depends on the server-side wiring PR that lands the
 [smoke] CLI arg + scheduler hook (post-MVP TODO in this PR's body). Once that
 [smoke] PR merges, re-run this smoke; or export SKIP_MTP_SIDECAR_PREFLIGHT=1
@@ -124,7 +124,7 @@ WORKDIR="$(mktemp -d -t gemma4-mtp-smoke.XXXXXX)"
 echo "[smoke] Workdir: ${WORKDIR}"
 
 # ── boot_and_prompt ──────────────────────────────────────────────────
-# Boot rapid-mlx, wait for ready, send the prompt, dump the completion,
+# Boot qmlx, wait for ready, send the prompt, dump the completion,
 # then kill the server. Args:
 #   $1 = "mtp" | "baseline"  — determines the MTP flags
 #   $2 = output file for the completion body
@@ -146,7 +146,7 @@ boot_and_prompt() {
 
   local server_log="${WORKDIR}/server_${mode}.log"
   echo "[smoke:${mode}] Starting server on :${PORT}..."
-  "${RAPID_MLX_BIN}" serve \
+  "${QMLX_BIN}" serve \
     --model "${MODEL_ALIAS}" \
     --port "${PORT}" \
     "${extra_args[@]}" \
@@ -157,7 +157,7 @@ boot_and_prompt() {
   # ── Codex round-3 fix: install a RETURN-time trap so ANY exit
   # path (curl failure, timeout, set -e trip, etc.) tears down the
   # background server. Without this, `set -e` short-circuits before
-  # `kill` at the bottom and leaves rapid-mlx serve running on the
+  # `kill` at the bottom and leaves qmlx serve running on the
   # port for the NEXT boot_and_prompt call to collide with.
   #
   # Round-5 nit: use a cleanup function that reads the pid from a
@@ -234,10 +234,10 @@ print((d.get('choices') or [{}])[0].get('message', {}).get('content', ''))" "$1"
 extract_mtp_stats() {
   local metrics_file="$1"
   echo "─── MTP telemetry (${metrics_file##*/}) ───"
-  grep -E '^rapid_mlx_spec_decode_(attempts|accepts|accept_ratio|tokens_saved)' "${metrics_file}" || \
-    echo "  (no rapid_mlx_spec_decode_* series found)"
+  grep -E '^qmlx_spec_decode_(attempts|accepts|accept_ratio|tokens_saved)' "${metrics_file}" || \
+    echo "  (no qmlx_spec_decode_* series found)"
   echo "─── decode tok/s ───"
-  grep -E '^rapid_mlx_.*(decode|tok).*_seconds|^rapid_mlx_tokens_per_second' "${metrics_file}" || \
+  grep -E '^qmlx_.*(decode|tok).*_seconds|^qmlx_tokens_per_second' "${metrics_file}" || \
     echo "  (no throughput series found)"
 }
 

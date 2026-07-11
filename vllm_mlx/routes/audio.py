@@ -1666,7 +1666,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             status_code=503,
             detail=(
                 f"mlx-audio import failed at runtime: {e}. "
-                "Install with: pip install 'qmlx[audio]'"
+                "Install with: pip install 'qmlx-serve[audio]'"
             ),
         )
     except Exception as e:

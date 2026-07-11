@@ -131,11 +131,11 @@ def test_no_warning_when_ctk_present_but_no_enable_thinking_key() -> None:
 
 
 def test_no_warning_for_top_level_enable_thinking_only() -> None:
-    """Top-level ``request.enable_thinking`` is the rapid-mlx-extension
+    """Top-level ``request.enable_thinking`` is the qmlx-extension
     field. Surface area for L-05 is the OpenAI-spec ``ctk`` channel —
     clients using the top-level field are already mlx-aware and the
     matrix is documented in the parser-support table. Keeping the
-    warning narrow avoids header noise on every rapid-mlx-native
+    warning narrow avoids header noise on every qmlx-native
     request."""
     request = SimpleNamespace(chat_template_kwargs=None, enable_thinking=False)
     assert enable_thinking_warning_header(request, "deepseek_r1") == {}

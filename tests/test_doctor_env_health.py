@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the env-health probes in ``vllm_mlx.doctor.env_health``.
 
-These tests are the safety net for the user-facing ``rapid-mlx doctor``
+These tests are the safety net for the user-facing ``qmlx doctor``
 contract:
 
 * Apple-Silicon detection works on macOS-arm64 and falls back gracefully.
@@ -114,7 +114,7 @@ def test_huge_hf_cache_marks_warn():
 
     warn_rows = [c for c in section.checks if c.status is eh.CheckStatus.WARN]
     assert any("HF cache size: 246 GB" in c.label for c in warn_rows)
-    assert any("rapid-mlx rm" in c.label for c in warn_rows)
+    assert any("qmlx rm" in c.label for c in warn_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ def test_network_probe_timeout_is_warning_not_failure():
     """An unreachable huggingface.co must produce ⚠, never ✗.
 
     This is the contract that lets air-gapped CI runners still get a
-    green ``rapid-mlx doctor`` (the spec is explicit about this).
+    green ``qmlx doctor`` (the spec is explicit about this).
     """
 
     def fake_probe() -> tuple[eh.CheckStatus, str]:
@@ -378,27 +378,27 @@ def test_argcomplete_not_in_rc_marks_warning(tmp_path: Path):
     fake_rc.write_text("export PATH=$PATH:~/bin\n")  # no argcomplete hook
 
     section = eh.section_shell_integration(
-        which=lambda name: "/usr/local/bin/rapid-mlx" if name == "rapid-mlx" else None,
+        which=lambda name: "/usr/local/bin/qmlx" if name == "qmlx" else None,
         rcs=[fake_rc],
     )
     argc_row = next(c for c in section.checks if "argcomplete" in c.label)
     assert argc_row.status is eh.CheckStatus.WARN
-    assert "register-python-argcomplete rapid-mlx" in argc_row.label
+    assert "register-python-argcomplete qmlx" in argc_row.label
 
 
 def test_argcomplete_present_marks_ok(tmp_path: Path):
     fake_rc = tmp_path / ".zshrc"
-    fake_rc.write_text('eval "$(register-python-argcomplete rapid-mlx)"\n')
+    fake_rc.write_text('eval "$(register-python-argcomplete qmlx)"\n')
 
     section = eh.section_shell_integration(
-        which=lambda name: "/usr/local/bin/rapid-mlx" if name == "rapid-mlx" else None,
+        which=lambda name: "/usr/local/bin/qmlx" if name == "qmlx" else None,
         rcs=[fake_rc],
     )
     argc_row = next(c for c in section.checks if "argcomplete" in c.label)
     assert argc_row.status is eh.CheckStatus.OK
 
 
-def test_rapid_mlx_not_on_path_marks_fail(tmp_path: Path):
+def test_qmlx_not_on_path_marks_fail(tmp_path: Path):
     section = eh.section_shell_integration(
         which=lambda name: None,
         rcs=[tmp_path / "missing.zshrc"],
@@ -499,7 +499,7 @@ def test_render_outputs_section_headers(capsys):
     out = buf.getvalue()
     assert "MySection" in out
     assert "Summary:" in out
-    assert "Rapid-MLX Doctor" in out
+    assert "qMLX Doctor" in out
 
 
 def test_render_verbose_includes_detail():

@@ -9,7 +9,7 @@ reasoning-before-message see message first and may discard the late
 reasoning item or treat the stream as malformed. The OpenAI Responses
 reference implementation always emits a ``reasoning`` item (possibly
 with empty content) BEFORE the message item — this test pins that
-invariant on the rapid-mlx streaming wire.
+invariant on the qmlx streaming wire.
 
 The invariant tested here:
   1. ``response.output_item.added`` events for "leading" items (currently

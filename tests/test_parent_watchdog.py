@@ -145,7 +145,7 @@ class TestInstallParentWatchdog:
         assert captured[0] == (real_ppid, 1)
 
     def test_loop_exits_when_stop_event_set(self):
-        """The thread exposes a ``_rapid_mlx_stop_event`` attribute so
+        """The thread exposes a ``_qmlx_stop_event`` attribute so
         a graceful-shutdown caller (or test) can disarm the watchdog
         without waiting for the next poll OR triggering the orphan
         path. Important for the future ``execve`` self-replacement
@@ -156,7 +156,7 @@ class TestInstallParentWatchdog:
         )
         assert thread is not None
         try:
-            stop_event = thread._rapid_mlx_stop_event  # type: ignore[attr-defined]
+            stop_event = thread._qmlx_stop_event  # type: ignore[attr-defined]
             assert isinstance(stop_event, threading.Event)
             stop_event.set()
             thread.join(timeout=2.0)
@@ -165,7 +165,7 @@ class TestInstallParentWatchdog:
             # Defensive — make sure the thread cannot outlive the test
             # even if assertions above raise.
             if thread.is_alive():
-                getattr(thread, "_rapid_mlx_stop_event", threading.Event()).set()
+                getattr(thread, "_qmlx_stop_event", threading.Event()).set()
                 thread.join(timeout=1.0)
 
     def test_callback_runs_only_once_per_install(self):
@@ -275,8 +275,8 @@ class TestServeCommandWiring:
 
 class TestInternalSpawnersStampWatchdog:
     """Source-pinned contract tests for in-tree supervisors that
-    themselves spawn ``rapid-mlx serve`` children (codex round-1 MAJOR
-    #1+#2): ``rapid-mlx share`` and ``rapid-mlx chat``. Without the
+    themselves spawn ``qmlx serve`` children (codex round-1 MAJOR
+    #1+#2): ``qmlx share`` and ``qmlx chat``. Without the
     stamp, a SIGKILL on the parent CLI invocation leaves the child
     serve as an orphan — the exact bug rapid-desktop #449 reports for
     the desktop case, applied to the local CLI."""
@@ -293,10 +293,10 @@ class TestInternalSpawnersStampWatchdog:
         start = source.index("def _spawn_chat_server(")
         end = source.find("\ndef ", start + 1)
         body = source[start : end if end != -1 else len(source)]
-        assert "RAPID_MLX_WATCHDOG_PPID" in body, (
+        assert "QMLX_WATCHDOG_PPID" in body, (
             "rapid-desktop #449 sibling regression: _spawn_chat_server "
-            "no longer stamps RAPID_MLX_WATCHDOG_PPID on the child env. "
-            "Without it, SIGKILL of `rapid-mlx chat` orphans the serve "
+            "no longer stamps QMLX_WATCHDOG_PPID on the child env. "
+            "Without it, SIGKILL of `qmlx chat` orphans the serve "
             "subprocess. Restore the env stamp."
         )
 
@@ -307,16 +307,16 @@ class TestInternalSpawnersStampWatchdog:
             Path(__file__).resolve().parents[1] / "vllm_mlx" / "share" / "cli.py"
         )
         source = share_file.read_text()
-        assert "RAPID_MLX_WATCHDOG_PPID" in source, (
-            "rapid-desktop #449 sibling regression: rapid-mlx share's "
-            "serve-spawn no longer stamps RAPID_MLX_WATCHDOG_PPID on the "
-            "child env. Without it, SIGKILL of `rapid-mlx share` leaves "
+        assert "QMLX_WATCHDOG_PPID" in source, (
+            "rapid-desktop #449 sibling regression: qmlx share's "
+            "serve-spawn no longer stamps QMLX_WATCHDOG_PPID on the "
+            "child env. Without it, SIGKILL of `qmlx share` leaves "
             "an orphan serve holding the bearer-gated port. Restore the "
             "env stamp."
         )
 
     def test_bench_serve_spawn_stamps_watchdog_ppid(self):
-        """Codex r2 MAJOR: ``rapid-mlx bench --tier ...`` boots a
+        """Codex r2 MAJOR: ``qmlx bench --tier ...`` boots a
         serve child via ``vllm_mlx/bench/_server.py``. Same SIGKILL-of-
         supervisor orphan story applies; pin the env stamp here too."""
         from pathlib import Path
@@ -325,10 +325,10 @@ class TestInternalSpawnersStampWatchdog:
             Path(__file__).resolve().parents[1] / "vllm_mlx" / "bench" / "_server.py"
         )
         source = bench_file.read_text()
-        assert "RAPID_MLX_WATCHDOG_PPID" in source, (
+        assert "QMLX_WATCHDOG_PPID" in source, (
             "rapid-desktop #449 sibling regression: bench/_server.py "
-            "no longer stamps RAPID_MLX_WATCHDOG_PPID on the spawned "
-            "serve child. SIGKILL of `rapid-mlx bench` would orphan "
+            "no longer stamps QMLX_WATCHDOG_PPID on the spawned "
+            "serve child. SIGKILL of `qmlx bench` would orphan "
             "the model server. Restore the env stamp."
         )
 
@@ -337,7 +337,7 @@ class TestInternalSpawnersStampWatchdog:
         the watchdog stamp.
 
         If the parent CLI invocation was itself launched under a
-        supervisor that exported ``RAPID_MLX_WATCHDOG_PPID=<gp_pid>``,
+        supervisor that exported ``QMLX_WATCHDOG_PPID=<gp_pid>``,
         ``setdefault`` would preserve the grandparent's PID. The serve
         child would then compare ``os.getppid()`` (= our immediate
         PID) against the grandparent's PID, mismatch on the FIRST
@@ -363,12 +363,12 @@ class TestInternalSpawnersStampWatchdog:
                 stripped = line.strip()
                 if stripped.startswith("#"):
                     continue
-                if "setdefault" in stripped and "RAPID_MLX_WATCHDOG_PPID" in stripped:
+                if "setdefault" in stripped and "QMLX_WATCHDOG_PPID" in stripped:
                     offenders.append(f"{spawner.name}: {stripped}")
         assert not offenders, (
             "rapid-desktop #449 sibling regression: a spawner used "
             "setdefault for the watchdog stamp. A grandparent's stale "
-            "RAPID_MLX_WATCHDOG_PPID would be inherited and the serve "
+            "QMLX_WATCHDOG_PPID would be inherited and the serve "
             "child would self-terminate immediately. Use direct "
             "assignment instead. Offending lines:\n  " + "\n  ".join(offenders)
         )
@@ -391,7 +391,7 @@ class TestDefaultOnOrphan:
             with pytest.raises(SystemExit):
                 pwd._default_on_orphan(expected_ppid=12345, observed_ppid=1)
         err = capsys.readouterr().err
-        assert "[rapid-mlx] parent watchdog" in err
+        assert "[qmlx] parent watchdog" in err
         assert "12345" in err
         assert "observed PPID 1" in err
         # SIGTERM first, SIGKILL second (matches the rapid-desktop

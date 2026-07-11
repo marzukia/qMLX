@@ -1373,7 +1373,7 @@ class TestWarnMisboundDeepseekV3Parser:
         family = _classify_deepseek_template_name(model_path)
         # The two layers must agree: if the classifier asserts a V3-template
         # sub-family, auto-detect MUST pin a parser inside that family —
-        # otherwise ``rapid-mlx serve`` silently binds the wrong parser.
+        # otherwise ``qmlx serve`` silently binds the wrong parser.
         if family in {"v3", "v31"}:
             assert cfg is not None
             assert cfg.tool_call_parser in _DEEPSEEK_V3_FAMILY_PARSERS, (
@@ -1433,7 +1433,7 @@ class TestWarnMisboundDeepseekV3Parser:
 
 class TestResolutionLogOnce:
     """0.9.5 dogfood: detect_model_config() is called 2-4 times per
-    `rapid-mlx serve` boot (cli, server, engine_core, pflash). Without
+    `qmlx serve` boot (cli, server, engine_core, pflash). Without
     de-dup, the user sees the same multi-line INFO 2-4 times. Log-once
     contract — one emit per unique model_path per process.
     """

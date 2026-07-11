@@ -265,7 +265,7 @@ def _run_once(
     """Run one generation under the requested condition.
 
     Imports ``mlx_lm`` lazily so ``--dry-run`` doesn't pay the
-    import cost. Imports the rapid-mlx MTP injection + generator
+    import cost. Imports the qmlx MTP injection + generator
     only when ``condition == "mtp"``.
 
     Returns a :class:`RunResult` carrying the decode tok/s and accept

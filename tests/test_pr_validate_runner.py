@@ -143,7 +143,7 @@ class TestFailFast:
     def test_skip_steps_drops_named_step_entirely(self, repo_root_cwd, capsys):
         """``skip_steps=("step_b",)`` removes step_b from the pipeline
         before iteration. This is what CI uses to drop
-        ``stress_e2e_bench`` — a real ``rapid-mlx serve`` boot can't run
+        ``stress_e2e_bench`` — a real ``qmlx serve`` boot can't run
         on a GitHub-hosted runner.
         """
         steps = _fake_pipeline(
@@ -1003,7 +1003,7 @@ class TestLangChainGuidedCapabilityHandling:
             response = _Response()
 
         assert test_langchain._is_guided_extra_required_error(_GuidedExtraError())
-        assert test_langchain._is_ok_result("SKIP: rapid-mlx[guided] not installed")
+        assert test_langchain._is_ok_result("SKIP: qmlx-serve[guided] not installed")
         assert not test_langchain._is_ok_result("SKIP: unrelated future check")
 
     def test_unrelated_langchain_error_still_fails(self):

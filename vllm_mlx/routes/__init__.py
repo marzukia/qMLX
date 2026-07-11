@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Route modules for the Rapid-MLX server.
+Route modules for the qMLX server.
 
 Routes are organized by API domain. Each module creates an APIRouter
 that server.py includes via app.include_router().

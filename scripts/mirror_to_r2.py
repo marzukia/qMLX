@@ -1,4 +1,4 @@
-"""Mirror a HuggingFace model repo into the rapid-mlx Cloudflare R2 bucket.
+"""Mirror a HuggingFace model repo into the qmlx Cloudflare R2 bucket.
 
 This tool is the persisted, in-repo counterpart to the ad-hoc uploads that
 seeded ``https://models.rapidmlx.com``. Client-side download uses
@@ -47,7 +47,7 @@ CLI:
 
 Defaults match the production R2 config
 (``https://f25478810829faf5ccc86f4ed9a96ef1.r2.cloudflarestorage.com``,
-bucket ``rapid-mlx-models``, profile ``r2``).
+bucket ``qmlx-models``, profile ``r2``).
 
 Install with ``pip install -e .[mirror]`` to pull ``boto3``.
 """
@@ -70,13 +70,13 @@ from typing import Any
 DEFAULT_ENDPOINT_URL = (
     "https://f25478810829faf5ccc86f4ed9a96ef1.r2.cloudflarestorage.com"
 )
-DEFAULT_BUCKET = "rapid-mlx-models"
+DEFAULT_BUCKET = "qmlx-models"
 DEFAULT_PROFILE = "r2"
 DEFAULT_PUBLIC_BASE = "https://models.rapidmlx.com"
 
 # Cloudflare 403s vanilla ``Python-urllib/*``; use a plausible UA that
 # also identifies the tool for R2 log grep.
-_USER_AGENT = "Mozilla/5.0 (rapid-mlx mirror uploader)"
+_USER_AGENT = "Mozilla/5.0 (qmlx mirror uploader)"
 
 
 def content_type_for(filename: str) -> str:
@@ -587,7 +587,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mirror_to_r2",
         description=(
-            "Mirror a HuggingFace model repo to the rapid-mlx R2 bucket. "
+            "Mirror a HuggingFace model repo to the qmlx R2 bucket. "
             "Streams file-by-file (peak disk = one shard) and verifies "
             "each object is publicly readable via models.rapidmlx.com."
         ),
@@ -601,7 +601,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--bucket",
         default=DEFAULT_BUCKET,
-        help="R2 bucket name (default: rapid-mlx-models)",
+        help="R2 bucket name (default: qmlx-models)",
     )
     p.add_argument(
         "--profile",

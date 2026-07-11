@@ -112,7 +112,7 @@ _LANE_SUBMODULES: dict[str, str] = {
 _KOKORO_EXTRA_DEP = "misaki"
 _KOKORO_EXTRA_HINT = (
     "Kokoro TTS requires the optional `misaki` G2P package, which is "
-    "not installed. Reinstall with `pip install 'qmlx[audio]'` "
+    "not installed. Reinstall with `pip install 'qmlx-serve[audio]'` "
     "to pull every audio dep, or `pip install misaki` for a "
     "minimal Kokoro-only install."
 )
@@ -415,7 +415,7 @@ def _raise_503(verdict: _Verdict) -> None:
     detail = verdict.reason or "mlx-audio is not available"
     raise HTTPException(
         status_code=503,
-        detail=(f"{detail}. Install with: pip install 'qmlx[audio]'"),
+        detail=(f"{detail}. Install with: pip install 'qmlx-serve[audio]'"),
     )
 
 
@@ -476,7 +476,7 @@ require_mlx_audio = require_mlx_audio_tts
 #: Canonical install-hint copy — shared with the route probes via
 #: :func:`_raise_503` so a torn install reports the same one-liner
 #: whether the operator hit it at boot or mid-request.
-AUDIO_EXTRA_INSTALL_HINT = "Install with: pip install 'qmlx[audio]'"
+AUDIO_EXTRA_INSTALL_HINT = "Install with: pip install 'qmlx-serve[audio]'"
 
 
 # Known audio alias surface — kept narrow on purpose. The list is

@@ -24,22 +24,22 @@ the ``hy_v3`` tool + reasoning parsers without booting the 166 GB model.
 
 Both matrices reuse the same server fixture, cheap-alias-per-family fixture,
 and assertion helpers. The fixtures never boot the server themselves — the
-operator (or CI) must have a rapid-mlx server already listening on
-``RAPID_MLX_BASE_URL`` (default ``http://localhost:8000/v1``) before running
+operator (or CI) must have a qmlx server already listening on
+``QMLX_BASE_URL`` (default ``http://localhost:8000/v1``) before running
 these tests. If no server is reachable, every test in the matrix ``skip``s
 so ``pytest tests/integrations`` never produces a false red on a clean box.
 
 Environment overrides
 ---------------------
 
-* ``RAPID_MLX_BASE_URL`` — where to point clients (default: localhost:8000/v1).
-* ``RAPID_MLX_AGENT_MATRIX_FAMILY`` — restrict matrix to one family
+* ``QMLX_BASE_URL`` — where to point clients (default: localhost:8000/v1).
+* ``QMLX_AGENT_MATRIX_FAMILY`` — restrict matrix to one family
   (``qwen36`` / ``gemma4`` / ``deepseek`` / ``gptoss`` / ``hy3``). Handy
   for CI shards, and mandatory in Golden-Path runs so the CI job knows
   which server alias to boot. ``hy3`` is Ultra-only (166 GB) and its
   cells are strict-xfail regardless, so this shard is only meaningful in
   the weekly Golden Path job on real hardware.
-* ``RAPID_MLX_MATRIX_STRICT`` — if ``1``, missing-server / model-mismatch
+* ``QMLX_MATRIX_STRICT`` — if ``1``, missing-server / model-mismatch
   raise instead of skipping. Off by default so a naive ``pytest`` run stays
   green.
 
@@ -75,7 +75,7 @@ class FamilyAlias:
     """A cheap-per-family alias used across the matrices."""
 
     family: str  # matrix column key: "qwen36" / "gemma4" / "deepseek" / "gptoss"
-    alias: str  # rapid-mlx alias string (positional model arg)
+    alias: str  # qmlx alias string (positional model arg)
     reason: str  # why this alias — used in skip messages
 
 
@@ -156,14 +156,14 @@ _FAMILY_ALIASES: dict[str, FamilyAlias] = {
 def _families_in_scope() -> tuple[str, ...]:
     """Return the families to parametrize over.
 
-    Honours ``RAPID_MLX_AGENT_MATRIX_FAMILY`` for CI sharding — set that
+    Honours ``QMLX_AGENT_MATRIX_FAMILY`` for CI sharding — set that
     env to one family key to restrict the run to a single column.
     """
-    only = os.environ.get("RAPID_MLX_AGENT_MATRIX_FAMILY", "").strip()
+    only = os.environ.get("QMLX_AGENT_MATRIX_FAMILY", "").strip()
     if only:
         if only not in _FAMILY_ALIASES:
             raise ValueError(
-                f"RAPID_MLX_AGENT_MATRIX_FAMILY={only!r} unknown; "
+                f"QMLX_AGENT_MATRIX_FAMILY={only!r} unknown; "
                 f"valid: {sorted(_FAMILY_ALIASES)}"
             )
         return (only,)
@@ -171,15 +171,15 @@ def _families_in_scope() -> tuple[str, ...]:
 
 
 def _strict() -> bool:
-    return os.environ.get("RAPID_MLX_MATRIX_STRICT", "").strip() == "1"
+    return os.environ.get("QMLX_MATRIX_STRICT", "").strip() == "1"
 
 
 def matrix_strict_mode() -> bool:
-    """Public accessor for ``RAPID_MLX_MATRIX_STRICT``.
+    """Public accessor for ``QMLX_MATRIX_STRICT``.
 
     Cells use this to decide whether to skip on a server / route / SDK
     failure (default, non-strict) or fail the CI job (strict). CI shards
-    that want per-cell coverage enforcement set ``RAPID_MLX_MATRIX_STRICT=1``
+    that want per-cell coverage enforcement set ``QMLX_MATRIX_STRICT=1``
     before running the matrix.
     """
     return _strict()
@@ -191,7 +191,7 @@ def strict_skip_or_fail(reason: str) -> None:
     Consolidates the "cell degraded, not red" pattern so a broken
     server-side route or a regressed SDK doesn't quietly hide behind a
     green skipped cell when the operator asked for enforcement via
-    ``RAPID_MLX_MATRIX_STRICT=1``. Codex #1030 flagged the earlier all-skip
+    ``QMLX_MATRIX_STRICT=1``. Codex #1030 flagged the earlier all-skip
     pattern as regression-hiding.
     """
     if _strict():
@@ -205,18 +205,18 @@ def strict_skip_or_fail(reason: str) -> None:
 
 
 @pytest.fixture(scope="session")
-def rapid_mlx_base_url() -> str:
-    """Return the base URL of the rapid-mlx server under test."""
-    return os.environ.get("RAPID_MLX_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+def qmlx_base_url() -> str:
+    """Return the base URL of the qmlx server under test."""
+    return os.environ.get("QMLX_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
 
 
 @pytest.fixture(scope="session")
-def rapid_mlx_server(rapid_mlx_base_url: str) -> dict[str, Any]:
-    """Verify a rapid-mlx server is reachable; return metadata.
+def qmlx_server(qmlx_base_url: str) -> dict[str, Any]:
+    """Verify a qmlx server is reachable; return metadata.
 
     Yields a dict with ``base_url`` and ``model_id`` (the first entry from
     ``/v1/models``). If no server is reachable, this fixture ``skip``s the
-    dependent test unless ``RAPID_MLX_MATRIX_STRICT=1`` is set — that flag
+    dependent test unless ``QMLX_MATRIX_STRICT=1`` is set — that flag
     turns the miss into a hard fail so CI can enforce coverage.
     """
     try:
@@ -225,7 +225,7 @@ def rapid_mlx_server(rapid_mlx_base_url: str) -> dict[str, Any]:
         pytest.skip("httpx not installed — matrix skipped")
 
     try:
-        resp = httpx.get(f"{rapid_mlx_base_url}/models", timeout=3.0)
+        resp = httpx.get(f"{qmlx_base_url}/models", timeout=3.0)
         resp.raise_for_status()
         data = resp.json().get("data") or []
         if not data:
@@ -233,15 +233,15 @@ def rapid_mlx_server(rapid_mlx_base_url: str) -> dict[str, Any]:
         model_id = data[0]["id"]
     except Exception as exc:  # noqa: BLE001 — surface the underlying error
         message = (
-            f"No rapid-mlx server reachable at {rapid_mlx_base_url}: {exc!r}. "
-            "Start one with `rapid-mlx serve <alias>` before running the "
-            "matrix, or set RAPID_MLX_MATRIX_STRICT=1 to hard-fail instead."
+            f"No qmlx server reachable at {qmlx_base_url}: {exc!r}. "
+            "Start one with `qmlx serve <alias>` before running the "
+            "matrix, or set QMLX_MATRIX_STRICT=1 to hard-fail instead."
         )
         if _strict():
             pytest.fail(message)
         pytest.skip(message)
 
-    return {"base_url": rapid_mlx_base_url, "model_id": model_id}
+    return {"base_url": qmlx_base_url, "model_id": model_id}
 
 
 # --------------------------------------------------------------------------- #
@@ -263,7 +263,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 @pytest.fixture(scope="session")
 def family_alias_for_active_server(
-    rapid_mlx_server: dict[str, Any],
+    qmlx_server: dict[str, Any],
 ) -> FamilyAlias | None:
     """Best-effort mapping from the running server's model_id → family.
 
@@ -271,7 +271,7 @@ def family_alias_for_active_server(
     prefix — matrix tests then skip themselves so we never assert against
     a wire the operator's booted server isn't actually running.
     """
-    mid = rapid_mlx_server["model_id"].lower()
+    mid = qmlx_server["model_id"].lower()
     if mid.startswith("qwen3.6") or "qwen3.6" in mid:
         return _FAMILY_ALIASES["qwen36"]
     if mid.startswith("gemma-4") or "gemma-4" in mid:
@@ -320,14 +320,14 @@ def family_alias_for_active_server(
 #    the get_weather tool."
 #
 # is deterministic across 4bit (16 GB) and 8bit (34.8 GB) variants —
-# not a quantization artifact, not a rapid-mlx parser bug. The base
+# not a quantization artifact, not a qmlx parser bug. The base
 # Qwen 2.5-32B tool-emission capability was lost during distillation.
 #
 # Rather than downgrade these 9 cells to skips (G8: "root-cause failures,
 # do not hide behind skips") we mark them ``xfail(strict=True)`` with
 # the architectural reason surfaced in test output. This matches the
 # existing OpenHands / Aider strict-xfail pattern in
-# ``test_agents_matrix.py``. If a future rapid-mlx change (or a fine-
+# ``test_agents_matrix.py``. If a future qmlx change (or a fine-
 # tune, or a V4-Flash upgrade) DID unlock tool_calls for the DeepSeek
 # family, the strict marker would XPASS and force a revisit.
 #
@@ -379,7 +379,7 @@ _DEEPSEEK_R1_XFAIL_REASON = (
 # Note (2026-07-07 revised): gpt-oss + OpenHands remains strict-xfail'd, but
 # the ROOT CAUSE has changed. PR #1051 (channel-scoped user stops in the
 # harmony scheduler path; see ``vllm_mlx/reasoning/harmony_stop.py``) fixed
-# the rapid-mlx-side wire bug — a wire-level probe against the running
+# the qmlx-side wire bug — a wire-level probe against the running
 # server with ``stop=["</execute_bash>", "</execute_ipython>"]`` now returns
 # non-empty ``content`` and ``finish_reason=stop`` instead of the pre-fix
 # empty-content premature stop. That fix is pinned at the unit level by
@@ -393,7 +393,7 @@ _DEEPSEEK_R1_XFAIL_REASON = (
 # empty ``MessageAction`` → prompts "Request user input >>" → EOFError on
 # the non-interactive stdin → 300 s wall-clock timeout, ``add.py`` never
 # rewritten. This is an upstream OpenHands CodeActAgent parser gap
-# (harmony format not yet supported), not a rapid-mlx bug. Filed as an
+# (harmony format not yet supported), not a qmlx bug. Filed as an
 # informational note in
 # https://github.com/All-Hands-AI/OpenHands/issues/15167.
 #
@@ -408,7 +408,7 @@ _GPTOSS_OPENHANDS_XFAIL_REASON = (
     "gpt-oss's native harmony output format (analysis + final channels, "
     "plain markdown code in the final channel) does not emit the "
     "<execute_bash>/<execute_ipython> text-action XML tags that OpenHands' "
-    "CodeActAgent parses. The rapid-mlx-side wire-level fix from PR #1051 "
+    "CodeActAgent parses. The qmlx-side wire-level fix from PR #1051 "
     "is confirmed via ``tests/test_harmony_stop_final_channel_only.py`` "
     "(harmony parser now channel-scopes user stops), but the end-to-end "
     "harness still times out at 300 s because CodeActAgent treats the "
@@ -536,7 +536,7 @@ def _guard_family_matches_server(request: pytest.FixtureRequest) -> None:
     * ``family_alias_for_active_server`` maps the running model → family;
     * mismatch → ``strict_skip_or_fail`` (fail in strict, skip otherwise).
 
-    Codex #1030 round-4 finding 1: ``rapid_mlx_server`` and
+    Codex #1030 round-4 finding 1: ``qmlx_server`` and
     ``family_alias_for_active_server`` are fetched **lazily** — only when
     a cell has actually opted in by requesting ``family_alias``. Fetching
     them unconditionally would force every existing deep-flow test in
@@ -550,7 +550,7 @@ def _guard_family_matches_server(request: pytest.FixtureRequest) -> None:
     except pytest.FixtureLookupError:
         return
     # Lazy fetch — only after we know this cell opted into the family matrix.
-    server_info: dict[str, Any] = request.getfixturevalue("rapid_mlx_server")
+    server_info: dict[str, Any] = request.getfixturevalue("qmlx_server")
     active: FamilyAlias | None = request.getfixturevalue(
         "family_alias_for_active_server"
     )
@@ -566,7 +566,7 @@ def _guard_family_matches_server(request: pytest.FixtureRequest) -> None:
             f"cell {cell_family.family}: running server is {active.family} "
             f"({server_info['model_id']!r}) — coverage for {cell_family.family} "
             f"belongs in a separate matrix run "
-            f"(RAPID_MLX_AGENT_MATRIX_FAMILY={cell_family.family})."
+            f"(QMLX_AGENT_MATRIX_FAMILY={cell_family.family})."
         )
 
 

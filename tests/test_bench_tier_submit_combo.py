@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``rapid-mlx bench <model> --tier <T> --submit`` — PR #5 unification.
+"""``qmlx bench <model> --tier <T> --submit`` — PR #5 unification.
 
 PR #2 landed ``--tier`` and PR #3 landed schema v2 with optional
 ``smoke_result`` / ``harness_result`` sub-objects, but the CLI kept
@@ -58,7 +58,7 @@ def _stub_bench_inputs():
     )
 
     hw = Hardware(chip="Apple M4 Pro", ram_gb=24, cpu_cores=12, gpu_cores=20)
-    sw = Software(macos="26.5.1", rapid_mlx="0.7.25", mlx="0.31.2", python="3.12.13")
+    sw = Software(macos="26.5.1", qmlx="0.7.25", mlx="0.31.2", python="3.12.13")
     rounds = [
         RoundResult(decode_tps=42.0, prefill_tps=500.0, ttft_ms=120.0) for _ in range(5)
     ]
@@ -471,7 +471,7 @@ def test_mutual_exclusive_guard_removed():
     old_argv = _sys.argv
     _cli.bench_command = _fake_bench_command
     _sys.argv = [
-        "rapid-mlx",
+        "qmlx",
         "bench",
         "qwen3.5-9b-4bit",
         "--tier",

@@ -483,7 +483,7 @@ class TestSkipList:
 def _build_minimal_parser() -> argparse.ArgumentParser:
     """A trimmed-down clone of the serve --kv-cache-turboquant flag.
 
-    Building the full CLI parser here would drag the entire rapid-mlx
+    Building the full CLI parser here would drag the entire qmlx
     surface — these tests only need the argparse contract.
     """
     parser = argparse.ArgumentParser(add_help=False)
@@ -600,7 +600,7 @@ class TestServerEntrypointParity:
     def test_server_argparse_accepts_none_off_switch(self):
         """#969 pre-fix: ``choices=["v4", "k8v4"]`` REJECTED the
         ``--kv-cache-turboquant none`` off-switch added in #962. Post-fix
-        the standalone entry must accept it just like ``rapid-mlx serve``.
+        the standalone entry must accept it just like ``qmlx serve``.
         """
         choices = _extract_server_argparse_choices("--kv-cache-turboquant")
         assert choices is not None, (
@@ -750,15 +750,15 @@ class TestMetrics:
 
         _reset_turboquant_state_for_tests()
         body = "\n".join(_render_turboquant_metrics(SimpleNamespace(engine=None)))
-        assert 'rapid_mlx_turboquant_mode{mode="disabled"} 1' in body
-        assert 'rapid_mlx_turboquant_mode{mode="v4"} 0' in body
-        assert 'rapid_mlx_turboquant_mode{mode="k8v4"} 0' in body
+        assert 'qmlx_turboquant_mode{mode="disabled"} 1' in body
+        assert 'qmlx_turboquant_mode{mode="v4"} 0' in body
+        assert 'qmlx_turboquant_mode{mode="k8v4"} 0' in body
         # Skip counters present with 0 values.
-        assert 'rapid_mlx_turboquant_skipped_total{reason="sliding-window"} 0' in body
-        assert 'rapid_mlx_turboquant_skipped_total{reason="mla"} 0' in body
-        assert 'rapid_mlx_turboquant_skipped_total{reason="other"} 0' in body
+        assert 'qmlx_turboquant_skipped_total{reason="sliding-window"} 0' in body
+        assert 'qmlx_turboquant_skipped_total{reason="mla"} 0' in body
+        assert 'qmlx_turboquant_skipped_total{reason="other"} 0' in body
         # Fused kernel gauge has exactly one of available/fallback at 1.
-        assert "rapid_mlx_turboquant_fused_kernel" in body
+        assert "qmlx_turboquant_fused_kernel" in body
 
     def test_render_turboquant_metrics_k8v4_mode(self):
         from types import SimpleNamespace
@@ -777,8 +777,8 @@ class TestMetrics:
         )
         cfg = SimpleNamespace(engine=engine)
         body = "\n".join(_render_turboquant_metrics(cfg))
-        assert 'rapid_mlx_turboquant_mode{mode="k8v4"} 1' in body
-        assert 'rapid_mlx_turboquant_mode{mode="disabled"} 0' in body
+        assert 'qmlx_turboquant_mode{mode="k8v4"} 1' in body
+        assert 'qmlx_turboquant_mode{mode="disabled"} 0' in body
 
     def test_record_skip_increments_counter(self):
         from types import SimpleNamespace
@@ -794,9 +794,9 @@ class TestMetrics:
         record_turboquant_skip("sliding-window")
         record_turboquant_skip("mla")
         body = "\n".join(_render_turboquant_metrics(SimpleNamespace(engine=None)))
-        assert 'rapid_mlx_turboquant_skipped_total{reason="sliding-window"} 2' in body
-        assert 'rapid_mlx_turboquant_skipped_total{reason="mla"} 1' in body
-        assert 'rapid_mlx_turboquant_skipped_total{reason="other"} 0' in body
+        assert 'qmlx_turboquant_skipped_total{reason="sliding-window"} 2' in body
+        assert 'qmlx_turboquant_skipped_total{reason="mla"} 1' in body
+        assert 'qmlx_turboquant_skipped_total{reason="other"} 0' in body
 
     def test_unknown_skip_reason_folds_to_other(self):
         from types import SimpleNamespace
@@ -810,7 +810,7 @@ class TestMetrics:
         _reset_turboquant_state_for_tests()
         record_turboquant_skip("typo-reason")
         body = "\n".join(_render_turboquant_metrics(SimpleNamespace(engine=None)))
-        assert 'rapid_mlx_turboquant_skipped_total{reason="other"} 1' in body
+        assert 'qmlx_turboquant_skipped_total{reason="other"} 1' in body
 
 
 # Per-alias K8V4 default-on resolver + codec dtype preservation (task #332).

@@ -109,12 +109,12 @@ REQUIRED_PACKAGES: list[tuple[str, str]] = [
 # (warning) not ✗ — that's the whole point of "optional". The hint is
 # echoed verbatim in the report so the user can copy-paste.
 OPTIONAL_PACKAGES: list[tuple[str, str, str]] = [
-    ("mlx-vlm", "mlx-vlm (vision extras)", "pip install 'qmlx[vision]'"),
-    ("mlx-audio", "mlx-audio (audio extras)", "pip install 'qmlx[audio]'"),
+    ("mlx-vlm", "mlx-vlm (vision extras)", "pip install 'qmlx-serve[vision]'"),
+    ("mlx-audio", "mlx-audio (audio extras)", "pip install 'qmlx-serve[audio]'"),
     (
         "mlx-embeddings",
         "mlx-embeddings (embeddings extras)",
-        "pip install 'qmlx[embeddings]'",
+        "pip install 'qmlx-serve[embeddings]'",
     ),
 ]
 
@@ -495,7 +495,7 @@ def section_optional_packages() -> Section:
     # The plain optional-package row above only reports presence/version —
     # it cannot say "you have mlx-vlm but it's too old for [dflash]". This
     # extra row makes the gate explicit so a fresh-install user knows whether
-    # `pip install 'qmlx[dflash]'` will actually work.
+    # `pip install 'qmlx-serve[dflash]'` will actually work.
     dflash_min = (0, 5, 0)
     vlm_ver = _safe_version("mlx-vlm")
     if vlm_ver and _version_at_least(vlm_ver, dflash_min):
@@ -510,7 +510,7 @@ def section_optional_packages() -> Section:
             f"mlx-vlm 0.5.0+ (dflash extras) not installed or too old "
             f"(current: {current}, need: 0.5.0+)",
             CheckStatus.WARN,
-            detail="pip install 'qmlx[dflash]'",
+            detail="pip install 'qmlx-serve[dflash]'",
         )
 
     return s

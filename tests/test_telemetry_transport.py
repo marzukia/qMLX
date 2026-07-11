@@ -20,8 +20,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY_DEBUG", raising=False)
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY_ENDPOINT", raising=False)
+    monkeypatch.delenv("QMLX_TELEMETRY_DEBUG", raising=False)
+    monkeypatch.delenv("QMLX_TELEMETRY_ENDPOINT", raising=False)
 
 
 def test_empty_batch_is_success_no_network():
@@ -221,7 +221,7 @@ def test_oversized_payload_dropped_locally():
 
 def test_non_https_non_loopback_override_fails_closed(monkeypatch):
     """Round 16 codex review: a set-but-rejected
-    ``RAPID_MLX_TELEMETRY_ENDPOINT`` used to silently fall back to the
+    ``QMLX_TELEMETRY_ENDPOINT`` used to silently fall back to the
     production endpoint, which meant a dev typo (or stale shell rc)
     could leak opted-in test events into the production R2 bucket
     without the operator noticing. ``endpoint()`` now returns ``None``
@@ -230,12 +230,12 @@ def test_non_https_non_loopback_override_fails_closed(monkeypatch):
     ``DEFAULT_ENDPOINT``."""
     from vllm_mlx.telemetry import transport
 
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "http://insecure.example/v1")
+    monkeypatch.setenv("QMLX_TELEMETRY_ENDPOINT", "http://insecure.example/v1")
     assert transport.endpoint() is None
 
 
 def test_endpoint_override_only_accepts_localhost(monkeypatch):
-    """Round 3 codex review: an unrestricted ``RAPID_MLX_TELEMETRY_ENDPOINT``
+    """Round 3 codex review: an unrestricted ``QMLX_TELEMETRY_ENDPOINT``
     let a hostile shell rc / wrapper script redirect opted-in users'
     events to an attacker-controlled collector. The override is now
     restricted to localhost / 127.0.0.1 / ::1 (the only legitimate use
@@ -252,7 +252,7 @@ def test_endpoint_override_only_accepts_localhost(monkeypatch):
         "https://localhost/v1/events",
         "http://[::1]:8787/v1/events",
     ):
-        monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", ok)
+        monkeypatch.setenv("QMLX_TELEMETRY_ENDPOINT", ok)
         assert transport.endpoint() == ok, f"{ok} should be accepted"
 
     # Anything else is REJECTED (returns None -- fail closed).
@@ -263,12 +263,12 @@ def test_endpoint_override_only_accepts_localhost(monkeypatch):
         "ftp://localhost/v1/events",
         "not-a-url",
     ):
-        monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", bad)
+        monkeypatch.setenv("QMLX_TELEMETRY_ENDPOINT", bad)
         assert transport.endpoint() is None, f"{bad} should be refused (fail closed)"
 
     # Sanity: env var entirely absent still resolves to the production
     # default -- the fail-closed change is scoped to set-but-rejected.
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY_ENDPOINT", raising=False)
+    monkeypatch.delenv("QMLX_TELEMETRY_ENDPOINT", raising=False)
     assert transport.endpoint() == transport.DEFAULT_ENDPOINT
 
 
@@ -279,7 +279,7 @@ def test_post_batch_fails_closed_on_rejected_override(monkeypatch):
     check (or restores the silent fallback) is caught immediately."""
     from vllm_mlx.telemetry import transport
 
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "https://attacker.example/v1")
+    monkeypatch.setenv("QMLX_TELEMETRY_ENDPOINT", "https://attacker.example/v1")
 
     called = []
 
@@ -326,7 +326,7 @@ def test_malformed_port_localhost_override_does_not_raise(monkeypatch):
     rejection is silent at this layer; ``post_batch`` logs + drops."""
     from vllm_mlx.telemetry import transport
 
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY_ENDPOINT", "http://localhost:bad/v1")
+    monkeypatch.setenv("QMLX_TELEMETRY_ENDPOINT", "http://localhost:bad/v1")
     assert transport.endpoint() is None
 
 
@@ -398,17 +398,17 @@ def test_user_agent_is_self_identifying():
     the contract is to identify the package + version explicitly so
     the receiver can attribute traffic.
 
-    Round 15 codex review caught the previous ``"rapid-mlx" in ua``
-    assertion was too loose: a versionless ``"rapid-mlx"`` UA would
+    Round 15 codex review caught the previous ``"qmlx" in ua``
+    assertion was too loose: a versionless ``"qmlx"`` UA would
     have passed, defeating the "package + version" contract advertised
-    in the docstring. Pin the exact ``rapid-mlx/<version>`` shape."""
+    in the docstring. Pin the exact ``qmlx/<version>`` shape."""
     import re
 
     from vllm_mlx.telemetry import transport
 
     ua = transport._user_agent()
-    assert re.search(r"\brapid-mlx/\S+", ua), (
-        f"UA must follow 'rapid-mlx/<version>' shape, got {ua!r}"
+    assert re.search(r"\bqmlx/\S+", ua), (
+        f"UA must follow 'qmlx/<version>' shape, got {ua!r}"
     )
     assert "Python-urllib" not in ua
 
@@ -437,8 +437,8 @@ def test_post_sends_self_identifying_user_agent():
     ua = {k.lower(): v for k, v in captured["headers"].items()}["user-agent"]
     # Round 15: same tighter assertion as ``_user_agent`` — package
     # AND version, not just the package name.
-    assert re.search(r"\brapid-mlx/\S+", ua), (
-        f"UA must follow 'rapid-mlx/<version>' shape, got {ua!r}"
+    assert re.search(r"\bqmlx/\S+", ua), (
+        f"UA must follow 'qmlx/<version>' shape, got {ua!r}"
     )
     assert "Python-urllib" not in ua
 
@@ -446,13 +446,13 @@ def test_post_sends_self_identifying_user_agent():
 def test_debug_env_truthy_off_by_default(monkeypatch):
     from vllm_mlx.telemetry import transport
 
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY_DEBUG", raising=False)
+    monkeypatch.delenv("QMLX_TELEMETRY_DEBUG", raising=False)
     assert transport.debug_enabled() is False
 
     for falsy in ("0", "false", "no", "off", ""):
-        monkeypatch.setenv("RAPID_MLX_TELEMETRY_DEBUG", falsy)
+        monkeypatch.setenv("QMLX_TELEMETRY_DEBUG", falsy)
         assert transport.debug_enabled() is False
 
     for truthy in ("1", "true", "yes", "on"):
-        monkeypatch.setenv("RAPID_MLX_TELEMETRY_DEBUG", truthy)
+        monkeypatch.setenv("QMLX_TELEMETRY_DEBUG", truthy)
         assert transport.debug_enabled() is True

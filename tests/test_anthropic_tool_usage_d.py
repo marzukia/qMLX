@@ -59,7 +59,7 @@ class _BaseEngine:
         # double, only their NAMES contribute to the count — same shape
         # the production tokenizer would see after chat-template render.
         # ``enable_thinking`` is accepted for signature parity with the
-        # real engine's ``build_prompt`` (rapid-mlx#280) but does not
+        # real engine's ``build_prompt`` (qmlx#280) but does not
         # alter the rendered output in this test double — the anthropic
         # route does not run the R12-T1F / R12-T2F auto-disable.
         parts = []

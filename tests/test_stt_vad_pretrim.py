@@ -142,7 +142,7 @@ def stub_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(stt_mod, "_VAD_IMPORT_UNAVAILABLE", False, raising=True)
     monkeypatch.setattr(stt_mod, "_VAD_LOAD_FAILURE_LOGGED", False, raising=True)
     # Ensure env override does not leak in from the host.
-    monkeypatch.delenv("RAPID_MLX_STT_VAD_PRETRIM", raising=False)
+    monkeypatch.delenv("QMLX_STT_VAD_PRETRIM", raising=False)
 
     fake_vad = _FakeVAD(timestamps=[])
     fake_whisper = _FakeWhisperModel()
@@ -266,12 +266,12 @@ class TestTrailingSilenceTrimmed:
 
 
 class TestVADDisabledViaEnv:
-    """Env override ``RAPID_MLX_STT_VAD_PRETRIM=0`` must fully bypass
+    """Env override ``QMLX_STT_VAD_PRETRIM=0`` must fully bypass
     the guard: VAD is never asked, Whisper receives the original path."""
 
     def test_vad_disabled_via_env_pass_through(self, stub_engine, monkeypatch):
         eng, fake_vad, fake_whisper, path, *_ = stub_engine
-        monkeypatch.setenv("RAPID_MLX_STT_VAD_PRETRIM", "0")
+        monkeypatch.setenv("QMLX_STT_VAD_PRETRIM", "0")
 
         result = eng.transcribe(path)
 
@@ -289,7 +289,7 @@ class TestVADDisabledViaEnv:
         self, stub_engine, monkeypatch, value
     ):
         eng, fake_vad, fake_whisper, path, *_ = stub_engine
-        monkeypatch.setenv("RAPID_MLX_STT_VAD_PRETRIM", value)
+        monkeypatch.setenv("QMLX_STT_VAD_PRETRIM", value)
 
         eng.transcribe(path)
 
@@ -383,7 +383,7 @@ class TestKwargOverrideDisables:
 
 class TestVADImportFailureFallsBack:
     """If ``mlx_audio.vad`` is not importable (e.g. user installed
-    rapid-mlx without the ``[audio]`` extra but supplied their own
+    qmlx without the ``[audio]`` extra but supplied their own
     Whisper build), the guard must gracefully skip and pass through
     to the original path — never raise."""
 
@@ -397,7 +397,7 @@ class TestVADImportFailureFallsBack:
         monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None)
         monkeypatch.setattr(stt_mod, "_VAD_IMPORT_UNAVAILABLE", False)
         monkeypatch.setattr(stt_mod, "_VAD_LOAD_FAILURE_LOGGED", False)
-        monkeypatch.delenv("RAPID_MLX_STT_VAD_PRETRIM", raising=False)
+        monkeypatch.delenv("QMLX_STT_VAD_PRETRIM", raising=False)
 
         import sys as _sys
 
@@ -865,9 +865,9 @@ class TestEnvHelper:
         from vllm_mlx.audio import stt as stt_mod
 
         if val is None:
-            monkeypatch.delenv("RAPID_MLX_STT_VAD_PRETRIM", raising=False)
+            monkeypatch.delenv("QMLX_STT_VAD_PRETRIM", raising=False)
         else:
-            monkeypatch.setenv("RAPID_MLX_STT_VAD_PRETRIM", val)
+            monkeypatch.setenv("QMLX_STT_VAD_PRETRIM", val)
         assert stt_mod._vad_pretrim_disabled_by_env() is expected
 
 

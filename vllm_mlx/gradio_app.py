@@ -27,7 +27,7 @@ except ImportError:
 
     print(
         "Error: gradio is required for the chat UI.\n"
-        "Install it with: pip install 'qmlx[chat]'\n"
+        "Install it with: pip install 'qmlx-serve[chat]'\n"
         "\n"
         "The qmlx-chat command requires the [chat] extra which\n"
         "includes gradio and pytz. It is not installed by default to\n"
@@ -364,7 +364,7 @@ Note: Make sure the qmlx server is running with a multimodal model:
 
         demo = gr.ChatInterface(
             fn=text_chat,
-            title="Rapid-MLX Text Chat",
+            title="qMLX Text Chat",
             description="Fast text-only chat with LLM models on Apple Silicon.",
             examples=[
                 "Hello, who are you?",
@@ -385,7 +385,7 @@ Note: Make sure the qmlx server is running with a multimodal model:
         # Create ChatInterface with multimodal support
         demo = gr.ChatInterface(
             fn=chat_fn,
-            title="Rapid-MLX Multimodal Chat",
+            title="qMLX Multimodal Chat",
             description="Chat with vision-language models on Apple Silicon. Upload images or videos!",
             multimodal=True,
             textbox=gr.MultimodalTextbox(

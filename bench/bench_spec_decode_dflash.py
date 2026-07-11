@@ -15,7 +15,7 @@ Architecture note (#343 fix)
 The bench drives the WORKING DFlash path: both target and drafter load
 through ``mlx_vlm`` (0.6.3) and generation flows through
 ``mlx_vlm.stream_generate`` with the drafter bound. Previously this
-script tried to call rapid-mlx's own
+script tried to call qmlx's own
 :func:`vllm_mlx.spec_decode.dflash.generator.dflash_generate_step`
 loop, which in turn called a ``draft_block(prefix_tokens,
 current_position)`` adapter signature that mlx-vlm 0.6.3's
@@ -147,7 +147,7 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help=(
             "Drafter HF path override (default: empty = use registry). "
-            "Mirrors the rapid-mlx serve --dflash-drafter-path flag."
+            "Mirrors the qmlx serve --dflash-drafter-path flag."
         ),
     )
     parser.add_argument(
@@ -380,7 +380,7 @@ def _run_dflash_once(
     max_tokens: int,
     temp: float,
 ) -> RunResult:
-    """Run one DFlash generation via the rapid-mlx driver wrapper."""
+    """Run one DFlash generation via the qmlx driver wrapper."""
     t0 = time.perf_counter()
     n = 0
     for chunk in driver.generate(

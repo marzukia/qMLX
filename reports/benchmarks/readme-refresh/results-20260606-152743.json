@@ -6,7 +6,7 @@
   "results": [
     {
       "model": "qwen3.5-27b",
-      "engine": "rapid-mlx",
+      "engine": "qmlx",
       "arch_note": "Same MLX weights",
       "median_aggregate_tps": 33.32382125677495,
       "median_per_stream_tps": 34.125316918593704,

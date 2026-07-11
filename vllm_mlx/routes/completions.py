@@ -86,7 +86,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             ),
         )
     # F-152: legacy completions params that have NO implementation on
-    # Rapid-MLX must fail loudly instead of returning 200 with a single
+    # qMLX must fail loudly instead of returning 200 with a single
     # completion (the silent-compat lie SDKs port broken from). The
     # canonical chat-completions handler already rejects ``n > 1``;
     # mirror that here and extend to ``best_of`` (a top-k rerank knob
@@ -97,7 +97,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         raise HTTPException(
             status_code=400,
             detail=(
-                "n > 1 is not supported on /v1/completions. Rapid-MLX "
+                "n > 1 is not supported on /v1/completions. qMLX "
                 "generates one completion per request — send "
                 "individual requests if you need multiple samples."
             ),
@@ -107,7 +107,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             status_code=400,
             detail=(
                 "best_of > 1 is not supported on /v1/completions. "
-                "Rapid-MLX has no server-side reranker — send "
+                "qMLX has no server-side reranker — send "
                 "individual requests and rerank client-side."
             ),
         )
@@ -143,7 +143,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             status_code=400,
             detail=(
                 "`echo` combined with `logprobs` is not supported on "
-                "/v1/completions: Rapid-MLX does not replay the prompt "
+                "/v1/completions: qMLX does not replay the prompt "
                 "through the sampler, so we cannot return per-token "
                 "logprobs for the echoed prefix. Send `echo` and "
                 "`logprobs` in separate requests (the `echo` request "

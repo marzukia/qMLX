@@ -61,7 +61,7 @@ OpenHands — previously a strict-xfail placeholder pending "Docker E2E
 harness required for OpenHands' text-action format" — has landed the
 same shape: ``TestOpenHands`` now shells out to ``test_openhands.sh``
 which drives the pinned OpenHands 0.9.0 app + runtime images against
-``rapid-mlx serve`` and asserts add.py corrected. Correctness gate is a **strict AST whitelist on ``add.py``'s return
+``qmlx serve`` and asserts add.py corrected. Correctness gate is a **strict AST whitelist on ``add.py``'s return
 expression** (parses the file, requires the module top level to be a
 single ``def add`` optionally preceded by a docstring, the ``def add``
 itself to have no decorators / defaults / annotations, and the return
@@ -150,7 +150,7 @@ def _openai_client(base_url: str):
 
 
 def _run_openai_tool_smoke(
-    rapid_mlx_server: dict[str, Any],
+    qmlx_server: dict[str, Any],
     family_alias: FamilyAlias,
     *,
     agent_label: str,
@@ -160,8 +160,8 @@ def _run_openai_tool_smoke(
     Shared by every Tier-1 agent that speaks the OpenAI wire (opencode,
     qwen-code, openhands, kilo-code, and — degraded — hermes).
     """
-    client, wire_errors = _openai_client_and_errors(rapid_mlx_server["base_url"])
-    model_id = rapid_mlx_server["model_id"]
+    client, wire_errors = _openai_client_and_errors(qmlx_server["base_url"])
+    model_id = qmlx_server["model_id"]
 
     try:
         resp = client.chat.completions.create(
@@ -229,13 +229,13 @@ class TestCodexCLI:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
         import httpx
 
-        base_url = rapid_mlx_server["base_url"]
-        model_id = rapid_mlx_server["model_id"]
+        base_url = qmlx_server["base_url"]
+        model_id = qmlx_server["model_id"]
 
         # Minimal /v1/responses envelope that Codex CLI would send.
         payload = {
@@ -264,7 +264,7 @@ class TestCodexCLI:
                 f"/v1/responses after session probe was healthy: {exc!r}"
             )
         if r.status_code in (404, 405):
-            # Codex #1030 round-2 finding 3: RAPID_MLX_MATRIX_STRICT=1 is meant
+            # Codex #1030 round-2 finding 3: QMLX_MATRIX_STRICT=1 is meant
             # to gate exactly this — the /v1/responses route MUST be wired for
             # Codex CLI Tier-1 support. Strict CI fails; local dev on an older
             # server without the shim skips.
@@ -306,7 +306,7 @@ class TestClaudeCode:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
         try:
@@ -319,12 +319,12 @@ class TestClaudeCode:
         except ImportError:
             pytest.skip("anthropic SDK not installed — cell deferred")
 
-        base_no_v1 = rapid_mlx_server["base_url"].rstrip("/").removesuffix("/v1")
+        base_no_v1 = qmlx_server["base_url"].rstrip("/").removesuffix("/v1")
         client = Anthropic(base_url=base_no_v1, api_key="not-needed")
 
         try:
             resp = client.messages.create(
-                model=rapid_mlx_server["model_id"],
+                model=qmlx_server["model_id"],
                 max_tokens=128,
                 messages=[{"role": "user", "content": "Reply with just SHIPPED."}],
             )
@@ -335,7 +335,7 @@ class TestClaudeCode:
             # Local dev on a mock or older server still skips.
             strict_skip_or_fail(
                 f"claude-code/{family_alias.family}: /v1/messages returned 404 "
-                f"on {rapid_mlx_server['base_url']} — Anthropic route not wired."
+                f"on {qmlx_server['base_url']} — Anthropic route not wired."
             )
         except (BadRequestError, APIStatusError) as exc:
             # Codex #1030 finding 2: a wired-but-broken /v1/messages IS a
@@ -361,10 +361,10 @@ class TestOpenCode:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
-        _run_openai_tool_smoke(rapid_mlx_server, family_alias, agent_label="opencode")
+        _run_openai_tool_smoke(qmlx_server, family_alias, agent_label="opencode")
 
 
 class TestQwenCode:
@@ -377,10 +377,10 @@ class TestQwenCode:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
-        _run_openai_tool_smoke(rapid_mlx_server, family_alias, agent_label="qwen-code")
+        _run_openai_tool_smoke(qmlx_server, family_alias, agent_label="qwen-code")
 
 
 class TestOpenHands:
@@ -433,7 +433,7 @@ class TestOpenHands:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
         harness = Path(__file__).parent / "test_openhands.sh"
@@ -456,8 +456,8 @@ class TestOpenHands:
         # host (CI shard on a remote-serve node) still tests the right
         # server. ``--base-url`` is authoritative; ``--port`` is only
         # kept for standalone local invocations.
-        base_url = rapid_mlx_server["base_url"]
-        model_id = rapid_mlx_server["model_id"]
+        base_url = qmlx_server["base_url"]
+        model_id = qmlx_server["model_id"]
 
         env = os.environ.copy()
 
@@ -514,11 +514,11 @@ class TestHermesAgent:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
         _run_openai_tool_smoke(
-            rapid_mlx_server, family_alias, agent_label="hermes-agent"
+            qmlx_server, family_alias, agent_label="hermes-agent"
         )
 
 
@@ -569,7 +569,7 @@ class TestAider:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
         harness = Path(__file__).parent / "test_aider.sh"
@@ -593,12 +593,12 @@ class TestAider:
         # the app runs on ``host.docker.internal``). ``--base-url`` is
         # authoritative; the harness still accepts ``--port`` for
         # standalone local invocations.
-        base_url = rapid_mlx_server["base_url"]
+        base_url = qmlx_server["base_url"]
 
         # Drive aider against the actual served model_id — this ensures
         # LiteLLM's ``openai/<model>`` prefix in the harness lines up
         # with what the /v1/models probe returned.
-        model_id = rapid_mlx_server["model_id"]
+        model_id = qmlx_server["model_id"]
 
         env = os.environ.copy()
         # Belt-and-braces: also set the analytics/update opt-out env vars
@@ -662,10 +662,10 @@ class TestKiloCode:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
-        _run_openai_tool_smoke(rapid_mlx_server, family_alias, agent_label="kilo-code")
+        _run_openai_tool_smoke(qmlx_server, family_alias, agent_label="kilo-code")
 
 
 class TestCopilot:
@@ -688,10 +688,10 @@ class TestCopilot:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
-        _run_openai_tool_smoke(rapid_mlx_server, family_alias, agent_label="copilot")
+        _run_openai_tool_smoke(qmlx_server, family_alias, agent_label="copilot")
 
 
 class TestDroid:
@@ -711,10 +711,10 @@ class TestDroid:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
-        _run_openai_tool_smoke(rapid_mlx_server, family_alias, agent_label="droid")
+        _run_openai_tool_smoke(qmlx_server, family_alias, agent_label="droid")
 
 
 class TestKimiCode:
@@ -733,7 +733,7 @@ class TestKimiCode:
 
     def test_smoke(
         self,
-        rapid_mlx_server: dict[str, Any],
+        qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
-        _run_openai_tool_smoke(rapid_mlx_server, family_alias, agent_label="kimi-code")
+        _run_openai_tool_smoke(qmlx_server, family_alias, agent_label="kimi-code")

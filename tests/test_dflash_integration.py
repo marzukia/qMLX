@@ -9,7 +9,7 @@ Two tiers of coverage here:
    (flag parsing, eligibility errors, info rendering, app construction
    with mocked model/processor/runtime).
 
-2. **End-to-end** — guarded by ``RAPID_MLX_DFLASH_E2E=1`` and the
+2. **End-to-end** — guarded by ``QMLX_DFLASH_E2E=1`` and the
    presence of mlx-vlm 0.5.0 + the Qwen3.5-27B-8bit weights and DFlash
    drafter locally. These actually generate text via the production
    server. They live here (not in a separate file) so a maintainer can
@@ -62,7 +62,7 @@ def test_serve_parser_exposes_speculative_config() -> None:
     # Help text mentions the install path so users know how to enable
     # the feature when it's missing.
     assert "[dflash]" in out.stdout, (
-        "help text should reference the rapid-mlx[dflash] extras"
+        "help text should reference the qmlx-serve[dflash] extras"
     )
 
 
@@ -155,7 +155,7 @@ def test_dflash_speculative_config_rejects_no_spec_decode(capsys) -> None:
 
 
 def test_info_renders_dflash_block_for_eligible_alias(capsys) -> None:
-    """``rapid-mlx info qwen3.5-27b-8bit`` shows the per-gate table."""
+    """``qmlx info qwen3.5-27b-8bit`` shows the per-gate table."""
     from vllm_mlx.cli import info_command
 
     args = type("Args", (), {"model": "qwen3.5-27b-8bit"})()
@@ -196,7 +196,7 @@ def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> N
     """``main()`` resolves alias → HF path before dispatch, stashing the
     user-typed alias on ``args._original_alias``. The ``Start with`` hint
     in the DFlash block must render the *alias*, not the resolved HF
-    repo — copy-pasting the resolved path back into ``rapid-mlx serve``
+    repo — copy-pasting the resolved path back into ``qmlx serve``
     breaks the alias-keyed eligibility check.
 
     The ``Start with:`` hint is gated on ``eligible == True``, which
@@ -228,15 +228,15 @@ def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> N
     info_command(args)
     captured = capsys.readouterr()
     assert (
-        """rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}'"""
+        """qmlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}'"""
         in captured.out
     )
     # The HF path must not show up in the start-with hint.
-    assert "rapid-mlx serve mlx-community/" not in captured.out
+    assert "qmlx serve mlx-community/" not in captured.out
 
 
 def test_models_listing_renders_dflash_column(capsys) -> None:
-    """``rapid-mlx models`` must show a ``DFlash`` column so users can
+    """``qmlx models`` must show a ``DFlash`` column so users can
     scan eligibility at a glance. The known-good alias renders ✓; a
     non-DFlash alias renders —."""
     from vllm_mlx.cli import models_command
@@ -1011,7 +1011,7 @@ def test_run_dflash_server_raises_when_mlx_vlm_missing(monkeypatch) -> None:
     from vllm_mlx.speculative.dflash import server as srv
 
     monkeypatch.setattr(srv, "have_runtime", lambda: False)
-    with pytest.raises(RuntimeError, match=r"rapid-mlx\[dflash\]"):
+    with pytest.raises(RuntimeError, match=r"qmlx\[dflash\]"):
         srv.run_dflash_server(
             main_model_repo="mlx-community/Qwen3.5-27B-8bit",
             drafter_repo="z-lab/Qwen3.5-27B-DFlash",
@@ -1092,7 +1092,7 @@ def test_run_dflash_server_loads_models_on_executor_thread(monkeypatch) -> None:
 
 # =============================================================================
 # End-to-end — heavy. Requires:
-#   - ``RAPID_MLX_DFLASH_E2E=1`` env var (opt-in; CI doesn't set it)
+#   - ``QMLX_DFLASH_E2E=1`` env var (opt-in; CI doesn't set it)
 #   - mlx-vlm 0.5.0+ installed (skipif gates this)
 #   - Qwen3.5-27B-8bit + DFlash drafter cached locally (~30 GB combined)
 # Validates the full happy path: model load → generate → OpenAI-format
@@ -1100,12 +1100,12 @@ def test_run_dflash_server_loads_models_on_executor_thread(monkeypatch) -> None:
 # =============================================================================
 
 
-_E2E_ENABLED = os.environ.get("RAPID_MLX_DFLASH_E2E", "") in ("1", "true", "yes")
+_E2E_ENABLED = os.environ.get("QMLX_DFLASH_E2E", "") in ("1", "true", "yes")
 
 
 @pytest.mark.skipif(
     not _E2E_ENABLED,
-    reason="DFlash e2e disabled — set RAPID_MLX_DFLASH_E2E=1 to enable "
+    reason="DFlash e2e disabled — set QMLX_DFLASH_E2E=1 to enable "
     "(requires Qwen3.5-27B-8bit + drafter cached, ~30 GB)",
 )
 def test_dflash_e2e_chat_completion_smoke() -> None:
@@ -1121,7 +1121,7 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
     if not have_runtime():
         pytest.skip("mlx-vlm 0.5.0+ not installed")
 
-    # Cache-presence gate — if a curious dev sets RAPID_MLX_DFLASH_E2E=1
+    # Cache-presence gate — if a curious dev sets QMLX_DFLASH_E2E=1
     # but doesn't have the weights, ``mlx_vlm.load`` would silently
     # start a multi-GB HuggingFace download (no progress visible from
     # pytest). Skip with a precise reason so they know how to bring the
@@ -1138,7 +1138,7 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
             pytest.skip(
                 f"DFlash e2e: {repo} not cached locally. Run "
                 f"`huggingface-cli download {repo}` before re-running "
-                "with RAPID_MLX_DFLASH_E2E=1."
+                "with QMLX_DFLASH_E2E=1."
             )
 
     from fastapi.testclient import TestClient

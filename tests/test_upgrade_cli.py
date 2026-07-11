@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the `rapid-mlx upgrade --dry-run` flag.
+"""Tests for the `qmlx upgrade --dry-run` flag.
 
 Dogfood-driven: a real user typing the Homebrew-muscle-memory `--dry-run`
 on 0.9.3 hit `error: unrecognized arguments`. 0.9.4 adds the flag and
@@ -25,9 +25,9 @@ def _stub_brew_with_upgrade_available(monkeypatch):
         "detect_install_method",
         lambda: vc.InstallInfo(
             method="brew",
-            binary_path="/opt/homebrew/bin/rapid-mlx",
-            upgrade_command="brew upgrade raullenchai/rapid-mlx/rapid-mlx",
-            upgrade_argv=["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"],
+            binary_path="/opt/homebrew/bin/qmlx",
+            upgrade_command="brew upgrade raullenchai/qmlx/qmlx",
+            upgrade_argv=["brew", "upgrade", "raullenchai/qmlx/qmlx"],
         ),
     )
 
@@ -43,9 +43,9 @@ def test_dry_run_does_not_invoke_subprocess(monkeypatch, capsys):
         run.assert_not_called()
         inp.assert_not_called()
     out = capsys.readouterr().out
-    assert "Current:  rapid-mlx 0.9.3" in out
-    assert "Latest:   rapid-mlx 0.9.4" in out
-    assert "brew upgrade raullenchai/rapid-mlx/rapid-mlx" in out
+    assert "Current:  qmlx 0.9.3" in out
+    assert "Latest:   qmlx 0.9.4" in out
+    assert "brew upgrade raullenchai/qmlx/qmlx" in out
     assert "(dry-run — not executed" in out
 
 
@@ -69,7 +69,7 @@ def test_non_dry_run_still_calls_subprocess(monkeypatch):
     ):
         upgrade_command(args)
     run.assert_called_once_with(
-        ["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"], check=False
+        ["brew", "upgrade", "raullenchai/qmlx/qmlx"], check=False
     )
     assert exc.value.code == 0
 

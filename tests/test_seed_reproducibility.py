@@ -193,7 +193,7 @@ def test_seed_rejects_negative():
 def test_seed_accepts_above_uint32():
     """Codex round-6 BLOCKING regression guard.
 
-    OpenAI clients routinely pass 64-bit (or larger) seeds. Rapid-MLX
+    OpenAI clients routinely pass 64-bit (or larger) seeds. qMLX
     must accept the value at the request layer; the deterministic
     fold in ``make_seeded_sampler`` collapses it to mlx-core's uint32
     PRNG key range. The reproducibility contract still holds

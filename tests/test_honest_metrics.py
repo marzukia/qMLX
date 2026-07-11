@@ -429,16 +429,16 @@ def test_route_renders_offered_computed_reused(metrics_client):
     body = metrics_client.client.get("/metrics").text
 
     # offered = 200 + 300 + 128 = 628
-    assert _sample_value(body, "rapid_mlx_prompt_tokens_offered_total") == 628
+    assert _sample_value(body, "qmlx_prompt_tokens_offered_total") == 628
     # computed = 200 + 180 + 0 = 380
-    assert _sample_value(body, "rapid_mlx_prompt_tokens_computed_total") == 380
+    assert _sample_value(body, "qmlx_prompt_tokens_computed_total") == 380
     # reused: memory = 120, disk = 128
     assert (
-        _sample_value(body, 'rapid_mlx_prompt_tokens_reused_total{source="memory"}')
+        _sample_value(body, 'qmlx_prompt_tokens_reused_total{source="memory"}')
         == 120
     )
     assert (
-        _sample_value(body, 'rapid_mlx_prompt_tokens_reused_total{source="disk"}')
+        _sample_value(body, 'qmlx_prompt_tokens_reused_total{source="disk"}')
         == 128
     )
     # offered - computed == total reused
@@ -450,14 +450,14 @@ def test_route_renders_prefill_kind_and_match(metrics_client):
         _base_stats(honest_metrics=_honest_block())
     )
     body = metrics_client.client.get("/metrics").text
-    assert _sample_value(body, 'rapid_mlx_prefill_kind_total{kind="cold"}') == 1
-    assert _sample_value(body, 'rapid_mlx_prefill_kind_total{kind="extend"}') == 1
-    assert _sample_value(body, 'rapid_mlx_prefill_kind_total{kind="exact"}') == 1
-    assert _sample_value(body, 'rapid_mlx_prefix_cache_match_total{type="miss"}') == 1
-    assert _sample_value(body, 'rapid_mlx_prefix_cache_match_total{type="prefix"}') == 1
-    assert _sample_value(body, 'rapid_mlx_prefix_cache_match_total{type="exact"}') == 1
+    assert _sample_value(body, 'qmlx_prefill_kind_total{kind="cold"}') == 1
+    assert _sample_value(body, 'qmlx_prefill_kind_total{kind="extend"}') == 1
+    assert _sample_value(body, 'qmlx_prefill_kind_total{kind="exact"}') == 1
+    assert _sample_value(body, 'qmlx_prefix_cache_match_total{type="miss"}') == 1
+    assert _sample_value(body, 'qmlx_prefix_cache_match_total{type="prefix"}') == 1
+    assert _sample_value(body, 'qmlx_prefix_cache_match_total{type="exact"}') == 1
     # unused canonical types still present at 0 (flat-line, not "no data")
-    assert _sample_value(body, 'rapid_mlx_prefix_cache_match_total{type="lcp"}') == 0
+    assert _sample_value(body, 'qmlx_prefix_cache_match_total{type="lcp"}') == 0
 
 
 def test_route_renders_kv_restore_hit_miss(metrics_client):
@@ -466,20 +466,20 @@ def test_route_renders_kv_restore_hit_miss(metrics_client):
     )
     body = metrics_client.client.get("/metrics").text
     assert (
-        "# HELP rapid_mlx_kv_restore_total Disk KV restore attempts by result" in body
+        "# HELP qmlx_kv_restore_total Disk KV restore attempts by result" in body
     )
-    assert _sample_value(body, 'rapid_mlx_kv_restore_total{result="hit"}') == 2
-    assert _sample_value(body, 'rapid_mlx_kv_restore_total{result="miss"}') == 1
+    assert _sample_value(body, 'qmlx_kv_restore_total{result="hit"}') == 2
+    assert _sample_value(body, 'qmlx_kv_restore_total{result="miss"}') == 1
     # Disk hit rate = 2 / (2 + 1) computable in PromQL from these two series.
 
 
 def test_kv_restore_counter_sticky(metrics_client):
-    """rapid_mlx_kv_restore_total never decreases across a source reset."""
+    """qmlx_kv_restore_total never decreases across a source reset."""
     metrics_client.cfg.engine = _fake_engine(
         _base_stats(honest_metrics=_honest_block())
     )
     body1 = metrics_client.client.get("/metrics").text
-    assert _sample_value(body1, 'rapid_mlx_kv_restore_total{result="hit"}') == 2
+    assert _sample_value(body1, 'qmlx_kv_restore_total{result="hit"}') == 2
 
     hm_lo = HonestMetrics()
     hm_lo.record_disk_restore(hit=True)  # raw hit drops to 1
@@ -487,7 +487,7 @@ def test_kv_restore_counter_sticky(metrics_client):
         _base_stats(honest_metrics=hm_lo.snapshot())
     )
     body2 = metrics_client.client.get("/metrics").text
-    hit2 = _sample_value(body2, 'rapid_mlx_kv_restore_total{result="hit"}')
+    hit2 = _sample_value(body2, 'qmlx_kv_restore_total{result="hit"}')
     assert hit2 >= 2  # folded baseline(2) + raw(1) == 3, never below 2
     assert hit2 == 3
 
@@ -497,17 +497,17 @@ def test_route_renders_ttft_and_decode_histograms(metrics_client):
         _base_stats(honest_metrics=_honest_block())
     )
     body = metrics_client.client.get("/metrics").text
-    assert "# TYPE rapid_mlx_ttft_seconds histogram" in body
-    assert "# TYPE rapid_mlx_decode_tokens_per_second histogram" in body
-    assert _sample_value(body, "rapid_mlx_ttft_seconds_count") == 1
-    assert _sample_value(body, "rapid_mlx_ttft_seconds_sum") == pytest.approx(0.30)
-    assert _sample_value(body, "rapid_mlx_decode_tokens_per_second_count") == 1
+    assert "# TYPE qmlx_ttft_seconds histogram" in body
+    assert "# TYPE qmlx_decode_tokens_per_second histogram" in body
+    assert _sample_value(body, "qmlx_ttft_seconds_count") == 1
+    assert _sample_value(body, "qmlx_ttft_seconds_sum") == pytest.approx(0.30)
+    assert _sample_value(body, "qmlx_decode_tokens_per_second_count") == 1
     assert _sample_value(
-        body, "rapid_mlx_decode_tokens_per_second_sum"
+        body, "qmlx_decode_tokens_per_second_sum"
     ) == pytest.approx(5.0)
     # +Inf bucket equals count.
     assert (
-        _sample_value(body, 'rapid_mlx_decode_tokens_per_second_bucket{le="+Inf"}') == 1
+        _sample_value(body, 'qmlx_decode_tokens_per_second_bucket{le="+Inf"}') == 1
     )
 
 
@@ -529,16 +529,16 @@ def test_route_renders_restore_reject_reasons(metrics_client):
     )
     metrics_client.cfg.engine = _fake_engine(stats)
     body = metrics_client.client.get("/metrics").text
-    assert "# TYPE rapid_mlx_kv_restore_reject_total counter" in body
+    assert "# TYPE qmlx_kv_restore_reject_total counter" in body
     assert (
         _sample_value(
-            body, 'rapid_mlx_kv_restore_reject_total{reason="memory_headroom"}'
+            body, 'qmlx_kv_restore_reject_total{reason="memory_headroom"}'
         )
         == 3
     )
     assert (
         _sample_value(
-            body, 'rapid_mlx_kv_restore_reject_total{reason="kv_dtype_mismatch"}'
+            body, 'qmlx_kv_restore_reject_total{reason="kv_dtype_mismatch"}'
         )
         == 1
     )
@@ -555,7 +555,7 @@ def test_reuse_counters_survive_reset_sticky(metrics_client):
     hm_hi = _honest_block()
     metrics_client.cfg.engine = _fake_engine(_base_stats(honest_metrics=hm_hi))
     body1 = metrics_client.client.get("/metrics").text
-    assert _sample_value(body1, "rapid_mlx_prompt_tokens_offered_total") == 628
+    assert _sample_value(body1, "qmlx_prompt_tokens_offered_total") == 628
 
     # Simulate a process-internal reset: the raw source now reports LOWER
     # values. The exposed counter must not decrease.
@@ -565,7 +565,7 @@ def test_reuse_counters_survive_reset_sticky(metrics_client):
         _base_stats(honest_metrics=hm_lo.snapshot())
     )
     body2 = metrics_client.client.get("/metrics").text
-    offered2 = _sample_value(body2, "rapid_mlx_prompt_tokens_offered_total")
+    offered2 = _sample_value(body2, "qmlx_prompt_tokens_offered_total")
     # baseline(628) + raw(10) == 638, and crucially >= 628 (never went down)
     assert offered2 >= 628
     assert offered2 == 638
@@ -605,5 +605,5 @@ def test_no_series_equals_prompt_plus_gen_over_wall(metrics_client):
 
     # Sanity: the honest decode sum IS present and equals (100-1)/4.0.
     assert _sample_value(
-        body, "rapid_mlx_decode_tokens_per_second_sum"
+        body, "qmlx_decode_tokens_per_second_sum"
     ) == pytest.approx(99 / 4.0)

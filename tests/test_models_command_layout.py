@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the `rapid-mlx models` table column-alignment contract.
+"""Tests for the `qmlx models` table column-alignment contract.
 
 Dogfood-driven: 0.9.5 had a hardcoded 24-char alias column. The actual
 registry has names up to 31 chars (``deepseek-coder-v2-lite-16b-4bit``),

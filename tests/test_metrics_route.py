@@ -72,10 +72,10 @@ def test_metrics_engine_not_loaded_still_returns_200(metrics_client):
     resp = metrics_client.client.get("/metrics")
     assert resp.status_code == 200
     body = resp.text
-    assert "rapid_mlx_build_info" in body
+    assert "qmlx_build_info" in body
     # Engine-dependent metrics must be absent (no fake zeros that imply
     # a running engine).
-    assert "rapid_mlx_requests_processed_total" not in body
+    assert "qmlx_requests_processed_total" not in body
 
 
 def test_metrics_engine_get_stats_raises_falls_back_to_build_info(metrics_client):
@@ -87,7 +87,7 @@ def test_metrics_engine_get_stats_raises_falls_back_to_build_info(metrics_client
     metrics_client.cfg.engine = SimpleNamespace(get_stats=_explode)
     resp = metrics_client.client.get("/metrics")
     assert resp.status_code == 200
-    assert "rapid_mlx_build_info" in resp.text
+    assert "qmlx_build_info" in resp.text
 
 
 def test_metrics_unauthenticated_even_when_api_key_set(metrics_client):
@@ -139,23 +139,23 @@ def test_metrics_exposes_all_expected_series(metrics_client):
     body = resp.text
 
     expected_names = [
-        "rapid_mlx_build_info",
-        "rapid_mlx_requests_processed_total",
-        "rapid_mlx_prompt_tokens_total",
-        "rapid_mlx_completion_tokens_total",
-        "rapid_mlx_requests_running",
-        "rapid_mlx_requests_waiting",
-        "rapid_mlx_steps_executed_total",
-        "rapid_mlx_uptime_seconds",
-        "rapid_mlx_metal_active_memory_bytes",
-        "rapid_mlx_metal_peak_memory_bytes",
-        "rapid_mlx_metal_cache_memory_bytes",
-        "rapid_mlx_prefix_cache_hits_total",
-        "rapid_mlx_prefix_cache_misses_total",
-        "rapid_mlx_prefix_cache_evictions_total",
-        "rapid_mlx_prefix_cache_tokens_saved_total",
+        "qmlx_build_info",
+        "qmlx_requests_processed_total",
+        "qmlx_prompt_tokens_total",
+        "qmlx_completion_tokens_total",
+        "qmlx_requests_running",
+        "qmlx_requests_waiting",
+        "qmlx_steps_executed_total",
+        "qmlx_uptime_seconds",
+        "qmlx_metal_active_memory_bytes",
+        "qmlx_metal_peak_memory_bytes",
+        "qmlx_metal_cache_memory_bytes",
+        "qmlx_prefix_cache_hits_total",
+        "qmlx_prefix_cache_misses_total",
+        "qmlx_prefix_cache_evictions_total",
+        "qmlx_prefix_cache_tokens_saved_total",
         # R10-D (Talia r10-R1): per-entry corruption signal at disk-load
-        "rapid_mlx_prefix_cache_load_skipped_total",
+        "qmlx_prefix_cache_load_skipped_total",
     ]
     for name in expected_names:
         assert f"# HELP {name}" in body, f"missing HELP for {name}"
@@ -167,33 +167,33 @@ def test_metrics_values_match_get_stats(metrics_client):
     metrics_client.cfg.engine = _fake_engine(_FULL_STATS)
     body = metrics_client.client.get("/metrics").text
 
-    assert "rapid_mlx_requests_processed_total 17" in body
-    assert "rapid_mlx_prompt_tokens_total 1234" in body
-    assert "rapid_mlx_completion_tokens_total 5678" in body
-    assert "rapid_mlx_requests_running 3" in body
-    assert "rapid_mlx_requests_waiting 2" in body
-    assert "rapid_mlx_steps_executed_total 99" in body
-    assert "rapid_mlx_uptime_seconds 42.5" in body
+    assert "qmlx_requests_processed_total 17" in body
+    assert "qmlx_prompt_tokens_total 1234" in body
+    assert "qmlx_completion_tokens_total 5678" in body
+    assert "qmlx_requests_running 3" in body
+    assert "qmlx_requests_waiting 2" in body
+    assert "qmlx_steps_executed_total 99" in body
+    assert "qmlx_uptime_seconds 42.5" in body
     # GB → bytes conversion verified.
-    assert "rapid_mlx_metal_active_memory_bytes 1500000000" in body
-    assert "rapid_mlx_metal_peak_memory_bytes 2000000000" in body
+    assert "qmlx_metal_active_memory_bytes 1500000000" in body
+    assert "qmlx_metal_peak_memory_bytes 2000000000" in body
     # Prefix-cache pass-through.
-    assert "rapid_mlx_prefix_cache_hits_total 10" in body
-    assert "rapid_mlx_prefix_cache_misses_total 4" in body
-    assert "rapid_mlx_prefix_cache_evictions_total 1" in body
-    assert "rapid_mlx_prefix_cache_tokens_saved_total 256" in body
+    assert "qmlx_prefix_cache_hits_total 10" in body
+    assert "qmlx_prefix_cache_misses_total 4" in body
+    assert "qmlx_prefix_cache_evictions_total 1" in body
+    assert "qmlx_prefix_cache_tokens_saved_total 256" in body
     # R10-D: cumulative count of corruption-rejects at disk-load.
-    assert "rapid_mlx_prefix_cache_load_skipped_total 7" in body
+    assert "qmlx_prefix_cache_load_skipped_total 7" in body
 
 
 def test_metrics_build_info_labels_carry_version_and_model(metrics_client):
-    """``rapid_mlx_build_info`` labels expose version + model_name."""
+    """``qmlx_build_info`` labels expose version + model_name."""
     metrics_client.cfg.engine = _fake_engine(_FULL_STATS)
     body = metrics_client.client.get("/metrics").text
 
     # Find the build_info sample line (HELP/TYPE excluded).
     sample_line = next(
-        line for line in body.splitlines() if line.startswith("rapid_mlx_build_info{")
+        line for line in body.splitlines() if line.startswith("qmlx_build_info{")
     )
     assert 'model="qwen3.5-4b"' in sample_line
     assert 'version="' in sample_line
@@ -214,9 +214,9 @@ def test_metrics_handles_none_metal_stats_as_zero(metrics_client):
     metrics_client.cfg.engine = _fake_engine(stats)
 
     body = metrics_client.client.get("/metrics").text
-    assert "rapid_mlx_metal_active_memory_bytes 0" in body
-    assert "rapid_mlx_metal_peak_memory_bytes 0" in body
-    assert "rapid_mlx_metal_cache_memory_bytes 0" in body
+    assert "qmlx_metal_active_memory_bytes 0" in body
+    assert "qmlx_metal_peak_memory_bytes 0" in body
+    assert "qmlx_metal_cache_memory_bytes 0" in body
 
 
 def test_metrics_prefers_memory_aware_cache_when_present(metrics_client):
@@ -251,11 +251,11 @@ def test_metrics_prefers_memory_aware_cache_when_present(metrics_client):
     metrics_client.cfg.engine = _fake_engine(stats)
     body = metrics_client.client.get("/metrics").text
 
-    assert "rapid_mlx_prefix_cache_hits_total 11" in body
-    assert "rapid_mlx_prefix_cache_misses_total 7" in body
-    assert "rapid_mlx_prefix_cache_tokens_saved_total 88" in body
+    assert "qmlx_prefix_cache_hits_total 11" in body
+    assert "qmlx_prefix_cache_misses_total 7" in body
+    assert "qmlx_prefix_cache_tokens_saved_total 88" in body
     # The shadowed prefix_cache values must NOT leak through.
-    assert "rapid_mlx_prefix_cache_hits_total 999" not in body
+    assert "qmlx_prefix_cache_hits_total 999" not in body
 
 
 def test_metrics_omits_cache_series_when_no_cache_active(metrics_client):
@@ -277,16 +277,16 @@ def test_metrics_omits_cache_series_when_no_cache_active(metrics_client):
     metrics_client.cfg.engine = _fake_engine(stats)
     body = metrics_client.client.get("/metrics").text
 
-    assert "rapid_mlx_prefix_cache_hits_total" not in body
+    assert "qmlx_prefix_cache_hits_total" not in body
     # The non-cache series must still be there.
-    assert "rapid_mlx_requests_processed_total 0" in body
+    assert "qmlx_requests_processed_total 0" in body
 
 
 def test_metrics_exposes_r7_m1_prefix_cache_cap_and_current_bytes(metrics_client):
-    """R7-M1 (dogfood-088 Talia r2): ``rapid_mlx_prefix_cache_cap_bytes``
-    and ``rapid_mlx_prefix_cache_current_bytes`` gauges must appear in
+    """R7-M1 (dogfood-088 Talia r2): ``qmlx_prefix_cache_cap_bytes``
+    and ``qmlx_prefix_cache_current_bytes`` gauges must appear in
     the scrape output when a cache is active. Pre-fix, operators tuning
-    ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` had no way to verify their
+    ``QMLX_PREFIX_CACHE_MAX_BYTES`` had no way to verify their
     ceiling was honored at runtime; this test pins both gauges through
     the metrics route.
 
@@ -320,14 +320,14 @@ def test_metrics_exposes_r7_m1_prefix_cache_cap_and_current_bytes(metrics_client
     # HELP + TYPE banners pin the metric name + gauge classification —
     # a refactor that flips to counter shape (which Prometheus would
     # reject with rate() going negative) trips this assertion.
-    assert "# HELP rapid_mlx_prefix_cache_cap_bytes" in body
-    assert "# TYPE rapid_mlx_prefix_cache_cap_bytes gauge" in body
-    assert "# HELP rapid_mlx_prefix_cache_current_bytes" in body
-    assert "# TYPE rapid_mlx_prefix_cache_current_bytes gauge" in body
+    assert "# HELP qmlx_prefix_cache_cap_bytes" in body
+    assert "# TYPE qmlx_prefix_cache_cap_bytes gauge" in body
+    assert "# HELP qmlx_prefix_cache_current_bytes" in body
+    assert "# TYPE qmlx_prefix_cache_current_bytes gauge" in body
 
     # Sample-line values: the raw byte values, no rescaling.
-    assert f"rapid_mlx_prefix_cache_cap_bytes {1024 * 1024 * 1024}" in body
-    assert f"rapid_mlx_prefix_cache_current_bytes {256 * 1024 * 1024}" in body
+    assert f"qmlx_prefix_cache_cap_bytes {1024 * 1024 * 1024}" in body
+    assert f"qmlx_prefix_cache_current_bytes {256 * 1024 * 1024}" in body
 
 
 def test_metrics_r7_m1_gauges_handle_missing_byte_fields_as_zero(metrics_client):
@@ -356,8 +356,8 @@ def test_metrics_r7_m1_gauges_handle_missing_byte_fields_as_zero(metrics_client)
     metrics_client.cfg.engine = _fake_engine(stats)
     body = metrics_client.client.get("/metrics").text
 
-    assert "rapid_mlx_prefix_cache_cap_bytes 0" in body
-    assert "rapid_mlx_prefix_cache_current_bytes 0" in body
+    assert "qmlx_prefix_cache_cap_bytes 0" in body
+    assert "qmlx_prefix_cache_current_bytes 0" in body
 
 
 def test_metrics_escapes_quotes_in_model_label(metrics_client):
@@ -372,7 +372,7 @@ def test_metrics_escapes_quotes_in_model_label(metrics_client):
     metrics_client.cfg.engine = _fake_engine(_FULL_STATS)
     body = metrics_client.client.get("/metrics").text
     sample = next(
-        line for line in body.splitlines() if line.startswith("rapid_mlx_build_info{")
+        line for line in body.splitlines() if line.startswith("qmlx_build_info{")
     )
     assert 'model="foo\\"bar\\\\baz"' in sample
 
@@ -424,7 +424,7 @@ def test_cache_counters_monotonic_across_cache_clear(metrics_client):
     def _hits_value(body: str) -> int:
         for line in body.splitlines():
             if line.startswith(
-                "rapid_mlx_prefix_cache_hits_total "
+                "qmlx_prefix_cache_hits_total "
             ) and not line.startswith("#"):
                 return int(line.rsplit(" ", 1)[1])
         raise AssertionError("hits_total line not found")
@@ -519,12 +519,12 @@ def test_metrics_output_parses_cleanly_via_prometheus_client(metrics_client):
 
     # Verify a few specific families round-trip the values we set.
     by_name = {fam.name: fam for fam in families}
-    assert "rapid_mlx_requests_processed" in by_name  # parser strips _total
-    assert by_name["rapid_mlx_requests_processed"].samples[0].value == 17
+    assert "qmlx_requests_processed" in by_name  # parser strips _total
+    assert by_name["qmlx_requests_processed"].samples[0].value == 17
 
     # build_info gauge round-trips labels.
-    assert "rapid_mlx_build_info" in by_name
-    build_sample = by_name["rapid_mlx_build_info"].samples[0]
+    assert "qmlx_build_info" in by_name
+    build_sample = by_name["qmlx_build_info"].samples[0]
     assert build_sample.labels["model"] == "qwen3.5-4b"
     assert build_sample.value == 1.0
 
@@ -543,9 +543,9 @@ def test_metrics_output_parses_cleanly_with_escaped_label(metrics_client):
 
     families = list(text_string_to_metric_families(body))
     by_name = {fam.name: fam for fam in families}
-    assert "rapid_mlx_build_info" in by_name
+    assert "qmlx_build_info" in by_name
     # The parser should reverse the escapes to recover the original string.
-    assert by_name["rapid_mlx_build_info"].samples[0].labels["model"] == 'foo"bar\\baz'
+    assert by_name["qmlx_build_info"].samples[0].labels["model"] == 'foo"bar\\baz'
 
 
 def test_metrics_output_parses_cleanly_when_engine_missing(metrics_client):
@@ -565,6 +565,6 @@ def test_metrics_output_parses_cleanly_when_engine_missing(metrics_client):
     families = list(text_string_to_metric_families(body))
     by_name = {fam.name: fam for fam in families}
     # build_info + H-06 response_format counters — three families.
-    assert "rapid_mlx_build_info" in by_name
-    assert "rapid_mlx_response_format_strict" in by_name
-    assert "rapid_mlx_response_format_strict_violations" in by_name
+    assert "qmlx_build_info" in by_name
+    assert "qmlx_response_format_strict" in by_name
+    assert "qmlx_response_format_strict_violations" in by_name

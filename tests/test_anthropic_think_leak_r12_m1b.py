@@ -178,7 +178,7 @@ class TestThinkLiteralLeak:
         on the Anthropic envelope.
         """
         # Enable the rescue (default-on, but pin for hermetic test).
-        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        monkeypatch.setenv("QMLX_REASONING_RESCUE", "on")
         reasoning_text = "<think>"
         final_content = _make_rescue_payload(reasoning_text)
         # Build the OpenAI-side response that the route hands to the
@@ -218,7 +218,7 @@ class TestThinkLiteralLeak:
         empty/whitespace thinking block — symmetric with the existing
         whitespace-only guard in the pre-R12-M1b code path.
         """
-        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        monkeypatch.setenv("QMLX_REASONING_RESCUE", "on")
         reasoning_text = "<think>"
         final_content = _make_rescue_payload(reasoning_text)
         resp = ChatCompletionResponse(
@@ -265,7 +265,7 @@ class TestRescueTailNoDuplication:
         ``reasoning_text``) appears in the ``text`` block but NOT
         anywhere in the ``thinking`` block.
         """
-        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        monkeypatch.setenv("QMLX_REASONING_RESCUE", "on")
         # Long enough reasoning that the tail slice is a strict
         # suffix (longer than RESCUE_TAIL_LENGTH). Uses a unique
         # marker substring inside the tail slice so the assertion
@@ -321,7 +321,7 @@ class TestRescueTailNoDuplication:
         ``text`` block — matches the PR #802 / R12-8 design where the
         rescue surfaces to ``text``.
         """
-        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        monkeypatch.setenv("QMLX_REASONING_RESCUE", "on")
         reasoning_text = "X" * 500 + " final partial conclusion."
         final_content = _make_rescue_payload(reasoning_text)
         # Extract the tail substring from the rescue payload.
@@ -375,7 +375,7 @@ class TestRescueTailNoDuplication:
         sentinel anchors the rescue tail, the thinking block has the
         leading thought process.
         """
-        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        monkeypatch.setenv("QMLX_REASONING_RESCUE", "on")
         prefix = "BEGINNING THOUGHT PROCESS HERE. "
         reasoning_text = prefix + "X" * (RESCUE_TAIL_LENGTH + 50)
         final_content = _make_rescue_payload(reasoning_text)
@@ -411,7 +411,7 @@ class TestRescueTailNoDuplication:
         Emitting the thinking block would be a byte-for-byte duplicate
         of what's already in the text block. Suppress it.
         """
-        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        monkeypatch.setenv("QMLX_REASONING_RESCUE", "on")
         reasoning_text = "short reasoning trace under the tail length"
         assert len(reasoning_text) <= RESCUE_TAIL_LENGTH, (
             "test invariant: reasoning must be shorter than the tail length"
@@ -469,7 +469,7 @@ class TestRescueSurfacesToAnthropic:
     def test_rescue_text_block_carries_sentinel_when_length_cut_mid_think(
         self, monkeypatch
     ):
-        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        monkeypatch.setenv("QMLX_REASONING_RESCUE", "on")
         reasoning_text = "Mid-think reasoning that got cut by max_tokens."
         final_content = _make_rescue_payload(reasoning_text)
         resp = ChatCompletionResponse(
@@ -513,8 +513,8 @@ class TestRescueSurfacesToAnthropic:
             ``is_rescue_payload(content)`` is False and no suffix is
             trimmed)
         Mirrors the wire shape ``routes/anthropic.py`` produces when
-        ``RAPID_MLX_REASONING_RESCUE=off`` /
-        ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``.
+        ``QMLX_REASONING_RESCUE=off`` /
+        ``QMLX_REASONING_CUTOFF_NOTICE=disabled``.
         """
         # No env var manipulation needed — we drive the adapter with
         # ``content=None`` directly, which is what the helper would

@@ -72,7 +72,7 @@ def render(report: Report, *, verbose: bool = False, stream=None) -> None:
 
     write("\n")
     write("┌" + "─" * 57 + "┐\n")
-    write("│" + "\U0001fa7a Rapid-MLX Doctor".center(57) + "│\n")
+    write("│" + "\U0001fa7a qMLX Doctor".center(57) + "│\n")
     write("└" + "─" * 57 + "┘\n")
     write("\n")
 

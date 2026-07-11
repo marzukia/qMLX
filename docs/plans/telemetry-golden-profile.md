@@ -6,7 +6,7 @@ This doc covers Phase 2 of the opt-in telemetry pipeline first sketched
 in [Issue #236](https://github.com/raullenchai/Rapid-MLX/issues/236).
 Phase 1 (consent + redaction + schema) already landed in
 `vllm_mlx/telemetry/` and the Cloudflare Worker at
-`~/work/Rapid-MLX-telemetry-worker/`. This doc is **only** about wiring
+`~/work/qMLX-telemetry-worker/`. This doc is **only** about wiring
 client transport, event call sites, server DNS, and the downstream
 Golden Profile aggregation. Re-litigating the consent UX or schema
 shape is out of scope.
@@ -48,7 +48,7 @@ Phase 1 has **no event call sites** — `is_enabled()` exists, but
 nothing calls it to actually emit. The package compiles, has tests,
 and ships dark.
 
-### 2.2 Server (`~/work/Rapid-MLX-telemetry-worker/`) — Phase 1 complete, deploy blocked
+### 2.2 Server (`~/work/qMLX-telemetry-worker/`) — Phase 1 complete, deploy blocked
 
 | Component | State |
 |---|---|
@@ -222,7 +222,7 @@ The original blocker is fully captured in memory
 # In a regular user terminal, NOT inside claude-code (see memory
 # gotcha_wrangler_oauth_claude_code — claude-code's bash strips
 # Authorization headers):
-cd ~/work/Rapid-MLX-telemetry-worker
+cd ~/work/qMLX-telemetry-worker
 npx wrangler login       # browser opens, grants Workers + R2
 npx wrangler r2 bucket create qmlx-telemetry-events --location enam
 npx wrangler deploy

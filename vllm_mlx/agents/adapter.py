@@ -90,9 +90,9 @@ def get_setup_instructions(
     testing = profile.get_testing_for_version(agent_version)
 
     lines = [
-        f"# {profile.display_name} + Rapid-MLX Setup",
+        f"# {profile.display_name} + qMLX Setup",
         "",
-        "## 1. Start Rapid-MLX",
+        "## 1. Start qMLX",
         "",
     ]
 

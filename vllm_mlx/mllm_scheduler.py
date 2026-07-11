@@ -411,7 +411,7 @@ class MLLMScheduler:
             else:
                 stop_tokens.add(tokenizer.eos_token_ids)
 
-        # Source 4: Rapid-MLX extras stash (see RAPID_EXTRA_EOS_ATTR).
+        # Source 4: qMLX extras stash (see RAPID_EXTRA_EOS_ATTR).
         extras = getattr(tokenizer, RAPID_EXTRA_EOS_ATTR, None)
         if extras:
             stop_tokens.update(extras)

@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression tests for L-07 (``rapid-mlx[vision]`` extra wiring) and
+"""Regression tests for L-07 (``qmlx-serve[vision]`` extra wiring) and
 L-07-B (Gemma 4 fresh-install regression from 0.10.0).
 
-Pre-fix probe (Kai r2, 0.8.0): a fresh-venv ``pip install rapid-mlx==0.8.0``
+Pre-fix probe (Kai r2, 0.8.0): a fresh-venv ``pip install qmlx==0.8.0``
 did not pull ``mlx-vlm``, and hitting a VL route 500'd with
 ``ModuleNotFoundError: No module named 'mlx_vlm'``. Fix: declare
 ``mlx-vlm`` under ``[project.optional-dependencies].vision`` (NOT core,
 to save ~322 MB for text-only users). README quickstart documents
-``pip install 'rapid-mlx[vision]'``.
+``pip install 'qmlx-serve[vision]'``.
 
 0.10.0 regression (Layer A "+13 Gemma 4 aliases"): a fresh-venv
-``pip install rapid-mlx==0.10.0 && rapid-mlx serve gemma-4-12b-4bit``
+``pip install qmlx==0.10.0 && qmlx serve gemma-4-12b-4bit``
 crashed the same way — Gemma 4 uses ``mlx_vlm.models.gemma4.language``
 because Google publishes it as a VLM-family checkpoint. The obvious
 fix — promoting ``mlx-vlm`` to core — would drag in ~+483 MB of
@@ -109,7 +109,7 @@ def _split_spec(spec: str) -> tuple[str, str]:
 
 def test_vision_extra_exists() -> None:
     """``[project.optional-dependencies].vision`` MUST be declared so
-    ``pip install 'rapid-mlx[vision]'`` resolves. The README quickstart
+    ``pip install 'qmlx-serve[vision]'`` resolves. The README quickstart
     documents this exact invocation — its disappearance would be a
     documentation-vs-code drift."""
     py = _load_pyproject()
@@ -117,7 +117,7 @@ def test_vision_extra_exists() -> None:
     assert "vision" in extras, (
         f"`[vision]` extra missing from pyproject. Available extras: "
         f"{sorted(extras)!r}. README quickstart references "
-        f"`pip install 'rapid-mlx[vision]'` and would 404 without this."
+        f"`pip install 'qmlx-serve[vision]'` and would 404 without this."
     )
 
 
@@ -174,7 +174,7 @@ def test_vision_mlx_vlm_floor_is_recognizable() -> None:
 
 def test_mlx_vlm_not_in_core_dependencies() -> None:
     """If ``mlx-vlm`` slips into ``[project].dependencies`` the
-    text-only ``pip install rapid-mlx`` jumps from ~460 MB to ~782 MB.
+    text-only ``pip install qmlx`` jumps from ~460 MB to ~782 MB.
     The point of the ``[vision]`` extra is to keep that surface
     opt-in. This is the second half of L-07's contract."""
     py = _load_pyproject()
@@ -183,12 +183,12 @@ def test_mlx_vlm_not_in_core_dependencies() -> None:
     assert "mlx-vlm" not in core_names, (
         f"mlx-vlm leaked into core deps={core!r}. Move it back under "
         f"`[project.optional-dependencies].vision` so the text-only "
-        f"`pip install rapid-mlx` stays slim (L-07)."
+        f"`pip install qmlx` stays slim (L-07)."
     )
 
 
 # ──────────────────────────────────────────────────────────────────────
-# README quickstart references `pip install 'rapid-mlx[vision]'`. The
+# README quickstart references `pip install 'qmlx-serve[vision]'`. The
 # docs-code drift would silently break the documented opt-in path.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -197,7 +197,7 @@ def test_readme_quickstart_mentions_vision_extra() -> None:
     """The README quickstart MUST surface the ``[vision]`` opt-in so a
     user reading top-down learns how to install for VL routes BEFORE
     hitting a 500. Detection is intentionally loose: any line carrying
-    both ``rapid-mlx`` and ``[vision]`` in the README counts."""
+    both ``qmlx`` and ``[vision]`` in the README counts."""
     here = Path(__file__).resolve()
     readme_path = None
     for parent in [here.parent, *here.parents]:
@@ -210,10 +210,10 @@ def test_readme_quickstart_mentions_vision_extra() -> None:
     )
     text = readme_path.read_text(encoding="utf-8")
     has_vision_install = any(
-        ("rapid-mlx" in line and "[vision]" in line) for line in text.splitlines()
+        ("qmlx" in line and "[vision]" in line) for line in text.splitlines()
     )
     assert has_vision_install, (
-        "README.md no longer documents `pip install 'rapid-mlx[vision]'`. "
+        "README.md no longer documents `pip install 'qmlx-serve[vision]'`. "
         "Users hitting a VL route now get a bare 500 with no install hint "
         "(L-07 — Kai r2 probe surfaced this on fresh-venv 0.8.0 installs)."
     )
@@ -221,14 +221,14 @@ def test_readme_quickstart_mentions_vision_extra() -> None:
 
 # ──────────────────────────────────────────────────────────────────────
 # Self-consistency: the ``all`` extra (advertised as union-of-everything)
-# also pulls mlx-vlm. Otherwise ``pip install 'rapid-mlx[all]'`` silently
+# also pulls mlx-vlm. Otherwise ``pip install 'qmlx-serve[all]'`` silently
 # skips vision and we get the L-07 failure mode under a different name.
 # ──────────────────────────────────────────────────────────────────────
 
 
 def test_all_extra_includes_mlx_vlm() -> None:
     """``[all]`` is documented as the union of vision + chat + embeddings.
-    A user who installs ``rapid-mlx[all]`` expecting "everything"
+    A user who installs ``qmlx-serve[all]`` expecting "everything"
     must NOT discover at request-time that mlx-vlm isn't there."""
     py = _load_pyproject()
     all_specs = _extra_specs(py, "all")
@@ -277,8 +277,8 @@ def test_pyproject_requires_python_floor_matches_tomllib_fallback() -> None:
 #
 # Google publishes Gemma 4 as a VLM-family checkpoint whose Python
 # classes live in ``mlx_vlm.models.gemma4``. In 0.10.0 that dep was
-# only in ``[vision]``, so a fresh ``pip install rapid-mlx==0.10.0``
-# followed by ``rapid-mlx serve gemma-4-12b-4bit`` crashed at import.
+# only in ``[vision]``, so a fresh ``pip install qmlx==0.10.0``
+# followed by ``qmlx serve gemma-4-12b-4bit`` crashed at import.
 # The 0.10.1 fix is to vendor the ~1200 lines of Gemma 4 text-only
 # classes into ``vllm_mlx/models/gemma4_vendored/`` so the fresh
 # install works without any [vision] extra pulled.
@@ -302,7 +302,7 @@ def test_gemma4_vendored_module_exists() -> None:
     vendored = repo_root / "vllm_mlx" / "models" / "gemma4_vendored"
     assert vendored.is_dir(), (
         f"gemma4_vendored/ missing at {vendored}. Without it, a fresh "
-        f"`pip install rapid-mlx && rapid-mlx serve gemma-4-12b-4bit` "
+        f"`pip install qmlx && qmlx serve gemma-4-12b-4bit` "
         f"re-crashes with the 0.10.0 ImportError (L-07-B)."
     )
     for required in ("__init__.py", "config.py", "language.py", "rope_utils.py"):
@@ -469,7 +469,7 @@ def test_gemma4_text_prefers_vendored_fallback() -> None:
         "gemma4_text.py no longer contains a `try: from mlx_vlm.models."
         "gemma4 import ... except ImportError: from vllm_mlx.models."
         "gemma4_vendored import ...` block. Without it, a fresh "
-        "`pip install rapid-mlx && rapid-mlx serve gemma-4-12b-4bit` "
+        "`pip install qmlx && qmlx serve gemma-4-12b-4bit` "
         "re-crashes with the 0.10.0 ImportError (L-07-B). Restore the "
         "try/except fallback. (Note: this test walks the AST — a bare "
         "comment referencing these module names is intentionally NOT "

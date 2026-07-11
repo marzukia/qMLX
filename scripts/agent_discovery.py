@@ -152,7 +152,7 @@ def fetch_github_search(query, sort="stars", per_page=30):
             timeout=15,
             headers={
                 "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "rapid-mlx-agent-discovery",
+                "User-Agent": "qmlx-agent-discovery",
             },
         )
         resp.raise_for_status()
@@ -214,7 +214,7 @@ def check_openai_compat(owner_repo):
             timeout=10,
             headers={
                 "Accept": "application/vnd.github.v3.raw",
-                "User-Agent": "rapid-mlx-agent-discovery",
+                "User-Agent": "qmlx-agent-discovery",
             },
         )
         if resp.status_code == 200:
@@ -237,7 +237,7 @@ def get_repo_info(owner_repo):
             timeout=10,
             headers={
                 "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "rapid-mlx-agent-discovery",
+                "User-Agent": "qmlx-agent-discovery",
             },
         )
         if resp.status_code == 200:

@@ -40,16 +40,16 @@ def test_shim_installed_when_scheduler_imports():
     # idempotent and the assertion still holds.
     from vllm_mlx import _mlx_compat
 
-    if hasattr(mx, "_rapid_mlx_compat_installed"):
-        delattr(mx, "_rapid_mlx_compat_installed")
+    if hasattr(mx, "_qmlx_compat_installed"):
+        delattr(mx, "_qmlx_compat_installed")
     import vllm_mlx.scheduler  # noqa: F401
 
-    if not getattr(mx, "_rapid_mlx_compat_installed", False):
+    if not getattr(mx, "_qmlx_compat_installed", False):
         # scheduler may already be in sys.modules from a previous test —
         # in which case its module-level install() didn't re-run. Confirm
         # that calling install() directly works.
         _mlx_compat.install()
-    assert getattr(mx, "_rapid_mlx_compat_installed", False) is True
+    assert getattr(mx, "_qmlx_compat_installed", False) is True
 
 
 def test_vllm_mlx_init_does_not_install_shim_or_import_mlx():
@@ -300,7 +300,7 @@ def test_install_is_noop_when_symbol_missing(monkeypatch):
         "regression path and the shim itself can probably go away."
     )
     monkeypatch.delattr(mx, "new_thread_local_stream")
-    monkeypatch.setattr(mx, "_rapid_mlx_compat_installed", False, raising=False)
+    monkeypatch.setattr(mx, "_qmlx_compat_installed", False, raising=False)
     importlib.reload(_mlx_compat)
     _mlx_compat.install()  # must not raise — that's the #408 contract
     # Note: on the no-symbol path the shim deliberately does NOT mark
@@ -333,7 +333,7 @@ def test_fallback_engages_when_probe_raises(monkeypatch):
     monkeypatch.setattr(mx, "stream", _BoomStream)
 
     # Force a fresh install with our broken probe environment.
-    monkeypatch.setattr(mx, "_rapid_mlx_compat_installed", False, raising=False)
+    monkeypatch.setattr(mx, "_qmlx_compat_installed", False, raising=False)
     importlib.reload(_mlx_compat)
     _mlx_compat.install()
 
@@ -365,7 +365,7 @@ def test_fallback_does_not_engage_on_unrelated_runtime_error(monkeypatch):
             return False
 
     monkeypatch.setattr(mx, "stream", _BoomStream)
-    monkeypatch.setattr(mx, "_rapid_mlx_compat_installed", False, raising=False)
+    monkeypatch.setattr(mx, "_qmlx_compat_installed", False, raising=False)
     importlib.reload(_mlx_compat)
     _mlx_compat.install()
 
@@ -383,8 +383,8 @@ def test_happy_path_unchanged_on_real_hardware():
     from vllm_mlx import _mlx_compat
 
     # Cleanup from prior monkeypatched tests
-    if hasattr(mx, "_rapid_mlx_compat_installed"):
-        delattr(mx, "_rapid_mlx_compat_installed")
+    if hasattr(mx, "_qmlx_compat_installed"):
+        delattr(mx, "_qmlx_compat_installed")
     importlib.reload(_mlx_compat)
     _mlx_compat.install()
 

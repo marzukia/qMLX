@@ -720,10 +720,10 @@ def test_compat_gate_anchored_allowlist_rejects_tail_substring_fake():
 
     accepted_names = (
         # OpenAI's canonical bare repo id — kept verbatim so the matcher
-        # is tested against the real upstream shape, not just the rapid-mlx
+        # is tested against the real upstream shape, not just the qmlx
         # alias form.
         "openai/gpt-oss-20b",
-        # rapid-mlx alias post-rename — separately covered so an alias
+        # qmlx alias post-rename — separately covered so an alias
         # match doesn't shadow the bare repo match above.
         "openai/gpt-oss-20b-mxfp4-q8",
         "mlx-community/gpt-oss-20b-MXFP4-Q8",

@@ -573,7 +573,7 @@ class TestModelsEndpoint:
         info = ModelInfo(id="mlx-community/Llama-3.2-3B-Instruct-4bit")
         assert info.id == "mlx-community/Llama-3.2-3B-Instruct-4bit"
         assert info.object == "model"
-        assert info.owned_by == "rapid-mlx"
+        assert info.owned_by == "qmlx"
 
     def test_models_response(self):
         resp = ModelsResponse(

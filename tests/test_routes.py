@@ -65,16 +65,16 @@ class TestHealthRoutes:
         app.include_router(probe_router)
         app.include_router(router)
         # Destructive control-plane routes (F-150 / F-151) live on a separate
-        # router with the ``X-Rapid-MLX-Internal: true`` gate. Include it here
+        # router with the ``X-qMLX-Internal: true`` gate. Include it here
         # so the existing test_cache_clear_* / test_health_router_accepts_*
         # cases still resolve the route — they pass the internal header below.
         app.include_router(admin_router)
         return app
 
-    # Convenience: every destructive route now needs ``X-Rapid-MLX-Internal:
+    # Convenience: every destructive route now needs ``X-qMLX-Internal:
     # true`` to even reach the handler (F-150). Tests that care about the
     # handler's behaviour — not the auth gate — pass this dict via ``headers=``.
-    _INTERNAL_HEADERS = {"X-Rapid-MLX-Internal": "true"}
+    _INTERNAL_HEADERS = {"X-qMLX-Internal": "true"}
 
     def _patch_config(self, **kwargs):
         """Patch config fields for testing."""
@@ -249,7 +249,7 @@ class TestHealthRoutes:
         test_probes_bypass_api_key.
 
         Destructive routes (``/v1/cache/clear``, ``/v1/cache``) additionally
-        require ``X-Rapid-MLX-Internal: true`` per F-150 — we pass it here
+        require ``X-qMLX-Internal: true`` per F-150 — we pass it here
         so the assertion checks the API-key 401, not the F-150 403. The
         header-only-403 path is exercised in ``test_internal_route_auth.py``.
         """
@@ -338,7 +338,7 @@ class TestHealthRoutes:
         """Valid Bearer token preserves access to protected management routes.
 
         Destructive routes (``/v1/cache/clear``, ``/v1/cache`` DELETE) also
-        require ``X-Rapid-MLX-Internal: true`` per F-150 — pass it so the
+        require ``X-qMLX-Internal: true`` per F-150 — pass it so the
         success path resolves.
         """
         orig = self._patch_config(
@@ -618,7 +618,7 @@ class TestModelsRoutes:
         finally:
             self._restore(orig)
 
-    # ----- Rapid-MLX vendor extension surface (Sweep autoresearch) -----
+    # ----- qMLX vendor extension surface (Sweep autoresearch) -----
 
     def test_retrieve_known_alias_populates_extensions(self):
         """A known alias (e.g. ``qwen3.5-4b-4bit``) must surface its

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Task #292 regression — guard ``/v1/audio/*`` on text-only servers.
 
-Bo R13/R14 fuzz wave: a fresh ``rapid-mlx serve <text-only-model>``
+Bo R13/R14 fuzz wave: a fresh ``qmlx serve <text-only-model>``
 boot (Qwen3-7B-4bit, etc.) still attached the audio router, so
 ``/v1/audio/transcriptions`` and ``/v1/audio/speech`` accepted POSTs
 and either crashed with a 500 (no audio engine loaded) or surfaced a
@@ -457,7 +457,7 @@ class TestModelsListingReflectsAudioGate:
 
 
 class TestCliServeCommandWiresEnableAudioFlag:
-    """Codex r1/r2 BLOCKING regression — both ``rapid-mlx serve`` and
+    """Codex r1/r2 BLOCKING regression — both ``qmlx serve`` and
     ``python -m vllm_mlx.server`` must thread ``--enable-audio`` all
     the way through to ``register_audio_routes_if_enabled``. A future
     refactor that moves the hook out of ``load_model`` (e.g. into a
@@ -557,10 +557,10 @@ class TestCliServeCommandWiresEnableAudioFlag:
                 setattr(cfg, attr, value)
 
     def test_cli_serve_command_wires_enable_audio_to_server_global(self, monkeypatch):
-        """``rapid-mlx serve <model> --enable-audio`` writes
+        """``qmlx serve <model> --enable-audio`` writes
         ``server._enable_audio_lane`` from the parsed value BEFORE
         ``load_model`` runs. Codex r3 BLOCKING #1: drive the REAL
-        ``cli.main()`` with the same sys.argv ``rapid-mlx serve``
+        ``cli.main()`` with the same sys.argv ``qmlx serve``
         builds, stub the heavy downstream calls, observe the actual
         write.
 
@@ -644,7 +644,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
         monkeypatch.setattr(
             "sys.argv",
             [
-                "rapid-mlx",
+                "qmlx",
                 "serve",
                 "mlx-community/Qwen3-7B-4bit",
                 "--enable-audio",
@@ -739,7 +739,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
         monkeypatch.setattr(
             "sys.argv",
             [
-                "rapid-mlx",
+                "qmlx",
                 "serve",
                 "mlx-community/Qwen3-7B-4bit",
                 "--enable-audio",
@@ -779,7 +779,7 @@ class TestCliServeCommandWiresEnableAudioFlag:
 
     def test_load_model_invokes_register_hook(self, monkeypatch):
         """``load_model`` is the SHARED loader between
-        ``rapid-mlx serve`` and ``python -m vllm_mlx.server``. Stub
+        ``qmlx serve`` and ``python -m vllm_mlx.server``. Stub
         the engine constructors so the function returns quickly, then
         observe that ``register_audio_routes_if_enabled`` was actually
         invoked (not just mentioned in the source).

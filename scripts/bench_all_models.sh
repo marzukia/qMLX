@@ -1,5 +1,5 @@
 #!/bin/bash
-# Benchmark all locally available ROADMAP models with Rapid-MLX
+# Benchmark all locally available ROADMAP models with qMLX
 # Usage: bash scripts/bench_all_models.sh
 
 set -e
@@ -93,8 +93,8 @@ for entry in "${MODELS[@]}"; do
   # Run benchmark
   echo "  Running benchmark..."
   $PYTHON "$BENCH_SCRIPT" \
-    --engine rapid-mlx \
-    --rapid-mlx-port $PORT \
+    --engine qmlx \
+    --qmlx-port $PORT \
     --runs 3 \
     --output "$output_file" \
     2>&1 | tee "/tmp/bench_output_${name}.log" || {

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Rapid-MLX: fast local LLM inference for Apple Silicon.
+qMLX: fast local LLM inference for Apple Silicon.
 
 A standalone OpenAI-compatible inference server built on Apple's MLX
 framework, mlx-lm for LLMs, and mlx-vlm for vision-language models.

@@ -415,7 +415,7 @@ class TestProcessImageInputDefenseInDepth:
         # — proves we got past the type guard into the body of the
         # function.
         with pytest.raises(ValueError) as ei:
-            process_image_input({"url": "/nonexistent/__rapid_mlx_test_path__.png"})
+            process_image_input({"url": "/nonexistent/__qmlx_test_path__.png"})
         # The error must be the downstream "Cannot process image"
         # marker (path not found), NOT the type guard's "must be a
         # string" — proves the dict was unwrapped and the unwrapped

@@ -9,7 +9,7 @@ prompt, so reusing prefix-cache entries computed for the uncompressed
 prefix would inject the wrong state into later requests. The scheduler is
 correct to bypass both the fetch (``scheduler.py`` ~2891) and the store
 (``scheduler.py`` ~3554) for compressed requests. The catch is that the
-existing ``rapid_mlx_prefix_cache_*`` series sees zero traffic on tiers
+existing ``qmlx_prefix_cache_*`` series sees zero traffic on tiers
 where PFlash mode is forced to ``"always"`` (verified-tier aliases such as
 ``qwen3.5-4b-4bit``) — they look frozen at ``hits=0/misses=1`` even though
 PFlash is doing meaningful work.
@@ -17,9 +17,9 @@ PFlash is doing meaningful work.
 This test suite locks in two new counters surfaced by
 ``Scheduler.get_stats()`` and rendered by ``routes/metrics.py``:
 
-* ``rapid_mlx_pflash_bypass_total`` — N+= for every request that hit the
+* ``qmlx_pflash_bypass_total`` — N+= for every request that hit the
   PFlash bypass.
-* ``rapid_mlx_pflash_compressed_tokens_total`` — cumulative
+* ``qmlx_pflash_compressed_tokens_total`` — cumulative
   ``len(original) - len(compressed)`` across all bypassed requests.
 
 The scheduler counters are exercised by driving the real
@@ -260,23 +260,23 @@ _PFLASH_STATS = {
 
 
 def test_metrics_route_renders_pflash_bypass_counter(metrics_client):
-    """``rapid_mlx_pflash_bypass_total`` HELP/TYPE/value all present."""
+    """``qmlx_pflash_bypass_total`` HELP/TYPE/value all present."""
     metrics_client.cfg.engine = _fake_engine(_PFLASH_STATS)
     body = metrics_client.client.get("/metrics").text
 
-    assert "# HELP rapid_mlx_pflash_bypass_total" in body
-    assert "# TYPE rapid_mlx_pflash_bypass_total counter" in body
-    assert "rapid_mlx_pflash_bypass_total 3" in body
+    assert "# HELP qmlx_pflash_bypass_total" in body
+    assert "# TYPE qmlx_pflash_bypass_total counter" in body
+    assert "qmlx_pflash_bypass_total 3" in body
 
 
 def test_metrics_route_renders_pflash_compressed_tokens_counter(metrics_client):
-    """``rapid_mlx_pflash_compressed_tokens_total`` HELP/TYPE/value all present."""
+    """``qmlx_pflash_compressed_tokens_total`` HELP/TYPE/value all present."""
     metrics_client.cfg.engine = _fake_engine(_PFLASH_STATS)
     body = metrics_client.client.get("/metrics").text
 
-    assert "# HELP rapid_mlx_pflash_compressed_tokens_total" in body
-    assert "# TYPE rapid_mlx_pflash_compressed_tokens_total counter" in body
-    assert "rapid_mlx_pflash_compressed_tokens_total 11250" in body
+    assert "# HELP qmlx_pflash_compressed_tokens_total" in body
+    assert "# TYPE qmlx_pflash_compressed_tokens_total counter" in body
+    assert "qmlx_pflash_compressed_tokens_total 11250" in body
 
 
 def test_metrics_route_renders_zero_when_pflash_keys_missing(metrics_client):
@@ -296,5 +296,5 @@ def test_metrics_route_renders_zero_when_pflash_keys_missing(metrics_client):
     metrics_client.cfg.engine = _fake_engine(stats_without_pflash)
     body = metrics_client.client.get("/metrics").text
 
-    assert "rapid_mlx_pflash_bypass_total 0" in body
-    assert "rapid_mlx_pflash_compressed_tokens_total 0" in body
+    assert "qmlx_pflash_bypass_total 0" in body
+    assert "qmlx_pflash_compressed_tokens_total 0" in body

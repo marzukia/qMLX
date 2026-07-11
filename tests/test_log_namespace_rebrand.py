@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """
 Tests for ``vllm_mlx/_log_namespace.py`` -- the runtime ``vllm_mlx.*`` ->
-``rapid_mlx.*`` LogRecord-factory rebrand.
+``qmlx.*`` LogRecord-factory rebrand.
 
 We import the module under test directly (not via ``import vllm_mlx``,
 which would install the global factory and pollute every subsequent
@@ -50,15 +50,15 @@ def isolated_logging_factory():
 
 
 def test_rewrite_exact_prefix():
-    assert _rewrite_name("vllm_mlx") == "rapid_mlx"
+    assert _rewrite_name("vllm_mlx") == "qmlx"
 
 
 def test_rewrite_dotted_child():
-    assert _rewrite_name("vllm_mlx.server") == "rapid_mlx.server"
+    assert _rewrite_name("vllm_mlx.server") == "qmlx.server"
 
 
 def test_rewrite_deeply_nested_child():
-    assert _rewrite_name("vllm_mlx.service.helpers") == "rapid_mlx.service.helpers"
+    assert _rewrite_name("vllm_mlx.service.helpers") == "qmlx.service.helpers"
 
 
 def test_does_not_rewrite_lookalike_prefix():
@@ -95,8 +95,8 @@ def test_factory_rewrites_vllm_mlx_records(isolated_logging_factory, caplog):
     matching = [r for r in caplog.records if r.message == "hello from server"]
     assert len(matching) == 1
     # The factory rewrites the name at record creation time, BEFORE caplog
-    # captures it. So the captured record's name must already be rapid_mlx.*.
-    assert matching[0].name == "rapid_mlx.server"
+    # captures it. So the captured record's name must already be qmlx.*.
+    assert matching[0].name == "qmlx.server"
 
 
 def test_factory_rewrites_deeply_nested_records(isolated_logging_factory, caplog):
@@ -107,13 +107,13 @@ def test_factory_rewrites_deeply_nested_records(isolated_logging_factory, caplog
 
     matching = [r for r in caplog.records if "disconnect_guard" in r.message]
     assert len(matching) == 1
-    assert matching[0].name == "rapid_mlx.service.helpers"
+    assert matching[0].name == "qmlx.service.helpers"
 
 
 def test_factory_leaves_third_party_records_alone(isolated_logging_factory, caplog):
     """uvicorn / asyncio / httpx / etc. log records must NOT be rewritten.
 
-    We have to set ``caplog.at_level`` per-logger because rapid-mlx's
+    We have to set ``caplog.at_level`` per-logger because qmlx's
     ``configure_logging`` (which runs as a side effect of importing
     ``vllm_mlx.server`` in the broader test session) pins httpx/httpcore/
     urllib3/huggingface_hub to WARNING. Setting INFO on root alone leaves
@@ -133,7 +133,7 @@ def test_factory_leaves_third_party_records_alone(isolated_logging_factory, capl
     for name in third_party:
         assert name in names, f"third-party logger {name!r} record went missing"
         # And critically, no rebranded twin appears.
-        assert f"rapid_mlx.{name}" not in names
+        assert f"qmlx.{name}" not in names
 
 
 def test_install_is_idempotent(isolated_logging_factory):
@@ -174,7 +174,7 @@ def test_install_preserves_existing_custom_factory(isolated_logging_factory):
     # Custom factory's marker survived...
     assert getattr(record, marker_attr, False) is True
     # ...AND our rebrand ran on top.
-    assert record.name == "rapid_mlx.scheduler"
+    assert record.name == "qmlx.scheduler"
 
 
 def test_factory_survives_make_log_record_with_none_name(isolated_logging_factory):
@@ -247,7 +247,7 @@ def test_install_rewraps_when_external_factory_is_swapped_in(
         None,
         None,
     )
-    assert record.name == "rapid_mlx.scheduler"
+    assert record.name == "qmlx.scheduler"
     assert getattr(record, marker_attr, False) is True
 
 
@@ -267,7 +267,7 @@ def test_factory_does_not_swallow_extra_args(isolated_logging_factory):
         "funcname",
         "stack info",
     )
-    assert record.name == "rapid_mlx.engine_core"
+    assert record.name == "qmlx.engine_core"
     assert record.pathname == "/path/to/file.py"
     assert record.lineno == 42
     assert record.funcName == "funcname"

@@ -148,7 +148,7 @@ class TestProbeAgreesWhenBroken:
             assert "torn install simulated" in body["detail"] or (
                 "import failed" in body["detail"] or "not installed" in body["detail"]
             )
-            assert "rapid-mlx[audio]" in body["detail"]
+            assert "qmlx-serve[audio]" in body["detail"]
 
     def test_both_routes_503_when_extra_not_installed(
         self, monkeypatch, _reset_audio_probe
@@ -168,8 +168,8 @@ class TestProbeAgreesWhenBroken:
         assert "not installed" in r_voices.json()["detail"]
         assert "not installed" in r_speech.json()["detail"]
         # Install hint is uniform.
-        assert "rapid-mlx[audio]" in r_voices.json()["detail"]
-        assert "rapid-mlx[audio]" in r_speech.json()["detail"]
+        assert "qmlx-serve[audio]" in r_voices.json()["detail"]
+        assert "qmlx-serve[audio]" in r_speech.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

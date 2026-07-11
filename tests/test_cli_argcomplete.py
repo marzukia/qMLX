@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the rapid-mlx CLI shell-completion wiring.
+"""Unit tests for the qmlx CLI shell-completion wiring.
 
 Locks in three things that are easy to break:
 
@@ -112,7 +112,7 @@ def test_alias_completer_handles_corrupt_aliases_file(
 
 
 def test_alias_csv_completer_first_token() -> None:
-    """``rapid-mlx doctor --models <TAB>`` (no comma yet) behaves
+    """``qmlx doctor --models <TAB>`` (no comma yet) behaves
     exactly like ``alias_completer``."""
     no_comma = alias_csv_completer("gemma-4-")
     plain = alias_completer("gemma-4-")
@@ -274,7 +274,7 @@ def test_autocomplete_handshake_returns_aliases_on_subprocess() -> None:
     env = {
         **os.environ,
         "_ARGCOMPLETE": "1",
-        "COMP_LINE": "rapid-mlx serve gemma-4-",
+        "COMP_LINE": "qmlx serve gemma-4-",
         "COMP_POINT": "24",
         "_ARGCOMPLETE_IFS": "\n",
     }

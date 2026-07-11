@@ -31,7 +31,7 @@ from vllm_mlx.cache.protocol import (
 def sandbox(monkeypatch, tmp_path):
     """Point the export sandbox at an isolated tmp dir for the test."""
     export_root = tmp_path / "exports"
-    monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(export_root))
+    monkeypatch.setenv("QMLX_CACHE_EXPORT_DIR", str(export_root))
     return export_root
 
 
@@ -122,7 +122,7 @@ def test_manifest_roundtrip(tmp_path):
         index_format_version=2,
         entries=42,
         total_bytes=12_345_678,
-        rapid_mlx_version="0.7.29",
+        qmlx_version="0.7.29",
         created_at="2026-06-18T00:00:00Z",
     )
     write_manifest(tmp_path, original)
@@ -394,7 +394,7 @@ def test_info_malformed_manifest_returns_400(cache_client):
 def test_info_400_detail_does_not_leak_resolved_path(cache_client):
     """The 400 body must not include the server's resolved cache root.
 
-    Codex round-3 NIT: leaking ``/Users/raullen/.cache/rapid-mlx/...`` to
+    Codex round-3 NIT: leaking ``/Users/raullen/.cache/qmlx/...`` to
     any bearer-token holder is unnecessary information disclosure.
     """
     bad = cache_client.sandbox / "leak-probe"

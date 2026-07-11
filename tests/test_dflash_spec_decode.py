@@ -1079,17 +1079,17 @@ def test_metrics_renders_dflash_counters_zero_at_cold_start():
 
     lines = _render_spec_decode_dflash_counters(_Cfg())
     body = "\n".join(lines)
-    assert "rapid_mlx_spec_decode_dflash_attempts_total" in body
-    assert "rapid_mlx_spec_decode_dflash_accepts_total" in body
-    assert "rapid_mlx_spec_decode_dflash_accept_ratio" in body
-    assert "rapid_mlx_spec_decode_dflash_tokens_saved_total" in body
-    assert "rapid_mlx_spec_decode_dflash_block_size" in body
+    assert "qmlx_spec_decode_dflash_attempts_total" in body
+    assert "qmlx_spec_decode_dflash_accepts_total" in body
+    assert "qmlx_spec_decode_dflash_accept_ratio" in body
+    assert "qmlx_spec_decode_dflash_tokens_saved_total" in body
+    assert "qmlx_spec_decode_dflash_block_size" in body
     # Family + method labels.
     assert 'family="qwen3.5-9b-4bit"' in body
     assert 'method="dflash"' in body
     # Block size default 16.
     assert (
-        'rapid_mlx_spec_decode_dflash_block_size{family="qwen3.5-9b-4bit",'
+        'qmlx_spec_decode_dflash_block_size{family="qwen3.5-9b-4bit",'
         'method="dflash"} 16'
     ) in body
 
@@ -1117,15 +1117,15 @@ def test_metrics_renders_post_acceptance_dflash_counters():
 
     body = "\n".join(_render_spec_decode_dflash_counters(_Cfg()))
     assert (
-        'rapid_mlx_spec_decode_dflash_attempts_total{family="qwen3.5-9b-4bit",'
+        'qmlx_spec_decode_dflash_attempts_total{family="qwen3.5-9b-4bit",'
         'method="dflash"} 4'
     ) in body
     assert (
-        'rapid_mlx_spec_decode_dflash_accepts_total{family="qwen3.5-9b-4bit",'
+        'qmlx_spec_decode_dflash_accepts_total{family="qwen3.5-9b-4bit",'
         'method="dflash"} 3'
     ) in body
     assert (
-        'rapid_mlx_spec_decode_dflash_tokens_saved_total{family="qwen3.5-9b-4bit",'
+        'qmlx_spec_decode_dflash_tokens_saved_total{family="qwen3.5-9b-4bit",'
         'method="dflash"} 27'
     ) in body
     # accept_ratio = 0.75 — must appear rounded to at most 4 decimals.
@@ -1144,9 +1144,9 @@ def test_metrics_route_includes_dflash_series_at_cold_start():
         kv_cache_dtype = None
 
     body = _render_prometheus(_Cfg())
-    assert "rapid_mlx_spec_decode_dflash_attempts_total" in body
-    assert "rapid_mlx_spec_decode_dflash_accept_ratio" in body
-    assert "rapid_mlx_spec_decode_dflash_block_size" in body
+    assert "qmlx_spec_decode_dflash_attempts_total" in body
+    assert "qmlx_spec_decode_dflash_accept_ratio" in body
+    assert "qmlx_spec_decode_dflash_block_size" in body
 
 
 # ---------------------------------------------------------------------------

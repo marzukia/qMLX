@@ -59,7 +59,7 @@ def test_test_hermes_populates_results_under_exec_module(monkeypatch):
     # the 10 API-level tests at the top of the file — running the E2E
     # block would be a side effect, not part of the contract.
     monkeypatch.setenv("HERMES_BIN", "/nonexistent/hermes-binary-for-contract-test")
-    monkeypatch.setenv("RAPID_MLX_BASE_URL", "http://localhost:0/v1")
+    monkeypatch.setenv("QMLX_BASE_URL", "http://localhost:0/v1")
 
     # Mirror vllm_mlx/agents/testing.py:_run_specific_tests exactly.
     spec = importlib.util.spec_from_file_location(

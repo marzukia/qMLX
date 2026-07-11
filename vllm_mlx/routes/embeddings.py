@@ -245,7 +245,7 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     except ImportError:
         raise HTTPException(
             status_code=503,
-            detail="mlx-embeddings not installed. Install with: pip install 'qmlx[embeddings]'",
+            detail="mlx-embeddings not installed. Install with: pip install 'qmlx-serve[embeddings]'",
         )
     except HTTPException:
         raise

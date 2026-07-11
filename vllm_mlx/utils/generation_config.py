@@ -5,7 +5,7 @@ Model authors ship recommended sampling parameters (``temperature``,
 ``top_p``, ``top_k``, ``min_p``, ``repetition_penalty``, …) inside
 ``generation_config.json`` next to the safetensors weights. The HF
 transformers loader auto-applies these; mlx-lm's generators do not, and
-neither does Rapid-MLX — until now. This module gives the server an
+neither does qMLX — until now. This module gives the server an
 opinionated, well-typed view of just the sampling subset, so the request
 → CLI → alias → generation_config → fallback cascade in
 ``service/helpers.py`` has a real value to read for layer 3 instead of

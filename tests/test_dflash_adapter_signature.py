@@ -21,7 +21,7 @@ Coverage:
   expected parameter names AND the ``token_dtype`` default. If
   mlx-vlm renames any of these, this test pins the failure to the
   upstream contract change.
-* :func:`test_dflash_runtime_kind_attribute` — the rapid-mlx wrapper
+* :func:`test_dflash_runtime_kind_attribute` — the qmlx wrapper
   reads ``runtime.kind`` to populate the ``draft_kind`` kwarg into
   ``stream_generate``. Pin that attribute name.
 * :func:`test_driver_generate_invokes_stream_generate_with_drafter` —
@@ -58,12 +58,12 @@ import pytest
 def test_mlx_vlm_draft_block_signature_matches_0_6_3() -> None:
     """Pin the mlx-vlm 0.6.3 ``draft_block`` parameter contract.
 
-    The rapid-mlx DFlash driver assumes mlx-vlm's drafter is called
+    The qmlx DFlash driver assumes mlx-vlm's drafter is called
     with these positional args by mlx-vlm's own ``_dflash_rounds``
     loop. We don't call it directly anymore — but if the upstream
     drifts the signature, ``_dflash_rounds`` itself stops working,
     and we want a CLEAR diagnostic ("mlx-vlm signature changed,
-    update the rapid-mlx wrapper") instead of a flaky GPU crash.
+    update the qmlx wrapper") instead of a flaky GPU crash.
     """
     pytest.importorskip("mlx_vlm")
     mx = pytest.importorskip("mlx.core")
@@ -151,7 +151,7 @@ def stub_mlx_vlm(monkeypatch: pytest.MonkeyPatch):
     """Stub ``mlx_vlm.load`` + ``stream_generate`` + ``load_runtime``.
 
     NOTE: this fixture uses ``importorskip("mlx_vlm")`` to skip the
-    driver wiring tests cleanly when ``rapid-mlx`` is installed
+    driver wiring tests cleanly when ``qmlx`` is installed
     WITHOUT the ``[dflash]`` extra (mlx-vlm is an optional dep). The
     ``test_mlx_vlm_draft_block_signature_matches_0_6_3`` test above
     already gates on ``importorskip`` for the same reason; mirroring

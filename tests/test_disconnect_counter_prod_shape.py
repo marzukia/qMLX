@@ -6,11 +6,11 @@ Background
 ----------
 0.8.2 dogfood (3 independent personas) reported on PyPI 0.8.2:
 
-* **D-M01-DEAD**: ``rapid_mlx_requests_cancelled_via_disconnect_total``
+* **D-M01-DEAD**: ``qmlx_requests_cancelled_via_disconnect_total``
   NEVER increments under real client disconnect on the production
-  ``rapid-mlx serve`` engine shape, even though
+  ``qmlx serve`` engine shape, even though
   ``[disconnect_guard] force-abort`` warnings fire every time.
-* **D-M01-2X**: ``rapid_mlx_requests_cancelled_total`` over-counts 2x
+* **D-M01-2X**: ``qmlx_requests_cancelled_total`` over-counts 2x
   on every BatchedEngine disconnect — 20 ticks for 10 actual aborts.
 
 PR #783's 9 rounds of codex review covered SYNTHETIC engine shapes
@@ -161,7 +161,7 @@ class _BatchedEngineLike:
 
 @pytest.mark.asyncio
 async def test_disconnect_subcounter_advances_on_prod_engine_shape():
-    """``rapid_mlx_requests_cancelled_via_disconnect_total`` MUST
+    """``qmlx_requests_cancelled_via_disconnect_total`` MUST
     increment by exactly 1 per disconnect-driven abort on the
     production ``BatchedEngine`` over ``AsyncEngineCore`` shape.
 
@@ -212,7 +212,7 @@ async def test_disconnect_subcounter_advances_on_prod_engine_shape():
 
 @pytest.mark.asyncio
 async def test_total_counter_no_2x_overcount_on_prod_shape():
-    """``rapid_mlx_requests_cancelled_total`` MUST advance by exactly
+    """``qmlx_requests_cancelled_total`` MUST advance by exactly
     1 per abort on the production engine shape — not 2 (or more).
 
     Pre-fix repro fingerprint: the disconnect_guard
@@ -521,7 +521,7 @@ def test_unresolved_engine_shape_logs_explicit_warning(caplog):
         _helpers._unresolved_engine_logged.discard(dedupe_key)
 
     # Capture WARNING from whatever logger the helpers module ends up
-    # bound to (rapid-mlx aliases ``vllm_mlx`` → ``rapid_mlx`` on the
+    # bound to (qmlx aliases ``vllm_mlx`` → ``qmlx`` on the
     # logging tree, see runtime/__init__.py).
     caplog.set_level(logging.WARNING)
     _record_disconnect_abort_on_scheduler(_NakedEngineForWarningTest(), "req-naked")

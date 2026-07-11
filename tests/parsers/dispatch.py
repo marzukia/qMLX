@@ -92,7 +92,7 @@ def run_tool_extraction(
     """Drive a tool parser through stream or non-stream extraction.
 
     Port of vLLM ``tests/tool_parsers/utils.py:84-103``, adapted for
-    Rapid-MLX's ``ExtractedToolCallInformation`` return type and dict-
+    qMLX's ``ExtractedToolCallInformation`` return type and dict-
     shaped streaming deltas.
 
     Returns:

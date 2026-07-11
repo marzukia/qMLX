@@ -19,7 +19,7 @@ Metrics measured:
    11. Audio           — STT/TTS support
 
 Usage:
-    python scripts/benchmark_engines.py --engine rapid-mlx ollama llama-cpp
+    python scripts/benchmark_engines.py --engine qmlx ollama llama-cpp
     python scripts/benchmark_engines.py --engine all --output results.json
 """
 
@@ -252,7 +252,7 @@ def _make_create_kwargs(client, model, messages, max_tokens, **extra):
 
     Deterministic: temperature=0, stream=True, thinking disabled.
     extra_body is used for ``enable_thinking`` so it works with both
-    rapid-mlx (which supports it) and other OpenAI-compatible servers
+    qmlx (which supports it) and other OpenAI-compatible servers
     (which silently ignore unknown fields).
     """
     kwargs = {
@@ -1069,12 +1069,12 @@ def print_comparison(all_summaries: list[dict]):
 # ---------------------------------------------------------------------------
 
 ENGINE_CONFIGS = {
-    "rapid-mlx": {"display": "Rapid-MLX", "default_port": 8000},
+    "qmlx": {"display": "qMLX", "default_port": 8000},
     "ollama": {"display": "Ollama", "default_port": 11434},
     "llama-cpp": {"display": "llama.cpp", "default_port": 8080},
     "mlx-lm": {"display": "mlx-lm", "default_port": None},
 }
-ALL_OPENAI_ENGINES = ["rapid-mlx", "ollama", "llama-cpp"]
+ALL_OPENAI_ENGINES = ["qmlx", "ollama", "llama-cpp"]
 
 
 # ---------------------------------------------------------------------------
@@ -1088,10 +1088,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts/benchmark_engines.py --engine rapid-mlx
-  python scripts/benchmark_engines.py --engine rapid-mlx ollama llama-cpp
+  python scripts/benchmark_engines.py --engine qmlx
+  python scripts/benchmark_engines.py --engine qmlx ollama llama-cpp
   python scripts/benchmark_engines.py --engine all --output results.json
-  python scripts/benchmark_engines.py --engine rapid-mlx --speed-only
+  python scripts/benchmark_engines.py --engine qmlx --speed-only
 """,
     )
     parser.add_argument(
@@ -1100,7 +1100,7 @@ Examples:
     parser.add_argument(
         "--model", default="default", help="Model name (default: 'default')"
     )
-    parser.add_argument("--rapid-mlx-port", type=int, default=8000)
+    parser.add_argument("--qmlx-port", type=int, default=8000)
     parser.add_argument("--ollama-port", type=int, default=11434)
     parser.add_argument("--llama-cpp-port", type=int, default=8080)
     parser.add_argument("--runs", type=int, default=3)
@@ -1120,11 +1120,11 @@ Examples:
     if "all" in engines:
         engines = list(ALL_OPENAI_ENGINES) + ["mlx-lm"]
 
-    if args.port and args.rapid_mlx_port == 8000:
-        args.rapid_mlx_port = args.port
+    if args.port and args.qmlx_port == 8000:
+        args.qmlx_port = args.port
 
     port_map = {
-        "rapid-mlx": args.rapid_mlx_port,
+        "qmlx": args.qmlx_port,
         "ollama": args.ollama_port,
         "llama-cpp": args.llama_cpp_port,
     }

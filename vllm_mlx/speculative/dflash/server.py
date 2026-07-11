@@ -114,7 +114,7 @@ def _build_app(
     multi-model deployment would still share that worker; one model
     can't run while another's generator is mid-step.
     """
-    app = FastAPI(title="Rapid-MLX (DFlash)")
+    app = FastAPI(title="qMLX (DFlash)")
     # D-ANTHRO-VALIDATION F11: install the shared exception handlers so
     # Pydantic validation errors return the canonical
     # ``{"error":{"type":"invalid_request_error","code":"invalid_request",
@@ -141,7 +141,7 @@ def _build_app(
             # POST/PUT). The dflash server only serves the OpenAI-compat
             # chat surface, so POST/GET/OPTIONS is the correct allowlist.
             allow_methods=["POST", "GET", "OPTIONS"],
-            allow_headers=["Content-Type", "Authorization", "X-Rapid-MLX-Internal"],
+            allow_headers=["Content-Type", "Authorization", "X-qMLX-Internal"],
             max_age=3600,
         )
 
@@ -675,7 +675,7 @@ def run_dflash_server(
     if not have_runtime():
         raise RuntimeError(
             "DFlash server requires mlx-vlm 0.5.0+ — install with "
-            "``pip install 'qmlx[dflash]'``."
+            "``pip install 'qmlx-serve[dflash]'``."
         )
 
     # Belt-and-suspenders eligibility re-check for programmatic callers

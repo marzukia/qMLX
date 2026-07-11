@@ -7,7 +7,7 @@ then times both detokenization paths over those tokens. Lives in
 ``scripts/`` rather than the user-facing CLI because the number it
 reports is meaningful only when tuning the streaming detokenizer
 implementation — end users care about end-to-end TTFT/decode tok/s,
-which ``rapid-mlx bench`` covers.
+which ``qmlx bench`` covers.
 
 Usage:
     python3 scripts/bench_detok.py

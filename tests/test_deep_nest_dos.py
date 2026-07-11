@@ -26,11 +26,11 @@ Post-fix:
   by exhausting the C stack.
 * :class:`vllm_mlx.api.models.ToolDefinition` rejects a deeply-nested
   ``function.parameters`` at request-model construction time (envvar
-  ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``, default 64) with the canonical
+  ``QMLX_MAX_TOOL_SCHEMA_DEPTH``, default 64) with the canonical
   ``invalid_request_error`` envelope.
 * :class:`vllm_mlx.middleware.body_depth.RequestBodyDepthMiddleware`
   rejects a whole-body that's deeply-nested before FastAPI/Pydantic
-  ever recurses over it (envvar ``RAPID_MLX_MAX_BODY_DEPTH``, default
+  ever recurses over it (envvar ``QMLX_MAX_BODY_DEPTH``, default
   64) with the canonical ``request_body_too_deep`` envelope.
 * A global :class:`RecursionError` exception handler returns the same
   sanitized 400 envelope when anything still hits the recursion limit
@@ -54,8 +54,8 @@ def _isolate_env(monkeypatch):
     monkey-patches a value doesn't leak it to the next case. The
     middleware reads the env per-request, so a leftover env var would
     silently change behaviour in unrelated tests."""
-    monkeypatch.delenv("RAPID_MLX_MAX_BODY_DEPTH", raising=False)
-    monkeypatch.delenv("RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH", raising=False)
+    monkeypatch.delenv("QMLX_MAX_BODY_DEPTH", raising=False)
+    monkeypatch.delenv("QMLX_MAX_TOOL_SCHEMA_DEPTH", raising=False)
     yield
 
 
@@ -245,7 +245,7 @@ def test_d_deep_json_depth_1000_returns_400_with_canonical_envelope(path):
     # The cap value MUST be named in the message so the operator can
     # find the env knob to bump if needed; the request-body bytes MUST
     # NOT be reflected.
-    assert "RAPID_MLX_MAX_BODY_DEPTH" in err["message"]
+    assert "QMLX_MAX_BODY_DEPTH" in err["message"]
     # No stack-trace fragments in the envelope.
     raw = resp.text
     assert "Traceback" not in raw
@@ -327,30 +327,30 @@ def test_d_deep_json_boundary_default_cap(monkeypatch):
 
 def test_d_deep_json_env_override_takes_effect(monkeypatch):
     """The cap is read per-request from
-    ``RAPID_MLX_MAX_BODY_DEPTH``. Setting it tighter MUST reject
+    ``QMLX_MAX_BODY_DEPTH``. Setting it tighter MUST reject
     payloads the default would have accepted; setting it looser MUST
     accept payloads the default would have rejected. The per-request
-    lookup pattern mirrors ``RAPID_MLX_MAX_REQUEST_BYTES``."""
+    lookup pattern mirrors ``QMLX_MAX_REQUEST_BYTES``."""
     app = _build_minimal_app()
     client = TestClient(app, raise_server_exceptions=False)
 
     # Tighten cap: depth 10 is now over the cap of 5.
-    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "5")
+    monkeypatch.setenv("QMLX_MAX_BODY_DEPTH", "5")
     r_tight = client.post("/v1/chat/completions", json=_deep_dict(10))
     assert r_tight.status_code == 400, r_tight.text
 
     # Loosen cap: depth 200 now under the cap of 500.
-    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "500")
+    monkeypatch.setenv("QMLX_MAX_BODY_DEPTH", "500")
     r_loose = client.post("/v1/chat/completions", json=_deep_dict(200))
     assert r_loose.status_code == 200, r_loose.text
 
 
 def test_d_deep_json_disabled_cap_passes_through(monkeypatch):
-    """``RAPID_MLX_MAX_BODY_DEPTH=0`` MUST disable the gate — the
+    """``QMLX_MAX_BODY_DEPTH=0`` MUST disable the gate — the
     documented escape hatch for operators whose internal deployment
     has other DoS controls. A regression that fail-closed on the
     disable value would prevent operators from opting out."""
-    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "0")
+    monkeypatch.setenv("QMLX_MAX_BODY_DEPTH", "0")
     app = _build_minimal_app()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/v1/chat/completions", json=_deep_dict(100))
@@ -380,7 +380,7 @@ def test_d_tool_recur_tools_depth_above_cap_returns_400_canonical_envelope(
     # sanitiser. We want both gates to work independently — a defense-
     # in-depth regression should not depend on the body-depth gate
     # firing first.
-    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "0")
+    monkeypatch.setenv("QMLX_MAX_BODY_DEPTH", "0")
     app = _build_minimal_app(with_pydantic_chat=True)
     client = TestClient(app, raise_server_exceptions=False)
 
@@ -405,7 +405,7 @@ def test_d_tool_recur_tools_depth_above_cap_returns_400_canonical_envelope(
     assert err["code"] == "invalid_request"
     # The cap env knob is named so an operator can find the lever; no
     # stack-trace fragments leak.
-    assert "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH" in err["message"]
+    assert "QMLX_MAX_TOOL_SCHEMA_DEPTH" in err["message"]
     assert "Traceback" not in resp.text
     assert "_walk" not in resp.text
 
@@ -416,7 +416,7 @@ def test_d_tool_recur_parser_depth_1000_returns_invalid_request_code(monkeypatch
     OpenAI-shaped envelope should carry the canonical invalid_request code
     instead of a null code.
     """
-    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "0")
+    monkeypatch.setenv("QMLX_MAX_BODY_DEPTH", "0")
     app = _build_minimal_app(with_pydantic_chat=True)
     client = TestClient(app, raise_server_exceptions=False)
 
@@ -544,10 +544,10 @@ def test_d_tool_recur_iterative_walk_handles_extreme_depth(monkeypatch):
 
 def test_d_tool_recur_tool_schema_env_override(monkeypatch):
     """The per-tool schema cap is read per-request from
-    ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``. Mirrors the body-depth env
+    ``QMLX_MAX_TOOL_SCHEMA_DEPTH``. Mirrors the body-depth env
     override behaviour."""
-    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "0")
-    monkeypatch.setenv("RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH", "10")
+    monkeypatch.setenv("QMLX_MAX_BODY_DEPTH", "0")
+    monkeypatch.setenv("QMLX_MAX_TOOL_SCHEMA_DEPTH", "10")
 
     app = _build_minimal_app(with_pydantic_chat=True)
     client = TestClient(app, raise_server_exceptions=False)
@@ -567,7 +567,7 @@ def test_d_tool_recur_tool_schema_env_override(monkeypatch):
     }
     resp = client.post("/v1/chat/completions", json=payload)
     assert resp.status_code == 400, resp.text
-    assert "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH" in resp.json()["error"]["message"]
+    assert "QMLX_MAX_TOOL_SCHEMA_DEPTH" in resp.json()["error"]["message"]
 
 
 # ============================================================
@@ -629,7 +629,7 @@ def test_body_depth_gate_catches_parser_recursion_error(monkeypatch):
     assert body["error"]["code"] == "request_body_too_deep"
     # Cap-naming message — the middleware path, not the global handler
     # path (whose message says "recursion bound" not "server cap").
-    assert "RAPID_MLX_MAX_BODY_DEPTH" in body["error"]["message"]
+    assert "QMLX_MAX_BODY_DEPTH" in body["error"]["message"]
     assert "server cap" in body["error"]["message"]
 
 
@@ -823,7 +823,7 @@ def test_quick_depth_heuristic_string_content_does_not_force_fallback():
     assert _quick_depth_might_exceed(suspicious, 64) is False
 
     # End-to-end: the body reaches the handler.
-    os.environ.pop("RAPID_MLX_MAX_BODY_DEPTH", None)
+    os.environ.pop("QMLX_MAX_BODY_DEPTH", None)
     app = _build_minimal_app()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
@@ -891,13 +891,13 @@ def test_resolve_max_helpers_fallback():
     assert resolve_max_tool_schema_depth() == DEFAULT_MAX_TOOL_SCHEMA_DEPTH
 
     # Empty env → default.
-    os.environ["RAPID_MLX_MAX_BODY_DEPTH"] = ""
+    os.environ["QMLX_MAX_BODY_DEPTH"] = ""
     assert resolve_max_body_depth() == DEFAULT_MAX_BODY_DEPTH
     # Garbage env → default.
-    os.environ["RAPID_MLX_MAX_BODY_DEPTH"] = "not-a-number"
+    os.environ["QMLX_MAX_BODY_DEPTH"] = "not-a-number"
     assert resolve_max_body_depth() == DEFAULT_MAX_BODY_DEPTH
     # Cleanup.
-    del os.environ["RAPID_MLX_MAX_BODY_DEPTH"]
+    del os.environ["QMLX_MAX_BODY_DEPTH"]
 
 
 # ============================================================
@@ -1043,7 +1043,7 @@ def test_body_depth_skips_non_json_content_type(monkeypatch):
     """A non-JSON content type (e.g. ``application/octet-stream``)
     MUST NOT trigger the depth gate — we can't measure a binary blob
     as a JSON tree. Audio uploads, etc. flow through unchanged."""
-    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "5")
+    monkeypatch.setenv("QMLX_MAX_BODY_DEPTH", "5")
     app = _build_minimal_app()
     client = TestClient(app, raise_server_exceptions=False)
     # Body that WOULD trip the depth gate if parsed as JSON — but
@@ -1066,7 +1066,7 @@ def test_body_depth_skips_unguarded_paths(monkeypatch):
     probes (``/openapi.json``, ``/healthz``) keep their zero-overhead
     fast path. We only add a handler at an out-of-scope path; if the
     middleware fired here it would 400 instead of reaching the handler."""
-    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "5")
+    monkeypatch.setenv("QMLX_MAX_BODY_DEPTH", "5")
     from vllm_mlx.middleware.body_depth import install_request_body_depth_middleware
     from vllm_mlx.middleware.exception_handlers import install_exception_handlers
 

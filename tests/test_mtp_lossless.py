@@ -336,7 +336,7 @@ def _spec_decode_mtp_path_auto_k(
     and ``max_k=1``.
 
     Exercises the EV depth controller code path that operators actually run
-    (``rapid-mlx serve ... --spec-decode mtp`` defaults to ``disable_auto_k
+    (``qmlx serve ... --spec-decode mtp`` defaults to ``disable_auto_k
     =False``) — the two byte-equal tests above pin ``disable_auto_k=True``
     so their mocked backbone scripts are not perturbed by the controller's
     per-round K∈{0,1} park/chain picks, but that means a regression in the
@@ -379,7 +379,7 @@ def test_lossless_default_path_terminates_cleanly_under_auto_k():
     ``disable_auto_k=True`` to keep the mocked backbone scripts stable
     under the controller — that means a regression that only breaks the
     default (auto-K) path would slip past them. This test exercises the
-    exact default path operators run (``rapid-mlx serve ... --spec-decode
+    exact default path operators run (``qmlx serve ... --spec-decode
     mtp`` with no ``--mtp-disable-auto-k``) and pins the two invariants
     that are cheap to verify under a mock:
 

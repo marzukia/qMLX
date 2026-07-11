@@ -104,7 +104,7 @@ TIMEOUT_SECONDS = 600
 # the same code-review surface as the rest of pr_validate: an attacker
 # wanting to weaken the gate would have to modify reviewed Python code.
 PROMPT_TEMPLATE = """\
-You are an adversarial code reviewer for Rapid-MLX, a production
+You are an adversarial code reviewer for qMLX, a production
 inference server published to PyPI + Homebrew with auto-deploy. Be
 picky and specific. Quote line numbers from the diff. Find concrete
 problems, not generalities. Skip what is fine — only report what is
@@ -388,13 +388,13 @@ class CodexReviewStep(Step):
                         CODEX_MODEL,
                         # Force the OpenAI cloud provider for the review
                         # call. The user's config.toml may set
-                        # ``model_provider = "rapid-mlx"`` for normal
+                        # ``model_provider = "qmlx"`` for normal
                         # codex use (so codex routes to local server),
                         # but pr_validate wants the gpt-5.5 cloud model
                         # talking through OpenAI, not the local mlx
                         # server. Without this override, codex tries to
-                        # refresh /models against the rapid-mlx server
-                        # and exits 1 because rapid-mlx's OpenAI-shaped
+                        # refresh /models against the qmlx server
+                        # and exits 1 because qmlx's OpenAI-shaped
                         # ``{"data": [...]}`` response lacks the
                         # ``models`` field codex 0.136+ expects.
                         "-c",

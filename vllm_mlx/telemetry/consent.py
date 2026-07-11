@@ -53,7 +53,7 @@ _NON_INTERACTIVE_SUBCOMMANDS = frozenset(
 # command. The outer except now also catches ``UnicodeError`` as a
 # belt-and-braces second guard.
 _DISCLOSURE = """\
-Rapid-MLX is open source and built on what its users report. We do not
+qMLX is open source and built on what its users report. We do not
 ship analytics SDKs, third-party trackers, or ads -- and we never will.
 With your help, we can do three concrete things better:
 
@@ -67,7 +67,7 @@ With your help, we can do three concrete things better:
 WHAT WE SEND (only after you say yes):
   - Your chip family + RAM tier -- "Apple M3 Ultra, 256 GB", never serial
   - OS family + major.minor version ("darwin 25.3"), arch ("arm64"),
-    Python major.minor ("3.12"), Rapid-MLX version ("0.6.79")
+    Python major.minor ("3.12"), qMLX version ("0.6.79")
   - Which subcommand you ran ("serve" / "chat") and its duration
   - The NAMES (only) of CLI flags you passed, sorted and de-duplicated
     (`--api-key sk-XXX` becomes the literal string "api-key"; the value

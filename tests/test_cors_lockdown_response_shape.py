@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests for L-02 — env-locked CORS rejection envelope shape.
 
-Pre-fix: when ``RAPID_MLX_CORS_ALLOW_ORIGINS`` was set to an explicit
+Pre-fix: when ``QMLX_CORS_ALLOW_ORIGINS`` was set to an explicit
 allowlist and the preflight ``OPTIONS`` arrived with an ``Origin`` not on
 that allowlist, Starlette's stock ``CORSMiddleware`` returned
 ``400 Bad Request`` with body ``"Disallowed CORS origin"``. Spec-correct
@@ -50,11 +50,11 @@ def fresh_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
     monkeypatch.setattr(server_mod, "app", app)
 
     for var in (
-        "RAPID_MLX_CORS_ALLOW_ORIGINS",
-        "RAPID_MLX_CORS_ALLOW_METHODS",
-        "RAPID_MLX_CORS_ALLOW_HEADERS",
-        "RAPID_MLX_CORS_MAX_AGE",
-        "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
+        "QMLX_CORS_ALLOW_ORIGINS",
+        "QMLX_CORS_ALLOW_METHODS",
+        "QMLX_CORS_ALLOW_HEADERS",
+        "QMLX_CORS_MAX_AGE",
+        "QMLX_CORS_ALLOW_CREDENTIALS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -78,7 +78,7 @@ def test_disallowed_origin_preflight_is_200_not_400(
 ) -> None:
     """Env-locked allowlist, preflight from a non-listed origin → 200
     (not 400). This is the headline L-02 change."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -111,7 +111,7 @@ def test_disallowed_origin_preflight_omits_acao(
     that header's absence is what makes the browser block the real
     request. If we accidentally echoed the requested origin we'd be
     silently failing open."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -137,7 +137,7 @@ def test_disallowed_origin_preflight_sets_vary_origin(
     different origins. Without it, a CDN could serve the same "no ACAO"
     body to a request from an allowed origin and silently break the
     allowed cross-origin path."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -169,7 +169,7 @@ def test_disallowed_method_preflight_is_200_not_400(
     block because the response doesn't echo ``DELETE`` in
     ``Access-Control-Allow-Methods``. Same shape as the origin case —
     upstream Starlette lumped them in the same 400 envelope."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -194,7 +194,7 @@ def test_allowed_origin_preflight_still_returns_acao(
     """Sanity check the happy path is untouched — the subclass only
     overrides the failure envelope. A matching origin still gets a 200
     with ``Access-Control-Allow-Origin`` set to that origin."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -214,13 +214,13 @@ def test_failclosed_empty_csv_path_unaffected(
 ) -> None:
     """L-02 must NOT touch the fail-closed empty-CSV path (``3da8230``).
 
-    When ``RAPID_MLX_CORS_ALLOW_ORIGINS`` is set to whitespace-only,
+    When ``QMLX_CORS_ALLOW_ORIGINS`` is set to whitespace-only,
     no middleware is registered at all — preflight ``OPTIONS`` on a
     ``POST``-only route still returns 405 because nothing wires the
     verb. This is the operator-visible signal that the env var has a
     templating bug, and the L-02 spec-aligned 200 must not weaken it.
     """
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", " , ,, ")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", " , ,, ")
     origins = _server_mod().configure_cors_from_env(cli_origins=None)
     assert origins == [], "fail-closed branch should return empty list"
 

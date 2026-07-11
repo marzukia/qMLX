@@ -20,7 +20,7 @@ A full engine-level harness (loads a long-context MLX model, drives
 section at the bottom for the deliberate non-stub. The bench-side
 sweep that produced the PR #649 TTFT + recall numbers lives at
 ``vllm_mlx/bench/pflash_replication.py`` and is exercised from the
-``rapid-mlx bench`` CLI, not pytest.
+``qmlx bench`` CLI, not pytest.
 
 The token-level tests below run on every PR (no marker) because they
 need no model and finish in milliseconds. The ``needle`` marker

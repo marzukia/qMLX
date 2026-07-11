@@ -292,7 +292,7 @@ def main():
     import argparse
 
     global _PORT, BASE_URL
-    parser = argparse.ArgumentParser(description="Stress test for Rapid-MLX server")
+    parser = argparse.ArgumentParser(description="Stress test for qMLX server")
     parser.add_argument("--port", type=int, default=8000, help="Server port")
     args = parser.parse_args()
     _PORT = args.port

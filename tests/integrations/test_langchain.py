@@ -35,7 +35,7 @@ def _is_guided_extra_required_error(exc: BaseException) -> bool:
 
 
 def _is_ok_result(value: str) -> bool:
-    return value == "PASS" or value == "SKIP: qmlx[guided] not installed"
+    return value == "PASS" or value == "SKIP: qmlx-serve[guided] not installed"
 
 
 def _run_tests() -> None:
@@ -180,7 +180,7 @@ def _run_tests() -> None:
         results["6_structured"] = "PASS"
     except Exception as e:
         if _is_guided_extra_required_error(e):
-            message = "SKIP: qmlx[guided] not installed"
+            message = "SKIP: qmlx-serve[guided] not installed"
             print(message)
             results["6_structured"] = message
         else:

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the ``rapid-mlx launch <client>`` bootstrap subcommand.
+"""Tests for the ``qmlx launch <client>`` bootstrap subcommand.
 
 We never touch the user's real config files — every test redirects the
 relevant home / config dir to a per-test ``tmp_path`` and asserts the
@@ -239,7 +239,7 @@ class TestContinueDev:
         continue_dev.write_or_patch_config("http://127.0.0.1:8000", "qwen3.5-4b-4bit")
         data = json.loads(cfg.read_text())
         assert len(data["models"]) == 2
-        rapid = next(m for m in data["models"] if m["title"] == "rapid-mlx")
+        rapid = next(m for m in data["models"] if m["title"] == "qmlx")
         assert rapid["provider"] == "openai"
         assert rapid["model"] == "qwen3.5-4b-4bit"
         assert rapid["apiBase"] == "http://127.0.0.1:8000/v1"
@@ -254,7 +254,7 @@ class TestContinueDev:
         continue_dev.write_or_patch_config("http://127.0.0.1:8000", "model-b")
         cfg = continue_dev.current_config_path()
         data = json.loads(cfg.read_text())
-        rapid_entries = [m for m in data["models"] if m.get("title") == "rapid-mlx"]
+        rapid_entries = [m for m in data["models"] if m.get("title") == "qmlx"]
         assert len(rapid_entries) == 1
         assert rapid_entries[0]["model"] == "model-b"
 
@@ -459,7 +459,7 @@ class TestLaunchCommand:
         # Spawn happened with the expected argv.
         argv = popen.call_args[0][0]
         assert argv == [
-            "rapid-mlx",
+            "qmlx",
             "serve",
             "qwen3.5-4b-4bit",
             "--port",
@@ -494,7 +494,7 @@ class TestLaunchCommand:
     def test_uses_original_alias_when_resolved(self, fake_home, capsys):
         """When ``main()`` rewrites ``args.model`` from alias to HF id,
         the launch command should patch with the ORIGINAL alias so the
-        IDE client requests the short name from rapid-mlx."""
+        IDE client requests the short name from qmlx."""
         ext_dir = (
             fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
         )
@@ -538,7 +538,7 @@ def test_launch_help_text_is_registered(tmp_path):
 @pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999", "abc"])
 def test_launch_port_rejects_out_of_range(bad_port):
     """``--port`` must use the same ``[1, 65535]`` validator as
-    ``rapid-mlx serve``. Pre-fix, ``launch --port 99999`` parsed
+    ``qmlx serve``. Pre-fix, ``launch --port 99999`` parsed
     successfully and only failed inside the detached child after the
     parent had already printed "Started" and written a PID."""
     parser = argparse.ArgumentParser()

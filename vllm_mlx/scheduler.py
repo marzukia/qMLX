@@ -2708,7 +2708,7 @@ class Scheduler:
                     stop_tokens.update(tok.eos_token_ids)
                 else:
                     stop_tokens.add(tok.eos_token_ids)
-            # Source 4: Rapid-MLX extras stash (see RAPID_EXTRA_EOS_ATTR).
+            # Source 4: qMLX extras stash (see RAPID_EXTRA_EOS_ATTR).
             extras = getattr(tok, RAPID_EXTRA_EOS_ATTR, None)
             if extras:
                 stop_tokens.update(extras)
@@ -3355,7 +3355,7 @@ class Scheduler:
         # Requests with different temperatures but same stop config can now
         # batch together, fixing issue where Claude Code's big agentic request
         # (33K tokens, default temp) blocked smaller concurrent requests with
-        # different temps for 115 seconds (Rapid-MLX #611 follow-up).
+        # different temps for 115 seconds (qMLX #611 follow-up).
         sampler_params = (
             frozenset(sampling_params.stop_token_ids or ()),
             bool(sampling_params.ignore_eos),
@@ -4732,7 +4732,7 @@ class Scheduler:
             # Ensure we have a batch generator. The False return means
             # the live generator has incompatible stop_tokens / sampler
             # for this request and is still draining — we must NOT admit
-            # into the stale generator (Rapid-MLX #611 / codex P2 on
+            # into the stale generator (qMLX #611 / codex P2 on
             # PR #612). Requeue and break so the next ``step`` retries
             # once the running batch completes.
             if not self._ensure_batch_generator(request.sampling_params):

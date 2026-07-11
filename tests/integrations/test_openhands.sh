@@ -1,8 +1,8 @@
 #!/bin/bash
-# OpenHands Docker E2E integration harness against a running `rapid-mlx serve`.
+# OpenHands Docker E2E integration harness against a running `qmlx serve`.
 #
 # What it proves:
-#   1. OpenHands' CodeActAgent can connect to rapid-mlx's OpenAI-compatible
+#   1. OpenHands' CodeActAgent can connect to qmlx's OpenAI-compatible
 #      endpoint via LiteLLM's ``openai/<alias>`` provider prefix.
 #   2. OpenHands' text-action edit format (``<execute_bash>...``,
 #      ``<execute_ipython>...``, and its file-write markdown blocks —
@@ -36,12 +36,12 @@
 #
 # ``--base-url`` takes the full ``http[s]://host:port/v1`` URL and is the
 # preferred form — it lets the Python wrapper pass whatever URL the
-# ``rapid_mlx_server`` fixture is actually pointed at. The URL passed
+# ``qmlx_server`` fixture is actually pointed at. The URL passed
 # into the OpenHands container has its host rewritten to
 # ``host.docker.internal`` ONLY when the parsed host is a loopback alias
 # (``localhost`` / ``127.0.0.1`` / ``0.0.0.0`` / ``::1``) — from inside
 # the container those addresses would refer to the container itself,
-# not the host where rapid-mlx is listening. Any other host (a
+# not the host where qmlx is listening. Any other host (a
 # remote-serve node, RFC1918 IP, DNS name, non-loopback IPv6) is
 # preserved as-is so a fixture pointed at a genuine remote server still
 # works.
@@ -49,7 +49,7 @@
 # Exit codes (aligned with ``test_aider.sh``):
 #   0  — OpenHands completed and the AST whitelist matched the rewritten file
 #   1  — arg parse / setup error (also: docker daemon unreachable,
-#        ``timeout`` / ``gtimeout`` missing, rapid-mlx serve unreachable)
+#        ``timeout`` / ``gtimeout`` missing, qmlx serve unreachable)
 #   2  — OpenHands runtime exited non-zero (agent crashed, LLM refused,
 #        transport blip; runtime container failed to boot)
 #   3  — OpenHands ran but the file wasn't corrected (edit didn't apply;
@@ -86,7 +86,7 @@ set -euo pipefail
 # ``docker buildx imagetools inspect <ref> | awk '/^Digest:/ {print $2}'``
 # when bumping to a newer OpenHands release. Also keep this lane
 # restricted to isolated Docker hosts — do NOT run the harness on a
-# workstation that also runs the operator's rapid-mlx production
+# workstation that also runs the operator's qmlx production
 # services.
 OPENHANDS_IMAGE="ghcr.io/all-hands-ai/openhands:0.9.0@sha256:d4b028e3b1f7ad6fdb1bba3579362c8298bb791b222e73a8355fd980bb987f1a"
 # Runtime image — two-ref pattern to preserve supply-chain integrity while
@@ -126,7 +126,7 @@ OPENHANDS_IMAGE="ghcr.io/all-hands-ai/openhands:0.9.0@sha256:d4b028e3b1f7ad6fdb1
 # Codex #1048 round-6 finding #2 (BLOCKING, still in force under this
 # two-ref pattern): keep this lane restricted to isolated Docker hosts —
 # do NOT run the harness on a workstation that also runs the operator's
-# rapid-mlx production services.
+# qmlx production services.
 OPENHANDS_RUNTIME_IMAGE_PULL="ghcr.io/all-hands-ai/runtime:od_v0.9.0_image_nikolaik___python-nodejs_tag_python3.11-nodejs22@sha256:784f7161295b87d3af26332dbbad5bcdd643641e87ed0038ed0c7f4b47c9472d"
 OPENHANDS_RUNTIME_IMAGE="ghcr.io/all-hands-ai/runtime:od_v0.9.0_image_nikolaik___python-nodejs_tag_python3.11-nodejs22"
 
@@ -250,7 +250,7 @@ if not host:
 # Codex #1048 round-8 finding #1 (BLOCKING): also emit the path so the
 # URL rebuild does not silently drop a base-path prefix on proxied
 # deployments (``https://gateway.example.com/rapid/v1``). We default
-# to ``/v1`` only if the caller passed no path at all — the rapid-mlx
+# to ``/v1`` only if the caller passed no path at all — the qmlx
 # server always exposes chat completions under ``/v1``. Escape TAB so
 # ``\t`` does not collide with awk splitting; urllib does not permit
 # raw TAB in the path anyway (would be percent-encoded first).
@@ -382,14 +382,14 @@ PYEOF
 # BASE_URL (host-visible), not CONTAINER_BASE_URL (only meaningful
 # inside the container).
 if ! curl -sS -m 5 "$BASE_URL/models" >/dev/null 2>&1; then
-    echo "ERROR: rapid-mlx server not reachable at $BASE_URL" >&2
+    echo "ERROR: qmlx server not reachable at $BASE_URL" >&2
     exit 1
 fi
 
 # LiteLLM (which OpenHands uses under the hood) needs the ``openai/``
 # prefix to route through the OpenAI-compat chat completions path against
 # our custom base URL — without it LiteLLM tries to pick a provider
-# from the alias string and fails on non-canonical rapid-mlx aliases.
+# from the alias string and fails on non-canonical qmlx aliases.
 LITELLM_MODEL="openai/${MODEL}"
 
 # Ensure the runtime base image is present locally — if the pull fails
@@ -458,7 +458,7 @@ echo "--------"
 #   WORKSPACE_BASE           — the in-container path the sandbox sees as
 #                              the workspace. Matches the openhands
 #                              image default (``/opt/workspace_base``).
-#   LLM_BASE_URL/MODEL/API_KEY — LiteLLM wiring for the rapid-mlx endpoint.
+#   LLM_BASE_URL/MODEL/API_KEY — LiteLLM wiring for the qmlx endpoint.
 # Docker flags:
 #   --add-host host.docker.internal:host-gateway  — required on Linux
 #                              (macOS Docker Desktop injects this

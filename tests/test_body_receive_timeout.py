@@ -13,7 +13,7 @@ Post-fix: ``RequestBodyLimitMiddleware`` wraps each ``receive()``
 ASGI call in ``asyncio.wait_for`` until the body is fully on the wire.
 When no body bytes arrive within
 ``ServerConfig.body_receive_timeout_seconds`` (default 15 s, env
-``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS``, 0 disables), the
+``QMLX_BODY_RECEIVE_TIMEOUT_SECONDS``, 0 disables), the
 middleware raises ``_BodyReceiveTimeoutError``, intercepts FastAPI's
 generic body-parse 400 in ``guarded_send``, and rewrites the response
 to a clean 408 with an OpenAI-shaped JSON envelope.
@@ -216,7 +216,7 @@ def test_slow_body_receive_emits_408():
 
 
 def test_timeout_disabled_when_zero():
-    """``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS=0`` (the documented
+    """``QMLX_BODY_RECEIVE_TIMEOUT_SECONDS=0`` (the documented
     escape hatch) must disable the gate. Operators with their own
     upstream slow-DoS defenses (e.g. an nginx ``client_body_timeout``)
     rely on this — otherwise the gate would double-fire and confuse
@@ -700,7 +700,7 @@ def test_h14_no_double_send_after_408_rewrite():
 
 def test_h14_env_var_override_reduces_timeout(monkeypatch):
     """H-14: the documented env-var escape hatch
-    ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` reduces the per-chunk
+    ``QMLX_BODY_RECEIVE_TIMEOUT_SECONDS`` reduces the per-chunk
     idle limit. Codex round-2 BLOCKING on PR #786: a hand-rolled
     stand-in for the CLI resolver would still pass even if the
     production wire-up were silently deleted. The fix is to call the
@@ -723,7 +723,7 @@ def test_h14_env_var_override_reduces_timeout(monkeypatch):
     # ``serve_command`` invokes. No duplicated logic in the test
     # body, so a regression that deletes or breaks
     # ``_apply_body_receive_timeout_env`` fails here.
-    monkeypatch.setenv("RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setenv("QMLX_BODY_RECEIVE_TIMEOUT_SECONDS", "0.05")
     _apply_body_receive_timeout_env(server_mod, logger=logging.getLogger("test"))
     assert server_mod._body_receive_timeout_seconds == 0.05
 
@@ -740,14 +740,14 @@ def test_h14_env_var_override_reduces_timeout(monkeypatch):
     # one branch the resolver logs a warning on; a regression that
     # turned it into ``= 0.0`` would widen the slowloris surface
     # under a typo).
-    monkeypatch.setenv("RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS", "not-a-number")
+    monkeypatch.setenv("QMLX_BODY_RECEIVE_TIMEOUT_SECONDS", "not-a-number")
     _apply_body_receive_timeout_env(server_mod, logger=logging.getLogger("test"))
     assert server_mod._body_receive_timeout_seconds == 15.0
 
 
 def test_h14_default_timeout_value_is_15_seconds():
     """H-14: pin the documented default. Operators rely on the
-    15 s default being applied when ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS``
+    15 s default being applied when ``QMLX_BODY_RECEIVE_TIMEOUT_SECONDS``
     is unset — a regression that bumped the default to 60 s would
     widen the slowloris surface from 15 s × N workers to 60 s × N.
     """

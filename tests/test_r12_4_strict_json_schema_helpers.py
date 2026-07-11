@@ -22,7 +22,7 @@ from vllm_mlx.api.strict_json_schema import (
 
 
 def test_strict_enforcement_enabled_default_true(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_STRICT_JSON_SCHEMA", raising=False)
+    monkeypatch.delenv("QMLX_STRICT_JSON_SCHEMA", raising=False)
     assert strict_enforcement_enabled() is True
 
 
@@ -30,23 +30,23 @@ def test_strict_enforcement_enabled_default_true(monkeypatch):
     "value", ["off", "0", "false", "no", "disable", "disabled", "OFF", "False"]
 )
 def test_strict_enforcement_enabled_off_values_disable(monkeypatch, value):
-    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", value)
+    monkeypatch.setenv("QMLX_STRICT_JSON_SCHEMA", value)
     assert strict_enforcement_enabled() is False
 
 
 @pytest.mark.parametrize("value", ["on", "1", "true", "yes", "", "anything-else"])
 def test_strict_enforcement_enabled_truthy_or_empty_values_enable(monkeypatch, value):
-    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", value)
+    monkeypatch.setenv("QMLX_STRICT_JSON_SCHEMA", value)
     assert strict_enforcement_enabled() is True
 
 
 def test_repair_retry_enabled_default_true(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR", raising=False)
+    monkeypatch.delenv("QMLX_STRICT_JSON_SCHEMA_REPAIR", raising=False)
     assert repair_retry_enabled() is True
 
 
 def test_repair_retry_enabled_off_disables(monkeypatch):
-    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR", "off")
+    monkeypatch.setenv("QMLX_STRICT_JSON_SCHEMA_REPAIR", "off")
     assert repair_retry_enabled() is False
 
 

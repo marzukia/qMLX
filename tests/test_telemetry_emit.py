@@ -18,7 +18,7 @@ import pytest
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
+    monkeypatch.delenv("QMLX_TELEMETRY", raising=False)
 
     # Reload state so any caches rebuild under the fresh HOME.
     import vllm_mlx.telemetry.state as state
@@ -39,7 +39,7 @@ def opted_in(fake_home):
     """Persist a yes-consent so is_enabled() returns True."""
     from vllm_mlx.telemetry.state import record_consent
 
-    record_consent(True, rapid_mlx_version="0.0.0+test")
+    record_consent(True, qmlx_version="0.0.0+test")
     return fake_home
 
 
@@ -136,7 +136,7 @@ def test_session_id_is_stable_under_concurrent_first_callers(fake_home):
 def test_cli_kill_switch_overrides_opt_in(opted_in, stub_queue):
     """``--no-telemetry`` (threaded through ``set_cli_kill_switch``) must
     suppress every emit site, even when the user has previously opted in
-    via the consent file. Before this was wired, ``rapid-mlx --no-telemetry
+    via the consent file. Before this was wired, ``qmlx --no-telemetry
     models`` still POSTed two events to the collector."""
     from vllm_mlx.telemetry import emit
     from vllm_mlx.telemetry.state import set_cli_kill_switch

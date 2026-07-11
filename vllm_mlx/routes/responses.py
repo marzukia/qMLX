@@ -453,7 +453,7 @@ async def create_response(request: Request):
             # regardless of whether [guided] is installed (the
             # constrained-decoding path is buffered-only on this
             # surface), so telling a strict+stream caller to
-            # ``pip install qmlx[guided]`` would be
+            # ``pip install qmlx-serve[guided]`` would be
             # misleading — installing the extra still wouldn't
             # let them use strict+stream on /v1/responses. Naming
             # the actual escape hatches first (drop stream=true,

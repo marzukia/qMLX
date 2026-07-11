@@ -58,7 +58,7 @@ HOOK_PATHS = (
     "Makefile",
     ".pre-commit-config.yaml",
     "Formula/",  # Homebrew tap
-    "homebrew-rapid-mlx/",
+    "homebrew-qmlx/",
 )
 
 
@@ -320,7 +320,7 @@ def _extract_added_deps(diff: str, files_changed: list[str]) -> list[str]:
     seen = set()
     out = []
     for d in deps:
-        if d in seen or d in ("rapid-mlx", "vllm-mlx"):
+        if d in seen or d in ("qmlx", "vllm-mlx"):
             continue
         seen.add(d)
         out.append(d)

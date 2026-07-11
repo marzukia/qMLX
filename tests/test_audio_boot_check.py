@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""R6-H4 (Eva 0.8.7 dogfood) — ``rapid-mlx serve <audio-alias>`` boot guard.
+"""R6-H4 (Eva 0.8.7 dogfood) — ``qmlx serve <audio-alias>`` boot guard.
 
-Eva: ``rapid-mlx serve kokoro`` (or whisper/parakeet/...) on a venv
+Eva: ``qmlx serve kokoro`` (or whisper/parakeet/...) on a venv
 without the ``[audio]`` extra started cleanly, printed the banner, and
 only crashed on the FIRST audio request — exact same shape r5-C
 fixed for UI-TARS in PR #822. The r6-C fix mirrors that pattern:
@@ -100,7 +100,7 @@ def test_require_audio_or_exit_exits_2_when_mlx_audio_missing(
     assert "kokoro" in err, err
     assert "[audio]" in err, err
     assert "pip install" in err, err
-    assert "rapid-mlx[audio]" in err, err
+    assert "qmlx-serve[audio]" in err, err
 
 
 def test_require_audio_or_exit_no_op_when_mlx_audio_present(monkeypatch) -> None:
@@ -177,7 +177,7 @@ def test_serve_command_does_not_audio_guard_text_model(monkeypatch) -> None:
     ``mlx_audio`` happens to be missing.
 
     This guards against an over-eager substring match that would
-    block ``rapid-mlx serve qwen3.6-27b-4bit`` on a base install
+    block ``qmlx serve qwen3.6-27b-4bit`` on a base install
     (text models don't need the audio extra).
     """
     from argparse import Namespace

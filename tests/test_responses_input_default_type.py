@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""rapid-mlx#254 — `/v1/responses` must accept the canonical OpenAI
+"""qmlx#254 — `/v1/responses` must accept the canonical OpenAI
 input shape `{role, content}` without an explicit `type: "message"`.
 
 Background
@@ -13,7 +13,7 @@ sent ``{"role":"user","content":"hi"}`` and got::
 
     400  input.0.type: Field required
 
-because rapid-mlx's ``ResponsesInputItem`` declared ``type: str`` with no
+because qmlx's ``ResponsesInputItem`` declared ``type: str`` with no
 default. Fix: ``mode="before"`` model_validator on
 ``ResponsesInputItem`` defaults ``type`` to ``"message"`` when absent
 and ``role`` is present (the message-shape marker). Other variants

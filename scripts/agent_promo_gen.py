@@ -54,9 +54,9 @@ def generate_github_issue(config):
             model_table += f"| {m} | ✅ | |\n"
         model_table += "\n"
 
-    return f"""## {agent} + local models on Mac — Rapid-MLX integration
+    return f"""## {agent} + local models on Mac — qMLX integration
 
-{issue_refs}{pain_section}## What is Rapid-MLX?
+{issue_refs}{pain_section}## What is qMLX?
 
 [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) is an inference server for Apple Silicon that provides an OpenAI-compatible API. It's designed for agentic workloads — tool calling, structured output, streaming.
 
@@ -66,10 +66,10 @@ def generate_github_issue(config):
 
 ```bash
 # Install
-pip install rapid-mlx
+pip install qmlx
 
 # Start server (pick a model)
-rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit
+qmlx serve mlx-community/Qwen3.5-4B-MLX-4bit
 ```
 
 Then configure {agent} to point to `http://localhost:8000/v1`.
@@ -82,7 +82,7 @@ We built a comprehensive test suite for {agent}: [`tests/integrations/test_{conf
 
 ## Benchmarks vs Ollama
 
-| Model | Rapid-MLX tok/s | Ollama tok/s | Speedup |
+| Model | qMLX tok/s | Ollama tok/s | Speedup |
 |---|---|---|---|
 | Qwen3.5-4B | ~65 | ~30 | 2.2x |
 | Qwen3.5-9B | ~45 | ~20 | 2.3x |
@@ -113,8 +113,8 @@ Been running {agent} with local models via [Rapid-MLX](https://github.com/raulle
 ### Setup (2 minutes)
 
 ```bash
-pip install rapid-mlx
-rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit
+pip install qmlx
+qmlx serve mlx-community/Qwen3.5-4B-MLX-4bit
 ```
 
 Then point {agent} at `http://localhost:8000/v1`.
@@ -123,7 +123,7 @@ Then point {agent} at `http://localhost:8000/v1`.
 
 ### Why not Ollama?
 
-Rapid-MLX is 2-4x faster on Apple Silicon for the same models. It also handles tool calling natively — no schema overhead, no format conversion.
+qMLX is 2-4x faster on Apple Silicon for the same models. It also handles tool calling natively — no schema overhead, no format conversion.
 
 Wrote an integration test suite with ~15 tests covering chat, tool calling, streaming, multi-step workflows. All passing.
 
@@ -151,7 +151,7 @@ def generate_tweet(config):
 
 {unique_edge or "2-4x faster than Ollama on Apple Silicon"}
 
-pip install rapid-mlx && rapid-mlx serve <model>
+pip install qmlx && qmlx serve <model>
 
 {handles}
 
@@ -169,12 +169,12 @@ def generate_discord_message(config):
 
     return f"""Hey! Sharing a local inference setup for {agent} on Mac.
 
-**Rapid-MLX** ({unique_edge or "2-4x faster than Ollama on Apple Silicon"})
+**qMLX** ({unique_edge or "2-4x faster than Ollama on Apple Silicon"})
 
 Setup:
 ```
-pip install rapid-mlx
-rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit
+pip install qmlx
+qmlx serve mlx-community/Qwen3.5-4B-MLX-4bit
 ```
 Point {agent} at `http://localhost:8000/v1`
 
@@ -197,8 +197,8 @@ def generate_issue_reply(config):
 
 Quick setup:
 ```bash
-pip install rapid-mlx
-rapid-mlx serve <MODEL>
+pip install qmlx
+qmlx serve <MODEL>
 ```
 
 Then point {agent} at `http://localhost:8000/v1`.
