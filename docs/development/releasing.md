@@ -54,7 +54,7 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
 4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment), polls PyPI until the version is queryable, computes the tarball SHA256, dispatches an `update-formula` event to `raullenchai/homebrew-qmlx`.
 
-5. **The tap repo's workflow** (in `homebrew-qmlx`) updates `Formula/rapid-mlx.rb` `url` + `sha256` + commits.
+5. **The tap repo's workflow** (in `homebrew-qmlx`) updates `Formula/qmlx.rb` `url` + `sha256` + commits.
 
 6. **Verify**: `brew update && brew upgrade qmlx` should pull in the new version.
 
@@ -88,9 +88,9 @@ To bypass (pure refactor, no user-visible change): add the
 - installed version is `>= 2 patch` versions behind the latest GitHub release
 - and the same major.minor (no cross-minor nag)
 - and stderr is a TTY (no nag in pipes / CI)
-- and `RAPID_MLX_DISABLE_VERSION_CHECK` isn't set
+- and `QMLX_DISABLE_VERSION_CHECK` isn't set
 
-Cache: `~/.cache/rapid-mlx/version_check.json` (24h TTL). Network timeout: 2s. **Fail-silent on every error path** — staleness warnings must never break the CLI. See `tests/test_version_check.py` for the contract.
+Cache: `~/.cache/qmlx/version_check.json` (24h TTL). Network timeout: 2s. **Fail-silent on every error path** — staleness warnings must never break the CLI. See `tests/test_version_check.py` for the contract.
 
 ## Adding a new model
 
@@ -107,7 +107,7 @@ If your PR adds a model alias or profile, the version-check guard will require a
 Sometimes the auto pipeline isn't right. Escape hatches:
 
 - **Skip the version-check guard for one PR**: add the `skip-version-bump` label.
-- **Disable the staleness warning system-wide**: set `RAPID_MLX_DISABLE_VERSION_CHECK=1` in your shell profile.
+- **Disable the staleness warning system-wide**: set `QMLX_DISABLE_VERSION_CHECK=1` in your shell profile.
 - **Re-trigger a release** (e.g. PyPI publish failed mid-pipeline): create the GitHub Release manually from the existing tag — `publish.yml` will re-fire.
 - **Skip auto-release entirely** (e.g. you want to bump version but not publish yet): use a different commit subject (`chore: prep 0.6.17` instead of `chore: bump version to 0.6.17`). `auto-release.yml` only matches the strict subject.
 

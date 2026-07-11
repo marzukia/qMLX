@@ -125,7 +125,7 @@ pytest tests/integrations/test_frameworks_matrix.py -v
 
 # Strict CI — per-family shard (this is the intended workflow: four
 # CI jobs, one per family, each with its own booted server).
-RAPID_MLX_MATRIX_STRICT=1 RAPID_MLX_AGENT_MATRIX_FAMILY=qwen36 \
+QMLX_MATRIX_STRICT=1 QMLX_AGENT_MATRIX_FAMILY=qwen36 \
     pytest tests/integrations/test_agents_matrix.py
 
 # One agent's cells across all families (still shard-restricted)
@@ -148,9 +148,9 @@ python3 tests/integrations/test_librechat_docker.py
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `RAPID_MLX_BASE_URL` | `http://localhost:8000/v1` | Where matrix clients point |
-| `RAPID_MLX_AGENT_MATRIX_FAMILY` | (all) | Restrict to `qwen36` / `gemma4` / `deepseek` / `gptoss` / `hy3` (`hy3` is Ultra-only, weekly Golden Path only) |
-| `RAPID_MLX_MATRIX_STRICT` | `0` | If `1`, missing-server → fail (default: skip) |
+| `QMLX_BASE_URL` | `http://localhost:8000/v1` | Where matrix clients point |
+| `QMLX_AGENT_MATRIX_FAMILY` | (all) | Restrict to `qwen36` / `gemma4` / `deepseek` / `gptoss` / `hy3` (`hy3` is Ultra-only, weekly Golden Path only) |
+| `QMLX_MATRIX_STRICT` | `0` | If `1`, missing-server → fail (default: skip) |
 
 ## Cheap-alias policy
 
@@ -182,7 +182,7 @@ will be filled by the 0.10.6 Phase 4 plumbing per `0.10-TODO.md`.
 ### Agent × Family matrix (11 × 5 = 55)
 
 Pilot execution 2026-07-06 — **serial 3-family run** against real
-inference under `RAPID_MLX_MATRIX_STRICT=1`. All PASS cells exercised
+inference under `QMLX_MATRIX_STRICT=1`. All PASS cells exercised
 real tool-call routing (function name = `get_weather`, arg parses as
 JSON, `city == "Tokyo"`, no `<think>` leak, no `<|channel|>analysis`
 leak). PydanticAI + smolagents cells assert the tool implementation

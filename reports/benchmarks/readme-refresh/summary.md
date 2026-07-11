@@ -2,12 +2,12 @@
 
 Generated: 2026-06-06
 M3 Ultra 256 GB · macOS 25.3.0
-Engines: rapid-mlx v0.6.80 · mlx-lm 0.31.3 · Ollama 0.24.0
+Engines: qmlx v0.6.80 · mlx-lm 0.31.3 · Ollama 0.24.0
 
 Workload: 4 concurrent streaming requests, ~32 input tokens, 256 max output
 tokens each, temperature 0.7, top_p 0.95.
 Thinking-off requested via `chat_template_kwargs.enable_thinking=False`,
-which rapid-mlx / mlx-lm / mlx-vlm honour; Ollama 0.24 ignores it for
+which qmlx / mlx-lm / mlx-vlm honour; Ollama 0.24 ignores it for
 Qwen3 and keeps streaming `delta.reasoning` chunks — those chunks decode
 at the same model rate as content tokens so we count them, which means
 the Qwen3 Ollama numbers reflect CoT-on throughput in practice.
@@ -20,7 +20,7 @@ contention never crossed engine boundaries.
 
 ## Results
 
-| Model (MLX alias)                  | rapid-mlx | mlx-lm    | Ollama tag                        | Ollama | vs mlx-lm | vs Ollama |
+| Model (MLX alias)                  | qmlx | mlx-lm    | Ollama tag                        | Ollama | vs mlx-lm | vs Ollama |
 |------------------------------------|----------:|----------:|-----------------------------------|-------:|----------:|----------:|
 | qwen3.5-4b                         |     261.1 |     173.2 | qwen3:4b                          |  119.5 |     1.51x |     2.18x |
 | qwen3.5-9b                         |     180.0 |     136.3 | qwen3:8b                          |   84.1 |     1.32x |     2.14x |
@@ -113,7 +113,7 @@ should not be reconciled, only superseded.
 
 The cross-engine A/B table above stays at v0.6.80 numbers because
 Ollama and mlx-lm were not re-bench'd today. If the apples-to-apples
-gpt-oss-20b row were re-run on 0.6.83, the rapid-mlx column would
+gpt-oss-20b row were re-run on 0.6.83, the qmlx column would
 plausibly move 220.5 → ~245 tok/s (B=4 aggregate has less room to
 gain than B=1 single-user) and the vs-Ollama speedup would widen
 toward 2.5x. Not done in this refresh.

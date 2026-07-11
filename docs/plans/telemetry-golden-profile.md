@@ -38,7 +38,7 @@ What we explicitly do **not** want:
 
 | File | Owns |
 |---|---|
-| `state.py` | `~/.qmlx/telemetry-client-id`, `~/.qmlx/telemetry-consent.yaml`, kill switch precedence (`--no-telemetry` > `RAPID_MLX_TELEMETRY=0` > file > default OFF). No env-var force-on (CI would skew aggregates). |
+| `state.py` | `~/.qmlx/telemetry-client-id`, `~/.qmlx/telemetry-consent.yaml`, kill switch precedence (`--no-telemetry` > `QMLX_TELEMETRY=0` > file > default OFF). No env-var force-on (CI would skew aggregates). |
 | `consent.py` | First-run prompt, schema-version-aware re-prompt. |
 | `schema.py` | `TelemetryPayload` envelope, `PlatformInfo` / `SessionPayload` / `RequestPayload` / `ErrorPayload` dataclasses, `sample_preview_payload()`. `SCHEMA_VERSION = 1`. |
 | `redact.py` | Bucket primitives (`bucket_tokens`, `bucket_ttft_ms`, `bucket_tps`, `bucket_memory_gb`), `normalize_model_path` (passes `org/name`, redacts local paths), `hash_flag_names` (names only, never values), `fingerprint_traceback` (16-hex of `class_name + basename:func:lineno`, no message text, no module path), `platform_info` (chip + memory rounded to GB + OS major.minor + python major.minor). |
@@ -114,7 +114,7 @@ Notes:
 - `urllib.request` (stdlib) over `httpx` / `requests` — no new
   dependency for a telemetry path. We already import stdlib `urllib`
   elsewhere.
-- Endpoint overridable via `RAPID_MLX_TELEMETRY_ENDPOINT` env var
+- Endpoint overridable via `QMLX_TELEMETRY_ENDPOINT` env var
   (mirrors PRT debug practice) but **only** when telemetry is otherwise
   enabled. The env var alone never opts a user in.
 - HTTPS-only check (mirror `share` PR #504 codex round 4 fix —
@@ -253,7 +253,7 @@ SET s3_access_key_id = '<R2 key>';
 SET s3_secret_access_key = '<R2 secret>';
 
 SELECT event, count(*) AS n
-FROM read_json_auto('s3://rapid-mlx-telemetry-events/events/2026/**/*.ndjson')
+FROM read_json_auto('s3://qmlx-telemetry-events/events/2026/**/*.ndjson')
 GROUP BY event;
 ```
 
@@ -277,7 +277,7 @@ The `RequestPayload` envelope already carries the right fields:
 | `tool_call_used` | `tool_call` (0/1) |
 | `stream` | `stream` (0/1) |
 | `status` | `status` (filter to 200 for the perf table) |
-| (top-level `rapid_mlx_version`) | `rapid_mlx_version` (so a regression on a single release is visible) |
+| (top-level `qmlx_version`) | `qmlx_version` (so a regression on a single release is visible) |
 
 Per-row count is the aggregation primary key, not per-event. The whole
 point of bucketing is that the (alias, chip, *_bucket, ...) tuple
@@ -360,7 +360,7 @@ reviewer can grep the binary's actual wire shape without strace.
   deploy yet).
 - Add unit tests pinning: silent failure on Worker 5xx, bounded queue,
   daemon thread joins on atexit, lossy under back-pressure.
-- Behind `RAPID_MLX_TELEMETRY_DEBUG=1` env: log "would have sent N
+- Behind `QMLX_TELEMETRY_DEBUG=1` env: log "would have sent N
   events to <endpoint>" without actually POSTing. Lets us validate
   the queue with zero server dependency.
 

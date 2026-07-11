@@ -67,13 +67,13 @@ rejects `api_key = "..."` as an unknown field. Use `env_key` instead:
 [model_providers.qmlx]
 name = "qMLX (local)"
 base_url = "http://localhost:8000/v1"
-env_key = "RAPID_MLX_API_KEY"
+env_key = "QMLX_API_KEY"
 ```
 
 And in your shell:
 
 ```bash
-export RAPID_MLX_API_KEY=your-secret
+export QMLX_API_KEY=your-secret
 ```
 
 ## Model name passthrough

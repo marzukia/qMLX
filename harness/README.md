@@ -164,7 +164,7 @@ Baseline file shape:
 ```json
 {
   "captured_at": "2026-04-15T21:36:32",
-  "rapid_mlx_version": "0.5.1",
+  "qmlx_version": "0.5.1",
   "model": "qwen3.5-35b-8bit",
   "metrics": {
     "decode_tps": 49.67,
