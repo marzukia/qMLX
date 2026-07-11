@@ -93,4 +93,4 @@ Forked from [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). T
 
 ## Notes
 
-The package is still imported as `vllm_mlx` and the CLI is still `qmlx`; those are kept as functional identifiers for compatibility. `rapid_mlx_*` metric names, `RAPID_MLX_*` env vars, and the `~/.cache/rapid-mlx/` cache path are unchanged for the same reason.
+The package is still imported as `vllm_mlx` and the CLI is still `qmlx`; those are kept as functional identifiers for compatibility. `qmlx_*` metric names, `QMLX_*` env vars, and the `~/.cache/qmlx/` cache path are unchanged for the same reason.

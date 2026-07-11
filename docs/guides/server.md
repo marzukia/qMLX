@@ -743,7 +743,7 @@ sudo systemctl start qmlx
 
 ### Authentication and bind→auth ordering
 
-When `--api-key` (or the `RAPID_MLX_API_KEY` env var) is set, every
+When `--api-key` (or the `QMLX_API_KEY` env var) is set, every
 request to the OpenAI-style routes (`/v1/chat/completions`,
 `/v1/embeddings`, `/v1/audio/*`, `/v1/models`, ...) must carry a valid
 `Authorization: Bearer <key>` header — anonymous requests get `401`.
@@ -795,7 +795,7 @@ os.execvpe(
     "qmlx",
     [
         "qmlx", "serve", "qwen3.5-4b-4bit",
-        "--api-key", os.environ["RAPID_MLX_API_KEY"],
+        "--api-key", os.environ["QMLX_API_KEY"],
         "--listen-fd", "3",
     ],
     {**os.environ, "LISTEN_FDS": "1"},

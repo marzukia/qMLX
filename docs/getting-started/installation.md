@@ -97,7 +97,7 @@ Pre-tap it once, then retry:
 
 ```bash
 brew tap homebrew/core --force   # ~1.3 GB, one-time
-brew tap raullenchai/rapid-mlx
-brew trust raullenchai/rapid-mlx
+brew tap raullenchai/qmlx
+brew trust raullenchai/qmlx
 brew install qmlx-serve
 ```

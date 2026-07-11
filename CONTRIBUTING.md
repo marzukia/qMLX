@@ -34,7 +34,7 @@ pip install pytest ruff
 
 **Requirements:** Python 3.11+, macOS with Apple Silicon. The disk-restore path is developed and tested on an M3 Ultra; most unit tests run on any Apple Silicon Mac without a model download.
 
-The package is still imported as `vllm_mlx` and the CLI is still `qmlx`. The `rapid_mlx_*` metric names, `RAPID_MLX_*` environment variables, and the `~/.cache/rapid-mlx/` cache path are also unchanged. These are kept on purpose for compatibility; please do not rename them in a PR.
+The package is still imported as `vllm_mlx` and the CLI is still `qmlx`. The `qmlx_*` metric names, `QMLX_*` environment variables, and the `~/.cache/qmlx/` cache path are also unchanged. These are kept on purpose for compatibility; please do not rename them in a PR.
 
 To run a dev server against the model this fork targets:
 

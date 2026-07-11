@@ -284,7 +284,7 @@ Operator controls:
 
 | Knob | Type | Default | Effect |
 | --- | --- | --- | --- |
-| `RAPID_MLX_STT_VAD_PRETRIM` | env var | on | Set to `0`, `false`, `no`, or `off` to disable the guard run-wide and restore the pre-fix pass-through behaviour. |
+| `QMLX_STT_VAD_PRETRIM` | env var | on | Set to `0`, `false`, `no`, or `off` to disable the guard run-wide and restore the pre-fix pass-through behaviour. |
 | `STTEngine(..., enable_vad_pretrim=True)` | Python API | `True` | Same effect at the engine level; use when embedding `STTEngine` directly. |
 
 The guard applies only to Whisper backends. Parakeet, Canary, and
