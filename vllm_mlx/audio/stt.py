@@ -241,7 +241,7 @@ def _get_vad_model() -> Any | None:
             _VAD_IMPORT_UNAVAILABLE = True
             logger.warning(
                 "VAD pre-trim disabled: mlx_audio.vad not importable (%s). "
-                "Install qmlx[audio] to enable the anti-hallucination "
+                "Install qmlx-serve[audio] to enable the anti-hallucination "
                 "guard for pure-silence clips (#961).",
                 e,
             )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.12
-"""Comprehensive regression and edge case test suite for Rapid-MLX.
+"""Comprehensive regression and edge case test suite for qMLX.
 
 Standalone script — the doctor harness invokes it via subprocess
 against a live server (``[py, str(script)]`` in
@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 # Port can be overridden by the doctor harness (which picks a free port).
-_PORT = os.environ.get("RAPID_MLX_PORT", "8777")
+_PORT = os.environ.get("QMLX_PORT", "8777")
 BASE = f"http://localhost:{_PORT}"
 
 

@@ -7,7 +7,7 @@ another's. The defaults mirror llama.cpp's ``llama-bench``
 (``-p 512 -n 128 -r 5`` short; long bucket extends to pp=2048,
 tg=512 for context-length sensitivity) because that's the de-facto
 standard on r/LocalLLaMA / Apple Silicon discussion threads, so
-Rapid-MLX numbers slot straight into existing comparison tables.
+qMLX numbers slot straight into existing comparison tables.
 
 Hardcoded:
 
@@ -346,7 +346,7 @@ def _make_sampling_params_factory(sampling: str):
                 ignore_eos=True,
             )
     elif sampling == "sampled":
-        # Real-world sampling. Matches Rapid-MLX's serve defaults
+        # Real-world sampling. Matches qMLX's serve defaults
         # (config.py SamplingParams.temperature=0.7, top_p=0.9).
         def factory(max_tokens: int):
             return SamplingParams(

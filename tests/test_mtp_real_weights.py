@@ -22,12 +22,12 @@ This file fills the gap with one end-to-end probe:
   contract at temp=0 says they MUST match.
 
 Heavy by default (5 GB base + 131 MB sidecar download on cold cache,
-~15 s wall on warm cache). Gated on ``RAPID_MLX_RUN_HEAVY_TESTS=1``
+~15 s wall on warm cache). Gated on ``QMLX_RUN_HEAVY_TESTS=1``
 so it does not fire in the ordinary CI sweep. Operators wanting to
 re-verify after touching the inject / generator / rollback code path
 run::
 
-    RAPID_MLX_RUN_HEAVY_TESTS=1 pytest tests/test_mtp_real_weights.py -xvs
+    QMLX_RUN_HEAVY_TESTS=1 pytest tests/test_mtp_real_weights.py -xvs
 """
 
 from __future__ import annotations
@@ -38,16 +38,16 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-# This whole file is gated on RAPID_MLX_RUN_HEAVY_TESTS=1. The unit
+# This whole file is gated on QMLX_RUN_HEAVY_TESTS=1. The unit
 # tests in ``test_mtp_spec_decode.py`` continue to cover the
 # control-flow surfaces in the normal CI sweep.
-_HEAVY = os.environ.get("RAPID_MLX_RUN_HEAVY_TESTS") == "1"
+_HEAVY = os.environ.get("QMLX_RUN_HEAVY_TESTS") == "1"
 
 pytestmark = pytest.mark.skipif(
     not _HEAVY,
     reason=(
         "Heavy real-weights probe (5 GB base + 131 MB sidecar). "
-        "Set RAPID_MLX_RUN_HEAVY_TESTS=1 to run."
+        "Set QMLX_RUN_HEAVY_TESTS=1 to run."
     ),
 )
 

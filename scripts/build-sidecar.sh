@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# build-sidecar.sh — produces the rapid-mlx sidecar artifact that
-# rapid-desktop stages under Rapid.app/Contents/Resources/rapid-mlx/.
+# build-sidecar.sh — produces the qmlx sidecar artifact that
+# rapid-desktop stages under Rapid.app/Contents/Resources/qmlx/.
 #
 # Codifies the recipe validated by Phase 2 spike on 2026-06-13. See
 # docs/sidecar-bundle-build.md for design + measurements.
@@ -19,18 +19,18 @@
 #                        smoke runs in a separate job.
 #
 # Outputs:
-#   $OUT_DIR/rapid-mlx/               # the bundle root
-#   $OUT_DIR/rapid-mlx/bin/rapid-mlx  # entrypoint shim
-#   $OUT_DIR/rapid-mlx/python/        # embedded python 3.12
-#   $OUT_DIR/rapid-mlx/site-packages/ # rapid-mlx + deps
-#   $OUT_DIR/rapid-mlx-sidecar.tar.gz # packaged artifact
-#   $OUT_DIR/rapid-mlx-sidecar.sha256 # SHA-256 of the tarball
+#   $OUT_DIR/qmlx/               # the bundle root
+#   $OUT_DIR/qmlx/bin/qmlx  # entrypoint shim
+#   $OUT_DIR/qmlx/python/        # embedded python 3.12
+#   $OUT_DIR/qmlx/site-packages/ # qmlx + deps
+#   $OUT_DIR/qmlx-sidecar.tar.gz # packaged artifact
+#   $OUT_DIR/qmlx-sidecar.sha256 # SHA-256 of the tarball
 #
 # Exit codes:
 #   0 = success
 #   1 = generic failure (build step error)
 #   2 = Mach-O count mismatch (signing baseline drift)
-#   3 = smoke test failure (bundle can't load mlx or import rapid-mlx)
+#   3 = smoke test failure (bundle can't load mlx or import qmlx)
 
 set -euo pipefail
 
@@ -77,7 +77,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-STAGE="${OUT_DIR}/rapid-mlx"
+STAGE="${OUT_DIR}/qmlx"
 ENTITLEMENTS="${REPO_ROOT}/scripts/sidecar-entitlements.plist"
 
 # ----- preflight -------------------------------------------------------
@@ -110,21 +110,21 @@ mkdir -p "$OUT_DIR"
 # Resolve to absolute so paths derived from $OUT_DIR survive the
 # `cd "$OUT_DIR"` we do later when invoking tar — otherwise a relative
 # `--out build/sidecar-stage` (CI passes this) makes tar look for
-# `./build/sidecar-stage/rapid-mlx-sidecar.tar.gz` from inside its own
+# `./build/sidecar-stage/qmlx-sidecar.tar.gz` from inside its own
 # target directory and fail with "no such file or directory".
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
 # Belt-and-suspenders (codex r3 N5): if the absolutise step above ever
 # silently produced an empty OUT_DIR (impossible under set -e for the
 # realistic failure modes, but the consequence of getting it wrong is
-# `rm -rf "/rapid-mlx"` two lines down — same family as the famous
+# `rm -rf "/qmlx"` two lines down — same family as the famous
 # Steam shell-script bug). Guard explicitly.
 if [ -z "$OUT_DIR" ] || [ ! -d "$OUT_DIR" ]; then
     echo "ERR: OUT_DIR resolution produced an invalid path: '$OUT_DIR'" >&2
     exit 1
 fi
 
-STAGE="${OUT_DIR}/rapid-mlx"
+STAGE="${OUT_DIR}/qmlx"
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin"
@@ -143,9 +143,9 @@ tar -xzf "$PBS_TAR" -C "$STAGE"
 test -x "$STAGE/python/bin/python3.12" \
     || { echo "ERR: extracted python is missing executable" >&2; exit 1; }
 
-# ----- step 2: install rapid-mlx + runtime deps ------------------------
+# ----- step 2: install qmlx + runtime deps ------------------------
 
-echo "==> installing rapid-mlx into site-packages (no [vision] extras)"
+echo "==> installing qmlx into site-packages (no [vision] extras)"
 # Drive with host python because bundled has ensurepip stripped.
 python3.12 -m pip install \
     --target "$STAGE/site-packages" \
@@ -224,7 +224,7 @@ rm -rf \
 #   * Migration Assistant copy to a new Mac → first launch fails
 #     "App is damaged, move to Trash".
 #   * macOS major upgrade re-evaluates Gatekeeper → same.
-#   * User moves /Applications/Rapid-MLX Desktop.app and back → same.
+#   * User moves /Applications/qMLX Desktop.app and back → same.
 #
 # rapid-desktop issue #230 — confirmed in v0.6.14 with 1008 stray
 # .pyc files post-launch. Notarisation is unaffected (the ticket lives
@@ -284,7 +284,7 @@ echo "==> pre-compiling .pyc cache (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
 # Caveat: crash tracebacks lose source-line CONTENT for non-__init__
 # modules (file:line is still shown, but the actual line of source is
 # not). Acceptable for the sidecar — we capture structured logs via
-# rapid-mlx telemetry. Set SKIP_SOURCE_DROP=1 to keep .py sources for
+# qmlx telemetry. Set SKIP_SOURCE_DROP=1 to keep .py sources for
 # local sidecar debugging.
 
 if [[ "${SKIP_SOURCE_DROP:-0}" != "1" ]]; then
@@ -330,8 +330,8 @@ fi
 
 # ----- step 4: shim entrypoint -----------------------------------------
 
-cp "${REPO_ROOT}/scripts/sidecar-shim.sh" "$STAGE/bin/rapid-mlx"
-chmod +x "$STAGE/bin/rapid-mlx"
+cp "${REPO_ROOT}/scripts/sidecar-shim.sh" "$STAGE/bin/qmlx"
+chmod +x "$STAGE/bin/qmlx"
 
 # ----- step 5: count + sign Mach-Os ------------------------------------
 
@@ -421,7 +421,7 @@ else
     trap 'rm -rf "$MACHOS_LIST" "$SMOKE_HOME"' EXIT INT TERM
 
     SMOKE_OUT="$(env -i HOME="$SMOKE_HOME" PATH=/usr/bin:/bin \
-        "$STAGE/bin/rapid-mlx" --version 2>&1)" || {
+        "$STAGE/bin/qmlx" --version 2>&1)" || {
         echo "ERR: bundle --version failed:" >&2
         echo "$SMOKE_OUT" >&2
         exit 3
@@ -485,15 +485,15 @@ fi
 
 # ----- step 7: package --------------------------------------------------
 
-TARBALL="${OUT_DIR}/rapid-mlx-sidecar.tar.gz"
+TARBALL="${OUT_DIR}/qmlx-sidecar.tar.gz"
 echo "==> packaging $TARBALL"
-( cd "$OUT_DIR" && tar -czf "$TARBALL" rapid-mlx )
-shasum -a 256 "$TARBALL" | awk '{print $1}' > "${OUT_DIR}/rapid-mlx-sidecar.sha256"
+( cd "$OUT_DIR" && tar -czf "$TARBALL" qmlx )
+shasum -a 256 "$TARBALL" | awk '{print $1}' > "${OUT_DIR}/qmlx-sidecar.sha256"
 
 RAW_SIZE="$(du -sh "$STAGE" | cut -f1)"
 TAR_SIZE="$(du -sh "$TARBALL" | cut -f1)"
 echo "==> raw bundle:    $RAW_SIZE"
 echo "==> tarball:       $TAR_SIZE  ($TARBALL)"
-echo "==> sha256:        $(cat "${OUT_DIR}/rapid-mlx-sidecar.sha256")"
+echo "==> sha256:        $(cat "${OUT_DIR}/qmlx-sidecar.sha256")"
 
 echo "==> sidecar build complete"

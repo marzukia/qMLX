@@ -5,7 +5,7 @@ OpenAI-spec lifecycle events IN ORDER, including
 ``response.output_item.added``.
 
 Background: Sasha R2 captured Codex CLI's stream parser entering a
-half-initialized state because rapid-mlx jumped straight from
+half-initialized state because qmlx jumped straight from
 ``response.created`` to ``response.output_item.added``, skipping the
 spec-required ``response.in_progress`` event. The official
 ``openai-python`` SDK transitions internal state on each lifecycle

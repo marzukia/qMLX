@@ -36,7 +36,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # SOP §10 routing registry — single source of truth.
 #
-# Every binary auto-routing decision in rapid-mlx has an entry here. Other
+# Every binary auto-routing decision in qmlx has an entry here. Other
 # gates in this file derive their checks from this registry instead of
 # carrying parallel hand-maintained lists — adding a new pair only requires
 # editing this one place. The 5-subagent red-team in PR #408 verified that

@@ -11,7 +11,7 @@ Workload (per model, per engine):
   Aggregate metric: sum(output_tokens) / wall_clock  (tok/s, higher = better)
 
 Engines:
-  rapid-mlx           — this project
+  qmlx           — this project
   mlx-lm serve        — same MLX weights, upstream Apple
   ollama              — closest GGUF arch; arch_note flagged when mismatched
 
@@ -23,7 +23,7 @@ buffers.
 Usage:
     python3.12 scripts/bench_readme_refresh.py                     # full sweep
     python3.12 scripts/bench_readme_refresh.py --models qwen3.5-4b-4bit # one model
-    python3.12 scripts/bench_readme_refresh.py --engines rapid-mlx,mlx-lm
+    python3.12 scripts/bench_readme_refresh.py --engines qmlx,mlx-lm
 """
 
 from __future__ import annotations
@@ -231,7 +231,7 @@ class RapidMLXEngine(Engine):
 
     def start(self, model: ModelSpec) -> None:
         env = os.environ.copy()
-        env["RAPID_MLX_TELEMETRY"] = "0"
+        env["QMLX_TELEMETRY"] = "0"
         self.process = subprocess.Popen(
             [
                 "python3.12",
@@ -378,13 +378,13 @@ class OllamaEngine(Engine):
 
 
 ENGINE_FACTORIES: dict[str, type[Engine]] = {
-    "rapid-mlx": RapidMLXEngine,
+    "qmlx": RapidMLXEngine,
     "mlx-lm": MlxLmEngine,
     "ollama": OllamaEngine,
 }
 
 ENGINE_PORTS: dict[str, int] = {
-    "rapid-mlx": 8101,
+    "qmlx": 8101,
     "mlx-lm": 8102,
     "ollama": 11434,
 }
@@ -432,7 +432,7 @@ class ModelEngineResult:
 
 def make_payload(model_id: str, stream: bool) -> dict:
     # `chat_template_kwargs.enable_thinking=False` is the standard hook
-    # for Qwen3.x on rapid-mlx / mlx-lm / mlx-vlm. Ollama 0.24 ignores
+    # for Qwen3.x on qmlx / mlx-lm / mlx-vlm. Ollama 0.24 ignores
     # this OpenAI-compat extension and keeps emitting `delta.reasoning`
     # chunks (= the chain-of-thought stream), but those chunks come out
     # at the same model decode rate as content tokens, so counting them
@@ -494,7 +494,7 @@ def run_one_stream(chat_url: str, model_id: str) -> tuple[float, int, float]:
                         output_tokens = usage["completion_tokens"]
                 continue
             delta = choices[0].get("delta") or {}
-            # Reasoning routing varies across engines: rapid-mlx and the
+            # Reasoning routing varies across engines: qmlx and the
             # OpenAI spec use `delta.reasoning_content`; Ollama 0.24
             # emits `delta.reasoning`; some servers stuff thinking back
             # into `delta.content`. They all exit the model at the same
@@ -615,7 +615,7 @@ def bench_model_engine(
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", default=",".join(m.alias for m in MODELS))
-    ap.add_argument("--engines", default="rapid-mlx,mlx-lm,ollama")
+    ap.add_argument("--engines", default="qmlx,mlx-lm,ollama")
     ap.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     ap.add_argument("--output", default=None)
     args = ap.parse_args()
@@ -688,13 +688,13 @@ def main():
     # Markdown summary
     print("\n=== Summary ===")
     print(
-        f"\n| Model | rapid-mlx (B={args.concurrency} tok/s) | mlx-lm | Ollama | Speedup vs mlx-lm | Speedup vs Ollama |"
+        f"\n| Model | qmlx (B={args.concurrency} tok/s) | mlx-lm | Ollama | Speedup vs mlx-lm | Speedup vs Ollama |"
     )
     print("|---|---:|---:|---:|---:|---:|")
     for model in selected_models:
         cells = [model.alias]
         scores: dict[str, float | None] = {}
-        for eng in ["rapid-mlx", "mlx-lm", "ollama"]:
+        for eng in ["qmlx", "mlx-lm", "ollama"]:
             r = next(
                 (x for x in all_results if x.model == model.alias and x.engine == eng),
                 None,
@@ -706,7 +706,7 @@ def main():
                 v = r.median_aggregate_tps()
                 scores[eng] = v
                 cells.append(f"{v:.1f}" if v is not None else "—")
-        rapid = scores.get("rapid-mlx")
+        rapid = scores.get("qmlx")
         mlxlm = scores.get("mlx-lm")
         oll = scores.get("ollama")
         if rapid and mlxlm:

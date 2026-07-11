@@ -8,7 +8,7 @@ to the RAW output for the reasoning parser via `cleaned_text or output.text`,
 and the reasoning parser strips `<think>` but not `<tool_call>` — so the
 opening tag + JSON survived all the way to user-facing `content`.
 
-Detected by `rapid-mlx agents hermes --test` (no_tool_leak + stress_no_leak)
+Detected by `qmlx agents hermes --test` (no_tool_leak + stress_no_leak)
 even on a strong 27B model, ruling out model weakness. Fix: when tool_calls
 were extracted, trust the tool parser's cleaned_text and only run the
 reasoning parser to recover reasoning_text from the raw output.

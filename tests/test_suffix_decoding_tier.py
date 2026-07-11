@@ -95,7 +95,7 @@ class TestClassifyTier:
 
 class TestSuffixDecodingHint:
     """The startup hint surfaces only AGENT/STRUCTURED/AVOID — not
-    UNKNOWN or NEUTRAL — to keep ``rapid-mlx serve`` startup quiet."""
+    UNKNOWN or NEUTRAL — to keep ``qmlx serve`` startup quiet."""
 
     def test_no_cfg_no_hint(self):
         assert suffix_decoding_hint(None) is None
@@ -148,7 +148,7 @@ class TestSuffixDecodingHint:
 
 
 class TestProfileTableCell:
-    """The Level 2 ``rapid-mlx info`` table must surface the tier without
+    """The Level 2 ``qmlx info`` table must surface the tier without
     crashing on edge cases (no bench data, hybrid models, missing fields)."""
 
     def test_unknown_mentions_bench_script(self):
@@ -199,7 +199,7 @@ class TestProfileTableCell:
             suffix_decoding_tier="avoid",
             suffix_bench_speedup={"json_array": 0.20},
         )
-        # 41 cols == the value-column width inside the rapid-mlx info
+        # 41 cols == the value-column width inside the qmlx info
         # box (inner=60 minus the 17-char key field and 2-char ``: ``).
         cell = _suffix_tier_cell(cfg, max_width=41)
         assert len(cell) <= 41

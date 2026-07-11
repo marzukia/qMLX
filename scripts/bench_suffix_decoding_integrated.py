@@ -238,7 +238,7 @@ class ServerHandle:
 
 
 def start_server(model: str, port: int, suffix_decoding: bool) -> ServerHandle:
-    """Spin up ``rapid-mlx serve`` and wait for /v1/models to answer.
+    """Spin up ``qmlx serve`` and wait for /v1/models to answer.
 
     ``suffix_decoding=True`` adds the ``--suffix-decoding`` flag. Logs go
     to a temp file so the parent process isn't drowned in startup noise.

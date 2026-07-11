@@ -21,7 +21,7 @@ config:
     model_provider = "qmlx"
 
     [model_providers.qmlx]
-    name = "Rapid-MLX (local)"
+    name = "qMLX (local)"
     base_url = "{base_url}"
     # No auth field — qmlx is unauthed by default and Codex
     # `--strict-config` rejects an inline literal like `api_key = "..."`.

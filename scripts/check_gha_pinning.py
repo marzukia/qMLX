@@ -6,7 +6,7 @@ Mutable tags (``actions/checkout@v4``) are a supply-chain compromise
 vector: if the action's repo is taken over, every workflow that pins by
 tag automatically picks up the malicious version on the next CI run.
 This bit Trivy in 2026 and is the recurring class of attack against
-auto-publishing release pipelines (which Rapid-MLX is).
+auto-publishing release pipelines (which qMLX is).
 
 Allowlist: official ``actions/*`` and ``github/*`` org actions are
 permitted at tag refs because GitHub backs their immutability via a

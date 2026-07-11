@@ -167,7 +167,7 @@ def main() -> int:
     # leaves every occurrence of ``gemma4`` untouched. The matching
     # codename alias was removed from ``aliases.json`` by
     # ``rename_aliases.py``; any remaining alias-context usage (e.g.
-    # ``rapid-mlx serve gemma4``) is a manual edit, NOT something this
+    # ``qmlx serve gemma4``) is a manual edit, NOT something this
     # script will rewrite. Rerunning this script on a fresh checkout is
     # therefore intentionally a no-op for ``gemma4``.
     HAND_HANDLED = {"gemma4"}

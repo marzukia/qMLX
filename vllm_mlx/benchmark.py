@@ -48,7 +48,7 @@ except ImportError:
 try:
     from PIL import Image
 except ImportError:
-    Image = None  # Only needed for image benchmarks; ships with qmlx[vision]
+    Image = None  # Only needed for image benchmarks; ships with qmlx-serve[vision]
 import numpy as np
 import requests
 from tabulate import tabulate
@@ -474,7 +474,7 @@ def run_benchmark(
     test_prompts = (prompts * ((num_prompts // len(prompts)) + 1))[:num_prompts]
 
     print(f"\n{'=' * 60}")
-    print("Rapid-MLX Performance Benchmark")
+    print("qMLX Performance Benchmark")
     print(f"{'=' * 60}")
 
     # Hardware info table
@@ -686,7 +686,7 @@ def download_test_image(url: str, timeout: int = 30) -> "Image.Image":
             "Image benchmarks require Pillow, which is included in the "
             "optional vision dependencies.\n"
             "Install with:\n"
-            "    pip install 'qmlx[vision]'"
+            "    pip install 'qmlx-serve[vision]'"
         )
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -836,7 +836,7 @@ def run_mllm_benchmark(
     except ImportError as e:
         raise ImportError(
             "Vision benchmarks require the optional `mlx-vlm` dependency.\n"
-            "Install it with: pip install 'qmlx[vision]'"
+            "Install it with: pip install 'qmlx-serve[vision]'"
         ) from e
 
     from vllm_mlx.optimizations import detect_hardware
@@ -867,7 +867,7 @@ def run_mllm_benchmark(
         ]
 
     print(f"\n{'=' * 70}")
-    print("Rapid-MLX MLLM Performance Benchmark")
+    print("qMLX MLLM Performance Benchmark")
     print(f"{'=' * 70}")
 
     # Info table
@@ -1028,7 +1028,7 @@ def create_test_video(
     if cv2 is None:
         raise ImportError(
             "opencv-python is required for video benchmarks. "
-            "Install with: pip install 'qmlx[vision]'"
+            "Install with: pip install 'qmlx-serve[vision]'"
         )
     temp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     temp_file.close()
@@ -1104,7 +1104,7 @@ def get_video_info(video_path: str) -> dict:
     if cv2 is None:
         raise ImportError(
             "opencv-python is required for video benchmarks. "
-            "Install with: pip install 'qmlx[vision]'"
+            "Install with: pip install 'qmlx-serve[vision]'"
         )
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -1243,7 +1243,7 @@ def run_video_benchmark(
         ]
 
     print(f"\n{'=' * 70}")
-    print("Rapid-MLX Video Performance Benchmark")
+    print("qMLX Video Performance Benchmark")
     print(f"{'=' * 70}")
 
     # Info table
@@ -1473,7 +1473,7 @@ def print_summary(summary: BenchmarkSummary):
 def main():
     """Run the benchmark."""
     parser = argparse.ArgumentParser(
-        description="Rapid-MLX Performance Benchmark (LLM, MLLM Image & Video)",
+        description="qMLX Performance Benchmark (LLM, MLLM Image & Video)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

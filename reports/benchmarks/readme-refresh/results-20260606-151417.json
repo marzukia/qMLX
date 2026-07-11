@@ -6,7 +6,7 @@
   "results": [
     {
       "model": "qwen3.5-27b",
-      "engine": "rapid-mlx",
+      "engine": "qmlx",
       "arch_note": "Same MLX weights",
       "median_aggregate_tps": 66.39788312088642,
       "median_per_stream_tps": 17.52265549673332,
@@ -92,7 +92,7 @@
     },
     {
       "model": "qwen3.6-35b",
-      "engine": "rapid-mlx",
+      "engine": "qmlx",
       "arch_note": "Same MLX weights",
       "median_aggregate_tps": 174.40256458192619,
       "median_per_stream_tps": 51.4953290980671,
@@ -178,7 +178,7 @@
     },
     {
       "model": "qwen3.5-35b",
-      "engine": "rapid-mlx",
+      "engine": "qmlx",
       "arch_note": "Same MLX weights",
       "median_aggregate_tps": 151.53766146397604,
       "median_per_stream_tps": 42.78240339954312,

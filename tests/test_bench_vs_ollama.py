@@ -119,7 +119,7 @@ def test_speedup_math_for_throughput_and_latency():
     assert bench.format_speedup(None) == "-"
 
 
-def test_parse_rapid_mlx_sse_stream_prefers_usage_tokens():
+def test_parse_qmlx_sse_stream_prefers_usage_tokens():
     bench = load_bench_module()
     lines = [
         'data: {"choices":[{"delta":{"content":"hello"}}]}',
@@ -128,13 +128,13 @@ def test_parse_rapid_mlx_sse_stream_prefers_usage_tokens():
         "data: [DONE]",
     ]
 
-    parsed = bench.parse_rapid_mlx_stream(lines)
+    parsed = bench.parse_qmlx_stream(lines)
 
     assert parsed.content_chunks == 2
     assert parsed.completion_tokens == 7
 
 
-def test_parse_rapid_mlx_stream_ignores_malformed_shapes_and_bad_usage():
+def test_parse_qmlx_stream_ignores_malformed_shapes_and_bad_usage():
     bench = load_bench_module()
     lines = [
         "data: []",
@@ -147,7 +147,7 @@ def test_parse_rapid_mlx_stream_ignores_malformed_shapes_and_bad_usage():
         "data: [DONE]",
     ]
 
-    parsed = bench.parse_rapid_mlx_stream(lines)
+    parsed = bench.parse_qmlx_stream(lines)
 
     assert parsed.content_chunks == 2
     assert parsed.completion_tokens == 2
@@ -281,10 +281,10 @@ def test_summarize_runs_averages_numeric_fields():
     }
 
 
-def test_build_rapid_mlx_payload_is_deterministic_no_thinking():
+def test_build_qmlx_payload_is_deterministic_no_thinking():
     bench = load_bench_module()
 
-    payload = bench.build_rapid_mlx_payload(
+    payload = bench.build_qmlx_payload(
         model="qwen3.5-9b-4bit",
         messages=[{"role": "user", "content": "hi"}],
         max_tokens=32,
@@ -363,18 +363,18 @@ def test_summarize_concurrent_batch_computes_p95_and_aggregate_tps():
     }
 
 
-def test_extract_rapid_mlx_message_content_ignores_malformed_shapes():
+def test_extract_qmlx_message_content_ignores_malformed_shapes():
     bench = load_bench_module()
 
-    assert bench.extract_rapid_mlx_message_content([]) == ""
-    assert bench.extract_rapid_mlx_message_content({"choices": [None]}) == ""
-    assert bench.extract_rapid_mlx_message_content({"choices": {"0": {}}}) == ""
+    assert bench.extract_qmlx_message_content([]) == ""
+    assert bench.extract_qmlx_message_content({"choices": [None]}) == ""
+    assert bench.extract_qmlx_message_content({"choices": {"0": {}}}) == ""
 
 
-def test_extract_rapid_mlx_message_content_returns_assistant_content():
+def test_extract_qmlx_message_content_returns_assistant_content():
     bench = load_bench_module()
 
-    content = bench.extract_rapid_mlx_message_content(
+    content = bench.extract_qmlx_message_content(
         {"choices": [{"message": {"content": "hello"}}]}
     )
 
@@ -402,7 +402,7 @@ def test_render_markdown_includes_model_table_and_speedups():
         "metadata": {
             "timestamp": "2026-05-02T12:00:00",
             "git_commit": "abc123",
-            "rapid_mlx_version": "rapid-mlx 0.2.0",
+            "qmlx_version": "qmlx 0.2.0",
             "ollama_version": "ollama version 0.6.0",
         },
         "config": {
@@ -414,9 +414,9 @@ def test_render_markdown_includes_model_table_and_speedups():
         },
         "model_pairs": [
             {
-                "rapid_mlx_model": "qwen3.5-9b-4bit",
+                "qmlx_model": "qwen3.5-9b-4bit",
                 "ollama_model": "qwen3.5:9b",
-                "rapid-mlx": {
+                "qmlx": {
                     "summary": {
                         "stream": {"ttft_ms": 100.0, "decode_tok_s": 120.0},
                         "multi_turn": {"avg_turn_ms": 200.0},
@@ -436,11 +436,11 @@ def test_render_markdown_includes_model_table_and_speedups():
 
     markdown = bench.render_markdown(result)
 
-    assert "# Rapid-MLX vs Ollama Benchmark" in markdown
+    assert "# qMLX vs Ollama Benchmark" in markdown
     assert "qwen3.5-9b-4bit vs qwen3.5:9b" in markdown
     assert "| Decode tok/s | 120.0 | 40.0 | 3.00x |" in markdown
     assert "| TTFT | 100.0 ms | 250.0 ms | 2.50x |" in markdown
-    assert "- Rapid-MLX: `rapid-mlx 0.2.0`" in markdown
+    assert "- qMLX: `qmlx 0.2.0`" in markdown
     assert "- Ollama: `ollama version 0.6.0`" in markdown
     assert "- Startup timeout: `30.0s`" in markdown
     assert "- Request timeout: `45.0s`" in markdown
@@ -454,9 +454,9 @@ def test_render_markdown_surfaces_engine_errors():
         "config": {"runs": 1, "concurrency": [1]},
         "model_pairs": [
             {
-                "rapid_mlx_model": "qwen3.5-9b-4bit",
+                "qmlx_model": "qwen3.5-9b-4bit",
                 "ollama_model": "qwen3.5:9b",
-                "rapid-mlx": {"error": "boom"},
+                "qmlx": {"error": "boom"},
                 "ollama": {"summary": {"stream": {"decode_tok_s": 40.0}}},
             }
         ],
@@ -464,7 +464,7 @@ def test_render_markdown_surfaces_engine_errors():
 
     markdown = bench.render_markdown(result)
 
-    assert "**Rapid-MLX error:** boom" in markdown
+    assert "**qMLX error:** boom" in markdown
 
 
 def test_render_markdown_surfaces_workload_errors():
@@ -474,9 +474,9 @@ def test_render_markdown_surfaces_workload_errors():
         "config": {"runs": 1, "concurrency": [1]},
         "model_pairs": [
             {
-                "rapid_mlx_model": "qwen3.5-9b-4bit",
+                "qmlx_model": "qwen3.5-9b-4bit",
                 "ollama_model": "qwen3.5:9b",
-                "rapid-mlx": {
+                "qmlx": {
                     "errors": [
                         {
                             "workload": "multi_turn",
@@ -502,7 +502,7 @@ def test_render_markdown_surfaces_workload_errors():
 
     markdown = bench.render_markdown(result)
 
-    assert "**Rapid-MLX workload errors:**" in markdown
+    assert "**qMLX workload errors:**" in markdown
     assert "- multi_turn: request timed out" in markdown
     assert "**Ollama workload errors:**" in markdown
     assert "- chat concurrency=2 run=1: connection reset" in markdown
@@ -515,9 +515,9 @@ def test_render_markdown_tolerates_none_engine_payloads():
         "config": {"runs": 1, "concurrency": [1]},
         "model_pairs": [
             {
-                "rapid_mlx_model": "qwen3.5-9b-4bit",
+                "qmlx_model": "qwen3.5-9b-4bit",
                 "ollama_model": "qwen3.5:9b",
-                "rapid-mlx": None,
+                "qmlx": None,
                 "ollama": {"error": "ollama down"},
             }
         ],
@@ -556,15 +556,15 @@ def test_find_free_port_can_be_rebound():
         sock.bind(("127.0.0.1", port))
 
 
-def test_build_rapid_mlx_command_includes_explicit_benchmark_settings():
+def test_build_qmlx_command_includes_explicit_benchmark_settings():
     bench = load_bench_module()
 
-    cmd = bench.build_rapid_mlx_command(
+    cmd = bench.build_qmlx_command(
         "qwen3.5-9b-4bit", 9123, ["--prefill-step-size", "4096"]
     )
 
     assert cmd == [
-        "rapid-mlx",
+        "qmlx",
         "serve",
         "qwen3.5-9b-4bit",
         "--host",
@@ -641,10 +641,10 @@ def test_build_engine_success_result_shape():
     bench = load_bench_module()
 
     result = bench.build_engine_success_result(
-        engine="rapid-mlx",
+        engine="qmlx",
         model="qwen3.5-9b-4bit",
         port=9123,
-        command=["rapid-mlx", "serve", "qwen3.5-9b-4bit"],
+        command=["qmlx", "serve", "qwen3.5-9b-4bit"],
         raw_runs={"stream": [{"ttft_ms": 100.0}]},
         summary={"stream": {"ttft_ms": 100.0}},
         errors=[],
@@ -652,13 +652,13 @@ def test_build_engine_success_result_shape():
         prepared=True,
     )
 
-    assert result["engine"] == "rapid-mlx"
+    assert result["engine"] == "qmlx"
     assert result["model"] == "qwen3.5-9b-4bit"
     assert result["port"] == 9123
-    assert result["command"] == ["rapid-mlx", "serve", "qwen3.5-9b-4bit"]
+    assert result["command"] == ["qmlx", "serve", "qwen3.5-9b-4bit"]
     assert result["server"]["url"] == "http://127.0.0.1:9123"
     assert result["runtime"]["prepared"] is True
-    assert result["metadata"]["engine"] == "rapid-mlx"
+    assert result["metadata"]["engine"] == "qmlx"
     assert result["metadata"]["model"] == "qwen3.5-9b-4bit"
     assert result["raw_runs"]["stream"] == [{"ttft_ms": 100.0}]
     assert result["summary"]["stream"] == {"ttft_ms": 100.0}
@@ -759,7 +759,7 @@ def test_run_engine_suite_records_workload_errors_and_continues(monkeypatch):
     )
 
     raw_runs, summary, errors = bench.run_engine_suite(
-        "rapid-mlx",
+        "qmlx",
         "http://server",
         {
             "chat_model": "chat-model",
@@ -819,7 +819,7 @@ def test_run_engine_suite_skips_embeddings_by_default(monkeypatch):
     )
 
     raw_runs, summary, errors = bench.run_engine_suite(
-        "rapid-mlx",
+        "qmlx",
         "http://server",
         {
             "chat_model": "chat-model",
@@ -868,7 +868,7 @@ def test_run_engine_suite_populates_multi_turn_summary(monkeypatch):
     monkeypatch.setattr(bench, "run_multi_turn", fake_multi_turn)
 
     raw_runs, summary, errors = bench.run_engine_suite(
-        "rapid-mlx",
+        "qmlx",
         "http://server",
         {
             "chat_model": "chat-model",
@@ -916,7 +916,7 @@ def test_run_engine_suite_records_multi_turn_errors_by_run(monkeypatch):
     monkeypatch.setattr(bench, "run_multi_turn", fake_multi_turn)
 
     raw_runs, summary, errors = bench.run_engine_suite(
-        "rapid-mlx",
+        "qmlx",
         "http://server",
         {
             "chat_model": "chat-model",
@@ -974,7 +974,7 @@ def test_run_engine_suite_stream_summary_does_not_require_concurrency_one(
     )
 
     raw_runs, summary, errors = bench.run_engine_suite(
-        "rapid-mlx",
+        "qmlx",
         "http://server",
         {
             "chat_model": "chat-model",
@@ -1028,7 +1028,7 @@ def test_run_engine_suite_passes_headers_to_multi_turn(monkeypatch):
     monkeypatch.setattr(bench, "run_multi_turn", fake_multi_turn)
 
     bench.run_engine_suite(
-        "rapid-mlx",
+        "qmlx",
         "http://server",
         {
             "chat_model": "chat-model",
@@ -1057,7 +1057,7 @@ def test_run_multi_turn_passes_headers_to_post_json(monkeypatch):
     monkeypatch.setattr(bench, "post_json", fake_post_json)
 
     summary = bench.run_multi_turn(
-        "rapid-mlx",
+        "qmlx",
         "http://server",
         "chat-model",
         16,
@@ -1078,7 +1078,7 @@ def test_run_multi_turn_rejects_empty_assistant_content(monkeypatch):
     monkeypatch.setattr(bench, "post_json", fake_post_json)
 
     with pytest.raises(RuntimeError, match="empty assistant content"):
-        bench.run_multi_turn("rapid-mlx", "http://server", "chat-model", 16, 30.0)
+        bench.run_multi_turn("qmlx", "http://server", "chat-model", 16, 30.0)
 
 
 def test_run_multi_turn_sends_new_user_message_for_each_turn(monkeypatch):
@@ -1091,7 +1091,7 @@ def test_run_multi_turn_sends_new_user_message_for_each_turn(monkeypatch):
 
     monkeypatch.setattr(bench, "post_json", fake_post_json)
 
-    bench.run_multi_turn("rapid-mlx", "http://server", "chat-model", 16, 30.0)
+    bench.run_multi_turn("qmlx", "http://server", "chat-model", 16, 30.0)
 
     user_messages_by_turn = [
         [
@@ -1138,7 +1138,7 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
         no_download=True,
         startup_timeout=1.0,
         request_timeout=2.0,
-        rapid_mlx_args=[],
+        qmlx_args=[],
         ollama_env={},
     )
 
@@ -1151,8 +1151,8 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
     def fake_rapid(pair, call_args):
         calls.append(("rapid", pair, call_args))
         return {
-            "engine": "rapid-mlx",
-            "model": pair.rapid_mlx,
+            "engine": "qmlx",
+            "model": pair.qmlx,
             "summary": {
                 "stream": {"ttft_ms": 100.0, "decode_tok_s": 120.0},
                 "multi_turn": {"avg_turn_ms": 200.0},
@@ -1181,7 +1181,7 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
             "errors": [],
         }
 
-    monkeypatch.setattr(bench, "benchmark_rapid_mlx", fake_rapid)
+    monkeypatch.setattr(bench, "benchmark_qmlx", fake_rapid)
     monkeypatch.setattr(bench, "benchmark_ollama", fake_ollama)
 
     result = bench.run_benchmark(args)
@@ -1191,7 +1191,7 @@ def test_run_benchmark_executes_engines_sequentially_and_adds_comparisons(
         ("ollama", args.model_pairs[0], args),
     ]
     pair_result = result["model_pairs"][0]
-    assert pair_result["rapid-mlx"]["model"] == "rapid-a"
+    assert pair_result["qmlx"]["model"] == "rapid-a"
     assert pair_result["ollama"]["model"] == "ollama-a"
     assert pair_result["comparisons"]["stream_decode_tok_s_speedup"] == 3.0
     assert pair_result["comparisons"]["stream_ttft_latency_speedup"] == 2.5
@@ -1226,7 +1226,7 @@ def test_benchmark_ollama_pulls_after_managed_server_start_with_managed_env(
         no_download=True,
         startup_timeout=1.0,
         request_timeout=2.0,
-        rapid_mlx_args=[],
+        qmlx_args=[],
         ollama_env={"OLLAMA_KEEP_ALIVE": "0"},
     )
 
@@ -1284,7 +1284,7 @@ def test_benchmark_ollama_retries_when_startup_process_exits(monkeypatch, tmp_pa
         no_download=True,
         startup_timeout=1.0,
         request_timeout=2.0,
-        rapid_mlx_args=[],
+        qmlx_args=[],
         ollama_env={},
     )
 

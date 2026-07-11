@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rapid-MLX Usage Statistics — collects download and traffic data.
+"""qMLX Usage Statistics — collects download and traffic data.
 
 Combines:
   B) GitHub traffic (clones, views, stars, forks) — requires repo owner auth
@@ -17,7 +17,7 @@ import subprocess
 from datetime import datetime
 
 REPO = "raullenchai/Rapid-MLX"
-PYPI_PACKAGE = "rapid-mlx"
+PYPI_PACKAGE = "qmlx"
 
 
 def gh_api(path: str) -> dict | list | None:
@@ -141,7 +141,7 @@ def print_report(github: dict, traffic: dict, pypi: dict):
     """Print a human-readable report."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"{'=' * 60}")
-    print(f"  Rapid-MLX Usage Stats — {now}")
+    print(f"  qMLX Usage Stats — {now}")
     print(f"{'=' * 60}")
 
     # GitHub
@@ -251,7 +251,7 @@ def save_snapshot(github: dict, traffic: dict, pypi: dict, filepath: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Rapid-MLX usage statistics")
+    parser = argparse.ArgumentParser(description="qMLX usage statistics")
     parser.add_argument("--json", action="store_true", help="JSON output")
     parser.add_argument(
         "--save", action="store_true", help="Append snapshot to docs/usage-stats.md"

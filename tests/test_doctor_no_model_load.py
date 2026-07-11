@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Assert ``rapid-mlx doctor`` is *purely* an env-health probe.
+"""Assert ``qmlx doctor`` is *purely* an env-health probe.
 
 The contract for the doctor subcommand (PR #4 of the doctor refactor
 series) is:
@@ -169,8 +169,8 @@ def test_doctor_runtime_under_five_seconds():
 
 @pytest.mark.parametrize("legacy_tier", ["smoke", "check", "full", "benchmark"])
 def test_doctor_legacy_tier_subcommand_redirects(legacy_tier: str, capsys):
-    """``rapid-mlx doctor smoke|check|full|benchmark`` exits 2 with a
-    pointer to ``rapid-mlx bench --tier <tier>``. PR #2 added a
+    """``qmlx doctor smoke|check|full|benchmark`` exits 2 with a
+    pointer to ``qmlx bench --tier <tier>``. PR #2 added a
     deprecation shim; this PR removes the shim and turns the same
     invocation into a clean redirect (exit 2 = "you typed something
     that's no longer valid")."""

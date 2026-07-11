@@ -121,7 +121,7 @@ _MISSING = object()
 
 def _build_app(monkeypatch, *, with_handlers: bool = True):
     """Construct a FastAPI app mounting the anthropic + responses routers
-    and (optionally) the rapid-mlx exception handlers.
+    and (optionally) the qmlx exception handlers.
 
     Tests use ``with_handlers=False`` to assert the *current* default
     FastAPI behaviour (500 / 422 echo) is what gets repaired by the

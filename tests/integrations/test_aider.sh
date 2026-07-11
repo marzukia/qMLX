@@ -177,7 +177,7 @@ echo "--------"
 #   --no-check-update    — skip pip-index poll
 #   --no-show-model-warnings — model isn't in aider's known list; silence
 #   --no-pretty          — plain text, no ANSI (easier to grep on failure)
-#   --no-stream          — Rapid-MLX supports streaming, but non-stream is
+#   --no-stream          — qMLX supports streaming, but non-stream is
 #                          less flaky on slow local inference
 #   --map-tokens 0       — don't burn a turn building a repo map
 #   --yes-always         — take all prompts as "yes"

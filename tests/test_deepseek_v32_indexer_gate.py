@@ -638,7 +638,7 @@ def test_uninstall_restores_originals_across_module_reload(repro_dir):
     gate.install_deepseek_v32_indexer_gate()
     from mlx_lm.models import deepseek_v32 as ds
 
-    assert getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False)
+    assert getattr(ds, "_QMLX_INDEXER_GATE_INSTALLED", False)
 
     # (3) simulate module-reload: clear the module-side globals and
     # call install again. The reload path must populate ``_orig_*``
@@ -661,7 +661,7 @@ def test_uninstall_restores_originals_across_module_reload(repro_dir):
     # (4) uninstall — should restore the true upstream callables.
     gate.uninstall_deepseek_v32_indexer_gate()
     assert gate._INSTALLED is False
-    assert not getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False)
+    assert not getattr(ds, "_QMLX_INDEXER_GATE_INSTALLED", False)
 
     # (5) Without the gate, loading a REAP config crashes with missing
     # indexer keys — proves the upstream un-patched callables really
@@ -714,7 +714,7 @@ def test_install_fires_on_real_serve_import_path():
     is imported directly.
 
     The original PR #967 wired ``install_deepseek_v32_indexer_gate()`` at
-    ``vllm_mlx/model_runner.py:34``. The real ``rapid-mlx serve`` boot
+    ``vllm_mlx/model_runner.py:34``. The real ``qmlx serve`` boot
     path is::
 
         cli -> server -> engine.batched._start_llm
@@ -769,10 +769,10 @@ def test_install_fires_on_real_serve_import_path():
 
         from mlx_lm.models import deepseek_v32 as ds
 
-        if not getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False):
+        if not getattr(ds, "_QMLX_INDEXER_GATE_INSTALLED", False):
             print(
                 "FAIL: upstream marker mlx_lm.models.deepseek_v32."
-                "_RAPID_MLX_INDEXER_GATE_INSTALLED is missing"
+                "_QMLX_INDEXER_GATE_INSTALLED is missing"
             )
             sys.exit(1)
 

@@ -2,7 +2,7 @@
 """R11-G / H-13 — ``/v1/models`` visibility of the configured embedding model.
 
 H-13 (Bo r11 carry from R8-H3): boot
-``rapid-mlx serve --embedding-model mlx-community/Qwen3-Embedding-0.6B-4bit``
+``qmlx serve --embedding-model mlx-community/Qwen3-Embedding-0.6B-4bit``
 and the response from ``GET /v1/models`` only listed the *chat* model.
 The embedding model id was missing, which broke
 ``client.models.list()`` auto-discovery for LangChain, LlamaIndex, and
@@ -153,7 +153,7 @@ def test_no_embedding_model_no_embedding_card():
 
 def test_retrieve_embedding_model_by_path_id():
     """``GET /v1/models/{embed_id}`` must resolve a slash-containing
-    HF id directly — every other rapid-mlx endpoint accepts the bare
+    HF id directly — every other qmlx endpoint accepts the bare
     HF id, this one should too.
 
     desktop / rapid-desktop hydrates per-model state from this path

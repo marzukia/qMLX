@@ -43,7 +43,7 @@ def _torch():
     except ImportError as exc:
         raise ImportError(
             "vllm_mlx.vllm_platform requires PyTorch when invoked by vLLM. "
-            "Install with: pip install 'qmlx[vision]' (vision extras "
+            "Install with: pip install 'qmlx-serve[vision]' (vision extras "
             "include torch), or `pip install torch` directly."
         ) from exc
 

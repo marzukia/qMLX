@@ -61,7 +61,7 @@ jobs:
               body: [
                 "Heads up: this issue was opened without one of the project's issue templates (Bug / Performance / Feature / Model Support / Benchmark), so it's been tagged `spam-suspected` for triage.",
                 "",
-                "**If this is a real report, please add the missing context the relevant template asks for** — Rapid-MLX version, hardware, the exact `rapid-mlx serve …` command, and a minimal reproduction. A maintainer will triage from there and remove the label.",
+                "**If this is a real report, please add the missing context the relevant template asks for** — qMLX version, hardware, the exact `qmlx serve …` command, and a minimal reproduction. A maintainer will triage from there and remove the label.",
                 "",
                 "Template index: https://github.com/raullenchai/Rapid-MLX/issues/new/choose",
               ].join("\n"),

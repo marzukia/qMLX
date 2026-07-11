@@ -8,7 +8,7 @@ Covers:
 3. ``release()`` hands ownership off and SUPPRESSES the unlink.
 4. The atexit fallback fires when ``sys.exit()`` (or any other path
    that bypasses ``__exit__``) leaves the body. This is the
-   regression that #719 reported on ``rapid-mlx chat``.
+   regression that #719 reported on ``qmlx chat``.
 5. The internal registry doesn't accumulate dead entries after
    normal context exits — important for long-lived parents that
    create + tear down many tempfiles (chat REPL ``/model`` swaps).
@@ -36,10 +36,10 @@ from vllm_mlx._tempfile_safe import managed_tempfile_path
 
 
 def _count_chat_logs() -> int:
-    """Return the number of ``rapid-mlx-chat-*.log`` stragglers."""
+    """Return the number of ``qmlx-chat-*.log`` stragglers."""
     tmp = Path(tempfile.gettempdir())
     try:
-        return sum(1 for name in os.listdir(tmp) if name.startswith("rapid-mlx-chat-"))
+        return sum(1 for name in os.listdir(tmp) if name.startswith("qmlx-chat-"))
     except OSError:
         return 0
 
@@ -456,9 +456,9 @@ def test_concurrent_release_during_context_exit_does_not_double_unlink(
 
 
 def _count_in_dir(d: str) -> int:
-    """Count ``rapid-mlx-chat-*.log`` files in ``d``."""
+    """Count ``qmlx-chat-*.log`` files in ``d``."""
     try:
-        return sum(1 for name in os.listdir(d) if name.startswith("rapid-mlx-chat-"))
+        return sum(1 for name in os.listdir(d) if name.startswith("qmlx-chat-"))
     except OSError:
         return 0
 
@@ -466,8 +466,8 @@ def _count_in_dir(d: str) -> int:
 def test_chat_command_does_not_leak_tempfile_on_keyboard_interrupt(tmp_path):
     """End-to-end regression for GH #719.
 
-    The original bug: ``rapid-mlx chat`` leaked one zero-byte
-    ``rapid-mlx-chat-*.log`` per invocation if anything raised
+    The original bug: ``qmlx chat`` leaked one zero-byte
+    ``qmlx-chat-*.log`` per invocation if anything raised
     between the ``NamedTemporaryFile(...).name`` call and the
     proc-registration step inside ``_spawn_chat_server``.
 
@@ -477,7 +477,7 @@ def test_chat_command_does_not_leak_tempfile_on_keyboard_interrupt(tmp_path):
     Run the chat command in a fresh subprocess with ``TMPDIR`` pointed
     at the test's ``tmp_path``. After the subprocess fully exits (so
     ``atexit`` has run), the parent counts the files. This is the
-    user-visible contract from the bug report: after ``rapid-mlx chat``
+    user-visible contract from the bug report: after ``qmlx chat``
     returns, the temp dir should not have a new straggler.
     """
     tmpdir = str(tmp_path)
@@ -528,7 +528,7 @@ def test_chat_command_does_not_leak_tempfile_on_keyboard_interrupt(tmp_path):
     after = _count_in_dir(tmpdir)
     delta = after - before
     assert delta == 0, (
-        f"GH #719 regression: rapid-mlx chat leaked {delta} "
+        f"GH #719 regression: qmlx chat leaked {delta} "
         f"tempfile(s) on KeyboardInterrupt during spawn. "
         f"Files in {tmpdir}: {os.listdir(tmpdir)}"
     )
@@ -574,8 +574,8 @@ def test_chat_command_does_not_leak_tempfile_on_spawn_readiness_failure(tmp_path
                 "chat callsite released the handle BEFORE the spawn"
             )
             log_fh = open(log_path, "w")
-            fake_proc._rapid_mlx_log = log_fh
-            fake_proc._rapid_mlx_log_path = log_path
+            fake_proc._qmlx_log = log_fh
+            fake_proc._qmlx_log_path = log_path
             if register_in is not None:
                 register_in.append(fake_proc)
             # Mirror the real spawn's hand-off so the chat REPL's
@@ -620,7 +620,7 @@ def test_chat_command_does_not_leak_tempfile_on_spawn_readiness_failure(tmp_path
     after = _count_in_dir(tmpdir)
     delta = after - before
     assert delta == 0, (
-        f"GH #719 regression: rapid-mlx chat leaked {delta} "
+        f"GH #719 regression: qmlx chat leaked {delta} "
         f"tempfile(s) on _wait_for_chat_server failure. "
         f"Files in {tmpdir}: {os.listdir(tmpdir)}"
     )

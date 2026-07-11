@@ -10,7 +10,7 @@ class of bug that only surfaces when you actually run the model.
 This script bolts a randomized sweep onto the existing gauntlet:
 
     for each of N seeded-random models (from the eligible alias set):
-        boot rapid-mlx serve <model> --port $PORT --no-thinking
+        boot qmlx serve <model> --port $PORT --no-thinking
         for each of M seeded-random harnesses (from the 5 first-class):
             for r in 1..K rounds:
                 run `bench --tier harness` with the env-filter scoped
@@ -202,7 +202,7 @@ def _wait_for_server(
     exits, or the deadline expires. Returns True on success, False
     otherwise.
 
-    Watching ``proc.poll()`` matters: if ``rapid-mlx serve`` aborts at
+    Watching ``proc.poll()`` matters: if ``qmlx serve`` aborts at
     import time (missing alias, port collision raced past the
     pre-flight, mlx-lm import error on a clean venv), there is no port
     that will ever come up. Without this check we'd burn the full 600 s
@@ -268,7 +268,7 @@ def _run_harness_round(
 ) -> tuple[bool, float, str]:
     """Run one ``bench --tier harness`` invocation scoped to one
     harness. Returns ``(ok, wall_clock_s, error_excerpt)``."""
-    env = {**os.environ, "RAPID_MLX_HARNESS_PROFILES_FILTER": harness}
+    env = {**os.environ, "QMLX_HARNESS_PROFILES_FILTER": harness}
     cmd = [
         sys.executable,
         "-m",
@@ -328,7 +328,7 @@ def main() -> int:
         "--port",
         type=int,
         default=8000,
-        help="Port to boot rapid-mlx serve on (default: 8000).",
+        help="Port to boot qmlx serve on (default: 8000).",
     )
     parser.add_argument(
         "--models",

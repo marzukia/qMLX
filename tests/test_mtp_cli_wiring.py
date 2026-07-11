@@ -680,7 +680,7 @@ def test_start_llm_raises_on_dispatch_unresolved_when_cli_vetted():
     """Codex round-E BLOCKING #2 regression guard.
 
     When the CLI has populated ``mtp_model_type`` (production
-    ``rapid-mlx serve --spec-decode mtp`` path), an executor-thread
+    ``qmlx serve --spec-decode mtp`` path), an executor-thread
     ``_DISPATCH_UNRESOLVED`` return can only be a plumbing bug (the
     executor doesn't even use the fallback config lookup because the
     CLI-vetted value takes precedence). Hard-fail so the operator
@@ -929,7 +929,7 @@ def test_apply_mtp_dispatch_raises_runtime_error_on_timeout(monkeypatch):
     from vllm_mlx.engine import batched as _batched
     from vllm_mlx.scheduler import SchedulerConfig
 
-    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
+    monkeypatch.setenv("QMLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
     # Codex round-L BLOCKING #1: no more process-exit hook to patch —
     # the timeout branch now raises ``RuntimeError`` directly. The
     # ``_log_mtp_dispatch_timeout`` call is a plain log statement
@@ -949,7 +949,7 @@ def test_apply_mtp_dispatch_raises_runtime_error_on_timeout(monkeypatch):
     raise AssertionError(
         "codex round-G BLOCKING #3 regression: _apply_mtp_dispatch did "
         "NOT convert a TimeoutError into a startup RuntimeError. A "
-        "stuck HF/DNS load would hang `rapid-mlx serve` indefinitely."
+        "stuck HF/DNS load would hang `qmlx serve` indefinitely."
     )
 
 
@@ -978,7 +978,7 @@ def test_apply_mtp_dispatch_timeout_logs_critical_and_does_not_call_os_exit(
     from vllm_mlx.engine import batched as _batched
     from vllm_mlx.scheduler import SchedulerConfig
 
-    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
+    monkeypatch.setenv("QMLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
 
     exit_codes: list[int] = []
 
@@ -1071,7 +1071,7 @@ def test_apply_mtp_dispatch_timeout_does_not_shut_down_shared_executor(monkeypat
     from vllm_mlx.engine import batched as _batched
     from vllm_mlx.scheduler import SchedulerConfig
 
-    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
+    monkeypatch.setenv("QMLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
 
     shutdown_calls: list[dict] = []
 
@@ -1111,7 +1111,7 @@ def test_get_mtp_dispatch_timeout_sec_default(monkeypatch):
     """
     from vllm_mlx.engine import batched as _batched
 
-    monkeypatch.delenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("QMLX_MTP_DISPATCH_TIMEOUT_SEC", raising=False)
     assert _batched._get_mtp_dispatch_timeout_sec() == 600.0
 
 
@@ -1121,7 +1121,7 @@ def test_get_mtp_dispatch_timeout_sec_zero_disables(monkeypatch):
     """
     from vllm_mlx.engine import batched as _batched
 
-    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "0")
+    monkeypatch.setenv("QMLX_MTP_DISPATCH_TIMEOUT_SEC", "0")
     assert _batched._get_mtp_dispatch_timeout_sec() is None
 
 
@@ -1131,7 +1131,7 @@ def test_get_mtp_dispatch_timeout_sec_malformed_falls_back_to_default(monkeypatc
     """
     from vllm_mlx.engine import batched as _batched
 
-    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "not-a-number")
+    monkeypatch.setenv("QMLX_MTP_DISPATCH_TIMEOUT_SEC", "not-a-number")
     assert _batched._get_mtp_dispatch_timeout_sec() == 600.0
 
 

@@ -1158,7 +1158,7 @@ def test_save_aborts_on_post_filter_dir_loss(tmp_path, monkeypatch):
 # Shutdown-deadline ("should_abort") partial-commit path
 # --------------------------------------------------------------------------
 #
-# Rapid-desktop only gives the rapid-mlx sidecar ~5s between SIGTERM and
+# Rapid-desktop only gives the qmlx sidecar ~5s between SIGTERM and
 # SIGKILL. The previous synchronous flush would write entries linearly,
 # get SIGKILLed mid-write, and leave ``<cache_dir>.new/`` orphaned on
 # disk — no cache survives to the next launch. The fix lets the lifespan
@@ -1239,7 +1239,7 @@ def test_save_to_disk_aborts_before_first_entry_returns_false(tmp_path):
 def test_save_to_disk_predicate_none_preserves_full_flush(tmp_path):
     """Passing ``should_abort=None`` must be equivalent to the legacy call
     shape — all entries get written, no early break. Protects the offline
-    ``rapid-mlx`` CLI path and the existing tests from regressing.
+    ``qmlx`` CLI path and the existing tests from regressing.
     """
     cache_dir = tmp_path / "snap"
     cache = fresh_cache()
@@ -1328,7 +1328,7 @@ def test_shutdown_save_prefix_cache_no_op_when_engine_missing(monkeypatch):
     """Companion guard: when ``server._engine`` is None (no model loaded
     yet at shutdown, or already torn down), the helper returns silently
     instead of blowing up with AttributeError. This is the production
-    failure mode for ``rapid-mlx serve --help`` lifecycle interruption
+    failure mode for ``qmlx serve --help`` lifecycle interruption
     where shutdown lands before startup finished.
     """
     import asyncio
@@ -2758,7 +2758,7 @@ def test_r12_save_drift_drops_survives_clear_and_reset_stats(tmp_path, monkeypat
 
 
 def test_r12_metrics_exposes_save_drift_drops():
-    """The ``rapid_mlx_prefix_cache_save_drift_drops_total`` Prometheus
+    """The ``qmlx_prefix_cache_save_drift_drops_total`` Prometheus
     counter must appear in /metrics output when the cache stats dict
     carries a ``save_drift_drops`` field. Pin the wiring so a future
     metrics refactor doesn't silently drop it.
@@ -2771,7 +2771,7 @@ def test_r12_metrics_exposes_save_drift_drops():
     from vllm_mlx.routes.metrics import _coerce_number  # noqa: F401 — import probe
 
     src = Path(metrics_mod.__file__).read_text()
-    assert "rapid_mlx_prefix_cache_save_drift_drops_total" in src, (
+    assert "qmlx_prefix_cache_save_drift_drops_total" in src, (
         "metrics route lost the R12-T1 counter wiring"
     )
     assert "save_drift_drops" in src

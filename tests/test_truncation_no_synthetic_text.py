@@ -7,7 +7,7 @@ NOTE — issue #858 (0.8.11) reverts R-01. The default is now ON again
 (PR #802 / H-01 restored), because GUI clients that only render the
 ``content`` field showed empty bubbles under R-01's default-off. This
 file pins the OPT-OUT branch: with
-``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` set, every transport
+``QMLX_REASONING_CUTOFF_NOTICE=disabled`` set, every transport
 must keep ``content``/``output_text``/``text`` free of the literal
 sentinel. The autouse fixture below sets that env var for every test
 in this module.
@@ -171,12 +171,12 @@ def _parse_sse_named(text: str) -> list[tuple[str | None, dict]]:
 @pytest.fixture(autouse=True)
 def _opt_out_env(monkeypatch):
     """Issue #858 revert: default is now ON, so this file pins the
-    explicit-opt-out branch (``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``).
+    explicit-opt-out branch (``QMLX_REASONING_CUTOFF_NOTICE=disabled``).
     The cross-route no-injection contract still holds — callers who set
     the opt-out env var get strict-null on every transport. The default-on
     path (PR #802 / H-01 restored) is exercised in
     ``test_reasoning_content_null_rescue.py``."""
-    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
+    monkeypatch.setenv("QMLX_REASONING_CUTOFF_NOTICE", "disabled")
 
 
 # ---------------------------------------------------------------------
@@ -507,14 +507,14 @@ def test_messages_stream_no_truncated_injection():
 
 def test_helper_returns_none_on_opt_out_env(monkeypatch):
     """Direct helper assertion at opt-out: when
-    ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` is set (the only way
+    ``QMLX_REASONING_CUTOFF_NOTICE=disabled`` is set (the only way
     to suppress the sentinel since the issue #858 revert flipped the
     default back to ON), the helper must be a strict no-op. Pins that
     no synthetic text can leak under the opt-out path even if a future
     route call site forgets to pass every predicate."""
     from vllm_mlx.service.helpers import _apply_reasoning_cutoff_notice
 
-    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
+    monkeypatch.setenv("QMLX_REASONING_CUTOFF_NOTICE", "disabled")
     result = _apply_reasoning_cutoff_notice(
         final_content=None,
         reasoning_text="<incomplete thought>",

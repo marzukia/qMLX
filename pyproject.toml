@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qmlx-serve"
 version = "0.12.1"
-description = "Disk KV restore for hybrid MoE models on Apple Silicon. A Qwen-specialised fork of Rapid-MLX that keeps a 122B model warm on a Mac."
+description = "Disk KV restore for hybrid MoE models on Apple Silicon. A Qwen-specialised fork of qMLX that keeps a 122B model warm on a Mac."
 readme = "README.md"
 license = {text = "MIT AND Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
     {name = "Andryo Marzuki"},
-    {name = "Rapid-MLX contributors"}
+    {name = "qMLX contributors"}
 ]
 keywords = ["llm", "mlx", "apple-silicon", "inference", "transformers"]
 classifiers = [
@@ -30,7 +30,7 @@ classifiers = [
 ]
 
 dependencies = [
-    # Core — these are all you need for `rapid-mlx serve <text-model>`
+    # Core — these are all you need for `qmlx serve <text-model>`
     # Floor bump to 0.31.2 (mlx) + 0.31.3 (mlx-lm) for #720 take-2 — see
     # tests/test_mllm_cross_thread_stream_contract.py for the empirical
     # status of the cross-thread `Stream(gpu, N)` crash on this floor.
@@ -85,13 +85,13 @@ dependencies = [
     "uvicorn>=0.23.0",
     "mcp>=1.0.0",
     "jsonschema>=4.0.0",
-    # argcomplete — shell tab completion for the `rapid-mlx` CLI. Tiny
+    # argcomplete — shell tab completion for the `qmlx` CLI. Tiny
     # pure-Python package (~50 KB) wired into argparse via the magic
     # `# PYTHON_ARGCOMPLETE_OK` marker in cli.py and a per-arg
     # `.completer = alias_completer` for model positionals. Required
-    # (not optional) so `rapid-mlx chat gemma-4-<TAB>` works on every
+    # (not optional) so `qmlx chat gemma-4-<TAB>` works on every
     # install without an extras step. Activation in the user's shell is
-    # one-time: `eval "$(register-python-argcomplete rapid-mlx)"` in
+    # one-time: `eval "$(register-python-argcomplete qmlx)"` in
     # ~/.zshrc, or `activate-global-python-argcomplete` system-wide.
     # The Homebrew formula handles activation automatically.
     #
@@ -101,7 +101,7 @@ dependencies = [
     # so the very first Tab raises TypeError mid-handshake and the shell
     # silently shows nothing. 3.6.0 ships the variadic signature fix.
     "argcomplete>=3.6",
-    # WebSocket client for ``rapid-mlx share`` — connects to the
+    # WebSocket client for ``qmlx share`` — connects to the
     # rapidserver Worker as the reverse-tunnel transport. Pure Python,
     # ~200 KB. Replaces the prior frpc Go binary download.
     "websockets>=12.0",
@@ -155,7 +155,7 @@ dflash = [
 # +450 MB). Duplicating that pin under ``[mtp]`` doubled the install
 # surface of a text-only sidecar path just to satisfy a transitive
 # PIL import that ``pillow`` already covers directly. Operators who
-# want Gemma 4 targets install ``rapid-mlx[mtp,vision]`` (or the
+# want Gemma 4 targets install ``qmlx-serve[mtp,vision]`` (or the
 # ``pip install --no-deps mlx-vlm>=0.6.1`` sliver flagged by
 # gemma4_text.py) — the ``[mtp]`` extra stays narrow to just the
 # MTP subsystem's own direct dependencies.
@@ -274,12 +274,12 @@ audio = [
     # internal interpolation step produces an off-by-one length mismatch
     # versus the noise tensor — every Kokoro request ends with
     # ``[broadcast_shapes] Shapes (1,36600,1) and (1,36900,9) cannot be
-    # broadcast`` deep inside the istftnet generator. The rapid-mlx
+    # broadcast`` deep inside the istftnet generator. The qmlx
     # route's catch-all collapsed that into the opaque ``No audio
     # generated`` 500 (the chunk loop swallowed the upstream raise).
     # 0.4.3 (and earlier) does NOT have the regression — the same
     # request returns a 73 KB WAV. Cap the upper bound until upstream
-    # ships a fix so every fresh ``pip install rapid-mlx[audio]``
+    # ships a fix so every fresh ``pip install qmlx-serve[audio]``
     # works out of the box.
     "mlx-audio>=0.2.9,<0.4.4",
     "sounddevice>=0.4.0",
@@ -294,7 +294,7 @@ audio = [
     # R6-H1 (Eva 0.8.7 dogfood): Kokoro TTS imports ``misaki.espeak`` which
     # calls ``EspeakWrapper.set_data_path(...)`` (the legacy 3.2-era API).
     # Two things need to line up for that call to succeed on a fresh
-    # ``pip install rapid-mlx[audio]``:
+    # ``pip install qmlx-serve[audio]``:
     #
     #   1. ``espeakng-loader`` provides the bundled libespeak-ng binary
     #      and ``espeak-ng-data/`` directory misaki passes to
@@ -339,7 +339,7 @@ qmlx = "vllm_mlx.cli:main"
 qmlx-chat = "vllm_mlx.gradio_app:main"
 qmlx-bench = "vllm_mlx.benchmark:main"
 # Deprecated pre-rename aliases — kept so existing users' scripts/muscle
-# memory keep working. Prefer the rapid-mlx* commands above.
+# memory keep working. Prefer the qmlx* commands above.
 vllm-mlx = "vllm_mlx.cli:main"
 vllm-mlx-chat = "vllm_mlx.gradio_app:main"
 vllm-mlx-bench = "vllm_mlx.benchmark:main"
@@ -349,7 +349,7 @@ vllm_mlx = [
     "aliases.json",
     "audio/aliases.json",
     "agents/profiles/*.yaml",
-    # Integration tests bundled inside the package so `rapid-mlx agents
+    # Integration tests bundled inside the package so `qmlx agents
     # <name> --test` works on pip/brew installs (the source layout keeps
     # them at tests/integrations/, mirrored here via symlinks). Without
     # this, the test runner shows a confusing path-error skip.

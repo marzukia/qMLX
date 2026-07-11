@@ -23,7 +23,7 @@ These tests pin the contract:
 * Registry resolution covers every documented major audio alias.
 * HF-id reverse lookup works (full ids are first-class).
 * serve_command forks BEFORE the text-LM loader runs.
-* ``rapid-mlx models`` advertises the audio alias surface.
+* ``qmlx models`` advertises the audio alias surface.
 * The boot guard still fires for missing-extra installs (no
   regression of R6-H4).
 * Text models do NOT trip the audio path (no regression of the
@@ -162,7 +162,7 @@ class TestAudioAliasRegistry:
     )
     def test_full_hf_id_resolves_to_audio_entry(self, hf_id):
         """A user pasting ``mlx-community/Kokoro-82M-bf16`` into
-        ``rapid-mlx serve`` MUST be routed to audio mode (not text)
+        ``qmlx serve`` MUST be routed to audio mode (not text)
         — pre-R10 this downloaded the repo successfully and then
         crashed in ``mlx_lm.load_model`` because there's no
         safetensors. The reverse-index canonical-alias choice is
@@ -318,7 +318,7 @@ def _make_serve_args(model: str) -> Namespace:
 
 
 class TestAudioServeModeDispatch:
-    """``rapid-mlx serve kokoro`` (and every other audio alias /
+    """``qmlx serve kokoro`` (and every other audio alias /
     audio HF id) MUST route to the audio path, skipping the text
     loader. This is the headline R10-C1 fix.
     """
@@ -498,7 +498,7 @@ class TestAudioServeModeSyncsServerConfig:
     the auth middleware reads from is populated with ``_api_key``,
     ``_max_request_bytes``, ``_model_name``, etc. — exactly what
     ``server.load_model`` does on the text path. Skipping this sync
-    means ``rapid-mlx serve kokoro --api-key SECRET`` would silently
+    means ``qmlx serve kokoro --api-key SECRET`` would silently
     accept unauthenticated /v1/audio/* requests because the
     middleware reads ``cfg.api_key`` (still ``None``) instead of
     ``server._api_key``.
@@ -575,12 +575,12 @@ class TestAudioServeModeSyncsServerConfig:
 
 
 # ---------------------------------------------------------------------------
-# G) rapid-mlx models advertises the audio surface
+# G) qmlx models advertises the audio surface
 # ---------------------------------------------------------------------------
 
 
 class TestModelsCommandListsAudio:
-    """``rapid-mlx models`` must surface the audio aliases so users
+    """``qmlx models`` must surface the audio aliases so users
     can discover them without reading the docs site. Pre-R10 the
     listing was text-only (audio surface was zero rows)."""
 
@@ -603,7 +603,7 @@ class TestModelsCommandListsAudio:
             "voxcpm",
         ):
             assert alias in out, (
-                f"R10-C1 regression: ``rapid-mlx models`` did not list "
+                f"R10-C1 regression: ``qmlx models`` did not list "
                 f"the audio alias {alias!r}. The audio surface must be "
                 f"discoverable in-tool, not docs-only."
             )
@@ -640,7 +640,7 @@ class TestModelsCommandListsAudio:
 class TestAudioServeHonorsServedModelName:
     """Pre-fix ``_serve_audio_mode`` silently dropped
     ``--served-model-name``: ``server._model_name`` was always
-    ``entry.hf_id``, so operators wrapping ``rapid-mlx serve kokoro``
+    ``entry.hf_id``, so operators wrapping ``qmlx serve kokoro``
     behind a gateway with a fixed ``model_name`` saw the raw HF id on
     ``/v1/models`` and the gateway's allowlist 404'd.
 
@@ -1150,13 +1150,13 @@ class TestAudioServeHonorsEmbeddingModel:
 class TestAudioServeArgparseAcceptsBothFlags:
     """Argparse-level smoke test: both flags are REGISTERED on the
     serve subparser (they were before the fix, the bug was downstream
-    in ``_serve_audio_mode``), so ``rapid-mlx serve kokoro
+    in ``_serve_audio_mode``), so ``qmlx serve kokoro
     --embedding-model ... --served-model-name ...`` parses without
     an argparse error. Guards against an accidental subparser
     refactor that drops these flags."""
 
     def test_both_flags_parse_on_audio_alias(self, monkeypatch):
-        """``rapid-mlx serve kokoro --embedding-model ... --served-model-name ...``
+        """``qmlx serve kokoro --embedding-model ... --served-model-name ...``
         must parse without an argparse error and forward both flags
         to ``serve_command``. ``main()`` reads sys.argv, so we patch
         argv and stub the dispatch.
@@ -1181,7 +1181,7 @@ class TestAudioServeArgparseAcceptsBothFlags:
             _sys,
             "argv",
             [
-                "rapid-mlx",
+                "qmlx",
                 "serve",
                 "kokoro",
                 "--embedding-model",

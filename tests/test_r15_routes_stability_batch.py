@@ -11,7 +11,7 @@ right up until process exit, so a load balancer / k8s readiness
 probe couldn't distinguish "draining" from "healthy" and kept
 sending new traffic into a tearing-down instance.
 
-Bug 2 (task #307, Sven B1): ``rapid-mlx serve`` MUST exit non-zero
+Bug 2 (task #307, Sven B1): ``qmlx serve`` MUST exit non-zero
 when the bind port is in use, so systemd / Docker / k8s auto-restart
 loops detect the failure instead of treating it as a clean exit
 ("don't restart").
@@ -201,12 +201,12 @@ class TestHealthzDrainStateFastPath:
 
 
 # ---------------------------------------------------------------------------
-# Bug 2 (task #307): rapid-mlx serve exits non-zero on port collision
+# Bug 2 (task #307): qmlx serve exits non-zero on port collision
 # ---------------------------------------------------------------------------
 
 
 class TestServePortCollisionExitCode:
-    """End-to-end subprocess test: spawn ``rapid-mlx serve`` against a
+    """End-to-end subprocess test: spawn ``qmlx serve`` against a
     port already bound by this test process and assert the child exits
     non-zero. The CLI's existing ``_port_preflight_or_die`` and
     ``_run_uvicorn`` paths both ``sys.exit(1)`` on EADDRINUSE — this
@@ -226,7 +226,7 @@ class TestServePortCollisionExitCode:
         holder.listen(1)
         try:
             # Drive the port preflight directly through python so the
-            # test does not depend on a packaged ``rapid-mlx`` console
+            # test does not depend on a packaged ``qmlx`` console
             # script, an editable install, or a model download.
             # ``_port_preflight_or_die`` is the EXACT helper
             # ``serve_command`` calls before any heavy boot work;

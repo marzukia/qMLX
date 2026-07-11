@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified dev testing entry point for Rapid-MLX.
+"""Unified dev testing entry point for qMLX.
 
 NOT shipped with pip — this is for local development only.
 Orchestrates all test levels from quick lint to overnight benchmarks.
@@ -135,7 +135,7 @@ def check_server(port=8000):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Rapid-MLX dev testing suite",
+        description="qMLX dev testing suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -163,7 +163,7 @@ def main():
     args = parser.parse_args()
 
     print(f"\n{'=' * 60}")
-    print(f"  Rapid-MLX Dev Test Suite — {args.tier}")
+    print(f"  qMLX Dev Test Suite — {args.tier}")
     print(f"{'=' * 60}")
 
     results = {}
@@ -181,7 +181,7 @@ def main():
         if not check_server(args.port):
             print(f"\n  ⚠ No server on port {args.port}. Start one first:")
             print(
-                f"    rapid-mlx serve mlx-community/Qwen3.5-4B-MLX-4bit --port {args.port}"
+                f"    qmlx serve mlx-community/Qwen3.5-4B-MLX-4bit --port {args.port}"
             )
             results["stress"] = False
         else:

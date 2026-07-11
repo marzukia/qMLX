@@ -1,11 +1,11 @@
-"""Hermes Agent integration tests against local Rapid-MLX server.
+"""Hermes Agent integration tests against local qMLX server.
 
-Tests the full Hermes Agent → Rapid-MLX pipeline using the OpenAI-compatible
+Tests the full Hermes Agent → qMLX pipeline using the OpenAI-compatible
 API. Covers chat, tool calling (single, multi-step, parallel), streaming,
 reasoning, and edge cases with many tools (Hermes injects 60+ tools).
 
 Requirements:
-    1. Rapid-MLX server running: qmlx serve <MODEL> --port 8000
+    1. qMLX server running: qmlx serve <MODEL> --port 8000
     2. Hermes Agent installed: pip install hermes-agent (or from source)
     3. ~/.hermes/config.yaml pointing to localhost:8000
 
@@ -45,7 +45,7 @@ results = {}
 
 
 def api_call(messages, tools=None, stream=False, max_tokens=300, temperature=0.3):
-    """Direct API call to Rapid-MLX server."""
+    """Direct API call to qMLX server."""
     payload = {
         "model": MODEL_ID,
         "messages": messages,
@@ -624,7 +624,7 @@ def test_hermes_patch_file():
 # reported "No test results found". See vllm_mlx/agents/testing.py L1117.
 # =============================================================================
 
-print("Rapid-MLX Hermes Integration Tests")
+print("qMLX Hermes Integration Tests")
 print(f"Server: {BASE_URL}")
 print(f"Model:  {MODEL_ID}")
 print(f"Hermes: {HERMES_BIN}")

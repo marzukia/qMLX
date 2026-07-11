@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for ``rapid-mlx bench <model> --tier all``.
+"""Unit tests for ``qmlx bench <model> --tier all``.
 
 ``--tier all`` runs smoke → speed → harness sequentially against a
 single booted server. The hard contract: if smoke fails, abort the

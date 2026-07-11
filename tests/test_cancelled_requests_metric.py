@@ -4,7 +4,7 @@
 Background
 ----------
 Mei r0.8.1 and Yana r3 both flagged that ``/metrics`` reported
-``rapid_mlx_requests_processed_total = 0`` after fifty client-cancelled
+``qmlx_requests_processed_total = 0`` after fifty client-cancelled
 streaming requests. ``num_requests_processed`` deliberately excludes
 aborted requests (a request that never produced an EOS-bounded response
 shouldn't be billed as "completed"), so operators staring at the
@@ -15,11 +15,11 @@ The fix exposes two new scheduler counters via ``Scheduler.get_stats()``
 and ``Scheduler`` MLLM-twin, rendered as Prometheus counters in
 ``routes/metrics.py``:
 
-* ``rapid_mlx_requests_cancelled_total`` — +1 per public-API abort the
+* ``qmlx_requests_cancelled_total`` — +1 per public-API abort the
   scheduler accepted (client disconnect, explicit cancel route,
   timeout, or internal abort), once per ``request_id`` irrespective of
   how many idempotent re-enqueues fire.
-* ``rapid_mlx_requests_cancelled_via_disconnect_total`` — sub-counter
+* ``qmlx_requests_cancelled_via_disconnect_total`` — sub-counter
   attributing the subset triggered through the disconnect_guard
   ``_force_abort_request`` path, so the (total - disconnect) gap
   surfaces explicit-cancel + timeout traffic for capacity planning.
@@ -713,7 +713,7 @@ def test_force_abort_does_not_crash_when_record_method_absent():
 
     Critical because the helper layer sits across a public API
     surface that downstream forks / external schedulers depend on.
-    A regression here would break every non-rapid_mlx scheduler.
+    A regression here would break every non-qmlx scheduler.
     """
     from vllm_mlx.service.helpers import _force_abort_request
 
@@ -1339,7 +1339,7 @@ _CANCEL_STATS = {
 
 
 def test_metrics_route_renders_total_cancelled_counter(metrics_client):
-    """``rapid_mlx_requests_cancelled_total`` HELP / TYPE / value all
+    """``qmlx_requests_cancelled_total`` HELP / TYPE / value all
     present and the value matches the scheduler stat.
 
     Codex r8 NIT #3: assertion uses exact line-by-line parsing of
@@ -1351,14 +1351,14 @@ def test_metrics_route_renders_total_cancelled_counter(metrics_client):
 
     _assert_prom_counter(
         body,
-        "rapid_mlx_requests_cancelled_total",
+        "qmlx_requests_cancelled_total",
         5,
         help_substr="aborted via the scheduler abort path",
     )
 
 
 def test_metrics_route_renders_disconnect_subcounter(metrics_client):
-    """``rapid_mlx_requests_cancelled_via_disconnect_total`` HELP /
+    """``qmlx_requests_cancelled_via_disconnect_total`` HELP /
     TYPE / value all present and the value matches the scheduler stat.
     """
     metrics_client.cfg.engine = _fake_engine(_CANCEL_STATS)
@@ -1366,7 +1366,7 @@ def test_metrics_route_renders_disconnect_subcounter(metrics_client):
 
     _assert_prom_counter(
         body,
-        "rapid_mlx_requests_cancelled_via_disconnect_total",
+        "qmlx_requests_cancelled_via_disconnect_total",
         3,
         help_substr="attributed to client disconnect",
     )
@@ -1376,7 +1376,7 @@ def test_metrics_route_renders_zero_when_cancel_keys_missing(metrics_client):
     """Engines without the M-01 keys render flat-line zero rather than
     omit the series.
 
-    Older non-rapid_mlx schedulers (downstream forks, custom backends)
+    Older non-qmlx schedulers (downstream forks, custom backends)
     may not populate the keys at all. Dashboards configured against
     these series must not flip to "no data".
     """
@@ -1390,8 +1390,8 @@ def test_metrics_route_renders_zero_when_cancel_keys_missing(metrics_client):
     metrics_client.cfg.engine = _fake_engine(stats_without_cancel)
     body = metrics_client.client.get("/metrics").text
 
-    _assert_prom_counter(body, "rapid_mlx_requests_cancelled_total", 0)
-    _assert_prom_counter(body, "rapid_mlx_requests_cancelled_via_disconnect_total", 0)
+    _assert_prom_counter(body, "qmlx_requests_cancelled_total", 0)
+    _assert_prom_counter(body, "qmlx_requests_cancelled_via_disconnect_total", 0)
 
 
 def test_metrics_route_renders_zero_when_both_counters_zero(metrics_client):
@@ -1408,5 +1408,5 @@ def test_metrics_route_renders_zero_when_both_counters_zero(metrics_client):
     metrics_client.cfg.engine = _fake_engine(quiet_stats)
     body = metrics_client.client.get("/metrics").text
 
-    _assert_prom_counter(body, "rapid_mlx_requests_cancelled_total", 0)
-    _assert_prom_counter(body, "rapid_mlx_requests_cancelled_via_disconnect_total", 0)
+    _assert_prom_counter(body, "qmlx_requests_cancelled_total", 0)
+    _assert_prom_counter(body, "qmlx_requests_cancelled_via_disconnect_total", 0)

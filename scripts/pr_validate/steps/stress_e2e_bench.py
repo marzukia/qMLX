@@ -16,7 +16,7 @@ fail.
 
 Implementation notes:
 * Server boot uses an unusual port (``8451``) to avoid colliding with
-  any locally-running rapid-mlx; we ALSO check for stale processes on
+  any locally-running qmlx; we ALSO check for stale processes on
   that port at startup and refuse if one is found rather than killing
   it (don't accidentally murder someone's debug session).
 * The MVP uses two models — smoke + small — to keep total runtime
@@ -437,7 +437,7 @@ def _server_in_repo(
     artifact_prefix: str = "",
     isolate_pythonpath: bool = False,
 ):
-    """Start a rapid-mlx server with `choice.model_id` on BENCH_PORT.
+    """Start a qmlx server with `choice.model_id` on BENCH_PORT.
     Yield the path to its log file. Stop on context exit. Refuses to
     proceed if BENCH_PORT is already bound."""
     if _port_in_use(BENCH_PORT):
@@ -694,7 +694,7 @@ def _run_agent(
 
     env = {
         **_repo_python_env(run_root, isolate_existing=isolate_pythonpath),
-        "RAPID_MLX_BASE_URL": f"http://127.0.0.1:{BENCH_PORT}/v1",
+        "QMLX_BASE_URL": f"http://127.0.0.1:{BENCH_PORT}/v1",
     }
     # 1800s (30 min) per agent script. 1200s used to be enough for
     # 27B-class qwen models, but qwen3.6-27B-MLX-8bit + pydantic_ai

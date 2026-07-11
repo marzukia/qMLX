@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """CLI surface for R15 #300 — argparse accepts the new flags.
 
-Verified via ``rapid-mlx serve --help`` rather than wiring a
+Verified via ``qmlx serve --help`` rather than wiring a
 ``build_parser`` helper because the existing parser is inlined into
 ``main()``; capturing the help text is sufficient to assert the flags
 landed.

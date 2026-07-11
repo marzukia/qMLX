@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <!--
-    Entitlements applied to every Mach-O inside the rapid-mlx sidecar
+    Entitlements applied to every Mach-O inside the qmlx sidecar
     bundle. Must match Rapid.app's outer entitlements exactly — when
-    the bundle is staged into Rapid.app/Contents/Resources/rapid-mlx/
+    the bundle is staged into Rapid.app/Contents/Resources/qmlx/
     Apple's library-validation check compares each .so's entitlements
     against the host process's entitlements.
 

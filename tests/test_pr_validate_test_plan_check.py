@@ -58,7 +58,7 @@ def test_unchecked_item_fails():
     """
     body = """## Test plan
 - [x] Unit tests pass
-- [ ] E2E verification against fishloa's repro: rapid-mlx serve ...
+- [ ] E2E verification against fishloa's repro: qmlx serve ...
 - [x] Lint clean
 """
     result = TestPlanCheckStep().run(_ctx(body))
@@ -99,7 +99,7 @@ def test_long_item_body_is_truncated_in_details():
     """A test plan can have long items (commands, URLs). Details should
     keep them readable — truncate per-item at 100 chars.
     """
-    long_command = "rapid-mlx serve TheCluster/Qwen3.6-35B-A3B-MLX-mixed-9bit " * 4
+    long_command = "qmlx serve TheCluster/Qwen3.6-35B-A3B-MLX-mixed-9bit " * 4
     body = f"- [ ] {long_command}\n"
     result = TestPlanCheckStep().run(_ctx(body))
     assert result.status == "fail"

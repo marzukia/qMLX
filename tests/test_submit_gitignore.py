@@ -43,7 +43,7 @@ def test_gitignore_lists_claude_directory():
         if not line.strip().startswith("#")
     )
     assert matched, (
-        ".gitignore must list `.claude/` so `rapid-mlx bench --submit` "
+        ".gitignore must list `.claude/` so `qmlx bench --submit` "
         "can open a PR from a Claude Code worktree (PR #5 wired this "
         "after the dogfood run got blocked by `.claude/scheduled_tasks.lock` "
         "and `.claude/worktrees/*` showing up in `git status`)."

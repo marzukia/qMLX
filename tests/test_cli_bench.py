@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``rapid-mlx bench`` R2-mirror routing (regression: #650 shape).
+"""Tests for ``qmlx bench`` R2-mirror routing (regression: #650 shape).
 
 Before this fix, ``bench_command`` (freeform path) and ``_run_submit_flow``
 (``--submit`` community-bench path) both delegated the initial weight pull
@@ -78,7 +78,7 @@ def _make_freeform_bench_args(model: str) -> argparse.Namespace:
 
 # ---------- freeform bench path (bench_command) -----------------------------
 def test_bench_command_prefetches_via_mirror_before_hf_load(monkeypatch) -> None:
-    """Freeform ``rapid-mlx bench <alias>`` must call
+    """Freeform ``qmlx bench <alias>`` must call
     ``_ensure_model_downloaded(args.model)`` BEFORE ``mlx_lm.load(args.model)``.
 
     Regression contract: without the prefetch, ``load`` triggers

@@ -11,8 +11,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: Rapid-MLX version
-      placeholder: "e.g. 0.6.6 (run: rapid-mlx --version)"
+      label: qMLX version
+      placeholder: "e.g. 0.6.6 (run: qmlx --version)"
     validations:
       required: true
   - type: input
@@ -52,7 +52,7 @@ body:
     attributes:
       label: Full serve command
       description: Every flag matters — `--tool-call-parser`, `--reasoning-parser`, `--enable-prefix-cache`, etc.
-      placeholder: "rapid-mlx serve qwen3.5-4b-4bit --enable-auto-tool-choice --tool-call-parser qwen3 ..."
+      placeholder: "qmlx serve qwen3.5-4b-4bit --enable-auto-tool-choice --tool-call-parser qwen3 ..."
     validations:
       required: true
   - type: dropdown
@@ -81,7 +81,7 @@ body:
       label: Minimal reproduction
       description: A `curl` command + the model output / error is ideal. We need to be able to reproduce locally.
       placeholder: |
-        1. Start server: `rapid-mlx serve ...`
+        1. Start server: `qmlx serve ...`
         2. Send request:
            ```
            curl -X POST http://127.0.0.1:1234/v1/chat/completions \

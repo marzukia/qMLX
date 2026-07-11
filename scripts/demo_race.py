@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Side-by-side speed comparison: Rapid-MLX vs Ollama
+Side-by-side speed comparison: qMLX vs Ollama
 Records a visual terminal demo for social media.
 
 Usage:
-    # Start Rapid-MLX first:
-    #   rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --port 8000
+    # Start qMLX first:
+    #   qmlx serve mlx-community/Qwen3.5-9B-4bit --port 8000
     # Then run:
     python3 scripts/demo_race.py
 """
@@ -25,7 +25,7 @@ MAX_TOKENS = 200
 
 ENGINES = [
     {
-        "name": "Rapid-MLX",
+        "name": "qMLX",
         "url": "http://localhost:8000/v1/chat/completions",
         "model": "default",
         "color": "\033[38;5;208m",  # orange
@@ -74,7 +74,7 @@ def print_at(row, col, text, max_width=None):
 
 def draw_header():
     clear_screen()
-    title = f"{BOLD}{WHITE}  ⚡ Rapid-MLX vs Ollama — Same Model, Same Prompt{RESET}"
+    title = f"{BOLD}{WHITE}  ⚡ qMLX vs Ollama — Same Model, Same Prompt{RESET}"
     print_at(1, 1, title)
     print_at(2, 1, f'{DIM}  Model: Qwen3.5-9B · Prompt: "{PROMPT[:50]}…"{RESET}')
     print_at(3, 1, f"  {'─' * COL_WIDTH}{DIVIDER}{'─' * COL_WIDTH}")
@@ -328,7 +328,7 @@ async def main():
     print(f"\n{BOLD}Checking engines...{RESET}")
     if not await check_engines():
         print(f"\n{BOLD}Please start both engines:{RESET}")
-        print("  1. rapid-mlx serve mlx-community/Qwen3.5-9B-4bit --port 8000")
+        print("  1. qmlx serve mlx-community/Qwen3.5-9B-4bit --port 8000")
         print("  2. ollama serve  (should already be running)")
         print("  3. ollama pull qwen3.5:9b")
         sys.exit(1)

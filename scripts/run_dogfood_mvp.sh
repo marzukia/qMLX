@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Minimal "single-Mac behind Cloudflare" dogfood MVP.
 #
-# Starts rapid-mlx serving an alias on localhost, then exposes that port
+# Starts qmlx serving an alias on localhost, then exposes that port
 # as a public *.trycloudflare.com endpoint gated by an API key (Bearer
 # token). Quick tunnel is ephemeral — URL resets on each run.
 #
@@ -14,13 +14,13 @@
 #     MODEL            alias to serve (default: qwen3.5-35b-8bit)
 #     PORT             local port (default: 8765)
 #     API_KEY          bearer token (default: random 24 hex bytes)
-#     RAPID_MLX_CMD    serve command (default: auto — editable `python3.12 -m
+#     QMLX_CMD    serve command (default: auto — editable `python3.12 -m
 #                      vllm_mlx.cli` if we're inside the vllm-mlx repo,
-#                      else system `rapid-mlx`). The editable path sees
+#                      else system `qmlx`). The editable path sees
 #                      newly-added aliases.json entries; the brew-installed
 #                      binary only knows the aliases bundled at install time.
 #     TUNNEL_MODE      quick | named (default: auto — named iff ~/.cloudflared/config.yml exists)
-#     TUNNEL_NAME      named tunnel name (default: rapid-mlx-mvp)
+#     TUNNEL_NAME      named tunnel name (default: qmlx-mvp)
 #     TUNNEL_HOSTNAME  named tunnel hostname (default: parsed from config.yml)
 #
 # Designed to be re-runnable: `stop` then `start` gives a fresh URL in
@@ -31,14 +31,14 @@ set -euo pipefail
 MODEL="${MODEL:-qwen3.5-35b}"
 PORT="${PORT:-8765}"
 API_KEY="${API_KEY:-$(openssl rand -hex 24)}"
-# Extra args appended to `rapid-mlx serve`. Defaults tuned for chat-UX dogfood:
+# Extra args appended to `qmlx serve`. Defaults tuned for chat-UX dogfood:
 #   --no-thinking         skip <think> reasoning so Open WebUI sees content
 #                         immediately (cuts perceived TTFT 10-15s on qwen3.5)
 #   --cors-origins "*"    allow browser-based chat UIs (LobeChat, Big-AGI, …)
 EXTRA_SERVE_ARGS="${EXTRA_SERVE_ARGS:---no-thinking --cors-origins *}"
 
 # Tunnel mode auto-detect: if a cloudflared config exists, default to named.
-TUNNEL_NAME="${TUNNEL_NAME:-rapid-mlx-mvp}"
+TUNNEL_NAME="${TUNNEL_NAME:-qmlx-mvp}"
 CF_CONFIG="$HOME/.cloudflared/config.yml"
 if [ -z "${TUNNEL_MODE:-}" ]; then
   if [ -f "$CF_CONFIG" ]; then TUNNEL_MODE="named"; else TUNNEL_MODE="quick"; fi
@@ -48,7 +48,7 @@ if [ -z "${TUNNEL_HOSTNAME:-}" ] && [ -f "$CF_CONFIG" ]; then
   TUNNEL_HOSTNAME="$(awk '/^[[:space:]]*-[[:space:]]*hostname:/ {print $NF; exit}' "$CF_CONFIG")"
 fi
 
-LOG_DIR="$HOME/.cache/rapid-mlx/dogfood"
+LOG_DIR="$HOME/.cache/qmlx/dogfood"
 mkdir -p "$LOG_DIR"
 SERVER_LOG="$LOG_DIR/server.log"
 TUNNEL_LOG="$LOG_DIR/tunnel.log"
@@ -113,30 +113,30 @@ if is_alive "$SERVER_PID" || is_alive "$TUNNEL_PID"; then
 fi
 
 # Pick the serve command. Prefer the editable repo CLI when we're inside
-# vllm-mlx — the brew-installed `rapid-mlx` ships an older aliases.json
+# vllm-mlx — the brew-installed `qmlx` ships an older aliases.json
 # and won't see recent additions like `minimax-m2.7-mxfp4`.
-if [ -z "${RAPID_MLX_CMD:-}" ]; then
+if [ -z "${QMLX_CMD:-}" ]; then
   if [ -f "$(git rev-parse --show-toplevel 2>/dev/null)/vllm_mlx/cli.py" ] \
        && python3.12 -c "import vllm_mlx" >/dev/null 2>&1; then
-    RAPID_MLX_CMD="python3.12 -m vllm_mlx.cli"
+    QMLX_CMD="python3.12 -m vllm_mlx.cli"
   else
-    RAPID_MLX_CMD="rapid-mlx"
+    QMLX_CMD="qmlx"
   fi
 fi
-if ! $RAPID_MLX_CMD --help >/dev/null 2>&1; then
-  echo "RAPID_MLX_CMD=$RAPID_MLX_CMD not runnable" >&2; exit 1
+if ! $QMLX_CMD --help >/dev/null 2>&1; then
+  echo "QMLX_CMD=$QMLX_CMD not runnable" >&2; exit 1
 fi
 if ! command -v cloudflared >/dev/null; then
   echo "cloudflared not found — brew install cloudflared" >&2; exit 1
 fi
 
-echo "Starting $RAPID_MLX_CMD ($MODEL on :$PORT) [extra: $EXTRA_SERVE_ARGS] …"
+echo "Starting $QMLX_CMD ($MODEL on :$PORT) [extra: $EXTRA_SERVE_ARGS] …"
 # shellcheck disable=SC2086  # intentional word splitting on CMD + EXTRA args
 # `set -f` disables pathname expansion so a literal `*` in EXTRA_SERVE_ARGS
 # (e.g. `--cors-origins *`) survives the unquoted expansion instead of
 # globbing against $PWD. Restore right after.
 set -f
-nohup $RAPID_MLX_CMD serve "$MODEL" --port "$PORT" --api-key "$API_KEY" \
+nohup $QMLX_CMD serve "$MODEL" --port "$PORT" --api-key "$API_KEY" \
   --log-level INFO $EXTRA_SERVE_ARGS >"$SERVER_LOG" 2>&1 &
 set +f
 echo $! > "$SERVER_PID"

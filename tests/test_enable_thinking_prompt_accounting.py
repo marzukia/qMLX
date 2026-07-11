@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""rapid-mlx#280 — thread ``enable_thinking`` into prompt accounting.
+"""qmlx#280 — thread ``enable_thinking`` into prompt accounting.
 
 Pins the systematic fix for the codex MED finding on the PR #893 review:
 the R12-T1F / R12-T2F auto-disable helpers (PRs #891 / #895) mutate

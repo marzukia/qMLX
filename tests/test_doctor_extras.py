@@ -2,7 +2,7 @@
 """Tests for the 0.9.7 doctor cleanup:
 
 1. ``YouTube/HF cookies`` (Trio-project leakage) is gone from the Network
-   section — rapid-mlx has nothing to do with YouTube.
+   section — qmlx has nothing to do with YouTube.
 2. ``anthropic SDK`` row (irrelevant for an MLX inference server) is gone
    from the Optional Tools section.
 3. A dedicated ``mlx-vlm 0.5.0+ (dflash extras)`` row exists in the

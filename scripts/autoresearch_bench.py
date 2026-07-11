@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AutoResearch comprehensive benchmark for Rapid-MLX.
+"""AutoResearch comprehensive benchmark for qMLX.
 
 Measures 6 metrics across multiple scenarios to detect both improvements
 and regressions. Returns a composite score for automated comparison.

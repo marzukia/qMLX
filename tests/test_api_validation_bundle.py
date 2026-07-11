@@ -456,7 +456,7 @@ class TestLogLevelLowercase:
 # Surgical bundle (R10 follow-up #2):
 # - C3: chat rejects image/video on text-only models (no silent hallucination)
 # - C16: guided JSON preserves nested array-of-objects (no silent str degrade)
-# - H17: `rapid-mlx ps` parses --port positioned after the model argument
+# - H17: `qmlx ps` parses --port positioned after the model argument
 # - H18: /v1/completions rejects FIM `suffix` (declared, not silently dropped)
 # ---------------------------------------------------------------------------
 
@@ -589,7 +589,7 @@ class TestGuidedArrayOfObjectsSchema:
 
 
 class TestPsCommandPortParsing:
-    """``rapid-mlx ps`` used to break on the first positional argument,
+    """``qmlx ps`` used to break on the first positional argument,
     so ``serve qwen3.5-4b-4bit --port 8005`` showed port=8000 (the default).
     Verify the parser keeps scanning for flags after capturing the
     positional model."""
@@ -624,27 +624,27 @@ class TestPsCommandPortParsing:
 
     def test_port_after_positional_model(self):
         model, port = self._parse_serve(
-            ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--port", "8005"]
+            ["qmlx", "serve", "qwen3.5-4b-4bit", "--port", "8005"]
         )
         assert model == "qwen3.5-4b-4bit"
         assert port == "8005"
 
     def test_port_before_positional_model(self):
         model, port = self._parse_serve(
-            ["rapid-mlx", "serve", "--port", "8005", "qwen3.5-4b-4bit"]
+            ["qmlx", "serve", "--port", "8005", "qwen3.5-4b-4bit"]
         )
         assert model == "qwen3.5-4b-4bit"
         assert port == "8005"
 
     def test_port_equals_form(self):
         model, port = self._parse_serve(
-            ["rapid-mlx", "serve", "qwen3.5-4b-4bit", "--port=9000"]
+            ["qmlx", "serve", "qwen3.5-4b-4bit", "--port=9000"]
         )
         assert model == "qwen3.5-4b-4bit"
         assert port == "9000"
 
     def test_no_port_uses_default(self):
-        model, port = self._parse_serve(["rapid-mlx", "serve", "qwen3.5-4b-4bit"])
+        model, port = self._parse_serve(["qmlx", "serve", "qwen3.5-4b-4bit"])
         assert model == "qwen3.5-4b-4bit"
         assert port == "8000"
 

@@ -25,7 +25,7 @@ HF_HUB_CACHE ?= $(shell echo $$HF_HUB_CACHE)
 DEV_TEST := $(PY) scripts/dev_test.py
 
 help:
-	@echo "Rapid-MLX developer targets:"
+	@echo "qMLX developer targets:"
 	@echo ""
 	@echo "  Dev testing (scripts/dev_test.py):"
 	@echo "    make lint               ruff lint (~10s)"
@@ -36,7 +36,7 @@ help:
 	@echo "    make soak               10-min agent soak test (needs server)"
 	@echo ""
 	@echo "  Bench tiers (regression harness — see harness/README.md):"
-	@echo "    rapid-mlx bench <model> --tier smoke|speed|harness|all"
+	@echo "    qmlx bench <model> --tier smoke|speed|harness|all"
 	@echo ""
 	@echo "  Release (see docs/development/releasing.md):"
 	@echo "    make release-smoke      clean-room install+import gate (~30s)"
@@ -64,14 +64,14 @@ soak:
 
 # ---------- removed targets (compat stubs) ----------
 # ``make check / full / benchmark / update-baselines`` ran the doctor
-# tier harness, which moved to ``rapid-mlx bench --tier ...`` in
+# tier harness, which moved to ``qmlx bench --tier ...`` in
 # v0.7.22. The doctor CLI has rejected the old subcommands since
 # then; these stubs preserve the migration breadcrumb so an old
 # script gets a usable error instead of GNU make's bare "No rule
 # to make target".
 check full benchmark update-baselines:
 	@echo "error: 'make $@' was removed. The doctor tier harness moved"
-	@echo "       to 'rapid-mlx bench <model> --tier smoke|speed|harness|all'"
+	@echo "       to 'qmlx bench <model> --tier smoke|speed|harness|all'"
 	@echo "       in v0.7.22. See harness/README.md."
 	@exit 2
 
@@ -80,7 +80,7 @@ release-smoke:
 	$(PY) scripts/release_smoke.py
 
 # Full M3-only release gauntlet — runs every gate that needs a live
-# `rapid-mlx serve` (G5/G6/G7/G8 end-to-end perf/G9). The CI-side gates
+# `qmlx serve` (G5/G6/G7/G8 end-to-end perf/G9). The CI-side gates
 # (G1/G3/G10/G11/PF-1) run automatically on the bump PR via
 # .github/workflows/release-preflight.yml; pr_validate runs on every PR
 # via .github/workflows/pr-validate.yml. This target covers what CI

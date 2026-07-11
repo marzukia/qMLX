@@ -108,7 +108,7 @@ def test_info_renders_ddtree_block_for_eligible_alias(capsys, monkeypatch) -> No
     assert "Spec tokens" in captured.out
     assert "Tree budget" in captured.out
     assert (
-        'rapid-mlx serve qwen3.5-9b-8bit --speculative-config \'{"method":"ddtree"}\''
+        'qmlx serve qwen3.5-9b-8bit --speculative-config \'{"method":"ddtree"}\''
         in captured.out
     )
 

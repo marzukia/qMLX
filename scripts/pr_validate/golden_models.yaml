@@ -1,9 +1,9 @@
 # Golden-model registry for stress + bench.
 #
 # Precision policy (project-wide): correctness tests run on **8-bit**
-# (or higher). The pipeline catches engine bugs in rapid-mlx; we don't
+# (or higher). The pipeline catches engine bugs in qmlx; we don't
 # want quant noise on 4-bit models producing failures that look like
-# rapid-mlx bugs but are actually model-capability ceilings. Reserved
+# qmlx bugs but are actually model-capability ceilings. Reserved
 # 4-bit runs (perf benches) live in dedicated scripts:
 #   - scripts/bench_dflash.py
 #   - scripts/bench_suffix_decoding_integrated.py
@@ -32,7 +32,7 @@
 # whose quant provably can't pass an agent test the model class
 # normally can (see qwen3.6 4-bit fallback below). Tiny-model smoke
 # tiers (sub-1B) were removed 2026-05-22 — they were dominated by
-# model-capability ceilings rather than rapid-mlx bugs, producing
+# model-capability ceilings rather than qmlx bugs, producing
 # false-positive failures that wasted reviewer cycles. Other tier
 # values (`golden`, `small`, `medium`) carry no functional difference
 # today and are applied to whichever candidate the family prefers, NOT
@@ -64,7 +64,7 @@ families:
     candidates:
       # 8-bit, 35B A3B MoE — chosen so the model itself ~never errs on
       # the eval suite. Quant noise on a 4-bit small model makes it hard
-      # to tell "model got confused" from "rapid-mlx broke something",
+      # to tell "model got confused" from "qmlx broke something",
       # which is the signal pr_validate exists to catch. 8-bit + a real-
       # capacity model isolates engine bugs cleanly.
       - id: mlx-community/Qwen3.5-35B-A3B-8bit
@@ -75,7 +75,7 @@ families:
     candidates:
       # PRIMARY: 8-bit, same principle as Qwen3.5-35B-A3B-8bit above —
       # correctness tests need a precision where the model itself
-      # ~never errs so failures cleanly attribute to rapid-mlx. The
+      # ~never errs so failures cleanly attribute to qmlx. The
       # 4-bit variant has a documented multi-tool capability deficit
       # (proven empirically: Qwen3.6-27B-4bit + thinking + 2-tool
       # composition → 4000-token natural-language ramble, no
@@ -192,7 +192,7 @@ families:
 # to fail multiple agent tests due to model-side instruction-following
 # weaknesses (writes essays for "Count to 5", refuses to call tools,
 # forgets multi-turn context). Per project rule "we want models that
-# ~never err so failures cleanly attribute to rapid-mlx", gemma4 does
+# ~never err so failures cleanly attribute to qmlx", gemma4 does
 # not meet the bar today and is excluded from automatic validation.
 #
 # When mlx-community ships a tighter Gemma 4 instruction-tuned variant
@@ -215,8 +215,8 @@ families:
 #     single fail (pydantic_ai single tool call) is a model-quality
 #     edge case (off-topic Java/Spring response). Not flaky enough
 #     to block merges, but adding here would gate every PR on it.
-# Both families remain available via ``rapid-mlx serve smollm3-3b-4bit``
-# and ``rapid-mlx serve granite4-tiny-4bit`` (auto-detected parsers).
+# Both families remain available via ``qmlx serve smollm3-3b-4bit``
+# and ``qmlx serve granite4-tiny-4bit`` (auto-detected parsers).
 
 # Per-model overrides: extra CLI args (e.g. parser overrides for
 # tool-calling tests). Keep small — most models don't need this.
@@ -275,7 +275,7 @@ agents:
     script: tests/integrations/test_langchain.py
     skip_for_smoke: false
     # Same diffusiongemma model-quality issue as anthropic_sdk. LangChain's
-    # structured-output subtest also requires rapid-mlx[guided], which this
+    # structured-output subtest also requires qmlx-serve[guided], which this
     # validation environment intentionally does not install.
     skip_for_models:
       - mlx-community/diffusiongemma-26B-A4B-it-4bit

@@ -1,8 +1,8 @@
 """End-to-end pins for the `help <typo>` fuzzy-match suggestion.
 
-When a user runs `rapid-mlx help serv`, difflib should nudge them toward
+When a user runs `qmlx help serv`, difflib should nudge them toward
 `serve` — but only when there's a plausibly close match.  No close match
-falls back to the original "Run `rapid-mlx help` ..." message.
+falls back to the original "Run `qmlx help` ..." message.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def test_help_typo_serv_suggests_serve() -> None:
     assert "Unknown subcommand: serv" in result.stdout
     assert "Did you mean:" in result.stdout
     assert "serve" in result.stdout
-    assert "Run `rapid-mlx help` for the list of subcommands." in result.stdout
+    assert "Run `qmlx help` for the list of subcommands." in result.stdout
 
 
 def test_help_typo_mdls_suggests_models() -> None:
@@ -53,4 +53,4 @@ def test_help_no_close_match_omits_suggestion() -> None:
     assert result.returncode == 1
     assert "Unknown subcommand: zzzzz" in result.stdout
     assert "Did you mean:" not in result.stdout
-    assert "Run `rapid-mlx help` for the list of subcommands." in result.stdout
+    assert "Run `qmlx help` for the list of subcommands." in result.stdout

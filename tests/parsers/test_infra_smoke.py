@@ -63,7 +63,7 @@ def _tool_delta(
     id: str | None = None,
     content: str | None = None,
 ):
-    """Build a Rapid-MLX-shaped streaming tool delta."""
+    """Build a qMLX-shaped streaming tool delta."""
     delta: dict = {}
     if content is not None:
         delta["content"] = content

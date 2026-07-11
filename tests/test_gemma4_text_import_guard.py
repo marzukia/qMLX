@@ -75,7 +75,7 @@ def test_missing_mlx_vlm_uses_vendored_text_loader(tmp_path, monkeypatch):
 def test_is_gemma4_model_uses_hf_hub_download_not_snapshot(monkeypatch) -> None:
     """Regression: ``is_gemma4_model`` must fetch only ``config.json`` via
     ``hf_hub_download``, never call ``snapshot_download`` (which would
-    pull the entire multi-GB model on every cold ``rapid-mlx serve``
+    pull the entire multi-GB model on every cold ``qmlx serve``
     start to peek at one ~5 KB JSON file).
 
     Root cause behind PR #600 stress_e2e_bench server-boot timeouts on

@@ -1519,7 +1519,7 @@ class TestRound12PromptEmbeddedAsConstant:
     def test_step_uses_embedded_prompt_not_filesystem(self, monkeypatch, tmp_path):
         """The codex input must contain PROMPT_TEMPLATE verbatim. We
         verify by sentinel: the prompt's distinctive 'adversarial code
-        reviewer for Rapid-MLX' opening line must appear in the
+        reviewer for qMLX' opening line must appear in the
         assembled prompt sent to codex."""
         captured: dict = {}
 
@@ -1562,7 +1562,7 @@ class TestRound12PromptEmbeddedAsConstant:
 
         CodexReviewStep().run(ctx)
 
-        assert "adversarial code reviewer for Rapid-MLX" in captured["input"], (
+        assert "adversarial code reviewer for qMLX" in captured["input"], (
             "the embedded PROMPT_TEMPLATE constant must appear in the "
             "assembled prompt sent to codex"
         )

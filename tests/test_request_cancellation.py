@@ -108,10 +108,10 @@ class TestBaseEngineDefaultAbort:
 
 class TestCancelRequestEndpoint:
     # Per F-150, the cancel route now lives on ``admin_router`` and requires
-    # ``X-Rapid-MLX-Internal: true``. All tests in this class pass it via
+    # ``X-qMLX-Internal: true``. All tests in this class pass it via
     # ``_HDRS`` — the header-only-403 path is exercised separately in
     # ``test_internal_route_auth.py``.
-    _HDRS = {"X-Rapid-MLX-Internal": "true"}
+    _HDRS = {"X-qMLX-Internal": "true"}
 
     @pytest.fixture
     def client_with_engine(self):

@@ -272,7 +272,7 @@ def _find_upstream_remote(repo: Path) -> str | None:
     Searches every remote — not just ``origin`` — so the standard
     GitHub fork workflow works:
 
-      - ``origin`` = ``<contributor>/Rapid-MLX`` (their fork)
+      - ``origin`` = ``<contributor>/qMLX`` (their fork)
       - ``upstream`` = ``raullenchai/Rapid-MLX``
 
     Earlier revisions only accepted ``origin = raullenchai/Rapid-MLX``,
@@ -680,7 +680,7 @@ def _print_manual_fallback(
 def _print_thanks(payload: dict, *, stdout) -> None:
     """Closing UX. The user just gave us real data — say so."""
     print("", file=stdout)
-    print("  Thank you for contributing to the Rapid-MLX community", file=stdout)
+    print("  Thank you for contributing to the qMLX community", file=stdout)
     print(
         "  performance database! Every submission tightens the median",
         file=stdout,
@@ -738,7 +738,7 @@ def submit_interactive(
     # Verify the resolved repo is associated with raullenchai/Rapid-MLX
     # before we touch any branches or open a PR. Accepted shapes:
     #   - ``origin`` = raullenchai/Rapid-MLX (maintainer's direct checkout)
-    #   - ``origin`` = <user>/Rapid-MLX fork + some other remote (typically
+    #   - ``origin`` = <user>/qMLX fork + some other remote (typically
     #     ``upstream``) pointing at raullenchai/Rapid-MLX (standard
     #     community fork workflow)
     # Without the fork case the only people who could submit are users

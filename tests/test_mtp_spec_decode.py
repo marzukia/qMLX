@@ -10,7 +10,7 @@ Coverage:
   proof guard against upstream merging the same change)
 * CLI flag parsing (``--spec-decode mtp|none``) + SchedulerConfig
   plumbing
-* Metrics rendering (``rapid_mlx_spec_decode_*``)
+* Metrics rendering (``qmlx_spec_decode_*``)
 * MTP head builder (constructs without weight load)
 * Qwen3.5/3.6 model-side injection helper (uses a synthetic model
   shell so we don't have to load real Qwen3.5 weights)
@@ -784,10 +784,10 @@ def test_metrics_renders_spec_decode_counters_zero_at_cold_start():
 
     lines = _render_spec_decode_mtp_counters(_Cfg())
     body = "\n".join(lines)
-    assert "rapid_mlx_spec_decode_attempts_total" in body
-    assert "rapid_mlx_spec_decode_accepts_total" in body
-    assert "rapid_mlx_spec_decode_accept_ratio" in body
-    assert "rapid_mlx_spec_decode_tokens_saved_total" in body
+    assert "qmlx_spec_decode_attempts_total" in body
+    assert "qmlx_spec_decode_accepts_total" in body
+    assert "qmlx_spec_decode_accept_ratio" in body
+    assert "qmlx_spec_decode_tokens_saved_total" in body
     # The family + method labels must be present.
     assert 'family="qwen3.5-9b-4bit"' in body
     assert 'method="mtp"' in body
@@ -813,15 +813,15 @@ def test_metrics_renders_post_acceptance_counters():
 
     body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
     assert (
-        'rapid_mlx_spec_decode_attempts_total{family="qwen3.5-9b-4bit",method="mtp"} 4'
+        'qmlx_spec_decode_attempts_total{family="qwen3.5-9b-4bit",method="mtp"} 4'
         in body
     )
     assert (
-        'rapid_mlx_spec_decode_accepts_total{family="qwen3.5-9b-4bit",method="mtp"} 3'
+        'qmlx_spec_decode_accepts_total{family="qwen3.5-9b-4bit",method="mtp"} 3'
         in body
     )
     assert (
-        'rapid_mlx_spec_decode_tokens_saved_total{family="qwen3.5-9b-4bit",method="mtp"} 3'
+        'qmlx_spec_decode_tokens_saved_total{family="qwen3.5-9b-4bit",method="mtp"} 3'
         in body
     )
     # accept_ratio = 0.75 → must appear rounded to 4 decimals.
@@ -851,7 +851,7 @@ def test_metrics_renders_zero_ratio_when_no_attempts():
     # No model_alias / model_name / model_path → "unknown" (stable
     # residual — never a transient empty string).
     assert 'family="unknown"' in body
-    assert 'rapid_mlx_spec_decode_accept_ratio{family="unknown",method="mtp"} 0' in body
+    assert 'qmlx_spec_decode_accept_ratio{family="unknown",method="mtp"} 0' in body
 
 
 def test_metrics_family_falls_back_to_gemma4_on_model_name():
@@ -877,8 +877,8 @@ def test_metrics_family_falls_back_to_gemma4_on_model_name():
 
 
 def test_metrics_includes_park_and_k_chosen_counters():
-    """PR-B counter additions: ``rapid_mlx_spec_decode_park_total`` and
-    the per-K ``rapid_mlx_spec_decode_k_chosen_total`` series must be
+    """PR-B counter additions: ``qmlx_spec_decode_park_total`` and
+    the per-K ``qmlx_spec_decode_k_chosen_total`` series must be
     present at cold-start (zero-valued) so dashboards discover the
     series before the first controller round lands.
     """
@@ -898,15 +898,15 @@ def test_metrics_includes_park_and_k_chosen_counters():
 
     body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
     assert (
-        'rapid_mlx_spec_decode_park_total{family="gemma-4-12b-4bit",method="mtp"} 0'
+        'qmlx_spec_decode_park_total{family="gemma-4-12b-4bit",method="mtp"} 0'
         in body
     )
     # K-chosen histogram emits a zero-valued K=0 line even before any
     # rounds have run.
-    assert "rapid_mlx_spec_decode_k_chosen_total" in body
+    assert "qmlx_spec_decode_k_chosen_total" in body
     assert 'k="0"' in body
     assert (
-        'rapid_mlx_spec_decode_k_chosen_rounds_total{family="gemma-4-12b-4bit",method="mtp"} 0'
+        'qmlx_spec_decode_k_chosen_rounds_total{family="gemma-4-12b-4bit",method="mtp"} 0'
         in body
     )
 
@@ -925,8 +925,8 @@ def test_metrics_route_includes_spec_decode_series_at_cold_start():
         kv_cache_dtype = None
 
     body = _render_prometheus(_Cfg())
-    assert "rapid_mlx_spec_decode_attempts_total" in body
-    assert "rapid_mlx_spec_decode_accept_ratio" in body
+    assert "qmlx_spec_decode_attempts_total" in body
+    assert "qmlx_spec_decode_accept_ratio" in body
 
 
 # ---------------------------------------------------------------------------
@@ -1334,7 +1334,7 @@ def test_inject_mtp_support_loads_synthetic_sidecar():
     """Lightweight quantize → load → coverage-check probe (no 5 GB download).
 
     Codex round-5 NIT: the heavy real-weights test is gated on
-    RAPID_MLX_RUN_HEAVY_TESTS=1 and doesn't run in normal CI, so the
+    QMLX_RUN_HEAVY_TESTS=1 and doesn't run in normal CI, so the
     quantize/load/key-coverage path it covers has no default
     safety net. This test fills the gap with a synthetic sidecar:
 

@@ -674,7 +674,7 @@ class TestWhisperProcessorPatchIsWhisperOnly:
         """Simulate a future STT engine (``voxtral``) whose model
         object exposes ``_processor=None``. The patch helper must skip
         it entirely so the upstream engine's own error path fires
-        without rapid-mlx stapling a Whisper processor on top.
+        without qmlx stapling a Whisper processor on top.
         """
         from vllm_mlx.audio import stt as stt_mod
 
@@ -718,7 +718,7 @@ class TestWhisperProcessorPatchIsWhisperOnly:
             "is the load-time guard that prevents accidental processor "
             "attachment to Voxtral / future STT backends."
         )
-        # And the fake model's _processor stays None — rapid-mlx did
+        # And the fake model's _processor stays None — qmlx did
         # not mutate a non-Whisper engine.
         assert fake_model._processor is None, (
             "Patch must not have attached a processor to a non-Whisper engine."
@@ -792,7 +792,7 @@ class TestKokoroMisakiGate:
             f"503 envelope should mention misaki. Got: {detail}"
         )
         # Install hint is actionable.
-        assert "rapid-mlx[audio]" in detail_lower or "pip install" in detail_lower, (
+        assert "qmlx-serve[audio]" in detail_lower or "pip install" in detail_lower, (
             f"503 envelope should include an install hint. Got: {detail}"
         )
 

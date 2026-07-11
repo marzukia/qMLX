@@ -13,7 +13,7 @@ These tests pin the admission-time enforcement that closes that gap:
 - ``Scheduler.add_request`` consults a real Metal-active probe and
   raises ``BackpressureError`` when active ≥ cap.
 - ``num_metal_cap_violations`` (surfaced as
-  ``rapid_mlx_metal_cap_violations_total`` in /metrics) increments
+  ``qmlx_metal_cap_violations_total`` in /metrics) increments
   once per rejected admission.
 - The first violation logs a single WARNING; subsequent violations rely
   on the Prometheus counter to keep logs readable on a sustained storm.
@@ -200,7 +200,7 @@ class TestMetalCapAddRequestIntegration:
 
 class TestGetStatsExposesCounter:
     """The Prometheus exporter renders
-    ``rapid_mlx_metal_cap_violations_total`` from
+    ``qmlx_metal_cap_violations_total`` from
     ``scheduler.get_stats()`` — this contract test pins the dict
     key so the route side cannot drift away."""
 
@@ -786,7 +786,7 @@ class TestMetricsRoute:
     off the exact series name."""
 
     def test_metric_series_in_render(self):
-        """``rapid_mlx_metal_cap_violations_total`` must appear in
+        """``qmlx_metal_cap_violations_total`` must appear in
         /metrics with the value from get_stats."""
         import types
 
@@ -802,7 +802,7 @@ class TestMetricsRoute:
             ),
         )
         body = _render_prometheus(cfg)
-        assert "rapid_mlx_metal_cap_violations_total 42" in body
-        assert "# TYPE rapid_mlx_metal_cap_violations_total counter" in body, (
+        assert "qmlx_metal_cap_violations_total 42" in body
+        assert "# TYPE qmlx_metal_cap_violations_total counter" in body, (
             "metric type must be 'counter' for monotonic rate() to work"
         )

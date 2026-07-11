@@ -191,7 +191,7 @@ def _payload(**overrides) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Auth — Bearer token; rapid-mlx Responses route is OpenAI-shape
+# Auth — Bearer token; qmlx Responses route is OpenAI-shape
 # ---------------------------------------------------------------------------
 
 

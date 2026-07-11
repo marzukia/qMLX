@@ -29,7 +29,7 @@ that's the simplest endpoint a misconfigured supervisor would poll to
 detect liveness.
 
 We also pin the inverse contract: with no ``--api-key`` configured,
-the development path stays anonymous-OK so plain ``rapid-mlx serve
+the development path stays anonymous-OK so plain ``qmlx serve
 <alias>`` still works without auth headers.
 """
 
@@ -150,8 +150,8 @@ def test_first_request_with_valid_key_passes():
 def test_no_api_key_keeps_dev_path_anonymous():
     """The no-auth (development) path MUST stay anonymous-OK.
 
-    ``rapid-mlx serve <alias>`` without ``--api-key`` /
-    ``RAPID_MLX_API_KEY`` is the on-laptop developer ergonomic — a
+    ``qmlx serve <alias>`` without ``--api-key`` /
+    ``QMLX_API_KEY`` is the on-laptop developer ergonomic — a
     well-meaning fix to #574 must not break it. Pin the contract here so
     a future "always require auth" reflex regression fails loudly.
     """

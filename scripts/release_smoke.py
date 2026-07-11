@@ -11,7 +11,7 @@ the dev mlx and silently agree with each other.
 This script creates a brand-new venv and either:
   - pip-installs the working tree (pip handles PEP 517 build internally,
     so no `build` or `hatchling` dep is required on the dev env), or
-  - pip-installs `rapid-mlx==X.Y.Z` from PyPI (post-tag verification).
+  - pip-installs `qmlx==X.Y.Z` from PyPI (post-tag verification).
 
 Then it imports the modules that the published entrypoints would import.
 An ``AttributeError`` / ``ImportError`` here means we are about to ship a
@@ -77,8 +77,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Modules whose import-time side effects must succeed against a clean
 # install. ``vllm_mlx.scheduler`` was the surface that #408 broke;
 # the others cover every base ``[project.scripts]`` entrypoint
-# (``rapid-mlx``, ``vllm-mlx``, ``vllm-mlx-bench``) plus the server
-# surface that every ``rapid-mlx serve`` invocation imports before
+# (``qmlx``, ``vllm-mlx``, ``vllm-mlx-bench``) plus the server
+# surface that every ``qmlx serve`` invocation imports before
 # binding a port. ``vllm_mlx.gradio_app`` is intentionally excluded —
 # it's the ``vllm-mlx-chat`` entrypoint, which lives behind the
 # ``chat`` extra and is allowed to fail-import on the base install.
@@ -103,7 +103,7 @@ def smoke(install_spec: str, *, source: str) -> None:
     venv: Path | None = None
     env = _clean_subprocess_env()
     try:
-        venv = Path(tempfile.mkdtemp(prefix="rapid-mlx-release-smoke-"))
+        venv = Path(tempfile.mkdtemp(prefix="qmlx-release-smoke-"))
         print(f"[release-smoke] clean venv: {venv}")
         run([sys.executable, "-m", "venv", str(venv)], env=env)
         py = venv / "bin" / "python"
@@ -135,14 +135,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--version",
-        help="If set, install `rapid-mlx==<VERSION>` from PyPI instead of building locally. "
+        help="If set, install `qmlx==<VERSION>` from PyPI instead of building locally. "
         "Use post-tag to verify the published wheel.",
     )
     args = parser.parse_args()
 
     try:
         if args.version:
-            smoke(f"rapid-mlx=={args.version}", source="PyPI")
+            smoke(f"qmlx=={args.version}", source="PyPI")
         else:
             smoke(str(REPO_ROOT), source="working tree")
     except subprocess.CalledProcessError as exc:

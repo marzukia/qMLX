@@ -11,7 +11,7 @@ PUT`` — over-broad for a server that only routes POST/GET/OPTIONS.
 
 The fix moves CORS to an env-var-driven opt-in. These tests pin both the
 default-deny stance and the new env-var family
-(``RAPID_MLX_CORS_ALLOW_ORIGINS`` / ``_METHODS`` / ``_HEADERS`` /
+(``QMLX_CORS_ALLOW_ORIGINS`` / ``_METHODS`` / ``_HEADERS`` /
 ``_MAX_AGE`` / ``_ALLOW_CREDENTIALS``).
 
 The tests mount the CORS resolver against a fresh ``FastAPI()`` so they
@@ -36,7 +36,7 @@ def fresh_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
     ``configure_cors_from_env`` register middleware on the test app
     rather than the production singleton.
 
-    Each test also gets a clean env (no leaked ``RAPID_MLX_CORS_*`` from
+    Each test also gets a clean env (no leaked ``QMLX_CORS_*`` from
     other tests).
     """
     import vllm_mlx.server as server_mod
@@ -57,11 +57,11 @@ def fresh_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[FastAPI]:
     monkeypatch.setattr(server_mod, "app", app)
 
     for var in (
-        "RAPID_MLX_CORS_ALLOW_ORIGINS",
-        "RAPID_MLX_CORS_ALLOW_METHODS",
-        "RAPID_MLX_CORS_ALLOW_HEADERS",
-        "RAPID_MLX_CORS_MAX_AGE",
-        "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
+        "QMLX_CORS_ALLOW_ORIGINS",
+        "QMLX_CORS_ALLOW_METHODS",
+        "QMLX_CORS_ALLOW_HEADERS",
+        "QMLX_CORS_MAX_AGE",
+        "QMLX_CORS_ALLOW_CREDENTIALS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -76,7 +76,7 @@ def _server_mod():
 
 # ──────────────────────────────────────────────────────────────────────
 # Default: wildcard ``*`` for friendly single-machine UX. Operators on
-# multi-tenant deployments lock down via RAPID_MLX_CORS_ALLOW_ORIGINS.
+# multi-tenant deployments lock down via QMLX_CORS_ALLOW_ORIGINS.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -157,11 +157,11 @@ def test_default_does_not_log_wildcard_warning(
 def test_env_explicit_origin_matching(
     fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``RAPID_MLX_CORS_ALLOW_ORIGINS=https://chat.openai.com`` → matching
+    """``QMLX_CORS_ALLOW_ORIGINS=https://chat.openai.com`` → matching
     origin gets that origin echoed back; non-matching origin gets no
     ACAO header."""
     monkeypatch.setenv(
-        "RAPID_MLX_CORS_ALLOW_ORIGINS",
+        "QMLX_CORS_ALLOW_ORIGINS",
         "https://chat.openai.com,https://claude.ai",
     )
     origins = _server_mod().configure_cors_from_env(cli_origins=None)
@@ -200,7 +200,7 @@ def test_default_methods_do_not_include_destructive_verbs(
     methods the server actually serves: POST + GET + OPTIONS. Pre-fix
     the response listed DELETE/PATCH/PUT too — over-broad surface that
     invited a future routing mistake."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -226,11 +226,11 @@ def test_default_methods_do_not_include_destructive_verbs(
 def test_env_methods_override(
     fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``RAPID_MLX_CORS_ALLOW_METHODS=POST,OPTIONS`` narrows the default
+    """``QMLX_CORS_ALLOW_METHODS=POST,OPTIONS`` narrows the default
     allowlist further. The operator can lock down to POST + OPTIONS for
     a webhook-style deployment."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_METHODS", "POST,OPTIONS")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_METHODS", "POST,OPTIONS")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -256,11 +256,11 @@ def test_wildcard_logs_warning_and_works(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``RAPID_MLX_CORS_ALLOW_ORIGINS=*`` matches the old default behavior
+    """``QMLX_CORS_ALLOW_ORIGINS=*`` matches the old default behavior
     (any origin echoed back) BUT emits a WARNING at startup so an
     operator who set it intentionally gets a sanity check, and an
     operator who copy-pasted from a stale doc notices."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "*")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "*")
     with caplog.at_level("WARNING", logger="vllm_mlx.server"):
         origins = _server_mod().configure_cors_from_env(cli_origins=None)
     assert origins == ["*"]
@@ -291,8 +291,8 @@ def test_cli_origins_override_env(
 ) -> None:
     """When ``--cors-origins`` is passed, the env var is ignored. This
     matches the precedent set by ``--max-request-bytes`` vs
-    ``RAPID_MLX_MAX_REQUEST_BYTES``."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://from-env.example")
+    ``QMLX_MAX_REQUEST_BYTES``."""
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://from-env.example")
     origins = _server_mod().configure_cors_from_env(
         cli_origins=["https://from-cli.example"]
     )
@@ -317,14 +317,14 @@ def test_malformed_max_age_falls_back_to_default(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Bad ``RAPID_MLX_CORS_MAX_AGE`` logs a warning and uses 3600 s. We
+    """Bad ``QMLX_CORS_MAX_AGE`` logs a warning and uses 3600 s. We
     don't crash startup on a typo — same shape as the ``--max-request-bytes``
     fallback added in PR #732."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
-    monkeypatch.setenv("RAPID_MLX_CORS_MAX_AGE", "not-a-number")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_MAX_AGE", "not-a-number")
     with caplog.at_level("WARNING", logger="vllm_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
-    assert any("RAPID_MLX_CORS_MAX_AGE" in rec.message for rec in caplog.records), (
+    assert any("QMLX_CORS_MAX_AGE" in rec.message for rec in caplog.records), (
         f"Expected a malformed-max-age warning; got {[r.message for r in caplog.records]!r}"
     )
 
@@ -350,12 +350,12 @@ def test_empty_csv_origin_value_fails_closed_with_warning(
     templating bug). The present-but-empty case is fail-closed (no CORS
     middleware → preflight 405) plus a WARNING — silent fail-open would
     hide a deployment bug behind a permissive default."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", " , ,, ")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", " , ,, ")
     with caplog.at_level("WARNING", logger="vllm_mlx.server"):
         origins = _server_mod().configure_cors_from_env(cli_origins=None)
     assert origins == []
     assert any(
-        "RAPID_MLX_CORS_ALLOW_ORIGINS" in rec.message
+        "QMLX_CORS_ALLOW_ORIGINS" in rec.message
         and "empty list" in rec.message.lower()
         for rec in caplog.records
     ), f"Expected an empty-origins WARNING; got {[r.message for r in caplog.records]!r}"
@@ -383,18 +383,18 @@ def test_empty_methods_env_warns_and_falls_back(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """An operator typo like ``RAPID_MLX_CORS_ALLOW_METHODS=" , "`` must
+    """An operator typo like ``QMLX_CORS_ALLOW_METHODS=" , "`` must
     NOT be treated as "use default" silently — that would broaden the
     surface back to ``POST,GET,OPTIONS`` despite the operator clearly
     intending to set the env var. Log a WARNING and fall back to the
     default; the operator sees the typo at boot.
     """
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_METHODS", " , ,, ")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_METHODS", " , ,, ")
     with caplog.at_level("WARNING", logger="vllm_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
     assert any(
-        "RAPID_MLX_CORS_ALLOW_METHODS" in rec.message
+        "QMLX_CORS_ALLOW_METHODS" in rec.message
         and "empty list" in rec.message.lower()
         for rec in caplog.records
     ), f"Expected an empty-methods warning; got {[r.message for r in caplog.records]!r}"
@@ -405,16 +405,16 @@ def test_empty_headers_env_warns_and_falls_back(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Same as the methods case — ``RAPID_MLX_CORS_ALLOW_HEADERS=" , "``
+    """Same as the methods case — ``QMLX_CORS_ALLOW_HEADERS=" , "``
     parses to an empty list; warn and fall back to the default header
     allowlist rather than silently propagating the (broken) empty
     intention as the broader default."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_HEADERS", " , ,, ")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_HEADERS", " , ,, ")
     with caplog.at_level("WARNING", logger="vllm_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
     assert any(
-        "RAPID_MLX_CORS_ALLOW_HEADERS" in rec.message
+        "QMLX_CORS_ALLOW_HEADERS" in rec.message
         and "empty list" in rec.message.lower()
         for rec in caplog.records
     ), f"Expected an empty-headers warning; got {[r.message for r in caplog.records]!r}"
@@ -422,7 +422,7 @@ def test_empty_headers_env_warns_and_falls_back(
 
 # ──────────────────────────────────────────────────────────────────────
 # Codex round-1 NIT: documented credentials default is False, not True.
-# Explicit origin + unset RAPID_MLX_CORS_ALLOW_CREDENTIALS must not flip
+# Explicit origin + unset QMLX_CORS_ALLOW_CREDENTIALS must not flip
 # the credentials header to true.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -430,11 +430,11 @@ def test_empty_headers_env_warns_and_falls_back(
 def test_credentials_default_false_with_explicit_origin(
     fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When ``RAPID_MLX_CORS_ALLOW_ORIGINS`` is set to a real origin and
-    ``RAPID_MLX_CORS_ALLOW_CREDENTIALS`` is unset, the resolver must not
+    """When ``QMLX_CORS_ALLOW_ORIGINS`` is set to a real origin and
+    ``QMLX_CORS_ALLOW_CREDENTIALS`` is unset, the resolver must not
     silently enable credentials — the documented default is False.
     Operators who need cookies must set the env var to ``true``."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -452,11 +452,11 @@ def test_credentials_default_false_with_explicit_origin(
 def test_credentials_opt_in_via_env(
     fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Setting ``RAPID_MLX_CORS_ALLOW_CREDENTIALS=true`` enables the
+    """Setting ``QMLX_CORS_ALLOW_CREDENTIALS=true`` enables the
     ``Access-Control-Allow-Credentials: true`` response header so
     cookie / Authorization-bearing fetches succeed."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_CREDENTIALS", "true")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.setenv("QMLX_CORS_ALLOW_CREDENTIALS", "true")
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -486,8 +486,8 @@ def test_cli_origins_path_keeps_legacy_wide_open_headers(
     overrides) → preflight echoes back the operator-requested header
     (legacy ``["*"]`` behavior), not the new narrow allowlist. This
     preserves the existing CLI contract."""
-    monkeypatch.delenv("RAPID_MLX_CORS_ALLOW_METHODS", raising=False)
-    monkeypatch.delenv("RAPID_MLX_CORS_ALLOW_HEADERS", raising=False)
+    monkeypatch.delenv("QMLX_CORS_ALLOW_METHODS", raising=False)
+    monkeypatch.delenv("QMLX_CORS_ALLOW_HEADERS", raising=False)
     _server_mod().configure_cors_from_env(cli_origins=["https://chat.openai.com"])
 
     client = TestClient(fresh_app)
@@ -511,12 +511,12 @@ def test_env_origins_path_applies_f091_narrowing(
     fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When origins come from the NEW env-driven path
-    (``RAPID_MLX_CORS_ALLOW_ORIGINS``), the F-091 narrowing kicks in:
+    (``QMLX_CORS_ALLOW_ORIGINS``), the F-091 narrowing kicks in:
     custom headers like ``OpenAI-Organization`` are NOT in the default
     allowlist. Operators on this path opt-in to specific headers via
-    ``RAPID_MLX_CORS_ALLOW_HEADERS``."""
-    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
-    monkeypatch.delenv("RAPID_MLX_CORS_ALLOW_HEADERS", raising=False)
+    ``QMLX_CORS_ALLOW_HEADERS``."""
+    monkeypatch.setenv("QMLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.delenv("QMLX_CORS_ALLOW_HEADERS", raising=False)
     _server_mod().configure_cors_from_env(cli_origins=None)
 
     client = TestClient(fresh_app)
@@ -536,7 +536,7 @@ def test_env_origins_path_applies_f091_narrowing(
     assert "openai-organization" not in allowed
     assert "*" not in allowed
     # The narrowed default is still echoed.
-    for expected in ("content-type", "authorization", "x-rapid-mlx-internal"):
+    for expected in ("content-type", "authorization", "x-qmlx-internal"):
         assert expected in allowed, (
             f"Expected {expected!r} in narrowed default headers; got {allowed!r}"
         )

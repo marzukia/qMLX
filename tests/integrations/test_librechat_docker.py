@@ -4,7 +4,7 @@ LibreChat E2E test against qmlx via Docker.
 Pipeline:
   1. Register a fresh test user via /api/auth/register
   2. Login → get JWT token
-  3. GET /api/endpoints → confirm Rapid-MLX appears under custom endpoints
+  3. GET /api/endpoints → confirm qMLX appears under custom endpoints
   4. POST /api/ask/custom (or whatever the chat endpoint is) → verify response
 
 Pass = LibreChat successfully proxies a chat through to qmlx and returns
@@ -73,7 +73,7 @@ if __name__ == "__main__":
 
     headers = {"Authorization": f"Bearer {token}"}
 
-    # === 3. List endpoints — Rapid-MLX must be present ===
+    # === 3. List endpoints — qMLX must be present ===
     print("\n=== Test 3: GET /api/endpoints ===")
     try:
         r = session.get(f"{LC}/api/endpoints", headers=headers, timeout=10)
@@ -84,24 +84,24 @@ if __name__ == "__main__":
         print(
             f"  custom subkeys: {list(custom.keys()) if isinstance(custom, dict) else custom}"
         )
-        assert "Rapid-MLX" in str(eps), f"Rapid-MLX not in endpoints: {eps}"
-        print("PASS: Rapid-MLX endpoint is registered")
+        assert "qMLX" in str(eps), f"qMLX not in endpoints: {eps}"
+        print("PASS: qMLX endpoint is registered")
         results["3_endpoints"] = "PASS"
     except Exception as e:
         print(f"FAIL: {e}")
         results["3_endpoints"] = f"FAIL: {str(e)[:150]}"
 
-    # === 4. List models for the Rapid-MLX endpoint (this proves fetch:true worked) ===
+    # === 4. List models for the qMLX endpoint (this proves fetch:true worked) ===
     print("\n=== Test 4: GET /api/models ===")
     try:
         r = session.get(f"{LC}/api/models", headers=headers, timeout=15)
         assert r.status_code == 200, f"{r.status_code} {r.text[:200]}"
         models = r.json()
         print(f"  models keys: {list(models.keys())[:20]}")
-        rapid_models = models.get("Rapid-MLX") or models.get("custom", {}).get(
-            "Rapid-MLX"
+        rapid_models = models.get("qMLX") or models.get("custom", {}).get(
+            "qMLX"
         )
-        assert rapid_models, f"No Rapid-MLX models in {models}"
+        assert rapid_models, f"No qMLX models in {models}"
         assert any("gemma" in m.lower() for m in rapid_models), (
             f"gemma not in {rapid_models}"
         )

@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""#991 — ``rapid-mlx pull <audio-alias>`` must resolve to the concrete HF id.
+"""#991 — ``qmlx pull <audio-alias>`` must resolve to the concrete HF id.
 
 Regression: the CLI dispatch resolves *text* aliases (``resolve_model`` over
 ``aliases.json``) before handing ``args.model`` to ``pull_command`` /
 ``rm_command``. Audio aliases live in the separate audio registry and were
-never resolved on that path, so ``rapid-mlx pull whisper`` reached
+never resolved on that path, so ``qmlx pull whisper`` reached
 ``pull_command`` as the literal string ``"whisper"``, missed the R2 mirror
 catalog (keyed by ``hf_path``), and 404'd at HuggingFace — even though
 ``serve whisper`` and ``pull mlx-community/whisper-large-v3-mlx`` both work.
@@ -67,16 +67,16 @@ def test_helper_returns_none_for_non_audio(model: str) -> None:
 
 def _run_main(monkeypatch, argv: list[str]) -> None:
     """Invoke ``cli.main()`` with a fixed argv and telemetry disabled."""
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    monkeypatch.setenv("QMLX_TELEMETRY", "0")
     # Bypass the interactive download-size gate so the dispatch never touches
     # the network regardless of the runner's TTY state.
-    monkeypatch.setenv("RAPID_MLX_AUTO_PULL", "1")
-    monkeypatch.setattr(sys, "argv", ["rapid-mlx", "--no-telemetry", *argv])
+    monkeypatch.setenv("QMLX_AUTO_PULL", "1")
+    monkeypatch.setattr(sys, "argv", ["qmlx", "--no-telemetry", *argv])
     cli.main()
 
 
 def test_main_pull_rewrites_audio_alias_to_hf_id(monkeypatch) -> None:
-    """End-to-end: ``rapid-mlx pull whisper-tiny`` reaches ``pull_command``
+    """End-to-end: ``qmlx pull whisper-tiny`` reaches ``pull_command``
     with ``args.model`` rewritten to the HF id and the original alias
     preserved for the banner / summary."""
     captured: dict[str, object] = {}
@@ -93,7 +93,7 @@ def test_main_pull_rewrites_audio_alias_to_hf_id(monkeypatch) -> None:
 
 
 def test_main_rm_rewrites_audio_alias_to_hf_id(monkeypatch) -> None:
-    """``rapid-mlx rm whisper`` reaches ``rm_command`` with the HF id so the
+    """``qmlx rm whisper`` reaches ``rm_command`` with the HF id so the
     cache scan (``models--<owner>--<repo>``) can actually match."""
     captured: dict[str, object] = {}
 
@@ -107,7 +107,7 @@ def test_main_rm_rewrites_audio_alias_to_hf_id(monkeypatch) -> None:
 
 
 def test_main_serve_keeps_short_audio_alias(monkeypatch) -> None:
-    """``rapid-mlx serve whisper`` must NOT be rewritten at dispatch — serve
+    """``qmlx serve whisper`` must NOT be rewritten at dispatch — serve
     resolves audio at request time and relies on the short alias."""
     captured: dict[str, object] = {}
 

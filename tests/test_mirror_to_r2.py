@@ -10,7 +10,7 @@ Three cases, all offline (no network, no boto3 calls):
    call); a size mismatch or 404 forces an upload.
 
 Codex round-2 BLOCKING #4: ``boto3`` / ``botocore`` are only pulled by
-the ``[mirror]`` optional extra. Default ``pip install rapid-mlx[dev]``
+the ``[mirror]`` optional extra. Default ``pip install qmlx-serve[dev]``
 does not include them, and CI that runs ``pytest tests/`` without the
 mirror extra should collect + skip cleanly rather than fail at import.
 ``pytest.importorskip("botocore")`` at module load enforces that.

@@ -324,7 +324,7 @@ class TestAugmentEosFromGenerationConfig:
     """Integration coverage for the tokenizer-load-layer augment.
 
     The fix is a single mutation point at load time. Two tokenizer
-    shapes flow through Rapid-MLX:
+    shapes flow through qMLX:
 
     1. mlx-lm ``TokenizerWrapper`` — mutate its ``_eos_token_ids``
        set directly.
@@ -442,7 +442,7 @@ class TestAugmentEosFromGenerationConfig:
         assert sched._get_stop_tokens() == {1, 106}
 
     def test_mllm_scheduler_reads_rapid_stash_via_get_stop_tokens(self):
-        """End-to-end union: a raw HF tokenizer with the Rapid-MLX
+        """End-to-end union: a raw HF tokenizer with the qMLX
         extras stash on RAPID_EXTRA_EOS_ATTR is correctly unioned
         by ``MLLMScheduler._get_stop_tokens``."""
         from vllm_mlx.mllm_scheduler import MLLMScheduler

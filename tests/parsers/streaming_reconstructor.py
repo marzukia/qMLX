@@ -10,7 +10,7 @@ state matches the non-streaming extraction.
 This pattern is SOTA across vLLM and SGLang for parser regression. See
 ``docs/parser_testing_patterns.md`` (referenced from the cluster fix PR)
 for the upstream rationale. Adopted unchanged in shape; minor adapters
-for Rapid-MLX:
+for qMLX:
 
   * Reasoning parsers already return ``DeltaMessage`` (see
     ``vllm_mlx/reasoning/base.py``) — same field layout as vLLM, so
@@ -31,7 +31,7 @@ Invariants enforced per delta (any violation = parser regression):
   R2. For tools: each ``index`` slot emits ``id`` exactly once and
       ``function.name`` exactly once on first appearance; subsequent
       deltas, if any, may only append to ``function.arguments`` —
-      Rapid-MLX parsers typically emit a single finalization delta at
+      qMLX parsers typically emit a single finalization delta at
       ``<|call|>`` rather than incremental argument streaming, but the
       invariant covers both shapes. (vLLM ``tool_parsers/utils.py:
       49-65``.)
@@ -96,7 +96,7 @@ class StreamingToolReconstructor:
     """Accumulate streaming tool deltas + assert per-delta invariants.
 
     Port of vLLM ``tests/tool_parsers/utils.py:17-81``, adapted for
-    Rapid-MLX's dict-shaped delta return value. Each tool call slot is
+    qMLX's dict-shaped delta return value. Each tool call slot is
     keyed by ``index``; ``id`` and ``function.name`` must appear exactly
     once per slot, and ``function.arguments`` accumulates.
 
@@ -113,7 +113,7 @@ class StreamingToolReconstructor:
     tool_calls: list[ReconstructedToolCall] = field(default_factory=list)
 
     def append_delta(self, delta: dict[str, Any]) -> None:
-        # Rapid-MLX tool parsers return either {"content": "..."},
+        # qMLX tool parsers return either {"content": "..."},
         # {"tool_calls": [...]}, or {"content": ..., "tool_calls": [...]}.
         # Either content or tool_calls (or both) must be non-empty per
         # vLLM tool_parsers/utils.py:24-29 — empty deltas should have

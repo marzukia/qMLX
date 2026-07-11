@@ -288,10 +288,10 @@ def test_render_prometheus_lines_shape():
     """Three lines: HELP, TYPE, single sample with the path_kind label."""
     lines = render_prometheus_lines()
     assert len(lines) == 3
-    assert lines[0].startswith("# HELP rapid_mlx_ubc_evicted_bytes_total ")
-    assert lines[1] == "# TYPE rapid_mlx_ubc_evicted_bytes_total counter"
+    assert lines[0].startswith("# HELP qmlx_ubc_evicted_bytes_total ")
+    assert lines[1] == "# TYPE qmlx_ubc_evicted_bytes_total counter"
     assert re.fullmatch(
-        r'rapid_mlx_ubc_evicted_bytes_total\{path_kind="safetensors"\} \d+',
+        r'qmlx_ubc_evicted_bytes_total\{path_kind="safetensors"\} \d+',
         lines[2],
     )
 

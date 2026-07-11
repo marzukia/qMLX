@@ -78,7 +78,7 @@ class TestEmbeddingsExtraProbe:
         """The CLI helper prints an actionable install hint to stderr
         and exits 2 — argparse's conventional usage-error code. The
         message must name the ``[embeddings]`` extra and the
-        ``rapid-mlx`` install command verbatim so the user can copy-
+        ``qmlx`` install command verbatim so the user can copy-
         paste the fix."""
         import importlib.util as _ilu
 
@@ -99,7 +99,7 @@ class TestEmbeddingsExtraProbe:
         err = capsys.readouterr().err
         assert "--embedding-model" in err
         assert "[embeddings]" in err
-        assert "pip install 'rapid-mlx[embeddings]'" in err
+        assert "pip install 'qmlx-serve[embeddings]'" in err
 
     def test_require_or_exit_noop_when_installed(self):
         """Sanity: when the extra IS installed the CLI helper returns
@@ -117,7 +117,7 @@ class TestEmbeddingsExtraProbe:
         in ``cli.py::serve_command`` must run BEFORE the model-download
         prefetch and the startup banner. Pre-fix the probe lived deep
         in ``serve_command`` so the operator saw the alias-resolved log
-        line, the "🐆 Rapid-MLX" banner, the feature list, AND the
+        line, the "🐆 qMLX" banner, the feature list, AND the
         Model id BEFORE the error and ``sys.exit(2)`` — Diego reported
         this as a warning-and-fall-through because the banner masked
         the actual exit.
@@ -125,7 +125,7 @@ class TestEmbeddingsExtraProbe:
         Source-pin the ordering: in ``cli.py::serve_command``, the
         first ``require_mlx_embeddings_or_exit`` reference must appear
         BEFORE the first ``_ensure_model_downloaded`` reference AND
-        BEFORE the first ``"🐆 Rapid-MLX"`` banner string.
+        BEFORE the first ``"🐆 qMLX"`` banner string.
         """
         cli_file = Path(__file__).resolve().parents[1] / "vllm_mlx" / "cli.py"
         source = cli_file.read_text()
@@ -164,11 +164,11 @@ class TestEmbeddingsExtraProbe:
         )
 
         # Ordering vs the startup banner.
-        idx_banner = body.find("🐆 Rapid-MLX")
+        idx_banner = body.find("🐆 qMLX")
         if idx_banner != -1:
             assert idx_require < idx_banner, (
                 "F-H08-INCOMPLETE regression: the H-08 guard fires AFTER "
-                "the '🐆 Rapid-MLX' startup banner — operators saw the "
+                "the '🐆 qMLX' startup banner — operators saw the "
                 "banner + Features line + Model id before the error, which "
                 "looked like a successful boot. Move the guard BEFORE "
                 "the banner."
@@ -207,7 +207,7 @@ class TestEmbeddingsExtraProbe:
 
     def test_mlx_embeddings_not_imported_at_module_top_level(self):
         """The whole point of H-08: ``mlx_embeddings`` must NOT be
-        imported at module top level by any rapid-mlx source file.
+        imported at module top level by any qmlx source file.
         Source-grep the package — if a future refactor moves a
         top-level ``import mlx_embeddings`` into ``embedding.py`` (or
         anywhere else), the base install starts crashing on import.
@@ -338,7 +338,7 @@ class TestEmbeddingsRouteGuard:
         # hint verbatim so the operator can copy-paste the fix.
         assert "No embedding model loaded" in msg
         assert "--embedding-model" in msg
-        assert "pip install 'rapid-mlx[embeddings]'" in msg
+        assert "pip install 'qmlx-serve[embeddings]'" in msg
         # The engine must NOT have been touched — guard fires before
         # any model load (no silent chat-model fallback).
         engine.embed.assert_not_called()
@@ -487,7 +487,7 @@ class TestModelsListEmbeddingCapability:
         ``mlx-community/all-MiniLM-L6-v2-4bit``). The
         ``/v1/models/{model_id:path}`` route must match the raw HF id
         without forcing clients to URL-encode the slash — every other
-        rapid-mlx endpoint accepts the bare HF id. Pin the production
+        qmlx endpoint accepts the bare HF id. Pin the production
         URL shape callers actually use against the production lookup."""
         embed_id = "mlx-community/all-MiniLM-L6-v2-4bit"
         client, restore = self._mount_models_app(
@@ -534,7 +534,7 @@ class TestModelsListEmbeddingCapability:
 # D-EMBED-ALIAS — Sarah F-S2-1
 # ---------------------------------------------------------------------------
 #
-# Sarah F-S2-1 (PyPI 0.8.3): ``rapid-mlx serve <chat-alias>
+# Sarah F-S2-1 (PyPI 0.8.3): ``qmlx serve <chat-alias>
 # --embedding-model embeddinggemma-300m-6bit`` crashed at startup with
 # ``mlx_embeddings.utils.ModelNotFoundError: Model not found for path
 # or HF repo: embeddinggemma-300m-6bit`` because the positional chat-
@@ -893,7 +893,7 @@ class TestEmbeddingModelAliasResolution:
             "First statement of `if args.embedding_model:` must be "
             "`from .cli import _load_embedding_model_or_exit` so the "
             "alias-resolution helper is sourced from the same module the "
-            "unified `rapid-mlx serve` CLI uses."
+            "unified `qmlx serve` CLI uses."
         )
 
         assert isinstance(stmt_call, ast.Expr) and isinstance(

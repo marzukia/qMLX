@@ -116,7 +116,7 @@ def test_runtime_patches_rope_parameters_without_copying_weights(
     )
     (source / "model.safetensors").write_bytes(b"fake")
     cache = tmp_path / "patched"
-    monkeypatch.setenv("RAPID_MLX_DDTREE_PATCH_CACHE", str(cache))
+    monkeypatch.setenv("QMLX_DDTREE_PATCH_CACHE", str(cache))
 
     patched = runtime._prepare_draft_model_for_dtree(str(source))
     patched_path = Path(patched)
@@ -148,7 +148,7 @@ def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
     )
     (source / "model.safetensors").write_bytes(b"fake")
     cache = tmp_path / "patched"
-    monkeypatch.setenv("RAPID_MLX_DDTREE_PATCH_CACHE", str(cache))
+    monkeypatch.setenv("QMLX_DDTREE_PATCH_CACHE", str(cache))
     stale = runtime._patched_draft_dir(source)
     stale.mkdir(parents=True)
     (stale / "model.safetensors").mkdir()
@@ -184,7 +184,7 @@ def test_runtime_cleans_temp_patch_dir_on_write_failure(tmp_path, monkeypatch) -
     )
     (source / "model.safetensors").write_bytes(b"fake")
     cache = tmp_path / "patched"
-    monkeypatch.setenv("RAPID_MLX_DDTREE_PATCH_CACHE", str(cache))
+    monkeypatch.setenv("QMLX_DDTREE_PATCH_CACHE", str(cache))
 
     original_write_text = Path.write_text
 
@@ -258,7 +258,7 @@ def test_runtime_patches_qwen35_split_prefill() -> None:
         [0],
     )
 
-    assert target._rapid_mlx_split_prefill_patch is True
+    assert target._qmlx_split_prefill_patch is True
     assert target.calls == [([[1, 2]], False), ([[3]], False)]
     assert logits.shape == (1, 1, 3)
     assert hidden.tolist() == [[[2, 2], [2, 2], [1, 1]]]

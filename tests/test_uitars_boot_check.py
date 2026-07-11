@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """R-10 — boot-time guard for UI-TARS / VLM aliases when ``mlx-vlm`` missing.
 
-PyPI 0.8.6 dogfood: a first-time ``pip install rapid-mlx`` user (no
-``[vision]`` extra) running ``rapid-mlx serve ui-tars-1.5-7b-4bit``
+PyPI 0.8.6 dogfood: a first-time ``pip install qmlx`` user (no
+``[vision]`` extra) running ``qmlx serve ui-tars-1.5-7b-4bit``
 crashed deep inside the engine's MLLM load path with a confusing
 ``ImportError: No module named 'mlx_vlm'`` traceback — minutes of
 wall-clock noise (alias resolution + weight download via the R2
@@ -25,7 +25,7 @@ This module pins:
 * The probe returns True when ``mlx_vlm`` is installed (no-op in
   installed envs).
 * The exit helper prints the actionable hint AND raises SystemExit(2).
-* The hint message names ``rapid-mlx[vision]`` so the user can copy-
+* The hint message names ``qmlx-serve[vision]`` so the user can copy-
   paste straight from stderr.
 * The hint message names the offending model id so the user knows
   WHY the boot failed (not just "vision needed").
@@ -46,7 +46,7 @@ import pytest
 def _mask_mlx_vlm(monkeypatch):
     """Make ``importlib.util.find_spec("mlx_vlm")`` return None and
     any direct ``import mlx_vlm`` raise ``ImportError`` — the exact
-    state of a fresh ``pip install rapid-mlx`` without the
+    state of a fresh ``pip install qmlx`` without the
     ``[vision]`` extra."""
     real_find_spec = importlib.util.find_spec
 
@@ -103,7 +103,7 @@ def test_require_mlx_vlm_or_exit_prints_hint_and_exits(monkeypatch, capsys):
     assert "ui-tars-1.5-7b-4bit" in err, (
         f"hint must name the offending model id, got: {err!r}"
     )
-    assert "rapid-mlx[vision]" in err or "rapid-mlx[vision]" in err.replace("'", ""), (
+    assert "qmlx-serve[vision]" in err or "qmlx-serve[vision]" in err.replace("'", ""), (
         f"hint must name the [vision] extra install path, got: {err!r}"
     )
     assert "mlx-vlm" in err, f"hint must name the dep, got: {err!r}"
@@ -138,13 +138,13 @@ def test_engine_side_require_mlx_vlm_still_raises_importerror(
 
     # Same actionable hint surface as the CLI guard.
     msg = str(exc_info.value)
-    assert "rapid-mlx[vision]" in msg
+    assert "qmlx-serve[vision]" in msg
     assert "mlx-vlm" in msg
 
 
 def test_vision_extra_pulls_in_mlx_vlm():
     """L-07 lock-in: the ``[vision]`` extra in pyproject.toml MUST
-    declare ``mlx-vlm`` so ``pip install rapid-mlx[vision]`` is a
+    declare ``mlx-vlm`` so ``pip install qmlx-serve[vision]`` is a
     complete fix without needing a separate ``pip install mlx-vlm``."""
     try:
         import tomllib
@@ -167,11 +167,11 @@ def test_vision_extra_pulls_in_mlx_vlm():
     # `[all]` mirrors `[vision]` content directly (the comment in
     # pyproject explains why a recursive self-dep breaks editable
     # installs); the `[all]` extra must also include mlx-vlm so the
-    # ``pip install rapid-mlx[all]`` shortcut covers UI-TARS users.
+    # ``pip install qmlx-serve[all]`` shortcut covers UI-TARS users.
     all_deps = " ".join(extras["all"])
     assert "mlx-vlm" in all_deps, (
         "[all] extra must also include mlx-vlm — pre-fix this drift "
         "was the secondary footgun (users following the docs to "
-        "`pip install rapid-mlx[all]` got everything EXCEPT the vision "
+        "`pip install qmlx-serve[all]` got everything EXCEPT the vision "
         f"runtime). got all = {extras['all']!r}"
     )

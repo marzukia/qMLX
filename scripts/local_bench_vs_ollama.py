@@ -92,7 +92,7 @@ def find_free_port() -> int:
 
 
 def ollama_model_name(model: str) -> str:
-    """Best-effort conversion of a Rapid-MLX model name to an Ollama tag."""
+    """Best-effort conversion of a qMLX model name to an Ollama tag."""
     if ":" in model:
         return model
     known = {
@@ -132,7 +132,7 @@ def get_process_tree_mb(pid: int) -> float:
     """
     Total RSS (MB) for a process and all its descendants.
     Essential for Ollama which spawns Metal/CUDA runner subprocesses,
-    and for rapid-mlx which may fork helpers. Without this, memory
+    and for qmlx which may fork helpers. Without this, memory
     shows near-zero because the actual work happens in child processes.
     """
     try:
@@ -165,8 +165,8 @@ def find_process_by_cmdline(keywords: list[str]) -> int | None:
     return None
 
 
-def find_rapid_mlx_pid() -> int | None:
-    pid = find_process_by_cmdline(["rapid-mlx", "serve"])
+def find_qmlx_pid() -> int | None:
+    pid = find_process_by_cmdline(["qmlx", "serve"])
     if pid:
         return pid
     for proc in psutil.process_iter(["pid", "name"]):
@@ -192,9 +192,9 @@ def find_ollama_pid() -> int | None:
 
 
 # ── Server management ─────────────────────────────────────────────────────────
-def start_rapid_mlx(model: str, port: int) -> subprocess.Popen:
+def start_qmlx(model: str, port: int) -> subprocess.Popen:
     cmd = [
-        "rapid-mlx",
+        "qmlx",
         "serve",
         model,
         "--host",
@@ -222,7 +222,7 @@ def start_ollama(port: int) -> subprocess.Popen:
 
 
 # ── Benchmarking ──────────────────────────────────────────────────────────────
-def benchmark_rapid_mlx(
+def benchmark_qmlx(
     url: str, model: str, max_tokens: int, warmup: bool = True
 ) -> BenchmarkResult:
     if warmup:
@@ -240,7 +240,7 @@ def benchmark_rapid_mlx(
         except Exception as e:
             print(f"  {C.YELLOW}Warning: warmup failed: {e}{C.RESET}")
 
-    pid = find_rapid_mlx_pid()
+    pid = find_qmlx_pid()
     mem_before = get_process_tree_mb(pid) if pid else 0.0
     memory_gen = 0.0
     memory_peak = mem_before
@@ -541,7 +541,7 @@ def render_results(result: ComparisonResult) -> None:
 
     # Column headers
     hl = C.ljust(f"  {C.DIM}METRIC{C.RESET}", 24)
-    hr = C.rjust(f"{C.BOLD}{C.BLUE}Rapid-MLX{C.RESET}", 15)
+    hr = C.rjust(f"{C.BOLD}{C.BLUE}qMLX{C.RESET}", 15)
     ho = C.rjust(f"{C.BOLD}{C.GREEN}Ollama{C.RESET}", 15)
     hs = C.center(f"{C.DIM}SPEEDUP{C.RESET}", 14)
     box_line(f"{hl}{hr}{ho}{hs}")
@@ -591,7 +591,7 @@ def render_results(result: ComparisonResult) -> None:
             rapid.ttft_ms,
             ollama.ttft_ms,
             "ms",
-            f"{C.BLUE}Rapid-MLX{C.RESET}",
+            f"{C.BLUE}qMLX{C.RESET}",
             f"{C.GREEN}Ollama   {C.RESET}",
         )
         blank()
@@ -600,7 +600,7 @@ def render_results(result: ComparisonResult) -> None:
             rapid.decode_tok_s,
             ollama.decode_tok_s,
             "tok/s",
-            f"{C.BLUE}Rapid-MLX{C.RESET}",
+            f"{C.BLUE}qMLX{C.RESET}",
             f"{C.GREEN}Ollama   {C.RESET}",
         )
 
@@ -665,7 +665,7 @@ def render_results(result: ComparisonResult) -> None:
 
         def summary_row(metric: str, ratio: float, desc: str) -> None:
             if ratio >= 1.0:
-                winner = f"{C.BOLD}{C.BLUE}Rapid-MLX{C.RESET}"
+                winner = f"{C.BOLD}{C.BLUE}qMLX{C.RESET}"
                 rs = f"{C.GREEN}{ratio:.2f}×{C.RESET} {C.DIM}{desc}{C.RESET}"
             else:
                 winner = f"{C.BOLD}{C.GREEN}Ollama{C.RESET}"
@@ -682,9 +682,9 @@ def render_results(result: ComparisonResult) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Benchmark Rapid-MLX vs Ollama")
+    parser = argparse.ArgumentParser(description="Benchmark qMLX vs Ollama")
     parser.add_argument(
-        "--model", default="qwen3.5-4b-4bit", help="Rapid-MLX model name"
+        "--model", default="qwen3.5-4b-4bit", help="qMLX model name"
     )
     parser.add_argument(
         "--ollama-model",
@@ -705,23 +705,23 @@ def main() -> int:
     model = args.model
     ollama_model = args.ollama_model or ollama_model_name(model)
 
-    print(f"\n{C.BOLD}{C.WHITE}⚡ rapid-mlx vs ollama benchmark{C.RESET}")
+    print(f"\n{C.BOLD}{C.WHITE}⚡ qmlx vs ollama benchmark{C.RESET}")
     print(
         f"{C.DIM}model={model}  ollama-tag={ollama_model}  runs={args.runs}  max-tokens={args.max_tokens}{C.RESET}"
     )
     print(f"{C.DIM}(use --ollama-model to override the Ollama tag if wrong){C.RESET}\n")
 
-    # ── Rapid-MLX ─────────────────────────────────────────────────────────────
-    print(f"{C.BOLD}{C.BLUE}▶ Benchmarking Rapid-MLX...{C.RESET}")
+    # ── qMLX ─────────────────────────────────────────────────────────────
+    print(f"{C.BOLD}{C.BLUE}▶ Benchmarking qMLX...{C.RESET}")
     rapid_proc, rapid_result = None, None
     try:
         port = find_free_port()
-        rapid_proc = start_rapid_mlx(model, port)
+        rapid_proc = start_qmlx(model, port)
         url = f"http://127.0.0.1:{port}"
         runs = []
         for i in range(args.runs):
             print(f"  {C.DIM}run {i + 1}/{args.runs}{C.RESET}", end="  ", flush=True)
-            r = benchmark_rapid_mlx(
+            r = benchmark_qmlx(
                 url, model, args.max_tokens, warmup=(i == 0 and not args.no_warmup)
             )
             runs.append(r)
@@ -829,7 +829,7 @@ def main() -> int:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "runs": args.runs,
             "max_tokens": args.max_tokens,
-            "rapid-mlx": r_dict(rapid_result),
+            "qmlx": r_dict(rapid_result),
             "ollama": r_dict(ollama_result),
         }
         args.output.write_text(json.dumps(data, indent=2))

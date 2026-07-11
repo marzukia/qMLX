@@ -2,7 +2,7 @@
 """R11-G / H-09 — ``/v1/embeddings`` 503 guard envelope contract.
 
 H-09 (Bo r11 carry from R8-H3, 6-round drift): boot
-``rapid-mlx serve <chat-model>`` (no ``--embedding-model``), then
+``qmlx serve <chat-model>`` (no ``--embedding-model``), then
 ``POST /v1/embeddings`` returned 200 with a 1024-dim Qwen vector
 sourced from the *chat* model's pooled hidden states. Callers stuffed
 the garbage vector into a vector store and only noticed weeks later
@@ -126,7 +126,7 @@ def test_embeddings_503_when_no_model(monkeypatch):
     msg = err["message"]
     assert "No embedding model loaded" in msg
     assert "--embedding-model" in msg
-    assert "pip install 'rapid-mlx[embeddings]'" in msg
+    assert "pip install 'qmlx-serve[embeddings]'" in msg
 
     # CRITICAL: the engine MUST NOT have been touched. Pre-fix the
     # route would fall through to ``embed`` / ``embed_tokens`` with

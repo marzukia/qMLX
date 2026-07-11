@@ -3,13 +3,13 @@ name: PR validation pipeline
 # Fires `python -m scripts.pr_validate <PR#>` on every PR so the SOP
 # pipeline runs in CI instead of relying on the maintainer to remember.
 #
-# Boundary: anything that needs `rapid-mlx serve` (i.e. real model
+# Boundary: anything that needs `qmlx serve` (i.e. real model
 # inference) stays local on M3 — see docs/development/releasing.md
 # §"Pre-release validation gauntlet". Everything else runs here.
 #
 # Steps skipped on CI and why:
 #
-#   stress_e2e_bench   needs a live `rapid-mlx serve` + cached weights.
+#   stress_e2e_bench   needs a live `qmlx serve` + cached weights.
 #                      GitHub-hosted macOS-14 has 7GB RAM, can't host
 #                      a meaningful stress workload. Re-run locally
 #                      via `make release-check-m3` before release.
@@ -89,7 +89,7 @@ jobs:
           # gh CLI auth for the fetch step
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Steps that need M3 / a full MLX install run locally only:
-          #   * stress_e2e_bench — needs a live `rapid-mlx serve`
+          #   * stress_e2e_bench — needs a live `qmlx serve`
           #   * full_unit        — runs the WHOLE tests/ tree which
           #                        includes MLX-importing modules; ubuntu
           #                        has no MLX, so collection errors stack

@@ -4,7 +4,7 @@
 
 Background (Sasha R1/R2 dogfood reports):
 
-  ``rapid-mlx serve qwen3.5-4b-4bit --port 9XYZ`` followed by ANY
+  ``qmlx serve qwen3.5-4b-4bit --port 9XYZ`` followed by ANY
   ``/v1/responses`` (or ``/v1/chat/completions``) request wedges on
   ``[metal::malloc] Resource limit (499000) exceeded`` at every
   generation step. ``--no-hybrid`` is the only workaround.

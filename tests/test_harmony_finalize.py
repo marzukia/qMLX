@@ -555,7 +555,7 @@ def test_streaming_harmony_cut_short_does_not_leak_into_content_length(monkeypat
 
     R-01 (2026-06-21, was H-01): the strict-null contract is the
     default. The cutoff sentinel is opt-IN via
-    ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1``; with the env var unset (or
+    ``QMLX_REASONING_CUTOFF_NOTICE=1``; with the env var unset (or
     any non-enable value), the terminal chunk ships
     ``delta.content=None`` and the D-HARMONY-LEAK contract (no
     byte-for-byte reasoning prose into content) holds trivially. The
@@ -566,7 +566,7 @@ def test_streaming_harmony_cut_short_does_not_leak_into_content_length(monkeypat
     ``test_reasoning_content_null_rescue.py`` and
     ``test_truncation_no_synthetic_text.py``.
     """
-    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
+    monkeypatch.setenv("QMLX_REASONING_CUTOFF_NOTICE", "disabled")
     events = _drive_streaming_harmony("length")
     assert events, "expected at least one SSE chunk"
 

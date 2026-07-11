@@ -24,7 +24,7 @@ def fake_home(tmp_path, monkeypatch):
     documented way to override on POSIX.
     """
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
+    monkeypatch.delenv("QMLX_TELEMETRY", raising=False)
     # Force-reload the state module so any cached path objects (there
     # shouldn't be any, but defence in depth) get rebuilt under the new
     # HOME.
@@ -48,7 +48,7 @@ def test_consent_round_trip(fake_home):
     )
 
     assert get_consent_state() is None
-    record_consent(True, rapid_mlx_version="0.6.33")
+    record_consent(True, qmlx_version="0.6.33")
     state = get_consent_state()
     assert state is not None
     assert state.consent is True
@@ -59,7 +59,7 @@ def test_consent_round_trip(fake_home):
 
 
 def test_env_kill_switch_wins_over_consent(fake_home, monkeypatch):
-    """Stored consent=True must NOT override RAPID_MLX_TELEMETRY=0.
+    """Stored consent=True must NOT override QMLX_TELEMETRY=0.
 
     Critical contract: the env var is the documented "scripts can force
     off without touching the file" escape hatch. If consent could
@@ -68,9 +68,9 @@ def test_env_kill_switch_wins_over_consent(fake_home, monkeypatch):
     """
     from vllm_mlx.telemetry.state import is_enabled, record_consent
 
-    record_consent(True, rapid_mlx_version="0.6.33")
+    record_consent(True, qmlx_version="0.6.33")
     assert is_enabled() is True
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    monkeypatch.setenv("QMLX_TELEMETRY", "0")
     assert is_enabled() is False
 
 
@@ -78,13 +78,13 @@ def test_cli_flag_wins_over_consent(fake_home):
     """Even with consent=True and no env var, --no-telemetry forces off."""
     from vllm_mlx.telemetry.state import is_enabled, record_consent
 
-    record_consent(True, rapid_mlx_version="0.6.33")
+    record_consent(True, qmlx_version="0.6.33")
     assert is_enabled() is True
     assert is_enabled(cli_no_telemetry=True) is False
 
 
 def test_env_force_on_is_ignored(fake_home, monkeypatch):
-    """RAPID_MLX_TELEMETRY=1 must NOT silently opt the user in.
+    """QMLX_TELEMETRY=1 must NOT silently opt the user in.
 
     Documented as kill-switch only — anything else means a CI agent or
     mistyped env var could enable telemetry without the user ever
@@ -92,9 +92,9 @@ def test_env_force_on_is_ignored(fake_home, monkeypatch):
     """
     from vllm_mlx.telemetry.state import is_enabled
 
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "1")
+    monkeypatch.setenv("QMLX_TELEMETRY", "1")
     assert is_enabled() is False  # still off — no stored consent
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "true")
+    monkeypatch.setenv("QMLX_TELEMETRY", "true")
     assert is_enabled() is False
 
 
@@ -102,8 +102,8 @@ def test_env_force_on_is_ignored(fake_home, monkeypatch):
 def test_env_falsy_values_all_disable(fake_home, monkeypatch, falsy):
     from vllm_mlx.telemetry.state import is_enabled, record_consent
 
-    record_consent(True, rapid_mlx_version="0.6.33")
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY", falsy)
+    record_consent(True, qmlx_version="0.6.33")
+    monkeypatch.setenv("QMLX_TELEMETRY", falsy)
     assert is_enabled() is False, f"falsy value {falsy!r} should kill-switch"
 
 
@@ -142,7 +142,7 @@ def test_reset_state_removes_both_files(fake_home):
         reset_state,
     )
 
-    record_consent(True, rapid_mlx_version="0.6.33")
+    record_consent(True, qmlx_version="0.6.33")
     get_or_create_client_id()
     assert consent_path().exists()
     assert client_id_path().exists()
@@ -159,11 +159,11 @@ def test_consent_source_reports_origin(fake_home, monkeypatch):
     from vllm_mlx.telemetry.state import consent_source, record_consent
 
     assert "default" in consent_source()
-    record_consent(True, rapid_mlx_version="0.6.33")
+    record_consent(True, qmlx_version="0.6.33")
     assert "consent-file" in consent_source()
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    monkeypatch.setenv("QMLX_TELEMETRY", "0")
     assert "env-var" in consent_source()
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY")
+    monkeypatch.delenv("QMLX_TELEMETRY")
     assert "cli-flag" in consent_source(cli_no_telemetry=True)
 
 
@@ -185,7 +185,7 @@ def test_consent_file_atomic_write(fake_home):
     a successful write."""
     from vllm_mlx.telemetry.state import consent_path, record_consent
 
-    record_consent(True, rapid_mlx_version="0.6.33")
+    record_consent(True, qmlx_version="0.6.33")
     leftover = consent_path().with_suffix(consent_path().suffix + ".tmp")
     assert not leftover.exists()
 
@@ -207,7 +207,7 @@ def test_record_consent_cleans_up_stale_tmp(fake_home):
     stale.write_text("partial: junk\nthis is not valid")
     assert stale.exists()
 
-    record_consent(True, rapid_mlx_version="0.6.33")
+    record_consent(True, qmlx_version="0.6.33")
     assert not stale.exists(), "stale .tmp should be cleaned up"
     state = get_consent_state()
     assert state is not None

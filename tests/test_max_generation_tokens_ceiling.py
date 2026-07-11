@@ -5,7 +5,7 @@ Aanya (0.8.0 round-2 dogfooding) showed that the F-007 body-bytes cap
 does NOT enforce the generation-token budget — a 5K-token system
 prompt with ``max_tokens=10000`` was accepted with the body cap left at
 its 8 MiB default. M-04 closes the gap by adding an OPT-IN cap exposed
-via the ``RAPID_MLX_MAX_GENERATION_TOKENS`` env var, applied at parse
+via the ``QMLX_MAX_GENERATION_TOKENS`` env var, applied at parse
 time on all three OpenAI/Anthropic compatible request models:
 
 * ``/v1/chat/completions`` → ``ChatCompletionRequest``
@@ -19,7 +19,7 @@ Design contract (mirrored across all three routes):
   opt-in for multi-tenant operators.
 * Env set to a positive integer ``N`` → reject at parse time when
   ``max_tokens > N``. The error envelope mentions
-  ``RAPID_MLX_MAX_GENERATION_TOKENS`` so operators see the actionable
+  ``QMLX_MAX_GENERATION_TOKENS`` so operators see the actionable
   lever in the 400 body.
 
 The tests below pin both arms — the opt-in invariant AND the
@@ -43,7 +43,7 @@ from vllm_mlx.api.models import (
 
 # Env var name kept as a module constant so a future rename has exactly
 # one source of truth (tests and the helper would both fail loudly).
-_ENV = "RAPID_MLX_MAX_GENERATION_TOKENS"
+_ENV = "QMLX_MAX_GENERATION_TOKENS"
 
 
 # ---------------------------------------------------------------------------

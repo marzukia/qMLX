@@ -49,7 +49,7 @@ _INSTALLED_SENTINEL = "_qmlx_log_namespace_rebrand_installed_factory"
 
 
 def _rewrite_name(name: str) -> str:
-    """Map ``vllm_mlx[.*]`` -> ``qmlx[.*]``; leave everything else alone.
+    """Map ``vllm_mlx[.*]`` -> ``qmlx-serve[.*]``; leave everything else alone.
 
     - Exact ``vllm_mlx`` becomes ``qmlx``.
     - ``vllm_mlx.server`` becomes ``qmlx.server``.

@@ -23,10 +23,10 @@ Four findings:
   emits a 400 ``invalid_request_error`` with ``param="voice"`` listing
   the available voices.
 
-* **R8-M5** — ``rapid-mlx serve kokoro`` (short audio alias) on a
-  fresh ``pip install rapid-mlx`` (no ``[audio]`` extra) printed
+* **R8-M5** — ``qmlx serve kokoro`` (short audio alias) on a
+  fresh ``pip install qmlx`` (no ``[audio]`` extra) printed
   "is not a known alias" instead of the actionable
-  "install rapid-mlx[audio]" hint — the CLI fail-fast tripped before
+  "install qmlx-serve[audio]" hint — the CLI fail-fast tripped before
   the audio boot guard ran. Fix: skip the fail-fast for names that
   ``is_audio_model_alias`` recognises so the guard fires.
 """
@@ -95,7 +95,7 @@ def _install_fake_mlx_audio(monkeypatch):
 
 
 def _mount_audio_app() -> tuple[TestClient, callable]:
-    """Mount the audio router with the rapid-mlx exception handlers so the
+    """Mount the audio router with the qmlx exception handlers so the
     Pydantic validation errors surface as the OpenAI envelope (not the
     default FastAPI 422)."""
     from vllm_mlx.config import get_config
@@ -986,7 +986,7 @@ class TestCliBootGuardShortAlias:
     """Reproduces the CLI fail-fast / boot-guard ordering bug.
 
     Bo's R2.9 sequence:
-      * R2.9b: ``rapid-mlx serve kokoro`` on a no-``[audio]`` venv exits
+      * R2.9b: ``qmlx serve kokoro`` on a no-``[audio]`` venv exits
         with the generic "is not a known alias" — pre-fix the CLI
         fail-fast in ``main()`` tripped BEFORE ``serve_command`` got
         the chance to fire the audio boot guard with the actionable
@@ -1036,7 +1036,7 @@ class TestCliBootGuardShortAlias:
         assert not is_audio_model_alias("some-future-llm-9b")
 
     def test_main_does_not_failfast_on_short_audio_alias(self, monkeypatch, capsys):
-        """End-to-end: ``rapid-mlx serve kokoro`` on a venv without
+        """End-to-end: ``qmlx serve kokoro`` on a venv without
         ``[audio]`` must reach the audio boot guard's exit-2 install
         hint INSTEAD of the generic exit-1 "not a known alias" Bo saw.
 
@@ -1072,7 +1072,7 @@ class TestCliBootGuardShortAlias:
 
         # Drive ``main`` with the exact command Bo ran. ``--port`` is a
         # belt for the argparse defaults but isn't load-bearing.
-        monkeypatch.setattr("sys.argv", ["rapid-mlx", "serve", "kokoro"])
+        monkeypatch.setattr("sys.argv", ["qmlx", "serve", "kokoro"])
 
         with pytest.raises(SystemExit) as excinfo:
             cli.main()
@@ -1081,7 +1081,7 @@ class TestCliBootGuardShortAlias:
         # main()'s fail-fast branch. Exit 2 from the audio boot guard
         # is the desired outcome.
         assert excinfo.value.code == 2, (
-            f"R8-M5 regression: ``rapid-mlx serve kokoro`` exited "
+            f"R8-M5 regression: ``qmlx serve kokoro`` exited "
             f"{excinfo.value.code!r}, expected 2 (audio boot guard). "
             f"Pre-fix the CLI fail-fast tripped first with exit 1."
         )

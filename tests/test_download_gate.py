@@ -99,7 +99,7 @@ def test_estimate_repo_size_returns_none_on_empty_repo():
 
 def test_confirm_passes_through_when_under_threshold(monkeypatch):
     """A 5 GiB estimate against a 10 GiB threshold must not prompt."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     # Even if stdin is a TTY, small downloads pass through silently.
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
@@ -111,8 +111,8 @@ def test_confirm_passes_through_when_under_threshold(monkeypatch):
 
 
 def test_confirm_passes_through_when_env_var_set(monkeypatch):
-    """``RAPID_MLX_AUTO_PULL=1`` short-circuits even for huge downloads."""
-    monkeypatch.setenv("RAPID_MLX_AUTO_PULL", "1")
+    """``QMLX_AUTO_PULL=1`` short-circuits even for huge downloads."""
+    monkeypatch.setenv("QMLX_AUTO_PULL", "1")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
         "builtins.input",
@@ -125,14 +125,14 @@ def test_confirm_passes_through_when_env_var_set(monkeypatch):
 @pytest.mark.parametrize("val", ["1", "true", "yes", "YES", "True"])
 def test_confirm_env_var_accepts_truthy_variants(monkeypatch, val):
     """Common truthy spellings must all work — users will try all of them."""
-    monkeypatch.setenv("RAPID_MLX_AUTO_PULL", val)
+    monkeypatch.setenv("QMLX_AUTO_PULL", val)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     assert gate.confirm_or_abort("foo/huge", 50 * 1024**3) is True
 
 
 def test_confirm_passes_through_when_non_tty(monkeypatch):
     """Non-interactive stdin (CI, piped scripts) must not deadlock on input."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr(
         "builtins.input",
@@ -144,7 +144,7 @@ def test_confirm_passes_through_when_non_tty(monkeypatch):
 
 def test_confirm_proceeds_with_unknown_size(monkeypatch, capsys):
     """Unknown size → heads-up + proceed (don't block on transient HF failures)."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(
         "builtins.input",
@@ -159,7 +159,7 @@ def test_confirm_proceeds_with_unknown_size(monkeypatch, capsys):
 
 def test_confirm_returns_true_on_yes(monkeypatch, capsys):
     """``y`` input → proceed."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "y")
 
@@ -172,7 +172,7 @@ def test_confirm_returns_true_on_yes(monkeypatch, capsys):
 
 def test_confirm_returns_true_on_yes_full_word(monkeypatch):
     """``yes`` (full word, case-insensitive) also proceeds."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "YES")
 
@@ -181,7 +181,7 @@ def test_confirm_returns_true_on_yes_full_word(monkeypatch):
 
 def test_confirm_aborts_on_no(monkeypatch, capsys):
     """``n`` input → ``sys.exit(1)`` with an actionable hint."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "n")
 
@@ -191,8 +191,8 @@ def test_confirm_aborts_on_no(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "Aborted" in out
-    assert "rapid-mlx pull foo/huge" in out
-    assert "RAPID_MLX_AUTO_PULL" in out
+    assert "qmlx pull foo/huge" in out
+    assert "QMLX_AUTO_PULL" in out
 
 
 def test_confirm_proceeds_on_empty_input(monkeypatch):
@@ -200,7 +200,7 @@ def test_confirm_proceeds_on_empty_input(monkeypatch):
     default — the user already typed the subcommand on a specific alias,
     so Enter should respect their intent, not abort.
     """
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "")
 
@@ -216,7 +216,7 @@ def test_confirm_aborts_on_ctrl_c(monkeypatch, capsys):
     flip the gate's semantics for callers that distinguish "user
     cancelled" from "abort hint printed and exited".
     """
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
     def _raise(_=None):
@@ -230,7 +230,7 @@ def test_confirm_aborts_on_ctrl_c(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "Aborted" in out
-    assert "rapid-mlx pull foo/huge" in out
+    assert "qmlx pull foo/huge" in out
 
 
 def test_confirm_proceeds_on_eof(monkeypatch):
@@ -239,7 +239,7 @@ def test_confirm_proceeds_on_eof(monkeypatch):
     Enter and proceed. Previously bundled with ``KeyboardInterrupt``
     (both → abort); now split so Ctrl-C cancels but EOF defers to the
     ``[Y/n]`` default. Pins the new split-handler contract."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
     def _eof(_=None):
@@ -262,7 +262,7 @@ def test_confirm_proceeds_on_non_no_typos(monkeypatch, typo):
     to delete this test on purpose. ``nope`` proceeding is the most
     surprising one; documented here.
     """
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: typo)
 
@@ -272,7 +272,7 @@ def test_confirm_proceeds_on_non_no_typos(monkeypatch, typo):
 def test_confirm_aborts_on_no_uppercase(monkeypatch):
     """``N`` (single capital) → abort. ``.lower()`` already runs on the
     raw input, but pin the case-insensitivity contract explicitly."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "N")
 
@@ -283,7 +283,7 @@ def test_confirm_aborts_on_no_uppercase(monkeypatch):
 
 def test_confirm_logfile_hint_appears_in_prompt(monkeypatch, capsys):
     """When a logfile is supplied, the prompt tells the user where to tail."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "y")
 
@@ -394,7 +394,7 @@ def test_is_repo_cached_false_on_zero_byte_weight(tmp_path, monkeypatch):
 
 
 def test_is_repo_cached_rejects_npz_only(tmp_path, monkeypatch):
-    """Codex round-4 BLOCKING #2 (refinement of round-2): rapid-mlx
+    """Codex round-4 BLOCKING #2 (refinement of round-2): qmlx
     serves via ``mlx_lm.load``, which globs ``model*.safetensors`` and
     never reads ``.npz``. A cache containing only ``weights.npz`` is
     unusable from the chat code path, so it must NOT pass the gate —
@@ -462,10 +462,10 @@ def test_is_repo_cached_requires_every_shard_listed_in_index(tmp_path, monkeypat
 
 
 def test_is_repo_cached_rejects_adapter_only_safetensors(tmp_path, monkeypatch):
-    """Codex round-5 BLOCKING #2: rapid-mlx's load path globs
+    """Codex round-5 BLOCKING #2: qmlx's load path globs
     ``model*.safetensors`` literally. A cache containing only
     ``adapter.safetensors`` (LoRA / PEFT fine-tune) or
-    ``embeddings.safetensors`` (sidecar) is unusable from rapid-mlx
+    ``embeddings.safetensors`` (sidecar) is unusable from qmlx
     and must NOT pass the gate — otherwise the spawned ``serve``
     silently pulls the real model weights."""
     cache_root = tmp_path / "hf-cache"
@@ -866,8 +866,8 @@ def test_is_repo_cached_rejects_nested_weights(tmp_path, monkeypatch):
 
 
 def test_confirm_env_var_falsy_value_does_not_short_circuit(monkeypatch):
-    """``RAPID_MLX_AUTO_PULL=0`` must NOT auto-confirm — the env is opt-in."""
-    monkeypatch.setenv("RAPID_MLX_AUTO_PULL", "0")
+    """``QMLX_AUTO_PULL=0`` must NOT auto-confirm — the env is opt-in."""
+    monkeypatch.setenv("QMLX_AUTO_PULL", "0")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "n")
 
@@ -877,7 +877,7 @@ def test_confirm_env_var_falsy_value_does_not_short_circuit(monkeypatch):
 
 def test_confirm_threshold_boundary(monkeypatch):
     """Exactly at threshold → prompt fires (the docstring promises ``>=``)."""
-    monkeypatch.delenv("RAPID_MLX_AUTO_PULL", raising=False)
+    monkeypatch.delenv("QMLX_AUTO_PULL", raising=False)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _=None: "y")
 

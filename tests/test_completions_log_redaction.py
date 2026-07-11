@@ -103,7 +103,7 @@ def test_info_log_does_not_leak_prompt_body(client_with_completions_route, caplo
     assert it does NOT appear in any INFO-or-higher log record."""
     # Capture every level so we can also positively assert the DEBUG
     # preview behaviour later.
-    # Note: the runtime log-namespace rebrand (vllm_mlx -> rapid_mlx)
+    # Note: the runtime log-namespace rebrand (vllm_mlx -> qmlx)
     # rewrites the record.name AFTER emit, but caplog filters by the
     # logger we configure — set both to be safe.
     caplog.set_level(logging.DEBUG)
@@ -164,7 +164,7 @@ def test_debug_log_carries_redacted_preview(client_with_completions_route, caplo
     the log level to DEBUG still get a 300-char preview for local
     debugging — but it's behind an explicit opt-in, not the production
     default."""
-    # Note: the runtime log-namespace rebrand (vllm_mlx -> rapid_mlx)
+    # Note: the runtime log-namespace rebrand (vllm_mlx -> qmlx)
     # rewrites the record.name AFTER emit, but caplog filters by the
     # logger we configure — set both to be safe.
     caplog.set_level(logging.DEBUG)

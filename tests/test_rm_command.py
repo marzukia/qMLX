@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``rapid-mlx rm <model>``.
+"""Tests for ``qmlx rm <model>``.
 
 Pre-0.9.7 ``rm`` deleted gigabytes of model weights silently — no
 confirmation, no freed-space summary. This file pins the new contract:

@@ -2,7 +2,7 @@
 """DFlash speculative-decoding integration (issue #264).
 
 DFlash is a block-diffusion drafter (z-lab) integrated into mlx-vlm's
-``generate_step``. Rapid-MLX wires it into ``BatchedEngine`` for B=1
+``generate_step``. qMLX wires it into ``BatchedEngine`` for B=1
 generation; B>1 transparently falls back to AR until phase-2 batched
 support lands.
 

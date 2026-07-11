@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Regression tests for issue #974 — ``scripts/release_check_m3.sh``
-must thread ``$PORT`` into ``RAPID_MLX_BASE_URL`` (and OpenAI-SDK
+must thread ``$PORT`` into ``QMLX_BASE_URL`` (and OpenAI-SDK
 conventional siblings) so G7 SDK integration tests hit the gauntlet
 server, not whatever default port their env-var defaults resolve to.
 
 The bug: G7 SDK tests (Anthropic / pydantic_ai / smolagents / langchain
-/ hermes) read the endpoint from ``os.environ.get("RAPID_MLX_BASE_URL",
+/ hermes) read the endpoint from ``os.environ.get("QMLX_BASE_URL",
 "http://localhost:8000/v1")``. If the gauntlet is booted with a PORT
 override (e.g. ``PORT=8011`` to avoid a running production server on
-8000) but the script does NOT export ``RAPID_MLX_BASE_URL``, the SDK
+8000) but the script does NOT export ``QMLX_BASE_URL``, the SDK
 tests silently target ``http://localhost:8000`` — usually the
 operator's production box — producing either false failures (wrong
 model) or false PASSes (prod happens to answer).
@@ -17,7 +17,7 @@ We assert two invariants on the shell script:
 
 1. **Every G-block env var is present and derived from $PORT.** Sourcing
    the top of the script under ``PORT=<random>`` yields
-   ``RAPID_MLX_BASE_URL == http://127.0.0.1:<PORT>/v1``.
+   ``QMLX_BASE_URL == http://127.0.0.1:<PORT>/v1``.
 
 2. **Every base-url env var read by any test under
    ``tests/integrations/*.py`` is covered by the export block.** This
@@ -26,7 +26,7 @@ We assert two invariants on the shell script:
    updated in lockstep.
 
 The script is Bash, not Python, so we shell out via ``subprocess`` —
-never actually booting rapid-mlx serve or touching a real port.
+never actually booting qmlx serve or touching a real port.
 """
 
 from __future__ import annotations
@@ -40,11 +40,11 @@ SCRIPT = REPO_ROOT / "scripts" / "release_check_m3.sh"
 INTEGRATIONS = REPO_ROOT / "tests" / "integrations"
 
 # Env vars any integration test under tests/integrations/*.py reads to
-# resolve the rapid-mlx server endpoint. The shell script MUST export
+# resolve the qmlx server endpoint. The shell script MUST export
 # each of these before running G7. Grow this set if we ever add a new
 # integration harness with a different env-var convention.
 KNOWN_BASE_URL_ENVS = {
-    "RAPID_MLX_BASE_URL",
+    "QMLX_BASE_URL",
     "OPENAI_BASE_URL",
     "OPENAI_API_BASE",
 }
@@ -55,7 +55,7 @@ def _extract_prelude(script_path: Path) -> str:
     ``echo "  log:"`` banner line — i.e. the part that resolves ``PORT``
     and exports base-url env vars. Everything after (server boot, G-block
     orchestration) is skipped so sourcing the prelude in a test doesn't
-    try to actually launch ``rapid-mlx serve``."""
+    try to actually launch ``qmlx serve``."""
     text = script_path.read_text()
     marker = 'echo "  log:'
     idx = text.find(marker)
@@ -68,7 +68,7 @@ def _extract_prelude(script_path: Path) -> str:
 
 
 def test_prelude_exports_base_url_from_port(tmp_path: Path) -> None:
-    """PORT override MUST propagate to RAPID_MLX_BASE_URL — the exact
+    """PORT override MUST propagate to QMLX_BASE_URL — the exact
     invariant the fix for issue #974 enforces."""
     prelude = _extract_prelude(SCRIPT)
     # Source under a non-default PORT and print the resolved env vars.
@@ -76,7 +76,7 @@ def test_prelude_exports_base_url_from_port(tmp_path: Path) -> None:
     probe = tmp_path / "probe.sh"
     probe.write_text(
         prelude
-        + '\necho "RAPID_MLX_BASE_URL=$RAPID_MLX_BASE_URL"\n'
+        + '\necho "QMLX_BASE_URL=$QMLX_BASE_URL"\n'
         + 'echo "OPENAI_BASE_URL=$OPENAI_BASE_URL"\n'
         + 'echo "OPENAI_API_BASE=$OPENAI_API_BASE"\n'
     )
@@ -88,7 +88,7 @@ def test_prelude_exports_base_url_from_port(tmp_path: Path) -> None:
         check=True,
     )
     expected = f"http://127.0.0.1:{port}/v1"
-    assert f"RAPID_MLX_BASE_URL={expected}" in result.stdout, result.stdout
+    assert f"QMLX_BASE_URL={expected}" in result.stdout, result.stdout
     assert f"OPENAI_BASE_URL={expected}" in result.stdout, result.stdout
     assert f"OPENAI_API_BASE={expected}" in result.stdout, result.stdout
 
@@ -100,7 +100,7 @@ def test_prelude_default_port_matches_hardcoded_probes() -> None:
     override is present."""
     prelude = _extract_prelude(SCRIPT)
     result = subprocess.run(
-        ["bash", "-c", prelude + '\necho "URL=$RAPID_MLX_BASE_URL"'],
+        ["bash", "-c", prelude + '\necho "URL=$QMLX_BASE_URL"'],
         capture_output=True,
         text=True,
         env={"PATH": "/usr/bin:/bin"},  # no PORT export
@@ -111,8 +111,8 @@ def test_prelude_default_port_matches_hardcoded_probes() -> None:
 
 def test_script_asserts_g7_env_matches_port() -> None:
     """The G7 block MUST include a fail-loud assertion that
-    ``RAPID_MLX_BASE_URL`` still points at the gauntlet PORT. Without
-    this, a downstream ``unset RAPID_MLX_BASE_URL`` or an unrelated
+    ``QMLX_BASE_URL`` still points at the gauntlet PORT. Without
+    this, a downstream ``unset QMLX_BASE_URL`` or an unrelated
     clobber would silently reopen the issue #974 hole."""
     text = SCRIPT.read_text()
     # Locate the G7 SDK integration section header (the ``#---…``
@@ -126,8 +126,8 @@ def test_script_asserts_g7_env_matches_port() -> None:
     invocation_idx = text.find("tests/integrations/test_anthropic_sdk.py", idx)
     assert invocation_idx != -1, "G7 no longer runs test_anthropic_sdk.py"
     g7_block = text[idx:invocation_idx]
-    assert "RAPID_MLX_BASE_URL" in g7_block, (
-        "G7 block should reference RAPID_MLX_BASE_URL in an assertion"
+    assert "QMLX_BASE_URL" in g7_block, (
+        "G7 block should reference QMLX_BASE_URL in an assertion"
     )
     assert "G7 env mismatch" in g7_block, (
         "G7 assertion should print a distinctive 'G7 env mismatch' error"

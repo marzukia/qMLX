@@ -2,7 +2,7 @@
 """Model listing endpoints.
 
 The OpenAI-canonical `/v1/models` and `/v1/models/{id}` endpoints
-serve ``ModelInfo`` shapes that carry Rapid-MLX vendor extensions
+serve ``ModelInfo`` shapes that carry qMLX vendor extensions
 (see ``api/models.ModelInfo``). The extensions surface per-alias
 profile data — curated sampling, hybrid/MoE flags, parser pair,
 modality — pulled from ``model_aliases.resolve_profile``. OpenAI
@@ -793,7 +793,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
 async def list_models() -> ModelsResponse:
     """List available models (supports multi-model).
 
-    Each entry carries the Rapid-MLX vendor extension fields when
+    Each entry carries the qMLX vendor extension fields when
     its id resolves to a known alias. OpenAI-spec clients ignore
     unknown fields, so the wire shape stays backward-compatible.
     """

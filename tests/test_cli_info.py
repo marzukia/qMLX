@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``rapid-mlx info <model>``.
+"""Tests for ``qmlx info <model>``.
 
 The ``info`` subcommand is a fast read-only path — it resolves an alias
 and prints the per-model profile (parser names, hybrid flag, etc.) without

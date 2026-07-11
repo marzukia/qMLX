@@ -133,7 +133,7 @@ def _resolve_harness_profiles_filter() -> tuple[str, ...] | None:
 # Per-profile wall-clock cap for the harness sweep. One bad harness
 # (e.g. a codex e2e_file_read hang at 156s on a slow model) was taking
 # down the in-process server and cascading FAIL to every later profile
-# with ECONNREFUSED / "Rapid-MLX server not running". Override via
+# with ECONNREFUSED / "qMLX server not running". Override via
 # ``HARNESS_PROFILE_TIMEOUT_S`` env var for slow boxes / future bigger
 # models. Resolved at module-load via ``_resolve_harness_profile_timeout``.
 HARNESS_PROFILE_TIMEOUT_S = _resolve_harness_profile_timeout()
@@ -567,7 +567,7 @@ class _HarnessServerSession:
     subtest hung long enough to OOM / crash the in-process server (real
     incident: codex e2e_file_read on gemma3-4-12b, qwen3.5-9b — the
     server died, and every later profile then failed with
-    ``Rapid-MLX server not running``), nothing brought the server back
+    ``qMLX server not running``), nothing brought the server back
     up. Cascade fail. Now a per-profile health check catches the dead
     server and the session reboots before the next profile runs.
     """
@@ -1272,7 +1272,7 @@ def run_tier(
             return 2, {"smoke_result": None, "harness_result": None}
         return 2
 
-    print(f"Rapid-MLX bench — tier={tier} model={model}")
+    print(f"qMLX bench — tier={tier} model={model}")
     print("=" * 60)
 
     overall_t0 = time.perf_counter()

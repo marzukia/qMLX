@@ -303,7 +303,7 @@ class TestDefaultTimeout:
         """Codex R1 caught this: ServerConfig had been bumped to
         1800 but BOTH CLI argparse (vllm_mlx/cli.py) AND server
         argparse (vllm_mlx/server.py) still defaulted to 300, so
-        ``rapid-mlx serve`` overwrote the config default at startup
+        ``qmlx serve`` overwrote the config default at startup
         and users still got 5min.
 
         Source-grep instead of parser invocation because both

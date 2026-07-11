@@ -295,7 +295,7 @@ _LEAK_NEEDLES = (
     # 1. Dependency-fingerprint vector — Pydantic help URLs include the
     #    pinned major.minor version.
     "errors.pydantic.dev",
-    # 2. Pinned Pydantic version (rapid-mlx v0.8.1 ships 2.13.x). Wider
+    # 2. Pinned Pydantic version (qmlx v0.8.1 ships 2.13.x). Wider
     #    than ``errors.pydantic.dev/2.13`` so a future upgrade to 2.14
     #    doesn't silently make this test pass on a still-leaking 2.13
     #    binary.
@@ -537,7 +537,7 @@ def test_pydantic_handler_log_does_not_leak_attacker_input(monkeypatch, caplog):
         sentinel = "H17_LOG_SENTINEL_pwned_secret_value"
         client = TestClient(app)
 
-        with caplog.at_level("WARNING", logger="rapid_mlx.exception_handlers"):
+        with caplog.at_level("WARNING", logger="qmlx.exception_handlers"):
             response = client.post("/__h17_log_probe__", json={"field_x": sentinel})
 
         assert response.status_code == 400

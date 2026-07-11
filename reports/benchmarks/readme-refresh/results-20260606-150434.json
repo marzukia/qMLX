@@ -6,7 +6,7 @@
   "results": [
     {
       "model": "qwen3.5-4b",
-      "engine": "rapid-mlx",
+      "engine": "qmlx",
       "arch_note": "Same MLX weights",
       "median_aggregate_tps": 261.0544769371528,
       "median_per_stream_tps": 79.44253325525838,
@@ -101,7 +101,7 @@
     },
     {
       "model": "qwen3.5-9b",
-      "engine": "rapid-mlx",
+      "engine": "qmlx",
       "arch_note": "Same MLX weights",
       "median_aggregate_tps": 180.044318760162,
       "median_per_stream_tps": 51.51151174326411,
@@ -196,7 +196,7 @@
     },
     {
       "model": "gemma-4-12b",
-      "engine": "rapid-mlx",
+      "engine": "qmlx",
       "arch_note": "Same MLX weights",
       "median_aggregate_tps": 55.380259724308644,
       "median_per_stream_tps": 14.558191325993018,
@@ -291,7 +291,7 @@
     },
     {
       "model": "gpt-oss-20b",
-      "engine": "rapid-mlx",
+      "engine": "qmlx",
       "arch_note": "Same MLX weights",
       "median_aggregate_tps": null,
       "median_per_stream_tps": null,

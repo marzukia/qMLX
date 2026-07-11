@@ -262,7 +262,7 @@ class TestMemoryAwareCacheEviction:
 
 class TestPressureEvictionMetric:
     """The Prometheus exporter renders
-    ``rapid_mlx_prefix_cache_pressure_evictions_total`` — pin the dict
+    ``qmlx_prefix_cache_pressure_evictions_total`` — pin the dict
     key and the rendered series."""
 
     def test_get_stats_exposes_counter(self):
@@ -297,8 +297,8 @@ class TestPressureEvictionMetric:
             engine=types.SimpleNamespace(get_stats=sched.get_stats),
         )
         body = _render_prometheus(cfg)
-        assert "rapid_mlx_prefix_cache_pressure_evictions_total 3" in body
-        assert "# TYPE rapid_mlx_prefix_cache_pressure_evictions_total counter" in body
+        assert "qmlx_prefix_cache_pressure_evictions_total 3" in body
+        assert "# TYPE qmlx_prefix_cache_pressure_evictions_total counter" in body
 
 
 class TestEngineCoreInvokesPressureEvict:
@@ -442,7 +442,7 @@ class TestClearCacheFailurePropagation:
         after ``clear_cache`` succeeded, but that left cache state
         and metrics in disagreement on the failure path: the trie
         had already mutated (entry removed) but the metric stayed at
-        zero, so operators saw ``rapid_mlx_prefix_cache_pressure_
+        zero, so operators saw ``qmlx_prefix_cache_pressure_
         evictions_total == 0`` while ``len(prefix_cache)`` showed
         the entry was actually gone.
 
@@ -599,7 +599,7 @@ class TestPressureEvictFractionClamp:
 
 class TestMetalCacheMemoryMetric:
     """D-METAL-CACHE-ZERO regression: the
-    ``rapid_mlx_metal_cache_memory_bytes`` series must reflect MLX's
+    ``qmlx_metal_cache_memory_bytes`` series must reflect MLX's
     actual reported cache memory — pre-fix users saw 0 across a
     long-prefill session, but that was a real allocator state (cache
     cleared every step end), not a wiring bug. Pin the wiring so a

@@ -92,14 +92,14 @@ def generate_test_file(config):
     query_parts = query_cmd.replace("'{query}'", "QUERY_PLACEHOLDER").split()
     query_args = query_parts[1:]
 
-    return f'''"""{display} integration tests against local Rapid-MLX server.
+    return f'''"""{display} integration tests against local qMLX server.
 
-Tests the full {display} → Rapid-MLX pipeline using the OpenAI-compatible
+Tests the full {display} → qMLX pipeline using the OpenAI-compatible
 API. Covers chat, tool calling (single, multi-step, parallel), streaming,
 and edge cases.
 
 Requirements:
-    1. Rapid-MLX server running: rapid-mlx serve <MODEL> --port 8000
+    1. qMLX server running: qmlx serve <MODEL> --port 8000
     2. {display} installed (see {repo})
     3. Agent configured to point to localhost:8000
 
@@ -114,7 +114,7 @@ import sys
 import time
 import httpx
 
-BASE_URL = os.environ.get("RAPID_MLX_BASE_URL", "http://localhost:8000/v1")
+BASE_URL = os.environ.get("QMLX_BASE_URL", "http://localhost:8000/v1")
 # Auto-detect model from server
 try:
     resp = httpx.get(f"{{BASE_URL}}/models", timeout=5)
@@ -131,7 +131,7 @@ results = {{}}
 
 
 def api_call(messages, tools=None, stream=False, max_tokens=300, temperature=0.3):
-    """Direct API call to Rapid-MLX server."""
+    """Direct API call to qMLX server."""
     payload = {{
         "model": MODEL_ID,
         "messages": messages,
@@ -419,10 +419,10 @@ def test_{name}_read_file():
 
 def test_{name}_terminal():
     """{display} runs a shell command."""
-    out, err = {name}_query("Run 'echo rapid_mlx_{name}_test' and show me the output")
+    out, err = {name}_query("Run 'echo qmlx_{name}_test' and show me the output")
     if err:
         assert False, err
-    assert "rapid_mlx_{name}_test" in out, f"Command output missing: {{out[:100]}}"
+    assert "qmlx_{name}_test" in out, f"Command output missing: {{out[:100]}}"
     print(f"  Terminal: OK")
 
 
@@ -461,7 +461,7 @@ def test_{name}_write_and_run():
 # =============================================================================
 
 if __name__ == "__main__":
-    print(f"Rapid-MLX {display} Integration Tests")
+    print(f"qMLX {display} Integration Tests")
     print(f"Server: {{BASE_URL}}")
     print(f"Model:  {{MODEL_ID}}")
     print(f"Agent:  {{{name.upper()}_BIN}}")
@@ -673,7 +673,7 @@ def main():
     print(f"   {len(test_code.splitlines())} lines, ~15 tests")
     print("\nNext steps:")
     print(f"  1. Review and customize: {output_path}")
-    print("  2. Start server: rapid-mlx serve <MODEL>")
+    print("  2. Start server: qmlx serve <MODEL>")
     print(f"  3. Run tests:    python3 {output_path}")
 
 

@@ -5,7 +5,7 @@ Problem (rapid-desktop issue #449)
 ----------------------------------
 
 Desktop apps that spawn ``qmlx serve`` as a subprocess hold a 20-30 GB
-model weight in unified memory. When the parent (Rapid-MLX Desktop, ``rapid``
+model weight in unified memory. When the parent (qMLX Desktop, ``rapid``
 CLI wrapper, ...) is killed with SIGKILL — macOS app hang force-quit, kernel
 OOM kill, panic, ``kill -9`` from a watchdog — the kernel re-parents the
 sidecar to launchd (PID 1) and the sidecar keeps running forever:

@@ -513,13 +513,13 @@ def test_scheduler_overrides_openai_penalty_context_size():
             f"penalty over the entire generated sequence. Use ≥ 4096."
         )
 
-    # Repetition penalty is a rapid-mlx extension (not OpenAI-spec) and
+    # Repetition penalty is a qmlx extension (not OpenAI-spec) and
     # is documented as multiplicative over a rolling window — leaving it
     # at mlx-lm's default 20 is intentional. Assert we don't accidentally
     # bump it (which would silently change semantics for existing users).
     assert "repetition_context_size" not in call_args, (
         "repetition_context_size should NOT be overridden in the scheduler. "
-        "repetition_penalty is rapid-mlx's multiplicative rolling-window "
+        "repetition_penalty is qmlx's multiplicative rolling-window "
         "extension; only the OpenAI-spec frequency/presence penalties need "
         "the larger window. If you're intentionally changing this, update "
         "the test and document the semantic change."

@@ -18,7 +18,7 @@ import pytest
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("RAPID_MLX_TELEMETRY", raising=False)
+    monkeypatch.delenv("QMLX_TELEMETRY", raising=False)
     import vllm_mlx.telemetry.state as state
 
     importlib.reload(state)
@@ -39,7 +39,7 @@ def test_skips_when_consent_already_recorded(fake_home, monkeypatch, capsys):
     from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
     from vllm_mlx.telemetry.state import record_consent
 
-    record_consent(False, rapid_mlx_version="0.6.33")
+    record_consent(False, qmlx_version="0.6.33")
     _stub_tty(monkeypatch)
     maybe_prompt_for_consent("serve")
     assert capsys.readouterr().out == ""
@@ -49,7 +49,7 @@ def test_skips_when_env_var_set(fake_home, monkeypatch, capsys):
     """Env var already governs state — no need to ask."""
     from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
 
-    monkeypatch.setenv("RAPID_MLX_TELEMETRY", "0")
+    monkeypatch.setenv("QMLX_TELEMETRY", "0")
     _stub_tty(monkeypatch)
     maybe_prompt_for_consent("serve")
     assert capsys.readouterr().out == ""
@@ -88,7 +88,7 @@ def test_skips_for_non_interactive_subcommands(
 
 
 def test_skips_when_subcommand_none(fake_home, monkeypatch, capsys):
-    """`rapid-mlx` with no subcommand prints help — no prompt."""
+    """`qmlx` with no subcommand prints help — no prompt."""
     from vllm_mlx.telemetry.consent import maybe_prompt_for_consent
 
     _stub_tty(monkeypatch)
@@ -115,7 +115,7 @@ def test_yes_records_consent_true(fake_home, monkeypatch, capsys):
     # disable/audit affordances so they always know how to revisit.
     lower = out.lower()
     assert "thank you" in lower
-    assert "rapid-mlx telemetry disable" in lower
+    assert "qmlx telemetry disable" in lower
 
 
 def test_no_records_consent_false(fake_home, monkeypatch, capsys):
@@ -156,7 +156,7 @@ def test_cached_consent_skip_returns_false(fake_home, monkeypatch, capsys):
     # for the wrong reason).
     _stub_tty(monkeypatch)
 
-    record_consent(True, rapid_mlx_version="0.0.0+test")
+    record_consent(True, qmlx_version="0.0.0+test")
     assert maybe_prompt_for_consent("serve") is False
 
 
@@ -268,7 +268,7 @@ def test_disclosure_is_ascii_encodable():
 
     # ``format`` to materialize the template substitutions the runtime
     # would resolve before printing.
-    rendered = _DISCLOSURE.format(env="RAPID_MLX_TELEMETRY", client_id_path="/tmp/x")
+    rendered = _DISCLOSURE.format(env="QMLX_TELEMETRY", client_id_path="/tmp/x")
     rendered.encode("ascii")  # raises UnicodeEncodeError if any non-ASCII slipped in
 
 

@@ -99,7 +99,7 @@ def test_suggest_similar_matches_partial_family_token():
 
 
 def test_suggest_similar_letter_fallback_handles_separator_mismatch():
-    """Real bug from the field: ``rapid-mlx chat gemma4-27b`` returned
+    """Real bug from the field: ``qmlx chat gemma4-27b`` returned
     zero suggestions because the strict family parser sees ``gemma4`` and
     no alias starts with ``gemma4`` (we have ``gemma-4-26b-4bit`` and
     ``gemma3-27b-4bit``). The letter-only fallback must catch this — extract

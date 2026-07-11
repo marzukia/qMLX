@@ -1600,7 +1600,7 @@ async def _create_chat_completion_impl(
     if request.n is not None and request.n > 1:
         raise HTTPException(
             status_code=400,
-            detail="n > 1 is not supported. Rapid-MLX generates one completion per request.",
+            detail="n > 1 is not supported. qMLX generates one completion per request.",
         )
 
     # Validate max_tokens. Lower bound: must be positive. Upper bound: a
@@ -2496,7 +2496,7 @@ async def _create_chat_completion_impl(
                     "%s.supports_guided_generation=False). Falling back "
                     "to unconstrained decoding — schema will NOT be "
                     "enforced. Install with `pip install "
-                    "'qmlx[guided]'` to enable outlines-backed "
+                    "'qmlx-serve[guided]'` to enable outlines-backed "
                     "schema enforcement.",
                     type(engine).__name__,
                 )

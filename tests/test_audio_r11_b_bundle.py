@@ -99,7 +99,7 @@ def _install_fake_mlx_audio(monkeypatch):
 
 
 def _mount_audio_app() -> tuple[TestClient, callable]:
-    """Mount the audio router with the rapid-mlx exception handlers so the
+    """Mount the audio router with the qmlx exception handlers so the
     Pydantic validation errors surface as the OpenAI envelope (not the
     default FastAPI 422)."""
     from vllm_mlx.config import get_config

@@ -186,7 +186,7 @@ def _api_call(
     temperature=0.3,
     timeout=120,
 ) -> dict:
-    """Direct API call to Rapid-MLX server."""
+    """Direct API call to qMLX server."""
     payload = {
         "model": model_id,
         "messages": messages,
@@ -933,7 +933,7 @@ class AgentTestRunner:
                 self.model_id = "default"
 
     def _server_available(self) -> bool:
-        """Check if the Rapid-MLX server is running."""
+        """Check if the qMLX server is running."""
         try:
             r = httpx.get(
                 f"{self.base_url.rstrip('/').rsplit('/v1', 1)[0]}/health", timeout=3
@@ -1015,7 +1015,7 @@ class AgentTestRunner:
                 TestResult(
                     "server_check",
                     TestStatus.ERROR,
-                    message="Rapid-MLX server not running",
+                    message="qMLX server not running",
                 )
             )
             return report

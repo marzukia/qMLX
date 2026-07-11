@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """R6-H1 (Eva 0.8.7 dogfood) regression lock-in for the ``[audio]`` extra.
 
-Eva's r1 dogfood run reproduced a fresh ``pip install rapid-mlx[audio]==0.8.7``
+Eva's r1 dogfood run reproduced a fresh ``pip install qmlx-serve[audio]==0.8.7``
 followed by a Kokoro TTS request returning **500** with
 ``AttributeError: type object 'EspeakWrapper' has no attribute
 'set_data_path'``. The root cause is a missing-dep + wrong-fork pair:

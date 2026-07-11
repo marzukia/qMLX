@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for ``rapid-mlx jlens`` (Jacobian-lens interpretability command).
+"""Tests for ``qmlx jlens`` (Jacobian-lens interpretability command).
 
 These are fast, weight-free tests. The J-lens engine imports mlx lazily, so the
 module imports and its pure helpers (architecture location, rendering, the
@@ -137,7 +137,7 @@ def test_workspace_signal_in_range_and_rewards_lead() -> None:
 
 def test_render_text_has_all_sections() -> None:
     out = jlens.render_text(_fake_result(), "Qwen3-1.7B-4bit")
-    assert "rapid-mlx jlens" in out
+    assert "qmlx jlens" in out
     assert "model continues → 'Paris, the'" in out
     assert "internal trajectory" in out
     assert "answer 'Paris'" in out
@@ -401,7 +401,7 @@ def test_load_model_still_runs_when_mirror_returns_404() -> None:
 
 
 def test_load_model_skips_mirror_for_local_paths(tmp_path) -> None:
-    """A user pointing jlens at a local directory (``rapid-mlx jlens -m
+    """A user pointing jlens at a local directory (``qmlx jlens -m
     ~/models/foo ...``) must not incur a mirror round-trip."""
     from unittest.mock import MagicMock
 

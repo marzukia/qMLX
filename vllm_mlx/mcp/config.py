@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # inject arbitrary MCP server commands/args. Use --mcp-config <path> or the
 # QMLX_MCP_CONFIG env var for explicit project-local configs.
 #
-# The ~/.config/vllm-mlx/ entries are the pre-rename location (Rapid-MLX was
+# The ~/.config/vllm-mlx/ entries are the pre-rename location (qMLX was
 # formerly vllm-mlx). They are kept as a back-compat fallback so existing user
 # configs keep working; new installs should use ~/.config/qmlx/.
 CONFIG_SEARCH_PATHS = [

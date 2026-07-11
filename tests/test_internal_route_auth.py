@@ -3,7 +3,7 @@
 
 History: the F-150 / F-151 fixes (#728) gated ``POST /v1/cache/clear``,
 ``POST /v1/requests/{id}/cancel``, the ``DELETE`` aliases, and
-``DELETE /v1/cache`` behind ``verify_internal_admin`` — an ``X-Rapid-MLX-
+``DELETE /v1/cache`` behind ``verify_internal_admin`` — an ``X-qMLX-
 Internal: true`` header plus loopback-or-api-key check. Per operator
 intent (single-machine UX, no API key gate), #728's auth bundle was
 reverted; these routes now run on plain ``verify_api_key`` (no-op when
@@ -20,7 +20,7 @@ What stays from #728 and is pinned here:
 
 The auth-matrix tests from #728 (no-header → 403, wrong header → 403,
 LAN without api-key → 403) are gone because the auth gate is gone.
-The ``X-Rapid-MLX-Internal: true`` header is now harmless extra
+The ``X-qMLX-Internal: true`` header is now harmless extra
 metadata; tests can pass it or not without changing behavior.
 """
 
@@ -234,7 +234,7 @@ _EXPECTED_NOT_IMPLEMENTED_ENVELOPE = {
 
 def test_cache_export_501_envelope_does_not_leak_operator_path(client_factory):
     """``POST /v1/cache/export`` 501 stub must not echo the resolved sandbox
-    destination — that expands to ``/Users/<USERNAME>/.cache/rapid-mlx/
+    destination — that expands to ``/Users/<USERNAME>/.cache/qmlx/
     cache_exports`` and leaks operator home dir / username to any
     bearer-token holder. After the #728 revert the route runs on plain
     ``verify_api_key``, so this leak shape matters even more when
@@ -248,7 +248,7 @@ def test_cache_export_501_envelope_does_not_leak_operator_path(client_factory):
     r = client.post("/v1/cache/export", json={})
     assert r.status_code == 501, r.text
     body = r.json()
-    for needle in ("/Users/", ".cache", "rapid-mlx", "cache_exports"):
+    for needle in ("/Users/", ".cache", "qmlx", "cache_exports"):
         assert needle not in r.text, f"{needle!r} leaked into 501 body: {r.text!r}"
     for needle in ("github.com", "issues/"):
         assert needle not in r.text, f"{needle!r} leaked into 501 body: {r.text!r}"
@@ -281,7 +281,7 @@ def test_cache_export_403_sandbox_escape_does_not_leak_operator_path(
     returns 403, and the body must NOT echo the resolved sandbox root.
 
     Pre-fix the 403 detail expanded ``InvalidExportPathError`` via
-    ``str(exc)``, which embeds ``/Users/<USERNAME>/.cache/rapid-mlx/
+    ``str(exc)``, which embeds ``/Users/<USERNAME>/.cache/qmlx/
     cache_exports`` — username + home-dir disclosure to any LAN caller
     after the #756 auth-gate revert. Mirrors the strictness of the
     sibling ``test_cache_export_501_envelope_does_not_leak_operator_path``
@@ -302,7 +302,7 @@ def test_cache_export_403_sandbox_escape_does_not_leak_operator_path(
     # Belt + braces leak sweep — these are the substrings that the
     # pre-fix envelope leaked verbatim. Same shape as the 501 test.
     home = str(Path.home())
-    for needle in (home, "/Users/", ".cache", "rapid-mlx", "cache_exports"):
+    for needle in (home, "/Users/", ".cache", "qmlx", "cache_exports"):
         assert needle not in r.text, (
             f"{needle!r} leaked into 403 sandbox-escape body for "
             f"destination={destination!r}: {r.text!r}"
@@ -317,7 +317,7 @@ def test_cache_import_501_envelope_does_not_leak_operator_path(
     at a tmp dir, hand-craft a valid manifest so the route gets past
     validation into the 501 stub, then assert the body is path-free +
     manifest-free."""
-    monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(tmp_path))
+    monkeypatch.setenv("QMLX_CACHE_EXPORT_DIR", str(tmp_path))
 
     import json
 
@@ -362,7 +362,7 @@ def test_cache_import_501_envelope_does_not_leak_operator_path(
         "/Users/",
         ".cache",
         "cache_exports",
-        "rapid-mlx",
+        "qmlx",
     ],
 )
 def test_cache_info_does_not_leak_operator_path(
@@ -370,7 +370,7 @@ def test_cache_info_does_not_leak_operator_path(
 ):
     """H-12: ``GET /v1/cache/info`` returned ``{"path": str(root), ...}``
     where ``root`` is the fully resolved sandbox subdirectory
-    (``/Users/<USERNAME>/.cache/rapid-mlx/cache_exports/<sub>`` on macOS).
+    (``/Users/<USERNAME>/.cache/qmlx/cache_exports/<sub>`` on macOS).
     Same shape as H-02 on a different cache endpoint — leaks the
     operator's home dir + username to any LAN caller after the #756
     auth-gate revert removed ``verify_internal_admin`` from this route.
@@ -387,9 +387,9 @@ def test_cache_info_does_not_leak_operator_path(
     # we care about — so a route that echoes ``str(root)`` would fail
     # every parametrized case, not just the ones whose substring happens
     # to land in the OS-provided ``tmp_path``.
-    sandbox = tmp_path / "Users" / "yuki" / ".cache" / "rapid-mlx" / "cache_exports"
+    sandbox = tmp_path / "Users" / "yuki" / ".cache" / "qmlx" / "cache_exports"
     sandbox.mkdir(parents=True)
-    monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(sandbox))
+    monkeypatch.setenv("QMLX_CACHE_EXPORT_DIR", str(sandbox))
 
     import json
 
@@ -431,7 +431,7 @@ def test_cache_info_returns_canonical_shape_without_path_field(
     """
     sandbox = tmp_path / "h12-canonical-shape"
     sandbox.mkdir(parents=True)
-    monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(sandbox))
+    monkeypatch.setenv("QMLX_CACHE_EXPORT_DIR", str(sandbox))
 
     import json
 

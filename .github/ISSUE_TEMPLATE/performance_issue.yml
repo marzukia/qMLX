@@ -14,8 +14,8 @@ body:
   - type: input
     id: current_version
     attributes:
-      label: Current Rapid-MLX version (slow)
-      placeholder: "0.6.6 (run: rapid-mlx --version)"
+      label: Current qMLX version (slow)
+      placeholder: "0.6.6 (run: qmlx --version)"
     validations:
       required: true
 
@@ -49,7 +49,7 @@ body:
     attributes:
       label: Full serve command
       description: Include every flag — KV quantization, prefix cache, pin-system-prompt, etc. all change perf.
-      placeholder: "rapid-mlx serve <model> --enable-prefix-cache --kv-cache-quantization ..."
+      placeholder: "qmlx serve <model> --enable-prefix-cache --kv-cache-quantization ..."
     validations:
       required: true
 
@@ -85,7 +85,7 @@ body:
     attributes:
       label: Same measurement on prior version
       description: |
-        Run the same long-prompt request on the prior version (downgrade with `brew install rapid-mlx@0.6.5` or pin via pip), report tok/s and TTFT.
+        Run the same long-prompt request on the prior version (downgrade with `brew install qmlx@0.6.5` or pin via pip), report tok/s and TTFT.
         If you can't downgrade, say why — but without a "before" number we can't confirm a regression.
       placeholder: |
         On 0.6.4 with same model + same 60K prompt:

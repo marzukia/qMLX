@@ -197,7 +197,7 @@ def repair_byte_level_decoder(tokenizer) -> bool:
     if tokenizer is None:
         return False
 
-    # Three tokenizer shapes flow through Rapid-MLX:
+    # Three tokenizer shapes flow through qMLX:
     # 1. ``mlx_lm.tokenizer_utils.TokenizerWrapper`` — wraps an HF
     #    tokenizer; ``decode`` is forwarded via ``__getattr__``.
     # 2. ``transformers.PreTrainedTokenizerFast`` (and subclasses,
@@ -424,7 +424,7 @@ def augment_eos_token_ids_from_generation_config(
     ``max_tokens`` is hit. User-visible symptom on Gemma 3n:
     ``hello -> "Okay.<end_of_turn><end_of_turn>..."``.
 
-    Two tokenizer shapes flow through Rapid-MLX:
+    Two tokenizer shapes flow through qMLX:
 
     1. **mlx-lm ``TokenizerWrapper``** — has a curated
        ``_eos_token_ids: set[int]`` plus an ``add_eos_token`` method
@@ -437,7 +437,7 @@ def augment_eos_token_ids_from_generation_config(
        ``eos_token_id`` and ``eos_token_ids`` as property
        descriptors backed by setters that reject non-string values,
        so we can't assign a list to either. Instead we stash the
-       union on a Rapid-MLX-owned attribute name
+       union on a qMLX-owned attribute name
        (``RAPID_EXTRA_EOS_ATTR``) that doesn't collide with any HF
        descriptor; both schedulers' source-4 union branch reads it.
 
@@ -472,7 +472,7 @@ def augment_eos_token_ids_from_generation_config(
     # mlx-vlm processors). HF defines ``eos_token_id`` and
     # ``eos_token_ids`` as property descriptors backed by setters
     # that reject non-string values — so we can't just assign a
-    # list. Instead stash on a Rapid-MLX-owned attribute name that
+    # list. Instead stash on a qMLX-owned attribute name that
     # doesn't collide with any HF descriptor, and have the
     # schedulers' source-4 union branch read it. This avoids
     # monkey-patching HF internals and keeps ``tokenizer.eos_token``

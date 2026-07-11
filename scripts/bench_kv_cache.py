@@ -6,8 +6,8 @@ Internal dev micro-bench. Operates on random tensors of the requested
 shape; does NOT load a real model. Lives in ``scripts/`` rather than the
 user-facing CLI because the numbers it reports are meaningful only when
 tuning the KV-cache quantization implementation — end users see the
-effect via ``--kv-cache-quantization`` on a real ``rapid-mlx serve`` and
-the integration benchmarks under ``rapid-mlx bench``.
+effect via ``--kv-cache-quantization`` on a real ``qmlx serve`` and
+the integration benchmarks under ``qmlx bench``.
 
 Usage:
     python3 scripts/bench_kv_cache.py
@@ -148,9 +148,9 @@ def run(
     )
     print()
     print("Usage:")
-    print("  rapid-mlx serve <model> --continuous-batching --kv-cache-quantization")
+    print("  qmlx serve <model> --continuous-batching --kv-cache-quantization")
     print(
-        "  rapid-mlx serve <model> --continuous-batching --kv-cache-quantization "
+        "  qmlx serve <model> --continuous-batching --kv-cache-quantization "
         "--kv-cache-quantization-bits 4"
     )
 

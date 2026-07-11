@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for `rapid-mlx models` — pins the per-alias profile rendering."""
+"""Tests for `qmlx models` — pins the per-alias profile rendering."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def test_models_command_lists_all_aliases():
     profiles = list_profiles()
     assert len(profiles) >= 20, "expected 20+ aliases (per project goal)"
     for alias in profiles:
-        assert alias in out, f"alias {alias!r} missing from `rapid-mlx models` output"
+        assert alias in out, f"alias {alias!r} missing from `qmlx models` output"
     assert f"({len(profiles)} aliases)" in out
 
 
@@ -119,17 +119,17 @@ def test_models_command_mentions_chat_pull_serve_in_tip():
     """The footer should advertise the four canonical actions."""
     out = _capture_models_output()
     for cmd in ("info", "pull", "chat", "serve"):
-        assert f"rapid-mlx {cmd}" in out, (
-            f"footer tip missing 'rapid-mlx {cmd}' suggestion"
+        assert f"qmlx {cmd}" in out, (
+            f"footer tip missing 'qmlx {cmd}' suggestion"
         )
 
 
 def test_models_command_subparser_smoke():
-    """`rapid-mlx models --help` exits 0 (subparser still wired)."""
+    """`qmlx models --help` exits 0 (subparser still wired)."""
     import pytest
 
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "models", "--help"]),
+        patch.object(sys, "argv", ["qmlx", "models", "--help"]),
         pytest.raises(SystemExit) as exc,
     ):
         cli.main()
@@ -142,11 +142,11 @@ def test_models_command_subparser_smoke():
 
 
 def test_ls_subcommand_registered():
-    """``rapid-mlx ls --help`` exits 0 (top-level alias is wired)."""
+    """``qmlx ls --help`` exits 0 (top-level alias is wired)."""
     import pytest
 
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "ls", "--help"]),
+        patch.object(sys, "argv", ["qmlx", "ls", "--help"]),
         pytest.raises(SystemExit) as exc,
     ):
         cli.main()
@@ -154,12 +154,12 @@ def test_ls_subcommand_registered():
 
 
 def test_ls_routes_to_models_with_cached(monkeypatch):
-    """``rapid-mlx ls`` invokes the cached view via ``models_command``
+    """``qmlx ls`` invokes the cached view via ``models_command``
     with ``args.cached = True``. We patch ``models_command`` to capture
     the args namespace before the body runs."""
     captured: list = []
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "ls"]),
+        patch.object(sys, "argv", ["qmlx", "ls"]),
         patch.object(cli, "models_command", side_effect=captured.append),
     ):
         cli.main()
@@ -177,7 +177,7 @@ def test_models_cached_flag_routes_to_cached_view(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_scan_hf_cache_models", lambda: [])
 
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "models", "--cached"]),
+        patch.object(sys, "argv", ["qmlx", "models", "--cached"]),
         patch("vllm_mlx._version_check.print_staleness_warning_if_any"),
     ):
         cli.main()
@@ -188,10 +188,10 @@ def test_models_cached_flag_routes_to_cached_view(monkeypatch, capsys):
 
 
 def test_models_default_view_unchanged(monkeypatch, capsys):
-    """Bare ``rapid-mlx models`` still prints the capability table —
+    """Bare ``qmlx models`` still prints the capability table —
     --cached is opt-in. Backward-compat contract."""
     with (
-        patch.object(sys, "argv", ["rapid-mlx", "models"]),
+        patch.object(sys, "argv", ["qmlx", "models"]),
         patch("vllm_mlx._version_check.print_staleness_warning_if_any"),
     ):
         cli.main()

@@ -27,7 +27,7 @@ from vllm_mlx.share import cli as share_cli
 @pytest.fixture(autouse=True)
 def _isolated_state_dir(tmp_path, monkeypatch):
     """Redirect ``_state_dir()`` to a per-test tmp_path so we don't
-    mkdir/chmod the user's real ``~/.cache/rapid-mlx/share``. Sandboxed
+    mkdir/chmod the user's real ``~/.cache/qmlx/share``. Sandboxed
     CI runs (codex review, Docker builds) lack permission to chmod a
     cache dir owned by another uid, which surfaces as PermissionError
     rather than a code bug.
@@ -233,7 +233,7 @@ def test_register_adds_share_to_subparsers():
 
 
 def test_share_command_rejects_garbage_port_env(monkeypatch):
-    monkeypatch.setenv("RAPID_MLX_SHARE_PORT", "not-a-number")
+    monkeypatch.setenv("QMLX_SHARE_PORT", "not-a-number")
     with pytest.raises(SystemExit) as exc_info:
         share_cli.share_command(_make_args(port=None))
     assert exc_info.value.code == 2
@@ -252,9 +252,9 @@ def test_share_command_rejects_explicit_port_zero():
 
 
 def test_share_command_rejects_bad_relay_url_scheme(monkeypatch):
-    """``RAPID_MLX_RELAY_URL=http://...`` would silently fall through to a
+    """``QMLX_RELAY_URL=http://...`` would silently fall through to a
     stalled WS handshake. Exit 2 at config-validation time instead."""
-    monkeypatch.setenv("RAPID_MLX_RELAY_URL", "https://not-a-ws-url")
+    monkeypatch.setenv("QMLX_RELAY_URL", "https://not-a-ws-url")
     with (
         patch.object(share_cli, "_spawn_serve", return_value=MagicMock()),
         patch.object(share_cli, "_wait_for_healthz", return_value=True),
@@ -289,7 +289,7 @@ def test_spawn_serve_passes_loopback_host():
 
 
 def test_spawn_serve_passes_api_key_via_env_not_argv():
-    """The bearer key must travel via env (RAPID_MLX_API_KEY) and never
+    """The bearer key must travel via env (QMLX_API_KEY) and never
     appear in argv where ``ps`` / shell history would leak it."""
     with patch("subprocess.Popen") as mock_popen:
         share_cli._spawn_serve(
@@ -302,7 +302,7 @@ def test_spawn_serve_passes_api_key_via_env_not_argv():
     argv = mock_popen.call_args.args[0]
     env = mock_popen.call_args.kwargs["env"]
     assert "SECRET_KEY_HERE" not in " ".join(argv)
-    assert env["RAPID_MLX_API_KEY"] == "SECRET_KEY_HERE"
+    assert env["QMLX_API_KEY"] == "SECRET_KEY_HERE"
 
 
 def test_wait_for_healthz_returns_false_if_serve_exits():
@@ -762,7 +762,7 @@ def test_explicit_cors_origins_wildcard_overrides_default():
 
 def test_default_rate_limit_120_forwarded_to_child():
     """Finding F. Without a forwarded ``--rate-limit`` the child
-    ``rapid-mlx serve`` defaults to 0 (disabled) — a leaked share key
+    ``qmlx serve`` defaults to 0 (disabled) — a leaked share key
     can then burst-DoS the publisher's M3. Share defaults to 120 rpm
     (2 req/s); the value is forwarded verbatim."""
     spawn_argv = _drive_share_capture(_make_args())
@@ -858,13 +858,13 @@ def test_share_command_falls_back_to_args_model_when_no_original_alias(capsys):
 
 def test_share_command_runs_download_gate_for_uncached_hf_repo():
     """``mlx-community/Foo`` is an HF repo id — the gate is reached.
-    ``RAPID_MLX_AUTO_PULL=1`` short-circuits the actual prompt; we just
+    ``QMLX_AUTO_PULL=1`` short-circuits the actual prompt; we just
     verify the gate function was reached for HF-shaped aliases by
     asserting ``_pick_port`` (the very next step) was called."""
     pick = MagicMock(side_effect=SystemExit(99))
     with (
         patch.object(share_cli, "_pick_port", pick),
-        patch.dict("os.environ", {"RAPID_MLX_AUTO_PULL": "1"}, clear=False),
+        patch.dict("os.environ", {"QMLX_AUTO_PULL": "1"}, clear=False),
         pytest.raises(SystemExit) as exc_info,
     ):
         share_cli.share_command(_make_args(model="mlx-community/SomeRepo"))
@@ -886,11 +886,11 @@ def test_share_command_skips_download_gate_for_local_alias():
 
 
 def test_share_command_skips_download_gate_when_env_override_set():
-    """``RAPID_MLX_AUTO_PULL=1`` short-circuits even for an HF repo id."""
+    """``QMLX_AUTO_PULL=1`` short-circuits even for an HF repo id."""
     with (
         patch.object(share_cli, "_pick_port", side_effect=SystemExit(99)),
         patch("vllm_mlx._download_gate.is_repo_cached") as cached,
-        patch.dict("os.environ", {"RAPID_MLX_AUTO_PULL": "1"}, clear=False),
+        patch.dict("os.environ", {"QMLX_AUTO_PULL": "1"}, clear=False),
         pytest.raises(SystemExit),
     ):
         share_cli.share_command(_make_args(model="mlx-community/SomeRepo"))
@@ -898,11 +898,11 @@ def test_share_command_skips_download_gate_when_env_override_set():
 
 
 def test_share_command_skips_download_gate_for_chat_spawn_child():
-    """``RAPID_MLX_CHAT_SPAWN=1`` is the signal that this serve was
-    spawned by ``rapid-mlx chat`` and a parent already gated the
+    """``QMLX_CHAT_SPAWN=1`` is the signal that this serve was
+    spawned by ``qmlx chat`` and a parent already gated the
     download. Re-asking would block headless flows."""
     with (
-        patch.dict("os.environ", {"RAPID_MLX_CHAT_SPAWN": "1"}, clear=False),
+        patch.dict("os.environ", {"QMLX_CHAT_SPAWN": "1"}, clear=False),
         patch(
             "vllm_mlx._download_gate.is_repo_cached",
             side_effect=AssertionError("should not be called"),
@@ -925,13 +925,13 @@ def test_banner_does_not_inline_key_in_curl_command():
         "https://chat.example.com",
     )
     # The bearer must reach curl via env, not via -H literal.
-    assert "Bearer $RAPID_MLX_SHARE_KEY" in out
+    assert "Bearer $QMLX_SHARE_KEY" in out
     assert "Bearer SUPER_SECRET_KEY" not in out
 
 
 def test_banner_has_cheetah_brand_line():
     """Cheetah brand mark sits above the warning box so the share output
-    leads with the friendly ``rapid-mlx`` identity before the harsh
+    leads with the friendly ``qmlx`` identity before the harsh
     security warning. Mirrors the cheetah glyph the desktop app's
     AppIcon ships."""
     from vllm_mlx.share import warning
@@ -1015,30 +1015,30 @@ def test_resolve_chat_frontend_defaults_to_big_agi(monkeypatch):
     ``https://rapid-pro.quicksilverpro.io``. Default surface-bound to the
     Big-AGI fork (tool-calling capable) hosted on CF Pages. BCG remains
     reachable via ``--chat-frontend https://rapid.quicksilverpro.io``."""
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     assert (
         share_cli._resolve_chat_frontend(None) == "https://rapid-pro.quicksilverpro.io"
     )
 
 
 def test_resolve_chat_frontend_flag_overrides_env(monkeypatch):
-    monkeypatch.setenv("RAPID_MLX_CHAT_FRONTEND", "https://env-set.example.com")
+    monkeypatch.setenv("QMLX_CHAT_FRONTEND", "https://env-set.example.com")
     out = share_cli._resolve_chat_frontend("https://flag-set.example.com")
     assert out == "https://flag-set.example.com"
 
 
 def test_resolve_chat_frontend_env_var_fallback(monkeypatch):
-    monkeypatch.setenv("RAPID_MLX_CHAT_FRONTEND", "https://my-fork.example.com")
+    monkeypatch.setenv("QMLX_CHAT_FRONTEND", "https://my-fork.example.com")
     assert share_cli._resolve_chat_frontend(None) == "https://my-fork.example.com"
 
 
 def test_resolve_chat_frontend_empty_flag_disables(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     assert share_cli._resolve_chat_frontend("") is None
 
 
 def test_resolve_chat_frontend_empty_env_disables(monkeypatch):
-    monkeypatch.setenv("RAPID_MLX_CHAT_FRONTEND", "")
+    monkeypatch.setenv("QMLX_CHAT_FRONTEND", "")
     assert share_cli._resolve_chat_frontend(None) is None
 
 
@@ -1046,7 +1046,7 @@ def test_resolve_chat_frontend_strips_trailing_path(monkeypatch):
     """``warning.render`` appends ``/#k=...`` itself — the resolver must
     normalise to scheme://host[:port] so a configured value with a
     trailing slash doesn't produce ``https://x.com//#k=...``."""
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     assert (
         share_cli._resolve_chat_frontend("https://chat.example.com/")
         == "https://chat.example.com"
@@ -1055,44 +1055,44 @@ def test_resolve_chat_frontend_strips_trailing_path(monkeypatch):
 
 def test_resolve_chat_frontend_rejects_javascript_scheme(monkeypatch):
     """Defense against a hostile env var."""
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     with pytest.raises(ValueError, match="https:// or http://"):
         share_cli._resolve_chat_frontend("javascript:alert(1)")
 
 
 def test_resolve_chat_frontend_rejects_ftp_scheme(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     with pytest.raises(ValueError, match="https:// or http://"):
         share_cli._resolve_chat_frontend("ftp://example.com")
 
 
 def test_resolve_chat_frontend_rejects_path_component(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     with pytest.raises(ValueError, match="without a path"):
         share_cli._resolve_chat_frontend("https://chat.example.com/app")
 
 
 def test_resolve_chat_frontend_rejects_query(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     with pytest.raises(ValueError, match="query or fragment"):
         share_cli._resolve_chat_frontend("https://chat.example.com?ref=abc")
 
 
 def test_resolve_chat_frontend_rejects_fragment(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     with pytest.raises(ValueError, match="query or fragment"):
         share_cli._resolve_chat_frontend("https://chat.example.com#anchor")
 
 
 def test_resolve_chat_frontend_rejects_http_for_public_host(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     with pytest.raises(ValueError, match="loopback"):
         share_cli._resolve_chat_frontend("http://chat.example.com")
 
 
 def test_resolve_chat_frontend_allows_http_localhost(monkeypatch):
     """Loopback exception so dev setups work without faking certs."""
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     assert (
         share_cli._resolve_chat_frontend("http://localhost:5173")
         == "http://localhost:5173"
@@ -1104,7 +1104,7 @@ def test_resolve_chat_frontend_allows_http_localhost(monkeypatch):
 
 
 def test_resolve_chat_frontend_rejects_missing_host(monkeypatch):
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     with pytest.raises(ValueError, match="host"):
         share_cli._resolve_chat_frontend("https://")
 
@@ -1114,7 +1114,7 @@ def test_resolve_chat_frontend_rejects_userinfo(monkeypatch):
     parses to ``netloc='chat@evil.com'`` and would echo a banner link
     where the visible host is ``chat`` but the actual host is
     ``evil.com`` (browser sends the bearer key to evil.com)."""
-    monkeypatch.delenv("RAPID_MLX_CHAT_FRONTEND", raising=False)
+    monkeypatch.delenv("QMLX_CHAT_FRONTEND", raising=False)
     with pytest.raises(ValueError, match="userinfo"):
         share_cli._resolve_chat_frontend("https://chat.rapidmlx.com@evil.com")
 

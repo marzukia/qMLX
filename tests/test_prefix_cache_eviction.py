@@ -2,8 +2,8 @@
 """R6-H6: prefix-cache eviction counter wiring.
 
 The 0.8.7 dogfood (Hiro R2) flagged the
-``rapid_mlx_prefix_cache_evictions_total`` and
-``rapid_mlx_prefix_cache_pressure_evictions_total`` Prometheus series
+``qmlx_prefix_cache_evictions_total`` and
+``qmlx_prefix_cache_pressure_evictions_total`` Prometheus series
 both stuck at 0 even after 50 distinct ~1K-token system prompts had
 ballooned the memory-aware cache to 31 GB and Metal allocated 35.5 GB.
 Two interacting root causes:
@@ -15,15 +15,15 @@ Two interacting root causes:
    prefix cache should ever grow, so the LRU evict-on-insert path
    inside ``MemoryAwarePrefixCache.store`` never fired and the
    ``evictions`` stat (surfaced as
-   ``rapid_mlx_prefix_cache_evictions_total``) stayed at 0.
+   ``qmlx_prefix_cache_evictions_total``) stayed at 0.
 2. ``Scheduler.evict_prefix_cache_under_pressure`` short-circuited
    when ``gpu_memory_utilization`` was unset (default 0.0), so the
    pressure-eviction trigger never fired and
-   ``rapid_mlx_prefix_cache_pressure_evictions_total`` stayed at 0
+   ``qmlx_prefix_cache_pressure_evictions_total`` stayed at 0
    regardless of how much memory the cache had pinned.
 
 The fix:
-* Add a ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` env-var override so
+* Add a ``QMLX_PREFIX_CACHE_MAX_BYTES`` env-var override so
   operators can bound the cache to a known ceiling.
 * Add a cache-self-pressure trigger to
   ``evict_prefix_cache_under_pressure`` that fires when
@@ -44,14 +44,14 @@ from unittest.mock import patch
 
 
 def test_env_override_takes_precedence_over_heuristic(monkeypatch):
-    """``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` wins over the
+    """``QMLX_PREFIX_CACHE_MAX_BYTES`` wins over the
     ``max_memory_percent`` heuristic so operators can bound the cache
     even on large-memory hosts where 20% of RAM is excessive."""
     from vllm_mlx.memory_cache import MemoryCacheConfig
 
     # Use a value safely above the 100 MiB floor so the test asserts
     # the env override directly rather than the floor.
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(500 * 1024 * 1024))
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", str(500 * 1024 * 1024))
 
     cfg = MemoryCacheConfig(max_memory_percent=0.99)  # heuristic would be huge
     assert cfg.compute_memory_limit() == 500 * 1024 * 1024
@@ -64,7 +64,7 @@ def test_env_override_takes_precedence_over_max_memory_mb(monkeypatch):
     code changes that wire in new programmatic defaults."""
     from vllm_mlx.memory_cache import MemoryCacheConfig
 
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(200 * 1024 * 1024))
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", str(200 * 1024 * 1024))
 
     cfg = MemoryCacheConfig(max_memory_mb=10000)  # 10 GiB programmatic
     assert cfg.compute_memory_limit() == 200 * 1024 * 1024
@@ -76,7 +76,7 @@ def test_env_unset_falls_back_to_legacy_max_memory_mb(monkeypatch):
     ``max_memory_mb`` working unchanged."""
     from vllm_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
 
-    monkeypatch.delenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", raising=False)
+    monkeypatch.delenv("QMLX_PREFIX_CACHE_MAX_BYTES", raising=False)
 
     cfg = MemoryCacheConfig(max_memory_mb=512)
     assert cfg.compute_memory_limit() == 512 * _BYTES_PER_MB
@@ -88,7 +88,7 @@ def test_env_invalid_value_falls_through_silently(monkeypatch):
     a typo in the operator's env still boots a working server."""
     from vllm_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
 
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", "5GB")
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", "5GB")
 
     cfg = MemoryCacheConfig(max_memory_mb=512)
     # Falls through to max_memory_mb (legacy heuristic).
@@ -100,12 +100,12 @@ def test_env_zero_or_negative_value_falls_through(monkeypatch):
     they fall through so the legacy heuristic applies."""
     from vllm_mlx.memory_cache import _BYTES_PER_MB, MemoryCacheConfig
 
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", "0")
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", "0")
 
     cfg = MemoryCacheConfig(max_memory_mb=256)
     assert cfg.compute_memory_limit() == 256 * _BYTES_PER_MB
 
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", "-100")
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", "-100")
     assert cfg.compute_memory_limit() == 256 * _BYTES_PER_MB
 
 
@@ -120,7 +120,7 @@ def test_env_value_passes_through_unclamped(monkeypatch):
     """
     from vllm_mlx.memory_cache import MemoryCacheConfig
 
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", "1024")
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", "1024")
 
     cfg = MemoryCacheConfig()
     assert cfg.compute_memory_limit() == 1024
@@ -173,9 +173,9 @@ def test_lru_evictions_total_ticks_when_cache_exceeds_env_cap(monkeypatch):
     to a small ceiling, inserting more entries than the ceiling can
     hold should evict LRU entries and tick the ``evictions`` stat
     that the metrics route surfaces as
-    ``rapid_mlx_prefix_cache_evictions_total``."""
+    ``qmlx_prefix_cache_evictions_total``."""
     # Use a small cap so a handful of fake entries trip eviction.
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
 
     from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
@@ -363,7 +363,7 @@ def test_cache_self_pressure_respects_env_override(monkeypatch):
     operator can drive eviction by lowering the env value alone,
     without touching ``gpu_memory_utilization``.
     """
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
 
     from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
@@ -383,7 +383,7 @@ def test_get_stats_surfaces_evictions(monkeypatch):
     refactor that renames the key trips this test instead of silently
     flat-lining the Prometheus series.
     """
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
 
     from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
@@ -429,7 +429,7 @@ def test_r7_h7_near_full_cache_admits_fresh_inserts_via_lru_eviction(
     entries × ~7 = preload to 87% (close to "95% of cap" without
     burning fixture time on a long preload).
     """
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
 
     from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 
@@ -503,7 +503,7 @@ def test_r7_h7_lru_ordering_least_recently_touched_evicted_first(
     # the 4th MUST force eviction. The 4th entry is the SAME 1 MiB
     # size as the others so the LRU loop only has to evict ONE entry
     # to make room.
-    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(3 * 1024 * 1024))
+    monkeypatch.setenv("QMLX_PREFIX_CACHE_MAX_BYTES", str(3 * 1024 * 1024))
 
     from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
 

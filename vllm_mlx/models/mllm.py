@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 VLM_EXTRA_INSTALL_HINT = (
     "Install it with:\n"
-    "    pip install 'qmlx[vision]'\n"
+    "    pip install 'qmlx-serve[vision]'\n"
     "or directly:\n"
     "    pip install 'mlx-vlm>=0.6.3'"
 )
@@ -845,7 +845,7 @@ class MLXMultimodalLM:
         except ImportError:
             raise ImportError(
                 "Vision dependencies are required for multimodal inference. "
-                "Install with: pip install 'qmlx[vision]'"
+                "Install with: pip install 'qmlx-serve[vision]'"
             )
         except ValueError as e:
             # mlx_vlm raises `ValueError: Missing N parameters: vision_*`

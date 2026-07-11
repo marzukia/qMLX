@@ -8,11 +8,11 @@ GPU contention on shared Metal device and hide the speedup.
 Setup (two servers, same alias, different ports):
 
     # terminal 1 — baseline
-    rapid-mlx serve qwen3.5-27b-8bit --port 8000
+    qmlx serve qwen3.5-27b-8bit --port 8000
 
     # terminal 2 — DFlash
-    pip install 'rapid-mlx[dflash]'
-    rapid-mlx serve qwen3.5-27b-8bit --enable-dflash --port 8001
+    pip install 'qmlx-serve[dflash]'
+    qmlx serve qwen3.5-27b-8bit --enable-dflash --port 8001
 
     # terminal 3 — run the demo
     python3.12 scripts/demo_dflash.py

@@ -7,7 +7,7 @@ The existing :mod:`tests.test_disk_kv_checkpoint` battery pins the
 ``self.batch_gen``) **inside the scheduler hook** that called that
 module, and the silent-swallow wrapper at ``Scheduler._process_batch_``
 ``responses`` swallowed the ``AttributeError`` with ``logger.debug`` for
-two releases. ``rapid_mlx_kv_checkpoint_writes_total`` sat at 0 in
+two releases. ``qmlx_kv_checkpoint_writes_total`` sat at 0 in
 production while every unit test below still passed.
 
 These tests exercise the scheduler hook end-to-end (with a stubbed
@@ -280,7 +280,7 @@ def test_safe_disk_checkpoint_records_silent_failure(
 
     before = _dkc.get_stats()["hook_errors"]
 
-    with caplog.at_level(logging.WARNING, logger="rapid_mlx.scheduler"):
+    with caplog.at_level(logging.WARNING, logger="qmlx.scheduler"):
         # Wrapper must not raise.
         sched._safe_disk_checkpoint(req, response=SimpleNamespace())
 

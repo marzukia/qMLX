@@ -295,7 +295,7 @@ class TestEmbeddingsEndpoint:
                 msg = body["error"]["message"]
                 assert "No embedding model loaded" in msg
                 assert "--embedding-model" in msg
-                assert "rapid-mlx[embeddings]" in msg
+                assert "qmlx-serve[embeddings]" in msg
         finally:
             srv._embedding_engine = original
             srv._embedding_model_locked = original_locked
