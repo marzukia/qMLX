@@ -65,6 +65,19 @@ rapid-mlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
 
 Drop-in OpenAI / Anthropic API, same as upstream. `--text-only` is required: the vision path is incompatible with the hybrid continuous-batching that the cache work depends on.
 
+## Recommended sampling
+
+Qwen3.5-122B-A10B ships a `generation_config` of temperature 0.6, top_p 0.95, top_k 20, but no repetition penalty (it defaults to 1.0). With no penalty the model can loop on long generations. Add these server defaults for Qwen's recommended thinking-mode profile plus a mild repetition penalty:
+
+```sh
+  --default-temperature 0.6 \
+  --default-top-p 0.95 \
+  --default-top-k 20 \
+  --default-repetition-penalty 1.05
+```
+
+These are `--default-*`, so a client can still override any of them per request. Keep the repetition penalty mild (1.05) so it does not degrade code output.
+
 ## Credit
 
 Forked from [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). The base engine, the OpenAI/Anthropic API surface, and the MLX serving path are theirs. qMLX adds the hybrid-aware disk restore, the eviction and metrics work, and the Qwen specialisation. We went a different direction on hybrid attention, too fundamental to reconcile in a PR, hence the fork.
