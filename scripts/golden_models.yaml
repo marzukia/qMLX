@@ -23,7 +23,6 @@
 # selection is purely based on list order + RAM fit; `quality_tier` is
 # NOT used to break ties or override ordering. Put your preferred
 # candidate first — the next one(s) are fallbacks for constrained hosts.
-# Source: scripts/pr_validate/steps/stress_e2e_bench.py::_select_models.
 #
 # `quality_tier` is mostly informational (display + scorecard labels).
 # The ONE behavioral effect: `quality_tier: smoke` causes integration
@@ -65,7 +64,7 @@ families:
       # 8-bit, 35B A3B MoE — chosen so the model itself ~never errs on
       # the eval suite. Quant noise on a 4-bit small model makes it hard
       # to tell "model got confused" from "qmlx broke something",
-      # which is the signal pr_validate exists to catch. 8-bit + a real-
+      # which is the signal the golden-models matrix exists to catch. 8-bit + a real-
       # capacity model isolates engine bugs cleanly.
       - id: mlx-community/Qwen3.5-35B-A3B-8bit
         ram_gb_required: 36
@@ -127,7 +126,7 @@ families:
       # completely independent from BatchedEngine (the AR LLM path the
       # other families cover). Without an entry here, any PR that
       # silently breaks ``server.load_model``'s modality dispatch or
-      # any DiffusionEngine internals would slip through pr_validate.
+      # any DiffusionEngine internals would slip through the golden-models matrix.
       # Live v0.7.15 e2e (subagent ``a89586066e0144bf2``): 154 s
       # download+boot+request, coherent ``"Hello there!"`` response in
       # 4 tokens, server log clean, mmap released on shutdown.
