@@ -374,7 +374,6 @@ class TestEndToEndRouteContract:
         assert reasoning == "Reasoning"
 
 
-
 # ---------------------------------------------------------------------
 # r5-D codex r1 BLOCKING follow-up: legitimate content containing a
 # LITERAL ``<|channel>thought`` / ``<think>`` substring must NOT be
@@ -386,4 +385,3 @@ class TestEndToEndRouteContract:
 # parsers whose new finalize branches missed the substring-vs-structural
 # distinction.
 # ---------------------------------------------------------------------
-

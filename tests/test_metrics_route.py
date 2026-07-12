@@ -423,9 +423,9 @@ def test_cache_counters_monotonic_across_cache_clear(metrics_client):
 
     def _hits_value(body: str) -> int:
         for line in body.splitlines():
-            if line.startswith(
-                "qmlx_prefix_cache_hits_total "
-            ) and not line.startswith("#"):
+            if line.startswith("qmlx_prefix_cache_hits_total ") and not line.startswith(
+                "#"
+            ):
                 return int(line.rsplit(" ", 1)[1])
         raise AssertionError("hits_total line not found")
 

@@ -517,9 +517,7 @@ class TestHermesAgent:
         qmlx_server: dict[str, Any],
         family_alias: FamilyAlias,
     ) -> None:
-        _run_openai_tool_smoke(
-            qmlx_server, family_alias, agent_label="hermes-agent"
-        )
+        _run_openai_tool_smoke(qmlx_server, family_alias, agent_label="hermes-agent")
 
 
 class TestAider:

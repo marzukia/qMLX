@@ -944,4 +944,3 @@ class TestNonStreamingHelperSymmetry:
             f"[{name}] D-STOP-THINK regression — content duplicates "
             f"reasoning.\n  content={content!r}\n  reasoning={reasoning!r}"
         )
-

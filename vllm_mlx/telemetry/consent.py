@@ -164,8 +164,7 @@ def maybe_prompt_for_consent(
             )
         )
         print(
-            "Contribute anonymous telemetry to make qmlx better "
-            "for everyone? [y/N]  ",
+            "Contribute anonymous telemetry to make qmlx better for everyone? [y/N]  ",
             end="",
             flush=True,
         )

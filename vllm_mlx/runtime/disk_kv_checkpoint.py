@@ -388,9 +388,7 @@ def get_default_root() -> str:
     created lazily by the first ``write_checkpoint`` so operators who never
     enable disk checkpointing don't see an empty directory show up.
     """
-    return os.path.join(
-        os.path.expanduser("~"), ".cache", "qmlx", "kv_checkpoints"
-    )
+    return os.path.join(os.path.expanduser("~"), ".cache", "qmlx", "kv_checkpoints")
 
 
 def resolve_max_disk_bytes(default: int = DEFAULT_MAX_DISK_BYTES) -> int:
@@ -809,9 +807,7 @@ def write_checkpoint(
                     save_uuid=save_uuid,
                 )
             except Exception as e:  # pragma: no cover — index is best-effort
-                logger.debug(
-                    f"[disk_kv_checkpoint] content-index hand-off failed: {e}"
-                )
+                logger.debug(f"[disk_kv_checkpoint] content-index hand-off failed: {e}")
 
         # Disk-cap enforcement. This is the single point every write funnels
         # through (both the store-level mirror and the interval hook), so the
@@ -1136,9 +1132,11 @@ def enforce_disk_cap(
     # eviction loop drains down to. A fraction of 1.0 collapses back to
     # evict-to-cap (no hysteresis); anything <=0 or non-finite is nonsense and
     # falls back to the default.
-    if not (isinstance(low_water_fraction, (int, float))
-            and math.isfinite(low_water_fraction)
-            and 0.0 < low_water_fraction <= 1.0):
+    if not (
+        isinstance(low_water_fraction, (int, float))
+        and math.isfinite(low_water_fraction)
+        and 0.0 < low_water_fraction <= 1.0
+    ):
         low_water_fraction = _DISK_CAP_LOW_WATER
     low_water = int(max_bytes * low_water_fraction)
 

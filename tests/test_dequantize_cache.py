@@ -80,9 +80,7 @@ def test_non_quantized_and_none_layers_pass_through_by_identity():
 
     recurrent = _FakeRecurrent()
     plain = KVCache()
-    plain.update_and_fetch(
-        mx.zeros((1, 1, 4, 8)), mx.zeros((1, 1, 4, 8))
-    )
+    plain.update_and_fetch(mx.zeros((1, 1, 4, 8)), mx.zeros((1, 1, 4, 8)))
 
     out = _dequantize_cache([recurrent, None, plain])
 

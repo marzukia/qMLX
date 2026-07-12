@@ -270,9 +270,7 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
                 # confusing bare quote.
                 display_host = probe_host or "0.0.0.0"
                 print(f"\n  Error: Port {port} is already in use on {display_host}.")
-                print(
-                    f"  Try a different port: qmlx serve {model} --port {port + 1}"
-                )
+                print(f"  Try a different port: qmlx serve {model} --port {port + 1}")
                 sys.exit(1)
 
 
@@ -4621,9 +4619,7 @@ def ps_command(_args):
             cmd = proc.info["cmdline"] or []
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        if not any(
-            ("qmlx" in c or "vllm_mlx" in c) and "serve" in cmd for c in cmd
-        ):
+        if not any(("qmlx" in c or "vllm_mlx" in c) and "serve" in cmd for c in cmd):
             continue
 
         # 0.9.0 dogfood: ``qmlx serve`` runs under a ``caffeinate
@@ -5599,9 +5595,7 @@ def chat_command(args):
         # critical section, so ``_teardown_proc``'s keep-non-empty-log
         # policy cannot be undone by a signal during the handoff
         # (codex round-1 BLOCKING #1).
-        with managed_tempfile_path(
-            prefix="qmlx-chat-", suffix=".log"
-        ) as _log_handle:
+        with managed_tempfile_path(prefix="qmlx-chat-", suffix=".log") as _log_handle:
             log_path = _log_handle.path
             print(f"\n  Starting server {DIM}(log: {log_path}){RESET} ...")
             # If main() resolved an alias, expose the alias as the API model name
@@ -6512,9 +6506,7 @@ def telemetry_command(args) -> None:
 
     if action == "preview":
         cid = get_or_create_client_id()
-        payload = sample_preview_payload(
-            client_id=cid, qmlx_version=qmlx_version
-        )
+        payload = sample_preview_payload(client_id=cid, qmlx_version=qmlx_version)
         print()
         print("  Sample payload (this is exactly the shape we send):")
         print()
@@ -6559,9 +6551,7 @@ Examples:
   qmlx info qwen3.5-9b-4bit                           # show per-alias profile
 """,
     )
-    parser.add_argument(
-        "--version", "-V", action="version", version=f"qmlx {_version}"
-    )
+    parser.add_argument("--version", "-V", action="version", version=f"qmlx {_version}")
     parser.add_argument(
         "--no-telemetry",
         action="store_true",

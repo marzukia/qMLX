@@ -788,8 +788,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         default=None,
         help=(
-            "Local port to bind serve to (default: 8765, or "
-            "$QMLX_SHARE_PORT if set)"
+            "Local port to bind serve to (default: 8765, or $QMLX_SHARE_PORT if set)"
         ),
     )
     # BooleanOptionalAction is the only way to get both ``--thinking``
