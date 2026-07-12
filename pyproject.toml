@@ -101,10 +101,6 @@ dependencies = [
     # so the very first Tab raises TypeError mid-handshake and the shell
     # silently shows nothing. 3.6.0 ships the variadic signature fix.
     "argcomplete>=3.6",
-    # WebSocket client for ``qmlx share`` — connects to the
-    # rapidserver Worker as the reverse-tunnel transport. Pure Python,
-    # ~200 KB. Replaces the prior frpc Go binary download.
-    "websockets>=12.0",
     # openai-harmony — official harmony-protocol streaming parser. Used
     # by ``HarmonyStreamingRouter`` (output_router_harmony.py) to route
     # gpt-oss tool calls correctly (issue #513 / cluster #444 #455
@@ -276,12 +272,10 @@ mlx = "vllm_mlx.plugin:mlx_platform_plugin"
 [project.scripts]
 qmlx = "vllm_mlx.cli:main"
 qmlx-chat = "vllm_mlx.gradio_app:main"
-qmlx-bench = "vllm_mlx.benchmark:main"
 # Deprecated pre-rename aliases — kept so existing users' scripts/muscle
 # memory keep working. Prefer the qmlx* commands above.
 vllm-mlx = "vllm_mlx.cli:main"
 vllm-mlx-chat = "vllm_mlx.gradio_app:main"
-vllm-mlx-bench = "vllm_mlx.benchmark:main"
 
 [tool.setuptools.package-data]
 vllm_mlx = [

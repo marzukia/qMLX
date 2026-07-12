@@ -102,7 +102,6 @@ jobs:
             tests/test_streaming_json_encoder.py \
             tests/test_native_tool_format.py \
             tests/test_prefix_cache.py \
-            tests/test_mllm_cache.py \
             tests/test_api_models.py \
             tests/test_api_utils.py \
             tests/test_request.py \
@@ -165,7 +164,6 @@ jobs:
             tests/test_server.py \
             tests/test_paged_cache.py \
             tests/test_mllm_continuous_batching.py \
-            tests/test_mllm_cache.py \
             tests/test_memory_cache.py \
             tests/test_optimizations.py \
             tests/test_batching.py \
