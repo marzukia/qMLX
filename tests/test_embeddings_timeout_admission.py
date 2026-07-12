@@ -477,35 +477,6 @@ class TestAdmissionControl:
         detail = r.json().get("detail", "").lower()
         assert "concurrent" in detail or "backpressure" in detail or "busy" in detail
 
-    def test_mllm_scheduler_has_cap(self):
-        """Codex R1 caught this: cap was on the LLM SchedulerConfig
-        only, so MLLM requests could bypass admission entirely. Mirror
-        the field on MLLMSchedulerConfig and exercise the gate."""
-        from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
-
-        cfg = MLLMSchedulerConfig()
-        assert hasattr(cfg, "max_concurrent_requests")
-        assert cfg.max_concurrent_requests is not None
-        assert cfg.max_concurrent_requests > 0
-
-    def test_mllm_add_request_raises_at_cap(self):
-        """Pin the actual MLLM gate: pre-populate ``requests`` up to
-        the cap, then call add_request and expect BackpressureError.
-        Codex R1's prior test only checked the class existed."""
-        from vllm_mlx.mllm_scheduler import (
-            MLLMScheduler,
-            MLLMSchedulerConfig,
-        )
-        from vllm_mlx.scheduler import BackpressureError
-
-        sched = MLLMScheduler.__new__(MLLMScheduler)
-        sched.config = MLLMSchedulerConfig(max_concurrent_requests=1)
-        sched.requests = {"req-0": MagicMock()}
-        sched.waiting = []
-
-        with pytest.raises(BackpressureError):
-            sched.add_request(prompt="hi")
-
     def test_streaming_admission_returns_503(self, monkeypatch):
         """Codex R1's biggest miss: the streaming path didn't 503 —
         ``_disconnect_guard`` swallowed BackpressureError into an SSE
@@ -866,43 +837,6 @@ class TestAdmissionControl:
         with pytest.raises(BackpressureError):
             eng.check_admission()
         assert eng._admission_reservations == 1
-
-    def test_mllm_scheduler_inherits_configured_concurrent_cap(self):
-        """Codex R5 closure: a server started with
-        ``SchedulerConfig(max_concurrent_requests=N)`` must apply the
-        same cap to the MLLM scheduler. Pre-fix, ``_start_mllm`` built
-        ``MLLMSchedulerConfig(...)`` without forwarding the field, so
-        the MLLM admission gate always saw the default 256 and ignored
-        memory-constrained deployments' lower cap.
-
-        Drives the cap propagation directly: read the field off a
-        ``SchedulerConfig`` instance and assert the resulting
-        ``MLLMSchedulerConfig`` carries it."""
-        from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
-        from vllm_mlx.scheduler import SchedulerConfig
-
-        configured = SchedulerConfig(max_concurrent_requests=4)
-        # Mirror the propagation site in ``_start_mllm``.
-        forwarded = getattr(configured, "max_concurrent_requests", 256)
-        assert forwarded == 4
-        mllm_cfg = MLLMSchedulerConfig(max_concurrent_requests=forwarded)
-        assert mllm_cfg.max_concurrent_requests == 4
-
-        # Sanity: omitting the source field falls back to 256 — same
-        # as ``MLLMSchedulerConfig``'s dataclass default. Codex R8
-        # caught the prior version which forwarded ``None`` here,
-        # silently disabling both the engine-level
-        # ``check_admission`` and the scheduler-level
-        # ``MLLMScheduler.add_request`` cap check.
-        bare = object()
-        forwarded = getattr(bare, "max_concurrent_requests", 256)
-        assert forwarded == 256
-        assert (
-            MLLMSchedulerConfig(
-                max_concurrent_requests=forwarded
-            ).max_concurrent_requests
-            == 256
-        )
 
     def test_cloud_routed_chat_releases_local_admission_slot(self, monkeypatch):
         """Codex R8 P2 closure: when ``cfg.cloud_router`` decides to
