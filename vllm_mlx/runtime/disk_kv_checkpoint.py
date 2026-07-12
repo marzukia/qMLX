@@ -1506,20 +1506,44 @@ class DiskCheckpointIndex:
 
             # --- phase 2: disk verify + materialise (index lock dropped) ---
             tok_path = tokens_path(ref.root, ref.req_hash, offset)
-            if not _verify_tokens_blob(tok_path, key, ref.save_uuid):
+            verify = _verify_tokens_blob(tok_path, key, ref.save_uuid)
+            if verify != "ok":
+                # Keep the dashboard-tracked substring; append the
+                # sub-classification so hard vs transient is visible.
                 logger.info(
-                    "[kv_restore_lookup] MISS reason=tokens_blob_verify_fail offset=%d",
+                    "[kv_restore_lookup] MISS reason=tokens_blob_verify_fail "
+                    "verify=%s offset=%d",
+                    verify,
                     offset,
                 )
-                self._quarantine(key, ref, offset, "tokens_blob_verify_fail")
+                if verify == "io_error":
+                    # TRANSIENT: a missing / short / EIO blob may be a racing
+                    # cleanup, not poison. Drop it from the in-memory index so
+                    # this fallback loop advances, but DON'T rename the file
+                    # aside — a later rescan can re-add it.
+                    logger.info(
+                        "[kv_restore_skip] transient reason=tokens_blob_io_error offset=%d",
+                        offset,
+                    )
+                    self._soft_evict(key)
+                else:
+                    # HARD: bytes genuinely wrong / incompatible — quarantine.
+                    self._quarantine(key, ref, offset, "tokens_blob_verify_fail")
                 continue
             loaded = load_checkpoint(ref.path)
             if loaded is None:
+                # TRANSIENT: schema guard aside, a None here can be a momentary
+                # mmap / OOM failure to materialise. Soft-evict (no disk
+                # rename) so the fallback advances without destroying the file.
                 logger.info(
                     "[kv_restore_lookup] MISS reason=load_checkpoint_none offset=%d",
                     offset,
                 )
-                self._quarantine(key, ref, offset, "load_checkpoint_none")
+                logger.info(
+                    "[kv_restore_skip] transient reason=load_checkpoint_none offset=%d",
+                    offset,
+                )
+                self._soft_evict(key)
                 continue
             if loaded.token_offset != offset:
                 logger.info(
@@ -1596,6 +1620,33 @@ class DiskCheckpointIndex:
             "[kv_restore_quarantine] removed corrupt checkpoint offset=%d reason=%s",
             offset,
             reason,
+        )
+
+    def _soft_evict(self, key: tuple[int, ...]) -> None:
+        """Drop ``key`` from the in-memory index without touching disk.
+
+        The TRANSIENT-failure sibling of :meth:`_quarantine`. A gate that could
+        have tripped on a momentary glitch — a missing / short tokens blob from
+        a racing cleanup, an mmap / OOM that made ``load_checkpoint`` return
+        None — must NOT permanently rename a possibly-good checkpoint aside.
+        Removing the key from the radix and the side map lets THIS ``lookup``
+        fallback loop advance to a strictly shorter candidate (so termination
+        is preserved), while the on-disk artifacts stay in place: a later
+        :func:`build_content_index` rescan (a restart) re-adds the entry once
+        the glitch clears.
+
+        In-memory mutation only, under ``self._lock`` — mirrors
+        :meth:`_quarantine`'s step 1 exactly and never holds the index lock
+        across disk I/O (there is none here).
+        """
+        with self._lock:
+            self._radix.remove(key)
+            self._by_key.pop(key, None)
+
+        logger.info(
+            "[kv_restore_soft_evict] dropped transient-failure key len=%d "
+            "(disk artifacts preserved for rescan)",
+            len(key),
         )
 
     def stats(self) -> dict[str, int]:
@@ -1706,32 +1757,83 @@ def _read_checkpoint_tokens(path: str) -> tuple[list[int] | None, str | None]:
     return tokens, save_uuid or blob_uuid
 
 
+# Substrings in a ``_read_tokens_bin`` reject reason that mark a TRANSIENT
+# I/O / read failure (a truncated or short-read file, a raised OSError,
+# an open/stat failure) as opposed to a genuine content incompatibility.
+# A truncated / short blob is the signature of a racing cleanup or an
+# interrupted write, not of poisoned bytes: classify it transient so the
+# caller soft-evicts instead of permanently renaming the file aside.
+_TOKENS_IO_REASON_MARKERS = (
+    "open/read failed",
+    "stat failed",
+    "short read",
+    "truncated",
+    "shorter than magic",
+)
+
+
+def _classify_tokens_reason(reason: str) -> str:
+    """Map a non-empty ``_read_tokens_bin`` reject reason to a failure mode.
+
+    ``"io_error"`` for a truncation / short read / raised OSError (possibly a
+    momentary glitch — a racing cleanup or a half-written file). Everything
+    else is ``"mismatch"``: a length-prefix / save_uuid / size / trailing-byte
+    disagreement, or a v3-magic-absent file the index declared v3, means the
+    on-disk bytes are genuinely wrong or incompatible and the checkpoint
+    should be quarantined.
+    """
+    low = reason.lower()
+    if any(marker in low for marker in _TOKENS_IO_REASON_MARKERS):
+        return "io_error"
+    return "mismatch"
+
+
 def _verify_tokens_blob(
     tok_path: str,
     expected: tuple[int, ...],
     expected_uuid: str | None,
-) -> bool:
-    """Byte-verify an on-disk tokens blob equals ``expected``.
+) -> str:
+    """Tri-state byte-verify of an on-disk tokens blob against ``expected``.
 
     The last gate before a restore trusts a cache: re-reads the tokens blob
     (enforcing the uuid binding when present) and confirms it matches the
-    matched key exactly. Any mismatch / read failure returns False so the
-    caller re-prefills. Takes ``_DISK_LOCK`` (index lock not held).
+    matched key exactly. Returns one of:
+
+    * ``"ok"`` — the blob read cleanly and equals ``expected``.
+    * ``"mismatch"`` — HARD: the blob read fine but differs from ``expected``,
+      the uuid binding was violated, or ``_read_tokens_bin`` reported a reason
+      that means the on-disk bytes are genuinely wrong / incompatible (a
+      length-prefix, save_uuid, size, magic, or trailing-byte disagreement).
+    * ``"io_error"`` — TRANSIENT: the file is missing, the read raised, or the
+      reject reason indicates an I/O / short-read failure rather than a content
+      mismatch. The caller must NOT rename such a file aside — a later rescan
+      can re-add it once the glitch clears.
+
+    Takes ``_DISK_LOCK`` (index lock not held).
     """
     with _DISK_LOCK:
         if not os.path.isfile(tok_path):
-            return False
+            # Missing file: a racing cleanup could have removed it between the
+            # index match and this read. Transient, not proven corrupt.
+            return "io_error"
         try:
             from vllm_mlx.memory_cache import _read_tokens_bin
         except Exception:  # pragma: no cover — defensive
-            return False
+            return "io_error"
         try:
             tokens, reason = _read_tokens_bin(tok_path, len(expected), expected_uuid)
-        except Exception:
-            return False
-    if reason or tokens is None:
-        return False
-    return tokens == list(expected)
+        except OSError:
+            # A raised OSError (e.g. EIO) is an I/O fault, not bad content.
+            return "io_error"
+        except Exception:  # pragma: no cover — defensive
+            return "io_error"
+    if reason:
+        return _classify_tokens_reason(reason)
+    if tokens is None:
+        return "io_error"
+    if tokens == list(expected):
+        return "ok"
+    return "mismatch"
 
 
 def _cache_offset_matches(cache: list[Any], offset: int) -> bool:
