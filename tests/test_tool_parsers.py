@@ -7,9 +7,6 @@ import pytest
 
 from vllm_mlx.api.tool_calling import parse_tool_calls
 from vllm_mlx.tool_parsers import (
-    AutoToolParser,
-    DeepSeekToolParser,
-    DeepSeekV3ToolParser,
     HermesToolParser,
     QwenToolParser,
     ToolParserManager,
@@ -23,10 +20,8 @@ class TestToolParserManager:
         """Test that all expected parsers are registered."""
         parsers = ToolParserManager.list_registered()
         expected = [
-            "auto",
             "qwen",
             "hermes",
-            "deepseek",
         ]
         for p in expected:
             assert p in parsers, f"Parser '{p}' not found"
@@ -36,11 +31,6 @@ class TestToolParserManager:
         test_cases = [
             ("qwen", QwenToolParser),
             ("qwen3", QwenToolParser),
-            ("auto", AutoToolParser),
-            ("deepseek", DeepSeekToolParser),
-            ("deepseek_v3", DeepSeekV3ToolParser),
-            ("deepseek_r1_0528", DeepSeekV3ToolParser),
-            ("deepseek_r1", DeepSeekToolParser),
             ("hermes", HermesToolParser),
             ("nous", HermesToolParser),
         ]
@@ -56,10 +46,8 @@ class TestToolParserManager:
     def test_parser_instantiation(self):
         """Test that all parsers can be instantiated without tokenizer."""
         for name in [
-            "auto",
             "qwen",
             "hermes",
-            "deepseek",
         ]:
             parser_cls = ToolParserManager.get_tool_parser(name)
             parser = parser_cls()  # Should not raise
@@ -257,142 +245,6 @@ class TestHermesToolParser:
         assert "Reasoning" in (result.content or "")
 
 
-class TestDeepSeekToolParser:
-    """Test the DeepSeek tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return DeepSeekToolParser()
-
-    def test_deepseek_format(self, parser):
-        """Test parsing DeepSeek V3 format."""
-        text = """<｜tool▁calls▁begin｜>
-<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather
-```json
-{"city": "Tokyo"}
-```<｜tool▁call▁end｜>
-<｜tool▁calls▁end｜>"""
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0]["name"] == "get_weather"
-
-    def test_multiple_calls(self, parser):
-        """Test multiple DeepSeek tool calls."""
-        text = """<｜tool▁calls▁begin｜>
-<｜tool▁call▁begin｜>function<｜tool▁sep｜>func1
-```json
-{"a": 1}
-```<｜tool▁call▁end｜>
-<｜tool▁call▁begin｜>function<｜tool▁sep｜>func2
-```json
-{"b": 2}
-```<｜tool▁call▁end｜>
-<｜tool▁calls▁end｜>"""
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert len(result.tool_calls) == 2
-
-    def test_content_before_tools(self, parser):
-        """Test content before tool calls is preserved."""
-        text = """Let me help you with that.<｜tool▁calls▁begin｜>
-<｜tool▁call▁begin｜>function<｜tool▁sep｜>search
-```json
-{}
-```<｜tool▁call▁end｜>
-<｜tool▁calls▁end｜>"""
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.content == "Let me help you with that."
-
-    def test_no_tool_call(self, parser):
-        """Test text without tool calls."""
-        text = "Here is my response without any tool calls."
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-
-
-class TestAutoToolParser:
-    """Test the auto-detecting tool parser."""
-
-    @pytest.fixture
-    def parser(self):
-        return AutoToolParser()
-
-    def test_detects_qwen_xml(self, parser):
-        """Test auto detection of Qwen XML format."""
-        text = '<tool_call>{"name": "calculate", "arguments": {}}</tool_call>'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "calculate"
-
-    def test_detects_qwen_bracket(self, parser):
-        """Test auto detection of Qwen bracket format."""
-        text = '[Calling tool: add({"a": 1})]'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "add"
-
-    def test_detects_raw_json(self, parser):
-        """Test auto detection of raw JSON format."""
-        text = '{"name": "test_func", "arguments": {"key": "value"}}'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        assert result.tool_calls[0]["name"] == "test_func"
-
-    def test_no_tool_call(self, parser):
-        """Test text without tool calls."""
-        text = "This is just a regular response."
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "Read [the docs](https://example.test) before changing this.",
-            "The output array was [1, 2, 3], not a tool call.",
-            'Here is JSON: [{"label": "alpha", "score": 0.7}]',
-            "Use [square brackets] for optional text.",
-            "This prose mentions [read(file_path)] without JSON arguments.",
-        ],
-    )
-    def test_no_false_positive_for_ordinary_bracket_text(self, parser, text):
-        """Ordinary bracket text must remain content, not be auto-classified
-        as a tool call (port from upstream #485)."""
-        result = parser.extract_tool_calls(text)
-
-        assert not result.tools_called
-        assert result.content == text
-
-    @pytest.mark.parametrize(
-        "delta",
-        [
-            "See [the docs](https://example.test)",
-            "Values: [1, 2, 3]",
-            'JSON data: [{"label": "alpha"}]',
-            "Literal [square brackets] in text",
-        ],
-    )
-    def test_streaming_ordinary_brackets_emit_content(self, parser, delta):
-        """Streaming must not suppress ordinary bracket text as
-        in-progress markup (port from upstream #485)."""
-        result = parser.extract_tool_calls_streaming(
-            previous_text="",
-            current_text=delta,
-            delta_text=delta,
-        )
-
-        assert result == {"content": delta}
-
-
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
@@ -400,38 +252,11 @@ class TestEdgeCases:
         """Test with empty input."""
         parsers = [
             QwenToolParser(),
-            DeepSeekToolParser(),
-            AutoToolParser(),
+            HermesToolParser(),
         ]
         for parser in parsers:
             result = parser.extract_tool_calls("")
             assert not result.tools_called
-
-    def test_nested_arguments(self):
-        """Test with deeply nested arguments."""
-        parser = AutoToolParser()
-        args = {"level1": {"level2": {"level3": [1, 2, 3]}}}
-        text = f'{{"name": "complex", "arguments": {json.dumps(args)}}}'
-        result = parser.extract_tool_calls(text)
-
-        assert result.tools_called
-        parsed_args = json.loads(result.tool_calls[0]["arguments"])
-        assert parsed_args["level1"]["level2"]["level3"] == [1, 2, 3]
-
-
-class TestStreamingParsing:
-    """Test streaming tool call parsing."""
-
-    def test_auto_streaming(self):
-        """Test auto parser streaming."""
-        parser = AutoToolParser()
-
-        result = parser.extract_tool_calls_streaming(
-            previous_text="",
-            current_text="Hello world",
-            delta_text="Hello world",
-        )
-        assert result == {"content": "Hello world"}
 
 
 class TestThinkTagStripping:
@@ -644,14 +469,6 @@ class TestQwen3XmlAlias:
         assert result.tool_calls[0]["name"] == "read"
         args = json.loads(result.tool_calls[0]["arguments"])
         assert args["filePath"] == "/etc/hostname"
-
-    def test_qwen3_coder_xml_still_resolves_to_coder_parser(self):
-        from vllm_mlx.tool_parsers.qwen3coder_tool_parser import Qwen3CoderToolParser
-
-        parser_cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
-        assert parser_cls is Qwen3CoderToolParser, (
-            "qwen3_coder_xml must remain bound to the Coder parser"
-        )
 
     def test_qwen3_xml_streaming_emits_tool_call(self):
         """Streaming path: feed reasoning-model output token-by-token through qwen3_xml.

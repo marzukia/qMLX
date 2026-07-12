@@ -15,7 +15,6 @@ import pytest
 from vllm_mlx.reasoning.base import DeltaMessage
 
 from ._harmony_markers import (
-    HARMONY_CONTROL_TOKENS,
     HARMONY_LEAK_MARKERS,
     assert_no_harmony_marker_leak,
 )
@@ -190,43 +189,6 @@ def test_batch_deltas_rejects_zero_interval():
 
 
 # ----- Harmony marker allow-list -----------------------------------------
-
-
-def test_harmony_markers_match_source():
-    """Pin EXACT set equality between the parser's stripped control
-    tokens and the regression-test allowlist.
-
-    Pre-fix the smoke test only checked that every test allowlist
-    token appeared in the parser's source string. That covered the
-    "marker list is stale" direction but missed the opposite drift:
-    the parser could quietly start stripping a brand-new control
-    token (say a future ``<|new|>``) and every harmony regression
-    file would silently let it leak because
-    ``HARMONY_CONTROL_TOKENS`` never gained the entry (codex
-    re-review BLOCKING).
-
-    Now: import the parser's exposed
-    ``HARMONY_STRIPPED_CONTROL_TOKENS`` constant and assert set
-    equality with the test's ``HARMONY_CONTROL_TOKENS``.
-    """
-    from vllm_mlx.tool_parsers.harmony_tool_parser import (
-        HARMONY_STRIPPED_CONTROL_TOKENS,
-    )
-
-    parser_set = set(HARMONY_STRIPPED_CONTROL_TOKENS)
-    test_set = set(HARMONY_CONTROL_TOKENS)
-
-    missing_from_test = parser_set - test_set
-    extra_in_test = test_set - parser_set
-    assert not missing_from_test and not extra_in_test, (
-        f"HARMONY_CONTROL_TOKENS drifted from parser source. "
-        f"missing_from_test={sorted(missing_from_test)!r} (parser strips these "
-        f"but regressions don't check for them — silent leak risk). "
-        f"extra_in_test={sorted(extra_in_test)!r} (regressions check for these "
-        f"but parser doesn't strip them — stale list). "
-        f"Either extend HARMONY_CONTROL_TOKENS in tests/parsers/_harmony_markers.py "
-        f"or update HARMONY_STRIPPED_CONTROL_TOKENS in harmony_tool_parser.py."
-    )
 
 
 def test_assert_no_marker_leak_accepts_clean_content():

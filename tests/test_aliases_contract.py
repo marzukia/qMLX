@@ -633,10 +633,9 @@ def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:
     ]
     for alias in family:
         assert alias in profiles, f"{alias} missing from aliases.json"
-        assert profiles[alias].reasoning_parser == "deepseek_r1", (
-            f"{alias}: reasoning_parser must be 'deepseek_r1' (V4-Flash emits "
-            f"`<think>` blocks). Got {profiles[alias].reasoning_parser!r}."
-        )
+        # The deepseek_r1 reasoning parser was removed in the Qwen-only
+        # strip, so this non-Qwen family no longer wires a reasoning parser.
+        assert profiles[alias].reasoning_parser is None
 
 
 @pytest.mark.parametrize(
@@ -670,12 +669,10 @@ def test_vibethinker_family_wires_deepseek_r1_reasoning_parser(alias: str) -> No
     """
     profiles = list_profiles()
     assert alias in profiles, f"{alias} missing from aliases.json"
-    assert profiles[alias].reasoning_parser == "vibethinker", (
-        f"{alias}: reasoning_parser must be 'vibethinker' — a DeepSeek-R1 "
-        f"variant with NO_TAG_CONTENT_THRESHOLD=1024 (vs base 64) to handle "
-        f"the documented preamble-before-`<think>` shape (codex r2 P2). "
-        f"Got {profiles[alias].reasoning_parser!r}."
-    )
+    # The vibethinker/deepseek_r1 reasoning parsers were removed in the
+    # Qwen-only strip, so this non-Qwen family no longer wires a reasoning
+    # parser.
+    assert profiles[alias].reasoning_parser is None
     assert profiles[alias].tool_call_parser == "hermes", (
         f"{alias}: tool_call_parser must be 'hermes' — VibeThinker is "
         f"Qwen2-derived and emits both <tool_call>{{...}}</tool_call> and "
@@ -831,11 +828,9 @@ def test_nanbeige_4_1_3b_uses_hermes_not_llama_tool_parser() -> None:
     # ``choices[0].message.content`` and clients lose ``reasoning_content``.
     # ``deepseek_r1`` handles the "model decides" contract — same as
     # VibeThinker / R1-distill on a non-DeepSeek base.
-    assert profile.reasoning_parser == "deepseek_r1", (
-        f"nanbeige4.1-3b-4bit: reasoning_parser must be 'deepseek_r1' — "
-        f"the model emits `<think>` blocks autonomously. Got "
-        f"{profile.reasoning_parser!r}."
-    )
+    # The deepseek_r1 reasoning parser was removed in the Qwen-only strip,
+    # so this non-Qwen family no longer wires a reasoning parser.
+    assert profile.reasoning_parser is None
 
 
 def test_phi_4_mini_reasoning_wires_deepseek_r1_reasoning_parser() -> None:
@@ -863,11 +858,9 @@ def test_phi_4_mini_reasoning_wires_deepseek_r1_reasoning_parser() -> None:
     profiles = list_profiles()
     alias = "phi-4-mini-reasoning-4bit"
     assert alias in profiles, f"{alias} missing from aliases.json"
-    assert profiles[alias].reasoning_parser == "deepseek_r1", (
-        f"{alias}: reasoning_parser must be 'deepseek_r1' — Phi-4-mini-"
-        f"reasoning emits `<think>` blocks autonomously (smoke-verified). "
-        f"Got {profiles[alias].reasoning_parser!r}."
-    )
+    # The deepseek_r1 reasoning parser was removed in the Qwen-only strip,
+    # so this non-Qwen family no longer wires a reasoning parser.
+    assert profiles[alias].reasoning_parser is None
     assert profiles[alias].tool_call_parser == "hermes", (
         f"{alias}: tool_call_parser must be 'hermes' (Phi family default)."
     )

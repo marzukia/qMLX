@@ -1091,56 +1091,6 @@ def _synthesize_forced_tool_call(
     )
 
 
-def _normalize_ui_tars_tcs_for_chat(tool_calls: list | None) -> list | None:
-    """Apply UI-TARS Computer-Use spec keys to a streaming-shaped tool_calls list.
-
-    The streaming postprocessor surfaces tool_calls as a list of dicts
-    in OpenAI-streaming shape (``{"index","id","type","function":{
-    "name","arguments"}}``); the cross-format fallback path
-    (``finalize_tool_calls``) and the terminal-chunk merge path use
-    the same shape. Centralising the per-entry normalisation here
-    keeps the three streaming sites (mid-stream emit, terminal merge,
-    synthetic fallback) byte-identical with the non-stream chat
-    response builder — without it the streaming path would emit the
-    parser-native ``point`` shape while the non-stream path emitted
-    the spec ``coordinate`` shape (r7-A R7-H1).
-
-    Gated on ``function.name == "computer"`` so vanilla function tools
-    whose arguments carry a key named ``point`` are passed through
-    verbatim. A None / empty input passes through.
-    """
-    if not tool_calls:
-        return tool_calls
-    from ..tool_parsers.ui_tars_tool_parser import (
-        normalize_ui_tars_chat_tool_call_arguments,
-    )
-
-    out = []
-    for tc in tool_calls:
-        if not isinstance(tc, dict):
-            out.append(tc)
-            continue
-        fn = tc.get("function") or {}
-        name = fn.get("name")
-        args = fn.get("arguments")
-        if not isinstance(args, str):
-            out.append(tc)
-            continue
-        new_args = normalize_ui_tars_chat_tool_call_arguments(args, name)
-        if new_args is args:
-            out.append(tc)
-            continue
-        # Shallow-copy so the upstream postprocessor's structures are
-        # not mutated under the caller's feet (defense-in-depth in case
-        # the same event is referenced elsewhere).
-        new_tc = dict(tc)
-        new_fn = dict(fn)
-        new_fn["arguments"] = new_args
-        new_tc["function"] = new_fn
-        out.append(new_tc)
-    return out
-
-
 def _is_harmony_cut_short_stream(
     reasoning_parser,
     accumulated_reasoning: str,
@@ -1838,30 +1788,6 @@ async def _create_chat_completion_impl(
                 messages[i]["role"] = "system"
             else:
                 m.role = "system"
-
-    # Dogfood C-05 / r5-B C-09 fix: auto-prepend the canonical UI-TARS
-    # Computer-Use action-API system prompt for the ``ui_tars`` parser
-    # family — **tool-coupled** (only when the request actually
-    # declares a Computer-Use tool). PR #812 wired the parser by alias
-    # regex but never injected the sysprompt the model is post-trained
-    # on; the C-05 fix then injected on every UI-TARS request, which
-    # broke plain-text and JSON-mode prompts (F-R1-L: ``2+2`` came
-    # back as a phantom click). r5-B threads ``tools=request.tools``
-    # through so the helper's tool-coupled gate decides: NO computer
-    # tool → no injection → model answers in prose / JSON. The helper
-    # is also idempotent (skips when the user already pasted the
-    # sysprompt) and honors ``tool_choice="none"`` (skips so the
-    # model emits plain prose — dogfood C-07).
-    from ..tool_parsers.ui_tars_tool_parser import (
-        maybe_inject_ui_tars_system_prompt as _maybe_inject_ui_tars_sysprompt,
-    )
-
-    messages = _maybe_inject_ui_tars_sysprompt(
-        messages,
-        tool_call_parser=cfg.tool_call_parser,
-        tool_choice=tc,
-        tools=request.tools,
-    )
 
     # Auto-inject system prompt suffix for tool use and/or reasoning control.
     # ``tool_choice="required"`` (and the specific-function form) gets a
@@ -3091,25 +3017,6 @@ async def _create_chat_completion_impl(
         output.text, request, structured_tool_calls=engine_tool_calls
     )
 
-    # r7-A R7-H1: UI-TARS chat-lane coordinate-key parity. The parser
-    # emits canonical ``point`` / ``start_point`` / ``end_point``; the
-    # OpenAI Computer-Use spec uses ``coordinate`` (single-point) and
-    # ``path=[{"x","y"}, …]`` (drag). The Anthropic + Responses lanes
-    # already normalize at their adapters (``api/anthropic_adapter.py``,
-    # ``api/responses_adapter.py``); the chat lane was missed in r6-B
-    # and surfaced the parser-native shape, breaking parity. Gated on
-    # ``function.name == "computer"`` so vanilla function tools whose
-    # arguments happen to carry a ``point`` key are untouched.
-    if tool_calls:
-        from ..tool_parsers.ui_tars_tool_parser import (
-            normalize_ui_tars_chat_tool_call_arguments,
-        )
-
-        for _tc in tool_calls:
-            _tc.function.arguments = normalize_ui_tars_chat_tool_call_arguments(
-                _tc.function.arguments, _tc.function.name
-            )
-
     # Honor ``parallel_tool_calls=false`` by capping the parsed list at one.
     # No decoder-level enforcement exists, so this is a post-parse trim — the
     # only reliable lever for OpenAI-compat clients that explicitly request a
@@ -3821,7 +3728,7 @@ async def stream_chat_completion(
                     # keys (``coordinate`` / ``path``) instead of the
                     # parser-native ``point``. Gated on
                     # ``function.name == "computer"`` inside the helper.
-                    _normalized_tcs = _normalize_ui_tars_tcs_for_chat(event.tool_calls)
+                    _normalized_tcs = event.tool_calls
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         created=_sse_created,
@@ -3907,9 +3814,7 @@ async def stream_chat_completion(
                 # r7-A R7-H1: normalize before append so terminal-merge
                 # + synthetic-fallback emit sites don't need to know
                 # about the UI-TARS spec-key contract.
-                fallback_tool_calls.extend(
-                    _normalize_ui_tars_tcs_for_chat(event.tool_calls) or []
-                )
+                fallback_tool_calls.extend(event.tool_calls or [])
             elif event.type == "content" and event.content:
                 finalize_content_parts.append(event.content)
         finalize_content = "".join(finalize_content_parts)
