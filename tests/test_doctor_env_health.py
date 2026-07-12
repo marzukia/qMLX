@@ -170,15 +170,15 @@ def test_missing_optional_package_marks_warning():
     """A missing optional package is ⚠ with an install hint, never ✗."""
 
     def fake_ver(dist: str) -> str | None:
-        # mlx-audio missing; the rest present.
-        return None if dist == "mlx-audio" else "1.0.0"
+        # mlx-vlm missing; the rest present.
+        return None if dist == "mlx-vlm" else "1.0.0"
 
     with mock.patch.object(eh, "_safe_version", side_effect=fake_ver):
         section = eh.section_optional_packages()
 
-    audio_row = next(c for c in section.checks if "mlx-audio" in c.label)
-    assert audio_row.status is eh.CheckStatus.WARN
-    assert "pip install" in audio_row.label  # hint preserved
+    vlm_row = next(c for c in section.checks if "mlx-vlm" in c.label)
+    assert vlm_row.status is eh.CheckStatus.WARN
+    assert "pip install" in vlm_row.label  # hint preserved
 
 
 # ---------------------------------------------------------------------------

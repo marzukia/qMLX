@@ -14,10 +14,6 @@ from pydantic import ValidationError
 
 from vllm_mlx.api.models import (
     AssistantMessage,
-    AudioSeparationRequest,
-    AudioSpeechRequest,
-    AudioTranscriptionRequest,
-    AudioTranscriptionResponse,
     AudioUrl,
     ChatCompletionChoice,
     ChatCompletionChunk,
@@ -654,55 +650,6 @@ class TestMCPModels:
         )
         assert resp.is_error is True
         assert resp.error_message == "Not found"
-
-
-class TestAudioModels:
-    """Tests for audio API models."""
-
-    def test_transcription_request_defaults(self):
-        req = AudioTranscriptionRequest()
-        assert req.model == "whisper-large-v3"
-        assert req.temperature == 0.0
-        assert req.response_format == "json"
-
-    def test_transcription_request_custom(self):
-        req = AudioTranscriptionRequest(
-            model="parakeet-tdt-0.6b-v2",
-            language="en",
-            response_format="verbose_json",
-        )
-        assert req.model == "parakeet-tdt-0.6b-v2"
-        assert req.language == "en"
-
-    def test_transcription_response(self):
-        resp = AudioTranscriptionResponse(
-            text="Hello world",
-            language="en",
-            duration=2.5,
-        )
-        assert resp.text == "Hello world"
-        assert resp.duration == 2.5
-
-    def test_speech_request_defaults(self):
-        req = AudioSpeechRequest(input="Hello world")
-        assert req.model == "kokoro"
-        assert req.voice == "af_heart"
-        assert req.speed == 1.0
-        assert req.response_format == "wav"
-
-    def test_speech_request_custom(self):
-        req = AudioSpeechRequest(
-            model="chatterbox",
-            input="Test speech",
-            voice="custom_voice",
-            speed=1.5,
-        )
-        assert req.speed == 1.5
-
-    def test_separation_request_defaults(self):
-        req = AudioSeparationRequest()
-        assert req.model == "htdemucs"
-        assert req.stems == ["vocals", "accompaniment"]
 
 
 class TestEmbeddingModels:

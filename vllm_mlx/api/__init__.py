@@ -10,11 +10,6 @@ This module provides shared components used by the server:
 
 from .models import (
     AssistantMessage,
-    AudioSeparationRequest,
-    AudioSpeechRequest,
-    # Audio
-    AudioTranscriptionRequest,
-    AudioTranscriptionResponse,
     AudioUrl,
     ChatCompletionChoice,
     # Chat requests/responses
@@ -105,11 +100,6 @@ __all__ = [
     "MCPServersResponse",
     "MCPExecuteRequest",
     "MCPExecuteResponse",
-    # Audio
-    "AudioTranscriptionRequest",
-    "AudioTranscriptionResponse",
-    "AudioSpeechRequest",
-    "AudioSeparationRequest",
     # Embeddings
     "EmbeddingRequest",
     "EmbeddingData",
