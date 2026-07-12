@@ -42,10 +42,6 @@ import pytest
 
 from vllm_mlx.api.utils import clean_output_text, strip_thinking_tags
 from vllm_mlx.reasoning import finalize_truncation
-from vllm_mlx.reasoning.deepseek_r1_parser import (
-    DeepSeekR1ReasoningParser,
-    VibeThinkerReasoningParser,
-)
 from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from vllm_mlx.service.helpers import (
     _finalize_content_and_reasoning,
@@ -126,10 +122,6 @@ class TestIsOpenInThink:
         p = Qwen3ReasoningParser()
         assert p.is_open_in_think("<think>R</think>answer") is False
 
-    def test_deepseek_r1_open_in_think(self):
-        p = DeepSeekR1ReasoningParser()
-        assert p.is_open_in_think("<think>R") is True
-
 
 # ---------------------------------------------------------------------
 # Per-parser ``extract_reasoning`` finalize-on-truncation contract
@@ -148,12 +140,6 @@ class TestExtractReasoningMidThink:
         assert reasoning == "Reasoning so far"
         assert content is None
 
-    def test_deepseek_r1_mid_thought_with_think_opener(self):
-        p = DeepSeekR1ReasoningParser()
-        reasoning, content = p.extract_reasoning("<think>Reasoning so far")
-        assert reasoning == "Reasoning so far"
-        assert content is None
-
 
 class TestExtractReasoningClosedStop:
     """No-regression: ``finish_reason="stop"`` happy-path (think
@@ -162,14 +148,6 @@ class TestExtractReasoningClosedStop:
 
     def test_qwen3_clean_split(self):
         p = Qwen3ReasoningParser()
-        reasoning, content = p.extract_reasoning(
-            "<think>Reasoning</think>The answer is 42."
-        )
-        assert reasoning == "Reasoning"
-        assert content == "The answer is 42."
-
-    def test_deepseek_r1_clean_split(self):
-        p = DeepSeekR1ReasoningParser()
         reasoning, content = p.extract_reasoning(
             "<think>Reasoning</think>The answer is 42."
         )
@@ -195,23 +173,6 @@ class TestRouteFinalizeOnTruncation:
         already handled this — pin it for no-regression."""
         raw = "<think>Reasoning mid-thought"
         parser = Qwen3ReasoningParser()
-        cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-            raw_text=raw,
-            cleaned_text=raw,
-            tool_calls=[],
-            reasoning_parser=parser,
-            engine_reasoning_text="",
-            finish_reason="length",
-        )
-        assert reasoning_text is not None
-        assert "Reasoning mid-thought" in reasoning_text
-        assert "<think>" not in (cleaned_text or "")
-
-    def test_deepseek_r1_length_truncation_routes_to_reasoning(self):
-        """Cross-parser sweep: deepseek-r1 mid-think — existing Case-3
-        fallback already handled this — pin it for no-regression."""
-        raw = "<think>Reasoning mid-thought"
-        parser = DeepSeekR1ReasoningParser()
         cleaned_text, reasoning_text = _finalize_content_and_reasoning(
             raw_text=raw,
             cleaned_text=raw,
@@ -281,14 +242,6 @@ class TestNoDuplicationOfBuffer:
                 Qwen3ReasoningParser,
                 "<think>Reasoning that was truncated mid-flight",
             ),
-            (
-                DeepSeekR1ReasoningParser,
-                "<think>Reasoning that was truncated mid-flight",
-            ),
-            (
-                VibeThinkerReasoningParser,
-                "<think>Reasoning that was truncated mid-flight",
-            ),
         ],
     )
     def test_no_dup_on_length_truncation(self, parser_cls, raw):
@@ -307,28 +260,6 @@ class TestNoDuplicationOfBuffer:
                 f"{parser_cls.__name__} duplicated buffer into both "
                 f"content and reasoning_content: {cleaned_text[:80]!r}"
             )
-
-
-class TestVibeThinkerLengthTruncation:
-    """VibeThinker is a DeepSeek-R1 variant — its truncated-think
-    behaviour was already pinned by the live-test plug
-    (``first_parse_was_truncated_think``). Pin it again here under
-    the r5-D contract so the plug ordering doesn't drift."""
-
-    def test_vibethinker_mid_think(self):
-        raw = "<think>Reasoning so far"
-        parser = VibeThinkerReasoningParser()
-        cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-            raw_text=raw,
-            cleaned_text=raw,
-            tool_calls=[],
-            reasoning_parser=parser,
-            engine_reasoning_text="",
-            finish_reason="length",
-        )
-        assert reasoning_text is not None
-        assert "Reasoning so far" in reasoning_text
-        assert "<think>" not in (cleaned_text or "")
 
 
 class TestEndToEndRouteContract:
@@ -352,16 +283,6 @@ class TestEndToEndRouteContract:
     def test_qwen3_end_to_end_no_dup(self):
         raw = "<think>Mid-thought reasoning that was cut short"
         content, reasoning = _route_end_to_end(Qwen3ReasoningParser(), raw, "length")
-        assert content is None
-        assert reasoning is not None
-        assert "Mid-thought reasoning" in reasoning
-        assert content != reasoning
-
-    def test_deepseek_r1_end_to_end_no_dup(self):
-        raw = "<think>Mid-thought reasoning that was cut short"
-        content, reasoning = _route_end_to_end(
-            DeepSeekR1ReasoningParser(), raw, "length"
-        )
         assert content is None
         assert reasoning is not None
         assert "Mid-thought reasoning" in reasoning

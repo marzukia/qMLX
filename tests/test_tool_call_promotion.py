@@ -423,78 +423,6 @@ class TestStreamingPromotion:
         # the first was clobbered).
         assert final.content.count("<tool_call>") == 2
 
-    def test_deepseek_threshold_crossing_with_reasoning_carry(self):
-        """Codex round-5 BLOCKING finding #1: when ``<tool_call>`` is
-        SPLIT across the NO_TAG_CONTENT_THRESHOLD boundary (e.g. the
-        opener arrives as ``<tool_ca`` under threshold and the rest
-        ``ll>...`` after), the under-threshold partial-opener is
-        held in ``_reasoning_carry``. The threshold-crossing content
-        delta must prepend that carry so the opener reassembles on
-        the wire — otherwise the prefix is silently dropped or
-        emitted as reasoning later by finalize."""
-        cls = get_parser("deepseek_r1")
-        p = cls()
-        p.reset_state()
-        # Build text that places the ``<tool_call>`` opener so it
-        # straddles the threshold (64). Under-threshold step
-        # populates ``_reasoning_carry`` with the partial opener;
-        # the next step crosses the threshold.
-        accumulated = ""
-        under_chunk = "x" * 48 + "<tool_ca"  # 56 chars: under 64
-        previous = accumulated
-        accumulated += under_chunk
-        p.extract_reasoning_streaming(previous, accumulated, under_chunk)
-        # Carry should now hold the partial opener.
-        assert p._reasoning_carry == "<tool_ca"
-        # Now the rest of the opener + body crosses the threshold.
-        rest = "ll>\n<function=f><parameter=x>1</parameter></function>"
-        previous = accumulated
-        accumulated += rest
-        result = p.extract_reasoning_streaming(previous, accumulated, rest)
-        assert result is not None
-        content_seen = result.content or ""
-        # The reassembled opener must be on the wire.
-        assert "<tool_call>" in content_seen
-        assert "<function=f>" in content_seen
-        # Carry should have been drained.
-        assert p._reasoning_carry == ""
-
-    def test_deepseek_threshold_crossing_with_buffered_tool_call(self):
-        """Codex round-4 BLOCKING finding #1: the DeepSeek no-tag
-        threshold path emits ``DeltaMessage(content=delta_text)``
-        once the stream crosses ``NO_TAG_CONTENT_THRESHOLD``. If a
-        structural ``<tool_call>`` opened the buffer while still
-        under the threshold (the parser routed under-threshold
-        bytes to reasoning), the buffered prefix must be flushed
-        with the threshold-crossing delta — otherwise the bytes
-        are stranded and never reach the wire."""
-        cls = get_parser("deepseek_r1")
-        p = cls()
-        p.reset_state()
-        # Open a tool_call buffer with reasoning bytes (under threshold).
-        under_threshold = "<tool_call>\n<func"
-        accumulated = ""
-        previous = accumulated
-        accumulated += under_threshold
-        p.extract_reasoning_streaming(previous, accumulated, under_threshold)
-        # Now push past NO_TAG_CONTENT_THRESHOLD (64) so the
-        # next delta hits the threshold-crossing branch.
-        crossing = "tion=f><parameter=x>1</parameter></function>"
-        crossing_pad = "x" * (max(0, 65 - len(accumulated + crossing)))
-        crossing_full = crossing + crossing_pad
-        previous = accumulated
-        accumulated += crossing_full
-        result = p.extract_reasoning_streaming(previous, accumulated, crossing_full)
-        # The buffered ``<tool_call>\n<func`` prefix must be present
-        # in the emitted content — not silently dropped from the
-        # wire by the threshold-crossing early-return.
-        assert result is not None
-        content_seen = result.content or ""
-        # Buffer should have been flushed: the under-threshold
-        # ``<tool_call>`` opener bytes appear in content.
-        assert "<tool_call>" in content_seen
-        assert "<function=f>" in content_seen
-
     def test_stream_multiple_tool_calls(self, parser):
         text = (
             "<think>Two calls.\n"
@@ -659,7 +587,7 @@ class TestMultiFamilyParity:
     """Promotion fires across every ``<think>``-tag subclass via the
     centralised filter."""
 
-    @pytest.mark.parametrize("parser_name", ["qwen3", "deepseek_r1", "vibethinker"])
+    @pytest.mark.parametrize("parser_name", ["qwen3"])
     def test_non_streaming_promotes_across_families(self, parser_name):
         cls = get_parser(parser_name)
         p = cls()
@@ -676,7 +604,7 @@ class TestMultiFamilyParity:
         assert "get_weather" in content, parser_name
         assert "<tool_call>" not in (reasoning or ""), parser_name
 
-    @pytest.mark.parametrize("parser_name", ["qwen3", "deepseek_r1", "vibethinker"])
+    @pytest.mark.parametrize("parser_name", ["qwen3"])
     def test_streaming_promotes_across_families(self, parser_name):
         cls = get_parser(parser_name)
         p = cls()

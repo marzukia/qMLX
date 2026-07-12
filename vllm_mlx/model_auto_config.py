@@ -249,7 +249,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             # (codex r2 P2 — keeps the base ``deepseek_r1`` threshold at 64
             # for distilled-on-Qwen aliases that DO open with ``<think>``
             # immediately).
-            reasoning_parser="vibethinker",
+            reasoning_parser=None,
         ),
     ),
     # Qwen3-Coder-Next / Qwen3-Next — hybrid linear attention, BEFORE
@@ -436,7 +436,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         re.compile(r"nanbeige", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="hermes",
-            reasoning_parser="deepseek_r1",
+            reasoning_parser=None,
         ),
     ),
     # Phi-4-mini-reasoning — Microsoft's math-tuned 3.8B reasoning
@@ -455,7 +455,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         re.compile(r"phi[-_]?4[-_]?mini[-_]?reasoning", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="hermes",
-            reasoning_parser="deepseek_r1",
+            reasoning_parser=None,
         ),
     ),
     # Phi-3.5-mini — the chat template only defines ``<|user|>`` /
