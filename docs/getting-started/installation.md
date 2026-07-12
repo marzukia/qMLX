@@ -35,13 +35,11 @@ pip install -e .
 
 ## Optional Extras
 
-The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
+The base text-only install is ~460 MB. Vision and other capabilities ship as opt-in extras.
 
 | Extra | Install | Adds |
 |---|---|---|
-| `vision` | `pip install 'qmlx-serve[vision]'` | mlx-vlm + opencv + torch (~322 MB) for VLMs (Gemma 4, Qwen-VL, video) |
-| `audio` | `pip install 'qmlx-serve[audio]'` | mlx-audio + spacy + scipy (~600 MB) for TTS / STT |
-| `embeddings` | `pip install 'qmlx-serve[embeddings]'` | mlx-embeddings (~50 MB) for `/v1/embeddings` |
+| `vision` | `pip install 'qmlx-serve[vision]'` | mlx-vlm + torch (~322 MB) for the Gemma 4 / Qwen-VL model paths |
 | `chat` | `pip install 'qmlx-serve[chat]'` | Gradio web UI (~150 MB) |
 | `guided` | `pip install 'qmlx-serve[guided]'` | outlines (~80 MB) for schema-constrained JSON |
 | `all` | `pip install 'qmlx-serve[all]'` | Everything above (~1.1 GB) |
@@ -52,9 +50,6 @@ The base text-only install is ~460 MB. Vision/audio/etc. ship as opt-in extras.
 # Check CLI
 qmlx --help
 qmlx version
-
-# Self-diagnostic (works without downloading a model)
-qmlx doctor
 
 # Smallest interactive smoke test (downloads ~2.5 GB on first run)
 qmlx chat qwen3.5-4b-4bit

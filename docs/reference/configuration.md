@@ -52,12 +52,6 @@
 |--------|-------------|---------|
 | `--reasoning-parser` | Parser for reasoning models (`qwen3`, `deepseek_r1`) | None |
 
-### Embedding Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'qmlx-serve[embeddings]'`) | None |
-
 ### Speculative Decoding Options
 
 Use `--speculative-config` for speculative decoding usage. Legacy
@@ -180,14 +174,6 @@ qmlx serve mlx-community/Qwen3-4B-4bit \
 ```bash
 qmlx serve mlx-community/Qwen3-8B-4bit \
   --reasoning-parser qwen3 \
-  --continuous-batching
-```
-
-### With Embeddings
-
-```bash
-qmlx serve mlx-community/Qwen3-4B-4bit \
-  --embedding-model mlx-community/multilingual-e5-small-mlx \
   --continuous-batching
 ```
 

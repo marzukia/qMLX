@@ -6,14 +6,12 @@
 |---------|-------------|
 | `qmlx serve` | Start OpenAI-compatible server |
 | `qmlx chat` | Interactive chat REPL with a model |
-| `qmlx bench` | Run performance benchmarks |
 | `qmlx models` | List available model aliases |
 | `qmlx info` | Show the per-model profile for an alias or repo |
 | `qmlx pull` | Download a model into the HuggingFace cache |
 | `qmlx rm` | Remove a cached model |
 | `qmlx ps` | List running qmlx servers |
 | `qmlx agents` | List, configure, and test agent integrations |
-| `qmlx doctor` | Run self-diagnostic / regression harness |
 | `qmlx telemetry` | Manage anonymous usage telemetry (opt-in) |
 | `qmlx upgrade` | Upgrade qmlx (brew / pip / install.sh) |
 | `qmlx version` | Show version number |
@@ -55,7 +53,6 @@ qmlx serve <model> [options]
 | `--default-temperature` | Default temperature when not specified in request | None |
 | `--default-top-p` | Default top_p when not specified in request | None |
 | `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'qmlx-serve[embeddings]'`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (e.g. `hermes`, `llama`, `deepseek`, `deepseek_v31`, `glm47`, `gemma4`, `minimax`, `kimi`, `harmony`, `qwen3_coder_xml`). Auto-detected from the model name; explicit flag overrides. | auto |
 
@@ -73,9 +70,6 @@ qmlx serve qwen3.5-9b-4bit --use-paged-cache --port 8000
 
 # With MCP tools
 qmlx serve qwen3.5-9b-4bit --mcp-config mcp.json
-
-# Multimodal (vision) model — requires the [vision] extra
-qmlx serve gemma-4-26b-4bit --mllm
 
 # Reasoning model — parser is auto-detected, but you can pin it
 qmlx serve qwen3.5-9b-4bit --reasoning-parser qwen3
@@ -108,17 +102,7 @@ qmlx serve qwen3.5-9b-4bit \
   --api-key your-secret-key \
   --rate-limit 60 \
   --timeout 120
-
-# Audio models (requires the [audio] extra) — see docs/guides/audio.md
-qmlx serve kokoro                    # TTS via /v1/audio/speech
-qmlx serve whisper-large-v3          # STT via /v1/audio/transcriptions
-qmlx serve parakeet                  # English STT (NVIDIA Parakeet)
-qmlx serve mlx-community/Kokoro-82M-bf16   # Full HF id also routes to audio
 ```
-
-#### Audio aliases (R10-C1)
-
-Pass any of the audio aliases listed in `qmlx models` (the "Audio models" section) to serve the audio-only `/v1/audio/*` endpoints. The audio path skips the text-LM loader entirely — engines load lazily on the first request. See the [audio guide](../guides/audio.md) for the full TTS / STT alias matrix and quickstart examples.
 
 ### Security
 
@@ -142,39 +126,6 @@ Or with curl:
 ```bash
 curl http://localhost:8000/v1/models \
   -H "Authorization: Bearer your-secret-key"
-```
-
-## `qmlx bench`
-
-Run a built-in performance benchmark against a model.
-
-### Usage
-
-```bash
-qmlx bench <model> [options]
-```
-
-### Common Options
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `<model>` | Model alias (e.g. `qwen3.5-4b-4bit`) or HF repo (positional) | *(required)* |
-| `--num-prompts` | Number of prompts | 5 |
-| `--max-tokens` | Max tokens per prompt | 256 |
-| `--enable-prefix-cache` / `--disable-prefix-cache` | Toggle prefix caching | enabled |
-| `--use-paged-cache` | Use paged KV cache layout | off |
-| `--kv-cache-quantization` | Quantize prefix cache entries | off |
-
-Run `qmlx bench --help` for the full list (memory limits, batch sizes, etc.).
-
-### Examples
-
-```bash
-# Quick LLM benchmark using a short alias
-qmlx bench qwen3.5-4b-4bit
-
-# Bench a vision-language model by full HF repo
-qmlx bench mlx-community/Qwen3-VL-8B-Instruct-4bit
 ```
 
 ## `qmlx chat`
