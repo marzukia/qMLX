@@ -192,7 +192,6 @@ def test_no_api_key_keeps_dev_path_anonymous():
 # moved to anonymous-by-design (and document why).
 PROTECTED_ROUTER_MODULES = (
     "vllm_mlx.routes.anthropic",
-    "vllm_mlx.routes.audio",
     "vllm_mlx.routes.cache",
     "vllm_mlx.routes.chat",
     "vllm_mlx.routes.completions",

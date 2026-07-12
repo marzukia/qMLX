@@ -194,15 +194,6 @@ _model_registry = ModelRegistry()
 _engine: BaseEngine | None = None
 _model_name: str | None = None
 _model_alias: str | None = None  # Short alias used to start the model (if any)
-# Task #292 (Bo R13/R14): operator opt-in for ``/v1/audio/*`` routes on a
-# text-only server. Set to True by ``--enable-audio`` (text mode) or by
-# :func:`vllm_mlx.cli._serve_audio_mode` (audio mode). The audio-mode
-# helper also stamps a registry-known model_alias/model_name so the gate
-# in :func:`register_audio_routes_if_enabled` fires from the registry
-# branch — the flag is the explicit-opt-in fallback for text-only servers
-# that intentionally want the audio routes mounted (e.g. side-car patterns
-# where the audio backend lives in a separate process the routes proxy to).
-_enable_audio_lane: bool = False
 _model_path: str | None = (
     None  # Actual model path (for cache dir, not affected by --served-model-name)
 )
@@ -472,49 +463,6 @@ async def lifespan(app: FastAPI):
     if mcp_config:
         await init_mcp(mcp_config)
 
-    # F-K-CAPABILITIES-OMIT-AUDIO: run a deep audio-lane dry-run so
-    # the per-lane status surfaces on ``/v1/models`` capability tags
-    # BEFORE the first user request lands on a degraded backend. The
-    # existing shallow probe only checks ``mlx_audio`` importability;
-    # a model that loads but can't generate output (F-K-WHISPER-500
-    # shape) still passed the shallow probe and 500'd at first use.
-    #
-    # Off by default to keep cold-start fast for text-only deploys —
-    # turn on via ``QMLX_AUDIO_DEEP_PROBE=1`` when running an
-    # audio-serving build. The dry-run is non-fatal: any failure is
-    # caught inside ``deep_probe_audio_lane`` and recorded as
-    # ``degraded`` / ``missing``; the lifespan completes regardless
-    # so a torn audio backend doesn't block server boot.
-    #
-    # Codex r2 NIT #3: call ``deep_probe_audio_lane`` unconditionally
-    # (even when ``mlx_audio`` is missing) so ``/v1/models`` carries
-    # ``audio_lanes={"stt":"missing","tts":"missing"}`` on bare
-    # installs. The prior branch short-circuited on ``find_spec``
-    # and ``audio_lanes`` came back ``null``, hiding the "no audio
-    # extra installed" state from operators using the field for
-    # health. ``deep_probe_audio_lane`` already runs the shallow
-    # presence check internally and records the missing-extra
-    # status via the same code path the route's 503 envelope uses.
-    # Codex r3 NIT #2: lowercase the env value before comparing so
-    # ``QMLX_AUDIO_DEEP_PROBE=False`` (capital F) and ``NO``
-    # (uppercase) are treated as falsy, not truthy. Mirrors the
-    # convention used by every other ``QMLX_*`` boolean knob.
-    _audio_deep_probe = os.environ.get("QMLX_AUDIO_DEEP_PROBE", "").strip().lower()
-    if _audio_deep_probe and _audio_deep_probe not in ("0", "false", "no"):
-        try:
-            from .audio.probe import deep_probe_audio_lane as _deep_probe
-
-            logger.info("Running deep audio probe (STT + TTS dry-run)...")
-            _stt_status = _deep_probe("stt")
-            _tts_status = _deep_probe("tts")
-            logger.info(
-                "Audio lane status — stt=%s, tts=%s",
-                _stt_status.get("status"),
-                _tts_status.get("status"),
-            )
-        except Exception as _audio_err:  # noqa: BLE001
-            logger.warning("Deep audio probe failed (non-fatal): %s", _audio_err)
-
     # All slow startup work done. Flip the readiness flag so /health/ready
     # starts returning 200. Anything that races a request before this point
     # would otherwise hit a not-yet-warmed engine.
@@ -593,14 +541,6 @@ app = FastAPI(
     version="0.6.0",
     lifespan=lifespan,
 )
-
-# SECURITY: bound the request body of /v1/audio/transcriptions at the
-# ASGI layer so honest-Content-Length DoS attempts are rejected before
-# Starlette's multipart parser drains the receive channel and spools
-# the body to disk. See vllm_mlx/routes/audio.py for the rationale.
-from .routes.audio import install_audio_body_limit_middleware  # noqa: E402
-
-install_audio_body_limit_middleware(app)
 
 # SECURITY: blanket request-body size cap across all /v1/* routes.
 # Defends against the DoS pattern documented in rapid-desktop#273 / #463
@@ -1515,17 +1455,6 @@ def load_model(
     # same failure mode if a future change violates the invariants.
     _sync_config()
 
-    # Task #292: attach ``/v1/audio/*`` routes only when the loaded model
-    # actually supports audio OR the operator passed ``--enable-audio``.
-    # Pre-fix the router was attached at module import (before any model
-    # was loaded), so a text-only ``qmlx serve <text-model>`` boot
-    # advertised the audio paths and 500'd on first POST. Calling the
-    # helper here — after the model is loaded and ``_model_name`` is
-    # stamped — gives FastAPI the chance to return a stock 404 for the
-    # audio paths on text-only servers, matching the customer-visible
-    # behaviour the Bo R13/R14 fuzz wave asked for.
-    register_audio_routes_if_enabled()
-
 
 def _sync_config() -> None:
     """Copy server globals into the ServerConfig singleton.
@@ -1579,7 +1508,6 @@ def _sync_config() -> None:
     cfg.pinned_system_prompt_hash = _pinned_system_prompt_hash
     cfg.mcp_executor = _mcp_executor
     cfg.model_registry = _model_registry
-    cfg.enable_audio_lane = _enable_audio_lane
 
 
 # Re-export for backward compatibility (test_streaming_pipeline_integration)
@@ -1637,12 +1565,6 @@ async def init_mcp(config_path: str):
 # circular imports (route modules import verify_api_key etc. from this module)
 # =============================================================================
 from .routes.anthropic import router as _anthropic_router
-
-# Task #292: ``_audio_router`` is no longer registered at import time —
-# :func:`register_audio_routes_if_enabled` (called from ``load_model``
-# and :func:`vllm_mlx.cli._serve_audio_mode`) imports the router lazily
-# through ``vllm_mlx.routes.audio.register_audio_routes``. Removing the
-# unused top-level alias keeps the rebound dispatcher hot path short.
 from .routes.cache import router as _cache_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
@@ -1668,41 +1590,7 @@ app.include_router(_anthropic_router)
 app.include_router(_responses_router)
 app.include_router(_embeddings_router)
 app.include_router(_mcp_router)
-# Task #292: ``_audio_router`` is registered LAZILY (after model load) by
-# :func:`register_audio_routes_if_enabled` — text-only servers (Bo R13/R14
-# fuzz wave: Qwen3-7B-4bit, etc.) must answer ``/v1/audio/*`` with a
-# stock 404 instead of advertising routes that 500 on first call.
 app.include_router(_cache_router)
-
-
-def register_audio_routes_if_enabled() -> bool:
-    """Task #292: attach the audio router only when audio is enabled.
-
-    The gate is:
-
-    * The loaded model alias / HF id resolves through the audio
-      registry (the audio-mode boot path
-      :func:`vllm_mlx.cli._serve_audio_mode` always populates
-      ``_model_name`` / ``_model_alias`` with a registry-known id), OR
-    * The operator passed ``--enable-audio`` on a text-mode boot
-      (``_enable_audio_lane`` is True).
-
-    Returns True when the router was attached on this call, False
-    otherwise. Idempotent: called from ``load_model`` (text path),
-    :func:`_post_audio_mode_routes_hook` (audio path), and the legacy
-    ``python -m vllm_mlx.server`` entrypoint. Doing it here keeps the
-    decision close to the boot state that drives it instead of
-    threading the model name through three call sites.
-    """
-    from .routes.audio import audio_routes_should_register, register_audio_routes
-
-    if not audio_routes_should_register(
-        model_name=_model_name,
-        model_alias=_model_alias,
-        enable_audio_lane=_enable_audio_lane,
-    ):
-        return False
-    return register_audio_routes(app)
 
 
 # =============================================================================
@@ -2016,22 +1904,6 @@ Examples:
         default=None,
         help="API key for cloud model (overrides environment variable).",
     )
-    # Task #292: mirror the ``qmlx serve`` ``--enable-audio`` flag
-    # on the legacy ``python -m vllm_mlx.server`` entrypoint so the same
-    # text-mode-with-audio escape hatch is available to operators who
-    # boot via the older command (e.g. supervisord units, internal
-    # tools pinned to the module-form invocation).
-    parser.add_argument(
-        "--enable-audio",
-        action="store_true",
-        default=False,
-        help=(
-            "Mount the ``/v1/audio/*`` routes even when the loaded model "
-            "is text-only. Audio-capable models auto-mount the routes; "
-            "this flag is only needed on text-mode boots."
-        ),
-    )
-
     args = parser.parse_args()
 
     # PortSweep pre-flight (codex round-1 MAJOR on PR #848): mirror the
@@ -2063,15 +1935,6 @@ Examples:
     # Set global configuration
     global _api_key, _default_timeout, _rate_limiter
     global _default_temperature, _default_top_p, _default_top_k
-    global _enable_audio_lane
-    # Task #292: forward ``--enable-audio`` to the gate that decides
-    # whether ``load_model``'s post-load hook attaches the audio router.
-    # Codex r2 NIT #2: assign from the parsed value directly so a second
-    # in-process ``main()`` call (test harness, embedded usage) without
-    # ``--enable-audio`` clears any stale ``True`` from a prior run —
-    # without this the gate would silently advertise audio on the next
-    # text-only boot.
-    _enable_audio_lane = bool(getattr(args, "enable_audio", False))
     # Env-fallback for the bearer key: keep it out of argv where
     # ``ps -ef`` would leak it. ``_resolve_api_key`` is the single
     # SSOT for the policy (inline-wins, env-fallback) — see its
