@@ -72,13 +72,6 @@ class TestDetectModelConfig:
             f"generic 'qwen3' regex? Got {cfg.reasoning_parser!r}."
         )
 
-    # GPT-OSS
-    def test_gpt_oss(self):
-        config = detect_model_config("mlx-community/gpt-oss-20b-MXFP4-Q8")
-        assert config is not None
-        assert config.tool_call_parser == "harmony"
-        assert config.reasoning_parser == "harmony"
-
     # Mistral / Devstral
     @pytest.mark.parametrize(
         "model_path",
@@ -106,67 +99,6 @@ class TestDetectModelConfig:
         assert config is not None
         assert config.tool_call_parser == "hermes"
         assert config.reasoning_parser is None
-
-    # DeepSeek V3.1 thinking-channel → deepseek_v31 parser. R12-5
-    # split: V3.1 is V3.1-only; R1-0528 lives on the V3 parser below
-    # because its chat_template.jinja was inherited from V3.
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "deepseek-ai/DeepSeek-V3.1-0324",
-        ],
-    )
-    def test_deepseek_v31(self, model_path):
-        config = detect_model_config(model_path)
-        assert config is not None
-        assert config.tool_call_parser == "deepseek_v31"
-        assert config.reasoning_parser == "deepseek_r1"
-
-    # R12-5: DeepSeek-R1-0528 (V3-shape chat template) → deepseek_v3
-    # parser. Split off from deepseek_v31 in PR for 0.8.14 — the V3.1
-    # parser was carrying V3 auto-detect logic that risked the historic
-    # ``name="function"`` mis-emission on edge cases.
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
-            "mlx-community/DeepSeek-R1-0528-4bit",
-        ],
-    )
-    def test_deepseek_r1_0528_routes_to_v3_parser(self, model_path):
-        config = detect_model_config(model_path)
-        assert config is not None
-        assert config.tool_call_parser == "deepseek_v3"
-        assert config.reasoning_parser == "deepseek_r1"
-
-    # DeepSeek V4 / V4-Flash — sparse MoE with sliding-window attention,
-    # pure-attention (spec decode safe).
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "mlx-community/DeepSeek-V4-Flash-8bit",
-            "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
-            "mlx-community/DeepSeek-V4-Flash-4bit",
-            "deepseek-ai/DeepSeek-V4",
-        ],
-    )
-    def test_deepseek_v4(self, model_path):
-        config = detect_model_config(model_path)
-        assert config is not None
-        assert config.tool_call_parser == "deepseek"
-        # V4-Flash chat template emits `<think>...</think>` blocks gated
-        # by ``thinking_mode``; ``deepseek_r1`` handles that format. The
-        # base ``deepseek-ai/DeepSeek-V4`` path is resolved via family
-        # detection (no aliases.json entry), so it currently gets no
-        # reasoning_parser — only the MLX variants benefit from the
-        # alias wiring. Track both shapes here so a refactor that flips
-        # the family default has to update this test consciously.
-        if model_path == "deepseek-ai/DeepSeek-V4":
-            assert config.reasoning_parser is None
-        else:
-            assert config.reasoning_parser == "deepseek_r1"
-        assert config.is_hybrid is False
-        assert config.supports_spec_decode is True
 
     # ---- 2026 model families ----
 
@@ -224,9 +156,10 @@ class TestDetectModelConfig:
     def test_vibethinker(self, model_path):
         cfg = detect_model_config(model_path)
         assert cfg is not None
-        # ``vibethinker`` parser — DeepSeek-R1 variant with a larger
-        # no-tag threshold for preamble-before-``<think>`` (codex r2 P2).
-        assert cfg.reasoning_parser == "vibethinker"
+        # The vibethinker/deepseek_r1 reasoning parsers were removed in
+        # the Qwen-only strip, so this non-Qwen family no longer wires a
+        # reasoning parser (tool_call_parser stays hermes).
+        assert cfg.reasoning_parser is None
         assert cfg.tool_call_parser == "hermes"
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
@@ -256,10 +189,10 @@ class TestDetectModelConfig:
             f"{model_path}: tool_call_parser must be 'hermes', got "
             f"{cfg.tool_call_parser!r} — did the regex order change?"
         )
-        # Nanbeige4.1-3B emits autonomous ``<think>...</think>`` blocks
-        # (smoke-verified). ``deepseek_r1`` parser routes the block into
-        # ``reasoning_content`` so it doesn't leak into ``content``.
-        assert cfg.reasoning_parser == "deepseek_r1"
+        # The deepseek_r1 reasoning parser was removed in the Qwen-only
+        # strip, so this non-Qwen family no longer wires a reasoning
+        # parser.
+        assert cfg.reasoning_parser is None
         assert cfg.is_hybrid is False
         assert cfg.supports_spec_decode is True
 
@@ -277,83 +210,6 @@ class TestDetectModelConfig:
         # Critical: reasoning_parser must be set.
         assert cfg.reasoning_parser == "qwen3"
         assert cfg.is_hybrid is False
-
-    # DeepSeek R1 (non-0528) → deepseek parser + reasoning
-    def test_deepseek_r1(self):
-        config = detect_model_config("deepseek-ai/DeepSeek-R1")
-        assert config is not None
-        assert config.tool_call_parser == "deepseek"
-        assert config.reasoning_parser == "deepseek_r1"
-
-    # R12-S1 (Sven r12 HIGH-1 verdict): DeepSeek-R1-Distill-* checkpoints
-    # are Qwen2 / Llama2-arch SFTs whose tokenizers do NOT carry the
-    # V3 fullwidth-pipe special tokens — they emit the V2-style envelope
-    # the legacy ``deepseek`` parser handles, NOT the V3 fenced-JSON
-    # envelope ``deepseek_v3`` expects. The regex ordering MUST keep
-    # these models on the legacy parser; if a future edit flipped them
-    # to ``deepseek_v3`` (because the family name still contains "r1"),
-    # Sven's HIGH-1 would re-surface as a default-config regression
-    # rather than a wrong-flag misbind.
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit",
-            "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
-            "mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit",
-            "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit",
-            "mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit",
-            "mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit",
-            "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-            "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-        ],
-    )
-    def test_deepseek_r1_distill_routes_to_legacy_parser(self, model_path):
-        config = detect_model_config(model_path)
-        assert config is not None
-        # MUST be the legacy ``deepseek`` parser, NOT ``deepseek_v3`` —
-        # the distills cannot emit the V3 wire shape.
-        assert config.tool_call_parser == "deepseek", (
-            f"{model_path}: tool_call_parser must be 'deepseek' (legacy), "
-            f"got {config.tool_call_parser!r}. R1-Distill family is "
-            "Qwen2/Llama2-arch SFT and cannot emit the V3 fenced-JSON "
-            "envelope. See Sven r12 dogfood HIGH-1 verdict (R12-S1)."
-        )
-        assert config.reasoning_parser == "deepseek_r1"
-
-    # DeepSeek V2.5 (and older non-R1) → legacy ``deepseek`` parser.
-    # R12-5: V3 vanilla checkpoints now route to ``deepseek_v3`` (the
-    # dedicated parser) — see ``test_deepseek_v3_vanilla_routes_to_v3_parser``.
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "mlx-community/DeepSeek-V2.5-4bit",
-        ],
-    )
-    def test_deepseek_no_reasoning(self, model_path):
-        config = detect_model_config(model_path)
-        assert config is not None
-        assert config.tool_call_parser == "deepseek"
-        assert config.reasoning_parser is None
-
-    # R12-5: vanilla DeepSeek-V3 checkpoints (V3-0324 etc.) emit the
-    # V3 fenced-JSON wire shape, same as R1-0528. Route them to the
-    # dedicated ``deepseek_v3`` parser so they get the block-wise
-    # scanner hardening and the forced-tool prefix injection (codex
-    # round-3 P2 — the generic ``deepseek`` parser has neither).
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "deepseek-ai/DeepSeek-V3-0324",
-            "deepseek-v3-0324",
-        ],
-    )
-    def test_deepseek_v3_vanilla_routes_to_v3_parser(self, model_path):
-        config = detect_model_config(model_path)
-        assert config is not None
-        assert config.tool_call_parser == "deepseek_v3"
-        # No ``deepseek_r1`` reasoning on vanilla V3 — only R1 family
-        # ships with the thinking-channel.
-        assert config.reasoning_parser is None
 
     # Hermes fine-tuned
     def test_hermes(self):
@@ -454,13 +310,10 @@ class TestDetectModelConfig:
         cfg = detect_model_config(model_path)
         assert cfg is not None
         assert cfg.tool_call_parser == "hermes"
-        assert cfg.reasoning_parser == "deepseek_r1", (
-            f"{model_path}: reasoning_parser must be 'deepseek_r1' — "
-            f"Phi-4-mini-reasoning emits `<think>` blocks autonomously, "
-            f"smoke-verified. Got {cfg.reasoning_parser!r}. Did the "
-            f"phi-4-mini-reasoning regex get demoted below the generic "
-            f"phi regex?"
-        )
+        # The deepseek_r1 reasoning parser was removed in the Qwen-only
+        # strip, so this non-Qwen family no longer wires a reasoning
+        # parser.
+        assert cfg.reasoning_parser is None
 
     # Unknown model → None
     def test_unknown_model(self):
@@ -1157,14 +1010,6 @@ class TestWarnMisboundDeepseekV3Parser:
     # Sanity check that the suggestion path still fires for the common
     # case (non-V3-named parent, R1-Distill family, auto suggests the
     # legacy ``deepseek`` parser).
-    def test_suggestion_still_fires_when_auto_picks_non_v3(self):
-        msg = warn_misbound_deepseek_v3_parser(
-            "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit", "deepseek_v3"
-        )
-        assert msg is not None
-        assert "Auto-detect would pick 'deepseek'" in msg
-        assert "Drop the explicit" in msg
-
     # Codex r5 follow-up nit: even when auto-detect's pick is a
     # DIFFERENT V3-family parser than the one bound (so the suggestion
     # would have fired under the r5 same-parser-only gate), suppress
@@ -1184,17 +1029,6 @@ class TestWarnMisboundDeepseekV3Parser:
         assert "Auto-detect would pick" not in msg
         # The hermes-pinning remediation kicks in instead.
         assert "hermes" in msg
-
-    # The cross-sub-family auto-detect suggestion MUST still fire on
-    # real V3-template checkpoints (template != None). Codex r5's
-    # original wins must not regress.
-    def test_cross_sub_family_suggestion_still_fires_on_real_v3_template(self):
-        msg = warn_misbound_deepseek_v3_parser(
-            "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", "deepseek_v31"
-        )
-        assert msg is not None
-        # Auto-detect correctly picks ``deepseek_v3`` for R1-0528.
-        assert "Auto-detect would pick 'deepseek_v3'" in msg
 
     # PR-validate codex r6 BLOCKING (HF cache layout): a HuggingFace
     # cache path resolves the model name to ``<sha>`` if you naively
@@ -1336,78 +1170,6 @@ class TestWarnMisboundDeepseekV3Parser:
     )
     def test_no_warn_on_real_versioned_variants(self, model_path, parser):
         assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
-
-    # #893 codex MED — V4 / V5 classifier alignment with auto-detect.
-    # An earlier revision of ``_classify_deepseek_template_name`` returned
-    # ``"v3"`` for V4 / V5 paths (a "forward-cover" guess about future
-    # chat templates), but ``_MODEL_PATTERNS`` routed V4 / V4-Flash to
-    # the LEGACY ``deepseek`` parser AND the V4-Flash alias entries in
-    # ``aliases.json`` pin the same legacy parser. The two layers
-    # disagreed — and the disagreement was invisible to the misbind
-    # warning because the classifier "vouched" for the V3 family. This
-    # test pins the corrected contract: V4 / V5 are out-of-lineage
-    # today, so:
-    #
-    #   1. The classifier-vs-auto-detect parser must agree (no silent
-    #      forward-cover that the registry contradicts).
-    #   2. An explicit ``--tool-call-parser=deepseek_v3`` /
-    #      ``=deepseek_v31`` / ``=deepseek_r1_0528`` on a V4 / V5 path
-    #      MUST surface the out-of-lineage misbind warning.
-    @pytest.mark.parametrize(
-        "model_path",
-        [
-            "deepseek-ai/DeepSeek-V4",
-            "deepseek-ai/DeepSeek-V4-Flash",
-            "mlx-community/DeepSeek-V4-Flash-4bit",
-            "deepseek-ai/DeepSeek-V5",
-            "mlx-community/DeepSeek-V5-MLX-4bit",
-        ],
-    )
-    def test_v4_v5_classifier_matches_auto_detect_parser(self, model_path):
-        from vllm_mlx.model_auto_config import (
-            _DEEPSEEK_V3_FAMILY_PARSERS,
-            _classify_deepseek_template_name,
-        )
-
-        cfg = detect_model_config(model_path)
-        family = _classify_deepseek_template_name(model_path)
-        # The two layers must agree: if the classifier asserts a V3-template
-        # sub-family, auto-detect MUST pin a parser inside that family —
-        # otherwise ``qmlx serve`` silently binds the wrong parser.
-        if family in {"v3", "v31"}:
-            assert cfg is not None
-            assert cfg.tool_call_parser in _DEEPSEEK_V3_FAMILY_PARSERS, (
-                f"classifier says {model_path} is V3-template family "
-                f"({family!r}) but auto-detect picks "
-                f"{cfg.tool_call_parser!r} — the two layers disagree."
-            )
-        else:
-            # Out-of-lineage today (codex r1 BLOCKING): the classifier
-            # MUST NOT promise V3-template lineage AND auto-detect MUST
-            # pin the legacy ``deepseek`` parser the registry currently
-            # ships for V4 / V5 — otherwise the test would still pass
-            # if a future regression flipped EITHER the registry back
-            # to a V3-family parser (the original #893 bug) OR the
-            # classifier back to ``"v3"``. Both halves of the alignment
-            # need an explicit assertion.
-            assert family is None, (
-                f"V4 / V5 classifier must return None today (no upstream "
-                f"V3-template tool envelope) — got {family!r} for "
-                f"{model_path!r}."
-            )
-            assert cfg is not None, (
-                f"auto-detect must still resolve {model_path!r} via the "
-                "DeepSeek regex chain — got None."
-            )
-            assert cfg.tool_call_parser == "deepseek", (
-                f"V4 / V5 must route to the legacy 'deepseek' parser "
-                f"today (V4 chat template is tool-less per deepseek-ai "
-                f"discussion #16) — got {cfg.tool_call_parser!r} for "
-                f"{model_path!r}. If this is intentional, BOTH the "
-                f"registry AND the classifier need to be updated "
-                f"together (see #893 codex MED rationale)."
-            )
-            assert cfg.tool_call_parser not in _DEEPSEEK_V3_FAMILY_PARSERS
 
     @pytest.mark.parametrize(
         "model_path",

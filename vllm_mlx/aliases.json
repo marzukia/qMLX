@@ -212,7 +212,7 @@
   },
   "qwen3.6-27b-4bit": {
     "hf_path": "mlx-community/Qwen3.6-27B-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -221,7 +221,7 @@
   },
   "qwen3.6-27b-8bit": {
     "hf_path": "unsloth/Qwen3.6-27B-MLX-8bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -231,7 +231,7 @@
   },
   "qwen3.6-27b-6bit": {
     "hf_path": "lmstudio-community/Qwen3.6-27B-MLX-6bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -240,7 +240,7 @@
   },
   "qwen3.6-27b-ud": {
     "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -249,7 +249,7 @@
   },
   "qwen3.6-35b-4bit": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
@@ -259,7 +259,7 @@
   },
   "qwen3.6-35b-6bit": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-6bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
@@ -269,7 +269,7 @@
   },
   "qwen3.6-35b-8bit": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-8bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
@@ -279,7 +279,7 @@
   },
   "qwen3.6-35b-ud": {
     "hf_path": "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
@@ -288,7 +288,7 @@
   },
   "qwen3.6-35b-dwq": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit-DWQ",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
@@ -298,7 +298,7 @@
   },
   "qwen3.6-35b-mxfp4": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-mxfp4",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
@@ -306,7 +306,7 @@
   },
   "qwen3.6-35b-nvfp4": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-nvfp4",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
@@ -314,7 +314,7 @@
   },
   "qwen3.6-27b": {
     "hf_path": "mlx-community/Qwen3.6-27B-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -323,7 +323,7 @@
   },
   "qwen3.6-35b": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "is_moe": true,
@@ -332,7 +332,7 @@
   },
   "qwen3.6-27b-mtp-4bit": {
     "hf_path": "mlx-community/Qwen3.6-27B-MTP-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -341,7 +341,7 @@
   },
   "qwen3.6-35b-mtp-4bit": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-MTP-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "is_moe": true,
@@ -350,7 +350,7 @@
   },
   "qwen3.6-27b-optiq-4bit": {
     "hf_path": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -359,7 +359,7 @@
   },
   "qwen3.6-35b-optiq-4bit": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "is_moe": true,
@@ -368,7 +368,7 @@
   },
   "qwen3.6-27b-ud-3bit": {
     "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-3bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -377,7 +377,7 @@
   },
   "qwen3.6-27b-ud-6bit": {
     "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-6bit",
-    "tool_call_parser": "qwen3_coder_xml",
+    "tool_call_parser": null,
     "reasoning_parser": "qwen3",
     "is_hybrid": false,
     "is_hybrid_explicit": true,
@@ -386,22 +386,22 @@
   },
   "deepseek-v4-flash-2bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
-    "tool_call_parser": "deepseek",
-    "reasoning_parser": "deepseek_r1",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true
   },
   "deepseek-v4-flash-8bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-8bit",
-    "tool_call_parser": "deepseek",
-    "reasoning_parser": "deepseek_r1",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true
   },
   "deepseek-v4-flash-4bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-4bit",
-    "tool_call_parser": "deepseek",
-    "reasoning_parser": "deepseek_r1",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true
   },
@@ -559,88 +559,88 @@
   },
   "gpt-oss-20b-mxfp4-q8": {
     "hf_path": "mlx-community/gpt-oss-20b-MXFP4-Q8",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-20b": {
     "hf_path": "mlx-community/gpt-oss-20b-MXFP4-Q8",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-20b-mxfp4-q4": {
     "hf_path": "mlx-community/gpt-oss-20b-MXFP4-Q4",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-20b-4bit": {
     "hf_path": "mlx-community/gpt-oss-20b-OptiQ-4bit",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-20b-8bit": {
     "hf_path": "lmstudio-community/gpt-oss-20b-MLX-8bit",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-120b": {
     "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q8",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-120b-mxfp4-q4": {
     "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q4",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-120b-mxfp4-q8": {
     "hf_path": "mlx-community/gpt-oss-120b-MXFP4-Q8",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-120b-4bit": {
     "hf_path": "mlx-community/gpt-oss-120b-4bit",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "gpt-oss-safeguard-20b": {
     "hf_path": "lmstudio-community/gpt-oss-safeguard-20b-MLX-MXFP4",
-    "tool_call_parser": "harmony",
-    "reasoning_parser": "harmony",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
     "supports_spec_decode": true
   },
   "deepseek-r1-8b-4bit": {
     "hf_path": "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
-    "tool_call_parser": "deepseek_v3",
-    "reasoning_parser": "deepseek_r1",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "avoid",
@@ -652,8 +652,8 @@
   },
   "deepseek-r1-32b-4bit": {
     "hf_path": "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit",
-    "tool_call_parser": "deepseek",
-    "reasoning_parser": "deepseek_r1",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
     "suffix_decoding_tier": "neutral",
@@ -848,7 +848,7 @@
   "vibethinker-1.5b-4bit": {
     "hf_path": "mlx-community/VibeThinker-1.5B-mlx-4bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": "vibethinker",
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true,
@@ -860,7 +860,7 @@
   "vibethinker-3b-8bit": {
     "hf_path": "mlx-community/VibeThinker-3B-8bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": "vibethinker",
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true,
@@ -896,7 +896,7 @@
   "nanbeige4.1-3b-4bit": {
     "hf_path": "mlx-community/Nanbeige4.1-3B-4bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": "deepseek_r1",
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true
@@ -904,7 +904,7 @@
   "phi-4-mini-reasoning-4bit": {
     "hf_path": "lmstudio-community/Phi-4-mini-reasoning-MLX-4bit",
     "tool_call_parser": "hermes",
-    "reasoning_parser": "deepseek_r1",
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true,
@@ -975,8 +975,8 @@
   },
   "ui-tars-1.5-7b-4bit": {
     "hf_path": "mlx-community/UI-TARS-1.5-7B-4bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -985,8 +985,8 @@
   },
   "ui-tars-1.5-7b-6bit": {
     "hf_path": "mlx-community/UI-TARS-1.5-7B-6bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -995,8 +995,8 @@
   },
   "ui-tars-1.5-7b-8bit": {
     "hf_path": "mlx-community/UI-TARS-1.5-7B-8bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -1005,8 +1005,8 @@
   },
   "ui-tars-7b-dpo-4bit": {
     "hf_path": "mlx-community/UI-TARS-7B-DPO-4bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -1015,8 +1015,8 @@
   },
   "ui-tars-7b-dpo-6bit": {
     "hf_path": "mlx-community/UI-TARS-7B-DPO-6bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -1025,8 +1025,8 @@
   },
   "ui-tars-7b-dpo-8bit": {
     "hf_path": "mlx-community/UI-TARS-7B-DPO-8bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -1035,8 +1035,8 @@
   },
   "ui-tars-7b-sft-4bit": {
     "hf_path": "mlx-community/UI-TARS-7B-SFT-4bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -1045,8 +1045,8 @@
   },
   "ui-tars-7b-sft-8bit": {
     "hf_path": "mlx-community/UI-TARS-7B-SFT-8bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -1055,8 +1055,8 @@
   },
   "ui-tars-72b-dpo-4bit": {
     "hf_path": "mlx-community/UI-TARS-72B-DPO-4bit",
-    "tool_call_parser": "ui_tars",
-    "reasoning_parser": "ui_tars",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": false,

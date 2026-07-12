@@ -5,7 +5,6 @@ Tests for reasoning content extraction parsers.
 Tests cover:
 - Parser registry (registration, lookup, listing)
 - Qwen3 parser (non-streaming and streaming)
-- DeepSeek-R1 parser (non-streaming and streaming)
 - Edge cases (no tags, partial tags, etc.)
 """
 
@@ -27,17 +26,10 @@ class TestParserRegistry:
         """Built-in parsers should be registered."""
         parsers = list_parsers()
         assert "qwen3" in parsers
-        assert "deepseek_r1" in parsers
 
     def test_get_parser_qwen3(self):
         """Should be able to get Qwen3 parser."""
         parser_cls = get_parser("qwen3")
-        parser = parser_cls()
-        assert isinstance(parser, ReasoningParser)
-
-    def test_get_parser_deepseek(self):
-        """Should be able to get DeepSeek-R1 parser."""
-        parser_cls = get_parser("deepseek_r1")
         parser = parser_cls()
         assert isinstance(parser, ReasoningParser)
 
@@ -177,70 +169,6 @@ class TestQwen3Parser:
         assert result.content == "content here"
 
 
-class TestDeepSeekR1Parser:
-    """Tests for the DeepSeek-R1 reasoning parser."""
-
-    @pytest.fixture
-    def parser(self):
-        """Create a fresh DeepSeek-R1 parser for each test."""
-        return get_parser("deepseek_r1")()
-
-    # Non-streaming tests
-
-    def test_extract_with_both_tags(self, parser):
-        """Should extract reasoning when both tags present."""
-        output = "<think>Step by step analysis</think>Final answer: 42"
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning == "Step by step analysis"
-        assert content == "Final answer: 42"
-
-    def test_extract_implicit_start_tag(self, parser):
-        """DeepSeek-R1 handles implicit start tag (missing <think>)."""
-        output = "Implicit reasoning content</think>The answer"
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning == "Implicit reasoning content"
-        assert content == "The answer"
-
-    def test_extract_no_tags_pure_content(self, parser):
-        """No tags should return pure content."""
-        output = "Just a regular response."
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning is None
-        assert content == output
-
-    def test_extract_multiline_reasoning(self, parser):
-        """Should preserve newlines in reasoning content."""
-        output = "<think>Line 1\nLine 2\nLine 3</think>Result"
-        reasoning, content = parser.extract_reasoning(output)
-        assert "Line 1" in reasoning
-        assert "Line 2" in reasoning
-        assert "Line 3" in reasoning
-        assert content == "Result"
-
-    # Streaming tests
-
-    def test_streaming_simple_flow(self, parser):
-        """Test basic streaming with reasoning then content."""
-        parser.reset_state()
-
-        deltas = ["<think>", "think", "ing", "</think>", "answer"]
-        accumulated = ""
-        results = []
-
-        for delta in deltas:
-            prev = accumulated
-            accumulated += delta
-            result = parser.extract_reasoning_streaming(prev, accumulated, delta)
-            if result:
-                results.append(result)
-
-        reasoning_parts = [r.reasoning for r in results if r.reasoning]
-        content_parts = [r.content for r in results if r.content]
-
-        assert "".join(reasoning_parts) == "thinking"
-        assert "".join(content_parts) == "answer"
-
-
 class TestDeltaMessage:
     """Tests for the DeltaMessage dataclass."""
 
@@ -267,9 +195,9 @@ class TestDeltaMessage:
 class TestEdgeCases:
     """Test edge cases across parsers."""
 
-    @pytest.fixture(params=["qwen3", "deepseek_r1"])
+    @pytest.fixture(params=["qwen3"])
     def parser(self, request):
-        """Parametrized fixture for both parsers."""
+        """Parametrized fixture for the qwen3 parser."""
         return get_parser(request.param)()
 
     def test_empty_output(self, parser):
@@ -310,9 +238,9 @@ class TestEdgeCases:
 class TestRealisticStreaming:
     """Tests for realistic streaming scenarios simulating actual model output."""
 
-    @pytest.fixture(params=["qwen3", "deepseek_r1"])
+    @pytest.fixture(params=["qwen3"])
     def parser(self, request):
-        """Parametrized fixture for both parsers."""
+        """Parametrized fixture for the qwen3 parser."""
         return get_parser(request.param)()
 
     def test_token_by_token_streaming(self, parser):
@@ -440,9 +368,9 @@ class TestRealisticStreaming:
 class TestUnicodeAndSpecialCharacters:
     """Tests for Unicode and special characters in reasoning."""
 
-    @pytest.fixture(params=["qwen3", "deepseek_r1"])
+    @pytest.fixture(params=["qwen3"])
     def parser(self, request):
-        """Parametrized fixture for both parsers."""
+        """Parametrized fixture for the qwen3 parser."""
         return get_parser(request.param)()
 
     def test_unicode_reasoning(self, parser):
@@ -539,9 +467,9 @@ class TestAPIModelsIntegration:
 class TestParserPerformance:
     """Basic performance tests for parsers."""
 
-    @pytest.fixture(params=["qwen3", "deepseek_r1"])
+    @pytest.fixture(params=["qwen3"])
     def parser(self, request):
-        """Parametrized fixture for both parsers."""
+        """Parametrized fixture for the qwen3 parser."""
         return get_parser(request.param)()
 
     def test_large_output_extraction(self, parser):
@@ -585,53 +513,6 @@ class TestParserPerformance:
             reasoning, content = parser.extract_reasoning(output)
             assert reasoning == "Quick thought"
             assert content == "Quick answer"
-
-
-class TestDeepSeekSpecificCases:
-    """Tests specific to DeepSeek-R1 parser behavior."""
-
-    @pytest.fixture
-    def parser(self):
-        """Create DeepSeek-R1 parser."""
-        return get_parser("deepseek_r1")()
-
-    def test_implicit_reasoning_streaming(self, parser):
-        """Test streaming when start tag is implicit (DeepSeek-R1 specific)."""
-        # DeepSeek-R1 sometimes omits <think> but includes </think>
-        tokens = ["reasoning", " text", " here", "</think>", "answer"]
-
-        parser.reset_state()
-        accumulated = ""
-        reasoning_parts = []
-        content_parts = []
-
-        for token in tokens:
-            prev = accumulated
-            accumulated += token
-            result = parser.extract_reasoning_streaming(prev, accumulated, token)
-            if result:
-                if result.reasoning:
-                    reasoning_parts.append(result.reasoning)
-                if result.content:
-                    content_parts.append(result.content)
-
-        # For DeepSeek-R1, content before </think> without <think> is treated as content
-        # until </think> appears in the delta
-        all_parts = reasoning_parts + content_parts
-        assert len(all_parts) > 0
-
-    def test_deepseek_long_implicit_reasoning(self, parser):
-        """Test long implicit reasoning without start tag."""
-        output = """Let me think about this problem carefully.
-
-First, I need to consider the constraints.
-Then, I'll apply the algorithm.
-Finally, I'll verify the result.</think>The answer is 42."""
-
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning is not None
-        assert "think about this problem" in reasoning
-        assert "42" in content
 
 
 class TestQwen3SpecificCases:
@@ -679,390 +560,3 @@ class TestQwen3SpecificCases:
             if expected_reasoning is None:
                 assert reasoning is None or reasoning.strip() == ""
             assert expected_content in (content or "")
-
-
-class TestGptOssParser:
-    """Tests for the GPT-OSS reasoning parser (channel-based format)."""
-
-    @pytest.fixture
-    def parser(self):
-        """Create a fresh GPT-OSS parser for each test."""
-        return get_parser("gpt_oss")()
-
-    # Non-streaming tests
-
-    def test_extract_both_channels(self, parser):
-        """Should extract reasoning from analysis and content from final."""
-        output = (
-            "<|channel|>analysis<|message|>Let me think step by step"
-            "<|start|>assistant<|channel|>final<|message|>The answer is 42<|return|>"
-        )
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning == "Let me think step by step"
-        assert content == "The answer is 42"
-
-    def test_extract_only_final(self, parser):
-        """Should handle output with only final channel."""
-        output = "<|channel|>final<|message|>Just the answer<|return|>"
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning is None
-        assert content == "Just the answer"
-
-    def test_extract_only_analysis(self, parser):
-        """Should handle output with only analysis channel."""
-        output = "<|channel|>analysis<|message|>Just thinking out loud"
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning == "Just thinking out loud"
-        assert content is None
-
-    def test_no_channel_tokens_fallback(self, parser):
-        """No channel tokens should return pure content."""
-        output = "Just a regular response."
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning is None
-        assert content == output
-
-    def test_empty_analysis_channel(self, parser):
-        """Empty analysis channel should return None reasoning."""
-        output = (
-            "<|channel|>analysis<|message|>"
-            "<|start|>assistant<|channel|>final<|message|>Content here<|return|>"
-        )
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning is None
-        assert content == "Content here"
-
-    def test_multiline_analysis(self, parser):
-        """Should preserve multiline reasoning content."""
-        output = (
-            "<|channel|>analysis<|message|>Step 1: Analyze\nStep 2: Solve\nStep 3: Verify"
-            "<|start|>assistant<|channel|>final<|message|>Result: 42<|return|>"
-        )
-        reasoning, content = parser.extract_reasoning(output)
-        assert "Step 1" in reasoning
-        assert "Step 2" in reasoning
-        assert "Step 3" in reasoning
-        assert content == "Result: 42"
-
-    def test_no_return_token(self, parser):
-        """Should handle missing <|return|> at end."""
-        output = (
-            "<|channel|>analysis<|message|>Thinking"
-            "<|start|>assistant<|channel|>final<|message|>Answer"
-        )
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning == "Thinking"
-        assert content == "Answer"
-
-    # Streaming tests
-
-    def test_streaming_full_flow(self, parser):
-        """Test streaming through analysis -> transition -> final phases."""
-        parser.reset_state()
-
-        # Simulate token-by-token streaming
-        tokens = [
-            "<|channel|>",
-            "analysis",
-            "<|message|>",
-            "Let me ",
-            "think",
-            "<|start|>",
-            "assistant",
-            "<|channel|>",
-            "final",
-            "<|message|>",
-            "The answer",
-            " is 42",
-            "<|return|>",
-        ]
-
-        accumulated = ""
-        reasoning_parts = []
-        content_parts = []
-
-        for token in tokens:
-            prev = accumulated
-            accumulated += token
-            result = parser.extract_reasoning_streaming(prev, accumulated, token)
-            if result:
-                if result.reasoning:
-                    reasoning_parts.append(result.reasoning)
-                if result.content:
-                    content_parts.append(result.content)
-
-        full_reasoning = "".join(reasoning_parts)
-        full_content = "".join(content_parts)
-
-        assert "Let me think" in full_reasoning
-        assert "The answer is 42" in full_content
-
-    def test_streaming_only_final(self, parser):
-        """Test streaming with only final channel."""
-        parser.reset_state()
-
-        tokens = [
-            "<|channel|>",
-            "final",
-            "<|message|>",
-            "Direct ",
-            "answer",
-            "<|return|>",
-        ]
-
-        accumulated = ""
-        content_parts = []
-
-        for token in tokens:
-            prev = accumulated
-            accumulated += token
-            result = parser.extract_reasoning_streaming(prev, accumulated, token)
-            if result and result.content:
-                content_parts.append(result.content)
-
-        assert "Direct answer" in "".join(content_parts)
-
-    def test_streaming_suppresses_structural_tokens(self, parser):
-        """Structural tokens should not leak into reasoning or content."""
-        parser.reset_state()
-
-        tokens = [
-            "<|channel|>analysis<|message|>",
-            "thinking",
-            "<|start|>",
-            "assistant",
-            "<|channel|>final<|message|>",
-            "answer",
-            "<|return|>",
-        ]
-
-        accumulated = ""
-        all_output = []
-
-        for token in tokens:
-            prev = accumulated
-            accumulated += token
-            result = parser.extract_reasoning_streaming(prev, accumulated, token)
-            if result:
-                if result.reasoning:
-                    all_output.append(result.reasoning)
-                if result.content:
-                    all_output.append(result.content)
-
-        combined = "".join(all_output)
-        assert "<|" not in combined
-
-    def test_registry_includes_gpt_oss(self):
-        """gpt_oss should be in the parser registry."""
-        assert "gpt_oss" in list_parsers()
-
-    def test_extract_constrain_format(self, parser):
-        """Should handle extended format with <|constrain|> token."""
-        output = (
-            "<|channel|>analysis<|message|>We need to output JSON"
-            "<|end|><|channel|>final <|constrain|>JSON<|message|>"
-            '{"hello":"world"}<|return|>'
-        )
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning == "We need to output JSON"
-        assert content == '{"hello":"world"}'
-
-    def test_extract_constrain_no_analysis(self, parser):
-        """Should handle constrain format with only final channel."""
-        output = (
-            '<|channel|>final <|constrain|>JSON<|message|>{"key":"value"}<|return|>'
-        )
-        reasoning, content = parser.extract_reasoning(output)
-        assert reasoning is None
-        assert content == '{"key":"value"}'
-
-    def test_streaming_constrain_format(self, parser):
-        """Streaming should handle <|constrain|> in channel marker."""
-        parser.reset_state()
-
-        tokens = [
-            "<|channel|>analysis<|message|>",
-            "Thinking...",
-            "<|end|>",
-            "<|channel|>final <|constrain|>JSON<|message|>",
-            '{"result":',
-            '"ok"}',
-            "<|return|>",
-        ]
-
-        accumulated = ""
-        reasoning_parts = []
-        content_parts = []
-
-        for token in tokens:
-            prev = accumulated
-            accumulated += token
-            result = parser.extract_reasoning_streaming(prev, accumulated, token)
-            if result:
-                if result.reasoning:
-                    reasoning_parts.append(result.reasoning)
-                if result.content:
-                    content_parts.append(result.content)
-
-        full_reasoning = "".join(reasoning_parts)
-        full_content = "".join(content_parts)
-
-        assert "Thinking" in full_reasoning
-        assert '{"result":"ok"}' in full_content
-        assert "<|constrain|>" not in full_content
-
-    def test_constrain_tokens_stripped(self, parser):
-        """<|constrain|> should not leak into output."""
-        output = (
-            '<|channel|>final <|constrain|>JSON<|message|>{"hello":"world"}<|return|>'
-        )
-        reasoning, content = parser.extract_reasoning(output)
-        assert "<|constrain|>" not in (content or "")
-        assert "<|channel|>" not in (content or "")
-
-
-class TestDeepSeekNoTagThreshold:
-    """Tests for the no-tag content threshold in DeepSeek-R1 parser."""
-
-    @pytest.fixture
-    def parser(self):
-        """Create DeepSeek-R1 parser."""
-        return get_parser("deepseek_r1")()
-
-    def test_no_tag_long_output_becomes_content(self, parser):
-        """Long output without any tags should become content after threshold."""
-        parser.reset_state()
-
-        # Generate text longer than NO_TAG_CONTENT_THRESHOLD (64 chars
-        # on the base ``deepseek_r1`` parser) without any think tags.
-        text = "This is a regular response without any thinking tags. " * 3
-        assert len(text) > parser.NO_TAG_CONTENT_THRESHOLD
-        accumulated = ""
-        content_parts = []
-        reasoning_parts = []
-
-        for char in text:
-            prev = accumulated
-            accumulated += char
-            result = parser.extract_reasoning_streaming(prev, accumulated, char)
-            if result:
-                if result.content:
-                    content_parts.append(result.content)
-                if result.reasoning:
-                    reasoning_parts.append(result.reasoning)
-
-        # After threshold, new chars should go to content
-        full_content = "".join(content_parts)
-        assert len(full_content) > 0, "Long no-tag output should have content"
-
-    def test_with_tags_still_separates_correctly(self, parser):
-        """Output with tags should still be correctly separated."""
-        parser.reset_state()
-
-        tokens = ["<think>", "reasoning here", "</think>", "content here"]
-        accumulated = ""
-        reasoning_parts = []
-        content_parts = []
-
-        for token in tokens:
-            prev = accumulated
-            accumulated += token
-            result = parser.extract_reasoning_streaming(prev, accumulated, token)
-            if result:
-                if result.reasoning:
-                    reasoning_parts.append(result.reasoning)
-                if result.content:
-                    content_parts.append(result.content)
-
-        assert "reasoning here" in "".join(reasoning_parts)
-        assert "content here" in "".join(content_parts)
-
-    def test_finalize_corrects_short_no_tag_output(self, parser):
-        """finalize_streaming surfaces short no-tag output via content.
-
-        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
-        the short-no-tag rescue is the CASUAL-ANSWER contract — no
-        explicit ``<think>`` opener was ever seen during streaming, so
-        we have no evidence the model was actually thinking. The
-        streaming Case-3 default routed the bytes to ``reasoning`` as
-        a conservative bet; this finalize correction flips them to
-        ``content`` so the route consumer surfaces them as a text
-        block (#570/#572). Route consumers ignore
-        ``final_msg.reasoning`` (anthropic.py:1715, responses.py:907)
-        so routing this rescue to reasoning would leave the casual
-        answer silently empty on the wire — the exact #569 regression
-        the rescue exists to prevent.
-
-        The D-STOP-THINK duplication leak surface for DeepSeek-R1 is
-        the EXPLICIT-OPENER path (covered by the base class default
-        which returns None); the short-no-tag arm does NOT fire there
-        because ``_saw_any_tag`` becomes True after the opener.
-        """
-        parser.reset_state()
-
-        # Stream a short output (under 64 chars) without tags
-        text = "Short answer."
-        accumulated = ""
-
-        for char in text:
-            prev = accumulated
-            accumulated += char
-            parser.extract_reasoning_streaming(prev, accumulated, char)
-
-        # Finalize should emit correction in the content channel — the
-        # casual-answer contract per #570/#572.
-        correction = parser.finalize_streaming(accumulated)
-        assert correction is not None
-        assert correction.content == text
-        assert correction.reasoning is None
-
-    def test_finalize_no_correction_with_tags(self, parser):
-        """finalize_streaming should not correct when tags were seen."""
-        parser.reset_state()
-
-        text = "<think>thinking</think>answer"
-        accumulated = ""
-
-        for char in text:
-            prev = accumulated
-            accumulated += char
-            parser.extract_reasoning_streaming(prev, accumulated, char)
-
-        # No correction needed - tags were seen
-        correction = parser.finalize_streaming(accumulated)
-        assert correction is None
-
-    def test_finalize_no_correction_for_long_no_tag(self, parser):
-        """finalize_streaming should not correct long no-tag output (already content)."""
-        parser.reset_state()
-
-        text = "A" * (parser.NO_TAG_CONTENT_THRESHOLD + 50)
-        accumulated = ""
-
-        for char in text:
-            prev = accumulated
-            accumulated += char
-            parser.extract_reasoning_streaming(prev, accumulated, char)
-
-        # No correction needed - already classified as content past threshold
-        correction = parser.finalize_streaming(accumulated)
-        assert correction is None
-
-    def test_saw_any_tag_flag_persists(self, parser):
-        """_saw_any_tag should persist and reset correctly."""
-        parser.reset_state()
-        assert not parser._saw_any_tag
-
-        # Stream with tags
-        text = "<think>test</think>done"
-        accumulated = ""
-        for char in text:
-            prev = accumulated
-            accumulated += char
-            parser.extract_reasoning_streaming(prev, accumulated, char)
-
-        assert parser._saw_any_tag
-
-        # Reset should clear it
-        parser.reset_state()
-        assert not parser._saw_any_tag

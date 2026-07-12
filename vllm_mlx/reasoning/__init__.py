@@ -80,31 +80,9 @@ def list_parsers() -> list[str]:
 
 def _register_builtin_parsers():
     """Register built-in parsers."""
-    from .deepseek_r1_parser import (
-        DeepSeekR1ReasoningParser,
-        VibeThinkerReasoningParser,
-    )
-    from .gpt_oss_parser import GptOssReasoningParser
-    from .harmony_parser import HarmonyReasoningParser
     from .qwen3_parser import Qwen3ReasoningParser
-    from .ui_tars_parser import UiTarsReasoningParser
 
     register_parser("qwen3", Qwen3ReasoningParser)
-    # ``hy_v3`` — Tencent Hunyuan 3 suffix-tolerant ``<think:opensource>``
-    # variant of qwen3. Aliased as ``hy3`` for CLI convenience.
-    register_parser("deepseek_r1", DeepSeekR1ReasoningParser)
-    # ``vibethinker`` — DeepSeek-R1 variant with a 1024-char no-tag
-    # threshold (vs. 64) to accommodate VibeThinker's preamble-before-
-    # ``<think>`` shape. See ``VibeThinkerReasoningParser`` docstring
-    # for the 2026-06-17 live-test rationale (codex r2 P2).
-    register_parser("vibethinker", VibeThinkerReasoningParser)
-    register_parser("gpt_oss", GptOssReasoningParser)
-    register_parser("harmony", HarmonyReasoningParser)
-    # ``ui_tars`` — UI-TARS Thought:/Reflection: preamble splitter (no
-    # ``<think>`` tags; labels are literal). Auto-wired by the ``ui-tars*``
-    # regex in ``model_auto_config`` and by the alias entries in
-    # ``aliases.json``.
-    register_parser("ui_tars", UiTarsReasoningParser)
 
 
 # Register built-in parsers on module load

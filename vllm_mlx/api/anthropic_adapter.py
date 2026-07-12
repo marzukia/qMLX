@@ -534,25 +534,6 @@ def openai_to_anthropic(
                 except (json.JSONDecodeError, AttributeError):
                     tool_input = {}
 
-                # R6-M2: when the upstream parser is UI-TARS (the only
-                # parser whose ``computer`` tool emits the canonical
-                # ``point`` / ``start_point`` / ``end_point`` keys) the
-                # Anthropic ``tool_use.input`` MUST surface the spec
-                # ``coordinate`` / ``start_coordinate`` keys per
-                # Anthropic's Computer-Use docs (single-point verbs use
-                # ``coordinate``; drag uses ``start_coordinate`` +
-                # ``coordinate`` for the end). Anthropic-strict consumers
-                # (claude-agent-sdk, Computer-Use harnesses) reject the
-                # ``point`` shape. Translation is gated on ``name ==
-                # "computer"`` so vanilla function tools whose arguments
-                # happen to carry a key named ``point`` are untouched.
-                if tc.function.name == "computer" and isinstance(tool_input, dict):
-                    from ..tool_parsers.ui_tars_tool_parser import (
-                        translate_to_anthropic_spec_keys,
-                    )
-
-                    tool_input = translate_to_anthropic_spec_keys(tool_input)
-
                 content.append(
                     AnthropicResponseContentBlock(
                         type="tool_use",

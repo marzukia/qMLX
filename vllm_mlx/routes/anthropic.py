@@ -689,27 +689,6 @@ async def create_anthropic_message(
             openai_request.messages,
             preserve_native_format=engine.preserve_native_tool_format,
         )
-        # Dogfood C-05 / F-R2-04 / r5-B C-11 lane parity: auto-prepend the
-        # canonical UI-TARS Computer-Use sysprompt on the Anthropic lane
-        # too so the three surfaces produce the SAME prompt for the SAME
-        # model. r5-B threads ``tools=openai_request.tools`` so the
-        # injection is tool-coupled (the same gate firing on
-        # ``/v1/chat/completions`` and ``/v1/responses``): NO Computer-Use
-        # tool declared → no action-API contract injected → model emits
-        # plain prose, matching the other two lanes. Single shared
-        # helper, single canonical sysprompt, single coordinate space.
-        from ..tool_parsers.ui_tars_tool_parser import (
-            maybe_inject_ui_tars_system_prompt as _maybe_inject_ui_tars_sysprompt,
-        )
-
-        _cfg_for_ui_tars = get_config()
-        messages = _maybe_inject_ui_tars_sysprompt(
-            messages,
-            tool_call_parser=_cfg_for_ui_tars.tool_call_parser,
-            tool_choice=openai_request.tool_choice,
-            tools=openai_request.tools,
-        )
-
         _inject_tool_use_required_suffix(
             messages,
             openai_request.tool_choice,
@@ -2794,25 +2773,6 @@ async def _stream_anthropic_messages(
                 tool_input = json.loads(tc.function.arguments)
             except (json.JSONDecodeError, AttributeError):
                 tool_input = {}
-
-            # R6-M2: Anthropic Computer-Use spec uses ``coordinate``
-            # for single-point verbs and ``start_coordinate`` +
-            # ``coordinate`` (the end) for drag. The UI-TARS parser
-            # emits the canonical ``point`` / ``start_point`` /
-            # ``end_point`` keys (PR #812 contract — chat-completions
-            # OpenAI lane stays bytes-faithful to that). Translate on
-            # the streaming ``/v1/messages`` boundary so a client
-            # correlating non-stream + stream sees the same spec key
-            # (the non-stream adapter ``openai_to_anthropic`` applies
-            # the same mapping). Gated on ``name=="computer"`` so
-            # vanilla function tools whose args happen to carry
-            # ``point`` are untouched.
-            if tc.function.name == "computer" and isinstance(tool_input, dict):
-                from ..tool_parsers.ui_tars_tool_parser import (
-                    translate_to_anthropic_spec_keys,
-                )
-
-                tool_input = translate_to_anthropic_spec_keys(tool_input)
 
             # F9: normalize the ``tool_use.id`` once per call. The
             # current loop only references ``tc.id`` inside the

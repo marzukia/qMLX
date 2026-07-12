@@ -43,9 +43,6 @@ except ModuleNotFoundError:  # pragma: no cover
 REQUIRED_DATA_FILES: list[tuple[str, str, str]] = [
     # Text-model alias registry — has always shipped.
     ("vllm_mlx", "aliases.json", "aliases.json"),
-    # r10-A: audio alias registry. Codex r10-B caught this missing from
-    # package-data; this entry locks the fix in place.
-    ("vllm_mlx", "audio/aliases.json", "audio/aliases.json"),
 ]
 
 

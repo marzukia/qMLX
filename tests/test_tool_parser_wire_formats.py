@@ -38,9 +38,9 @@ from vllm_mlx.tool_parsers.abstract_tool_parser import WIRE_FORMAT_LABELS
 # this set documents them explicitly so a future contributor adding a
 # class to the meta tier can't accidentally bypass the declaration
 # requirement by forgetting to set the attribute.
-_META_PARSER_CLASSES: set[str] = {
-    "AutoToolParser",  # "auto" / "generic" — routing meta-parser
-}
+# The AutoToolParser routing meta-parser was removed in the Qwen-only
+# strip, so no meta-parsers remain in the registry.
+_META_PARSER_CLASSES: set[str] = set()
 
 
 def _registered_parser_classes() -> dict[type, set[str]]:

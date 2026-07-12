@@ -110,7 +110,6 @@ REQUIRED_PACKAGES: list[tuple[str, str]] = [
 # echoed verbatim in the report so the user can copy-paste.
 OPTIONAL_PACKAGES: list[tuple[str, str, str]] = [
     ("mlx-vlm", "mlx-vlm (vision extras)", "pip install 'qmlx-serve[vision]'"),
-    ("mlx-audio", "mlx-audio (audio extras)", "pip install 'qmlx-serve[audio]'"),
     (
         "mlx-embeddings",
         "mlx-embeddings (embeddings extras)",

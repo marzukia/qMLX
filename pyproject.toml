@@ -237,7 +237,6 @@ test = [
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
-    "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
 ]
 dev = [
     # Test runtime (must mirror the `test` extras above; a unit test in
@@ -252,7 +251,6 @@ dev = [
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
-    "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
     # Linters / typer — NOT in the `test` extras because pr_validate
     # only needs to *run* the tests; lint is its own pipeline step
     # (ruff) and runs from the host environment.
@@ -267,65 +265,6 @@ vllm = [
 guided = [
     "outlines[mlxlm]>=1.0.0",
 ]
-# Audio dependencies for TTS/STT (mlx-audio)
-audio = [
-    # R7-H3 (Bo 0.8.8 dogfood): pin BELOW 0.4.4. The 0.4.4 release
-    # regressed ``mlx_audio.tts.models.kokoro.istftnet.SineGen`` so the
-    # internal interpolation step produces an off-by-one length mismatch
-    # versus the noise tensor — every Kokoro request ends with
-    # ``[broadcast_shapes] Shapes (1,36600,1) and (1,36900,9) cannot be
-    # broadcast`` deep inside the istftnet generator. The qmlx
-    # route's catch-all collapsed that into the opaque ``No audio
-    # generated`` 500 (the chunk loop swallowed the upstream raise).
-    # 0.4.3 (and earlier) does NOT have the regression — the same
-    # request returns a 73 KB WAV. Cap the upper bound until upstream
-    # ships a fix so every fresh ``pip install qmlx-serve[audio]``
-    # works out of the box.
-    "mlx-audio>=0.2.9,<0.4.4",
-    "sounddevice>=0.4.0",
-    "soundfile>=0.12.0",
-    "scipy>=1.10.0",
-    "numba>=0.57.0",
-    "tiktoken>=0.5.0",
-    "misaki[zh,ja]>=0.5.0",  # Chinese (zh) and Japanese (ja) support
-    "spacy>=3.7.0",
-    "num2words>=0.5.0",
-    "loguru>=0.7.0",
-    # R6-H1 (Eva 0.8.7 dogfood): Kokoro TTS imports ``misaki.espeak`` which
-    # calls ``EspeakWrapper.set_data_path(...)`` (the legacy 3.2-era API).
-    # Two things need to line up for that call to succeed on a fresh
-    # ``pip install qmlx-serve[audio]``:
-    #
-    #   1. ``espeakng-loader`` provides the bundled libespeak-ng binary
-    #      and ``espeak-ng-data/`` directory misaki passes to
-    #      ``set_data_path``. Without it, the import crashes inside
-    #      ``misaki/espeak.py`` with ``ModuleNotFoundError`` before any
-    #      TTS request reaches the engine.
-    #   2. ``phonemizer-fork`` (NOT vanilla ``phonemizer``) is the only
-    #      package that still exposes ``EspeakWrapper.set_data_path``.
-    #      Vanilla ``phonemizer>=3.3.0`` removed it in favour of a
-    #      property-only ``data_path`` accessor — so the legacy API
-    #      misaki uses raises ``AttributeError: type object
-    #      'EspeakWrapper' has no attribute 'set_data_path'`` and the
-    #      Kokoro TTS route 500s on first request.
-    #
-    # Pin ``phonemizer-fork`` BEFORE the vanilla ``phonemizer`` line and
-    # drop the vanilla pin — pip installs the first one wins and they
-    # claim the same import name, so leaving both in produces a
-    # non-deterministic resolution depending on resolver order.
-    # ``test_audio_extras_lockin.py`` asserts both packages are
-    # importable and that ``EspeakWrapper.set_data_path`` exists so we
-    # catch a future drift back to vanilla phonemizer in CI.
-    "espeakng-loader>=0.2.0",
-    "phonemizer-fork>=3.3.0",
-    # Additional multilingual dependencies
-    "ordered_set>=4.1.0",    # Required for Chinese TTS
-    "cn2an>=0.5.0",          # Chinese number conversion
-    "fugashi>=1.3.0",        # Japanese tokenizer
-    "unidic-lite>=1.0.0",    # Japanese dictionary for fugashi
-    "jieba>=0.42.0",         # Chinese word segmentation
-]
-
 [project.urls]
 Homepage = "https://qmlx.mrzk.io"
 Documentation = "https://github.com/marzukia/qMLX#readme"
@@ -347,7 +286,6 @@ vllm-mlx-bench = "vllm_mlx.benchmark:main"
 [tool.setuptools.package-data]
 vllm_mlx = [
     "aliases.json",
-    "audio/aliases.json",
     "agents/profiles/*.yaml",
     # Integration tests bundled inside the package so `qmlx agents
     # <name> --test` works on pip/brew installs (the source layout keeps
