@@ -14,8 +14,8 @@ The scheduler follows vLLM's design with:
 import logging
 import os
 import threading
-import uuid
 import time
+import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import Enum
