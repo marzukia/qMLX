@@ -720,3 +720,110 @@ def test_request_checkpoint_state_default_interval():
     assert state.last_checkpoint_at == 0
     assert state.requires_full_checkpoint is False
     assert state.kv_dtype == "bf16"
+
+
+# ---------------------------------------------------------------------------
+# Content-index lookup — partial-restore fallback + corrupt-checkpoint
+# quarantine (regression for the 184k-token tokens_blob_verify_fail cold-
+# prefill poison loop)
+# ---------------------------------------------------------------------------
+
+
+def _write_indexed_checkpoint(root: str, req_id: str, tokens: list[int]) -> str:
+    """Write a checkpoint whose tokens blob equals ``tokens`` and register it
+    in the process-wide content index. Returns the ``req_hash``.
+
+    ``token_offset`` is tied to ``len(tokens)`` so the tokens-blob length, the
+    claimed offset, and the seeded cache length all agree (the invariant
+    :meth:`DiskCheckpointIndex.lookup` byte-verifies).
+    """
+    n = len(tokens)
+    cache = _seed_kv_cache(num_tokens=n)
+    req_hash = _dkc.request_hash(req_id, model_name="m")
+    path = _dkc.write_checkpoint(
+        cache,
+        root=root,
+        req_hash=req_hash,
+        token_offset=n,
+        kv_dtype="bf16",
+        model_name="m",
+        extra_metadata={"tokens_key": list(tokens)},
+    )
+    assert path is not None
+    return req_hash
+
+
+def test_lookup_hot_path_returns_longest_valid_checkpoint(root: str):
+    """When the longest prefix verifies, lookup returns it unchanged — the
+    hot path must behave byte-for-byte as before the fallback rewrite.
+    """
+    idx = _dkc.get_content_index()
+    idx.clear()
+    query = list(range(1, 65))
+    _write_indexed_checkpoint(root, "hot-short", query[:32])
+    _write_indexed_checkpoint(root, "hot-long", query[:64])
+
+    loaded = idx.lookup(query)
+    assert loaded is not None
+    assert loaded.token_offset == 64
+    # Nothing was quarantined: both keys survive.
+    assert tuple(query[:64]) in idx._by_key
+    assert tuple(query[:32]) in idx._by_key
+
+
+def test_lookup_falls_back_to_shorter_valid_prefix_when_longest_corrupt(root: str):
+    """A corrupt longest-prefix checkpoint must NOT force a full cold prefill.
+    lookup walks to the next-shorter verified prefix and returns it.
+    """
+    idx = _dkc.get_content_index()
+    idx.clear()
+    query = list(range(1, 65))
+    _write_indexed_checkpoint(root, "fb-short", query[:32])
+    req_hash_long = _write_indexed_checkpoint(root, "fb-long", query[:64])
+
+    # Corrupt the LONG checkpoint's tokens blob so _verify_tokens_blob fails
+    # (bad magic on re-read) — the exact production failure mode.
+    tok_path = _dkc.tokens_path(root, req_hash_long, 64)
+    assert os.path.isfile(tok_path)
+    with open(tok_path, "wb") as fh:
+        fh.write(b"\x00" * 8)
+
+    loaded = idx.lookup(query)
+    assert loaded is not None
+    # Fell back to the shorter, still-valid checkpoint.
+    assert loaded.token_offset == 32
+
+
+def test_lookup_quarantines_corrupt_checkpoint(root: str):
+    """After a lookup hits a corrupt longest checkpoint, that checkpoint is
+    evicted from the index (a later lookup can't re-select it) AND its on-disk
+    artifacts are renamed aside with a ``.corrupt`` suffix so a future
+    ``build_content_index`` scan won't re-add it.
+    """
+    idx = _dkc.get_content_index()
+    idx.clear()
+    query = list(range(1, 65))
+    _write_indexed_checkpoint(root, "qn-short", query[:32])
+    req_hash_long = _write_indexed_checkpoint(root, "qn-long", query[:64])
+
+    tok_path = _dkc.tokens_path(root, req_hash_long, 64)
+    with open(tok_path, "wb") as fh:
+        fh.write(b"\x00" * 8)
+
+    # Trigger the quarantine.
+    idx.lookup(query)
+
+    # In-memory: the corrupt (len-64) key is gone; the shorter one stays.
+    assert tuple(query[:64]) not in idx._by_key
+    assert tuple(query[:32]) in idx._by_key
+    # A second lookup no longer even sees the corrupt candidate — it returns
+    # the shorter one directly (no re-fail on the same corrupt entry).
+    again = idx.lookup(query)
+    assert again is not None and again.token_offset == 32
+
+    # On-disk: the safetensors + tokens artifacts were renamed aside.
+    orig_body = _dkc.checkpoint_path(root, req_hash_long, 64)
+    assert not os.path.exists(orig_body)
+    assert os.path.exists(orig_body + ".corrupt")
+    assert not os.path.exists(tok_path)
+    assert os.path.exists(tok_path + ".corrupt")

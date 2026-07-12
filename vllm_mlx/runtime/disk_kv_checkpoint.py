@@ -206,6 +206,7 @@ _KNOWN_SCHEMA_VERSION = 1
 # rename fails. The ``.tmp.`` infix is what ``scan_checkpoints`` strips
 # from on rescan.
 _TMP_INFIX = ".tmp"
+_CORRUPT_SUFFIX = ".corrupt"
 
 
 # ---------------------------------------------------------------------------
@@ -1404,29 +1405,47 @@ class DiskCheckpointIndex:
     # Lookup                                                             #
     # ------------------------------------------------------------------ #
 
-    def lookup(self, query_tokens: list[int] | tuple[int, ...]) -> LoadedCheckpoint | None:
-        """Return the best restore candidate for ``query_tokens``, or None.
+    def lookup(
+        self, query_tokens: list[int] | tuple[int, ...]
+    ) -> LoadedCheckpoint | None:
+        """Return the best verified restore candidate for ``query_tokens``.
 
         "Best" = the checkpoint with the LARGEST ``token_offset`` whose
-        persisted tokens are a true prefix of ``query_tokens``. Because every
-        indexed key's length equals its ``token_offset``, the radix's
-        longest-prefix walk yields exactly that checkpoint.
+        persisted tokens are a true prefix of ``query_tokens`` AND which
+        passes every byte-level gate. Because every indexed key's length
+        equals its ``token_offset``, the radix's longest-prefix walk yields
+        the longest candidate first.
 
-        Every uncertainty is a None (re-prefill) — a wrong restore corrupts
+        Every uncertainty is still a re-prefill — a wrong restore corrupts
         output silently, so we only return a cache we could byte-verify:
 
-        1. radix miss / no side-map entry → None;
+        1. radix miss / no side-map entry → None (genuine miss);
         2. the matched key isn't a true prefix of the query, or its length
-           disagrees with the claimed offset → None;
+           disagrees with the claimed offset;
         3. the on-disk tokens blob doesn't re-read byte-identically to the
-           matched key (with the uuid binding) → None;
+           matched key (with the uuid binding);
         4. ``load_checkpoint`` fails its own schema guard, or the loaded
-           cache's live offset disagrees with the claimed offset → None.
+           cache's live offset disagrees with the claimed offset.
 
-        Lock discipline: phase 1 resolves the in-memory ref under the index
-        lock and releases it; phase 2 does all disk work with the index lock
-        dropped (see the module LOCK ORDERING note). No lock is held on
-        return, so the caller can forward the cache freely.
+        The difference from the naive design: a failure at gates 2-4 no
+        longer aborts the whole lookup. The longest prefix being corrupt used
+        to force a full cold prefill of the entire prompt (the 184k-token
+        ``tokens_blob_verify_fail`` poison loop — the bad checkpoint was
+        re-selected and re-failed on every retry). Instead we QUARANTINE the
+        offending checkpoint (evict it from the index and rename its on-disk
+        artifacts aside with a ``.corrupt`` suffix) and fall back to the
+        next-shorter verified prefix. A shorter valid checkpoint still saves
+        most of the prefill; only the genuinely un-cached tail is recomputed.
+
+        The hot path is unchanged: when the longest prefix verifies, this
+        returns exactly that ``LoadedCheckpoint``, byte-for-byte as before.
+
+        Lock discipline: each iteration re-resolves the in-memory ref under
+        the index lock and releases it before any disk work (verify / load /
+        quarantine rename), per the module LOCK ORDERING note. Every
+        iteration either returns or removes the matched key, so the candidate
+        set strictly shrinks and the loop terminates; a belt-and-suspenders
+        iteration cap guards against a radix/side-map disagreement.
         """
         if not query_tokens:
             return None
@@ -1435,70 +1454,149 @@ class DiskCheckpointIndex:
         except (TypeError, ValueError):
             return None
 
-        # --- phase 1: in-memory resolution (index lock only) ---
+        # Belt-and-suspenders bound: each iteration either returns or
+        # quarantines (removes) the matched key, so entries strictly
+        # decrease. Cap at entries+1 so a pathological radix/side-map
+        # disagreement can never spin forever.
         with self._lock:
-            n_entries = len(self._by_key)
-            _matched, key = self._radix.longest_prefix(query)
-            if key is None:
+            max_iters = len(self._by_key) + 1
+
+        for _ in range(max_iters):
+            # --- phase 1: in-memory resolution (index lock only) ---
+            with self._lock:
+                n_entries = len(self._by_key)
+                _matched, key = self._radix.longest_prefix(query)
+                if key is None:
+                    logger.info(
+                        "[kv_restore_lookup] MISS reason=radix_no_prefix "
+                        "query_len=%d index_entries=%d",
+                        len(query),
+                        n_entries,
+                    )
+                    return None
+                ref = self._by_key.get(key)
+
+            if ref is None:
+                # Index inconsistency: the radix knows the key but the side
+                # map doesn't. Quarantine (in-memory only — no ref, so no
+                # disk paths) and fall back to a shorter prefix.
                 logger.info(
-                    "[kv_restore_lookup] MISS reason=radix_no_prefix "
-                    "query_len=%d index_entries=%d",
-                    len(query),
-                    n_entries,
+                    "[kv_restore_lookup] MISS reason=key_not_in_map matched_len=%d",
+                    len(key),
                 )
-                return None
-            ref = self._by_key.get(key)
-        if ref is None:
-            logger.info(
-                "[kv_restore_lookup] MISS reason=key_not_in_map matched_len=%d",
-                len(key),
-            )
-            return None
+                self._quarantine(key, None, len(key), "key_not_in_map")
+                continue
 
-        offset = ref.token_offset
-        if offset <= 0 or offset != len(key):
-            logger.info(
-                "[kv_restore_lookup] MISS reason=offset_len_disagree offset=%d key_len=%d",
-                offset,
-                len(key),
-            )
-            return None
-        if list(key) != query[:offset]:
-            logger.info(
-                "[kv_restore_lookup] MISS reason=prefix_bytes_differ offset=%d",
-                offset,
-            )
-            return None
+            offset = ref.token_offset
+            if offset <= 0 or offset != len(key):
+                logger.info(
+                    "[kv_restore_lookup] MISS reason=offset_len_disagree offset=%d key_len=%d",
+                    offset,
+                    len(key),
+                )
+                self._quarantine(key, ref, offset, "offset_len_disagree")
+                continue
+            if list(key) != query[:offset]:
+                logger.info(
+                    "[kv_restore_lookup] MISS reason=prefix_bytes_differ offset=%d",
+                    offset,
+                )
+                self._quarantine(key, ref, offset, "prefix_bytes_differ")
+                continue
 
-        # --- phase 2: disk verify + materialise (index lock dropped) ---
-        tok_path = tokens_path(ref.root, ref.req_hash, offset)
-        if not _verify_tokens_blob(tok_path, key, ref.save_uuid):
-            logger.info(
-                "[kv_restore_lookup] MISS reason=tokens_blob_verify_fail offset=%d",
-                offset,
-            )
-            return None
-        loaded = load_checkpoint(ref.path)
-        if loaded is None:
-            logger.info(
-                "[kv_restore_lookup] MISS reason=load_checkpoint_none offset=%d",
-                offset,
-            )
-            return None
-        if loaded.token_offset != offset:
-            logger.info(
-                "[kv_restore_lookup] MISS reason=loaded_offset_disagree offset=%d loaded=%d",
-                offset,
-                loaded.token_offset,
-            )
-            return None
-        if not _cache_offset_matches(loaded.cache, offset):
-            logger.info(
-                "[kv_restore_lookup] MISS reason=cache_offset_mismatch offset=%d",
-                offset,
-            )
-            return None
-        return loaded
+            # --- phase 2: disk verify + materialise (index lock dropped) ---
+            tok_path = tokens_path(ref.root, ref.req_hash, offset)
+            if not _verify_tokens_blob(tok_path, key, ref.save_uuid):
+                logger.info(
+                    "[kv_restore_lookup] MISS reason=tokens_blob_verify_fail offset=%d",
+                    offset,
+                )
+                self._quarantine(key, ref, offset, "tokens_blob_verify_fail")
+                continue
+            loaded = load_checkpoint(ref.path)
+            if loaded is None:
+                logger.info(
+                    "[kv_restore_lookup] MISS reason=load_checkpoint_none offset=%d",
+                    offset,
+                )
+                self._quarantine(key, ref, offset, "load_checkpoint_none")
+                continue
+            if loaded.token_offset != offset:
+                logger.info(
+                    "[kv_restore_lookup] MISS reason=loaded_offset_disagree offset=%d loaded=%d",
+                    offset,
+                    loaded.token_offset,
+                )
+                self._quarantine(key, ref, offset, "loaded_offset_disagree")
+                continue
+            if not _cache_offset_matches(loaded.cache, offset):
+                logger.info(
+                    "[kv_restore_lookup] MISS reason=cache_offset_mismatch offset=%d",
+                    offset,
+                )
+                self._quarantine(key, ref, offset, "cache_offset_mismatch")
+                continue
+            return loaded
+
+        # Candidate set exhausted without a verified hit (only reachable
+        # when every prefix in the chain was quarantined). Genuine miss →
+        # the scheduler cold-prefills.
+        logger.info(
+            "[kv_restore_lookup] MISS reason=all_candidates_exhausted query_len=%d",
+            len(query),
+        )
+        return None
+
+    def _quarantine(
+        self,
+        key: tuple[int, ...],
+        ref: _CheckpointRef | None,
+        offset: int,
+        reason: str,
+    ) -> None:
+        """Evict a corrupt / inconsistent checkpoint from the index and disk.
+
+        Two steps, in lock order:
+
+        1. In-memory (index lock): drop ``key`` from the radix and the side
+           map so the next ``longest_prefix`` in the fallback loop can't
+           re-select it. This alone stops the immediate re-match in THIS
+           process (the fix for the retry-poison loop).
+        2. On-disk (index lock dropped, ``_DISK_LOCK`` held): rename the
+           checkpoint's three artifacts aside with a ``.corrupt`` suffix so a
+           future :func:`build_content_index` scan won't re-add the bad entry
+           after a restart. A rename failure is logged and swallowed — the
+           in-memory removal already covers the live process.
+
+        Never touches a cache that hasn't been proven corrupt: the caller
+        only reaches here after a gate failed.
+        """
+        with self._lock:
+            self._radix.remove(key)
+            self._by_key.pop(key, None)
+
+        if ref is not None:
+            with _DISK_LOCK:
+                for src in (
+                    checkpoint_path(ref.root, ref.req_hash, offset),
+                    metadata_path(ref.root, ref.req_hash, offset),
+                    tokens_path(ref.root, ref.req_hash, offset),
+                ):
+                    try:
+                        if os.path.exists(src):
+                            os.replace(src, src + _CORRUPT_SUFFIX)
+                    except OSError as e:
+                        logger.warning(
+                            "[kv_restore_quarantine] rename failed for %r: %s",
+                            src,
+                            e,
+                        )
+
+        logger.warning(
+            "[kv_restore_quarantine] removed corrupt checkpoint offset=%d reason=%s",
+            offset,
+            reason,
+        )
 
     def stats(self) -> dict[str, int]:
         """Snapshot of index size for /metrics folding."""
