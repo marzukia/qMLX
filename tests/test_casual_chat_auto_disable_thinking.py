@@ -654,9 +654,7 @@ class TestChatRouteAutoDisableForCasualChat:
             json={
                 "model": "test-model",
                 "max_tokens": 80,
-                "messages": [
-                    {"role": "user", "content": "In 8 words, what is qmlx?"}
-                ],
+                "messages": [{"role": "user", "content": "In 8 words, what is qmlx?"}],
             },
         )
         assert resp.status_code == 200, resp.text

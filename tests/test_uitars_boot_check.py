@@ -103,9 +103,9 @@ def test_require_mlx_vlm_or_exit_prints_hint_and_exits(monkeypatch, capsys):
     assert "ui-tars-1.5-7b-4bit" in err, (
         f"hint must name the offending model id, got: {err!r}"
     )
-    assert "qmlx-serve[vision]" in err or "qmlx-serve[vision]" in err.replace("'", ""), (
-        f"hint must name the [vision] extra install path, got: {err!r}"
-    )
+    assert "qmlx-serve[vision]" in err or "qmlx-serve[vision]" in err.replace(
+        "'", ""
+    ), f"hint must name the [vision] extra install path, got: {err!r}"
     assert "mlx-vlm" in err, f"hint must name the dep, got: {err!r}"
 
 

@@ -898,8 +898,7 @@ def test_metrics_includes_park_and_k_chosen_counters():
 
     body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
     assert (
-        'qmlx_spec_decode_park_total{family="gemma-4-12b-4bit",method="mtp"} 0'
-        in body
+        'qmlx_spec_decode_park_total{family="gemma-4-12b-4bit",method="mtp"} 0' in body
     )
     # K-chosen histogram emits a zero-valued K=0 line even before any
     # rounds have run.

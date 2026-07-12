@@ -355,8 +355,7 @@ def test_empty_csv_origin_value_fails_closed_with_warning(
         origins = _server_mod().configure_cors_from_env(cli_origins=None)
     assert origins == []
     assert any(
-        "QMLX_CORS_ALLOW_ORIGINS" in rec.message
-        and "empty list" in rec.message.lower()
+        "QMLX_CORS_ALLOW_ORIGINS" in rec.message and "empty list" in rec.message.lower()
         for rec in caplog.records
     ), f"Expected an empty-origins WARNING; got {[r.message for r in caplog.records]!r}"
 
@@ -394,8 +393,7 @@ def test_empty_methods_env_warns_and_falls_back(
     with caplog.at_level("WARNING", logger="vllm_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
     assert any(
-        "QMLX_CORS_ALLOW_METHODS" in rec.message
-        and "empty list" in rec.message.lower()
+        "QMLX_CORS_ALLOW_METHODS" in rec.message and "empty list" in rec.message.lower()
         for rec in caplog.records
     ), f"Expected an empty-methods warning; got {[r.message for r in caplog.records]!r}"
 
@@ -414,8 +412,7 @@ def test_empty_headers_env_warns_and_falls_back(
     with caplog.at_level("WARNING", logger="vllm_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
     assert any(
-        "QMLX_CORS_ALLOW_HEADERS" in rec.message
-        and "empty list" in rec.message.lower()
+        "QMLX_CORS_ALLOW_HEADERS" in rec.message and "empty list" in rec.message.lower()
         for rec in caplog.records
     ), f"Expected an empty-headers warning; got {[r.message for r in caplog.records]!r}"
 

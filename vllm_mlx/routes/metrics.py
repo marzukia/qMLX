@@ -437,8 +437,7 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
         # (e.g. mid-upgrade, stale .pyc) — emit zero-valued series so
         # dashboards don't break.
         return [
-            "# HELP qmlx_spec_decode_attempts_total MTP draft "
-            "proposals (R15-P1 #302).",
+            "# HELP qmlx_spec_decode_attempts_total MTP draft proposals (R15-P1 #302).",
             "# TYPE qmlx_spec_decode_attempts_total counter",
             'qmlx_spec_decode_attempts_total{family="qwen3.5",method="mtp"} 0',
             "# HELP qmlx_spec_decode_accepts_total MTP drafts "
@@ -911,9 +910,7 @@ def _render_turboquant_metrics(cfg: Any) -> list[str]:
     out.append("# TYPE qmlx_turboquant_fused_kernel gauge")
     for candidate in ("available", "fallback"):
         active = 1 if status == candidate else 0
-        out.append(
-            f'qmlx_turboquant_fused_kernel{{status="{candidate}"}} {active}'
-        )
+        out.append(f'qmlx_turboquant_fused_kernel{{status="{candidate}"}} {active}')
     return out
 
 
@@ -1065,9 +1062,7 @@ def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
         monotonic = _cache_counter_accumulator.advance(
             f"qmlx_prompt_tokens_reused_total|{source}", raw
         )
-        out.append(
-            f'qmlx_prompt_tokens_reused_total{{source="{source}"}} {monotonic}'
-        )
+        out.append(f'qmlx_prompt_tokens_reused_total{{source="{source}"}} {monotonic}')
 
     prefill_kind = hm.get("prefill_kind")
     if not isinstance(prefill_kind, dict):
