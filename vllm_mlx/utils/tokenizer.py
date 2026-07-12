@@ -572,95 +572,22 @@ def _resolve_model_path(model_name: str) -> Path | None:
         return None
 
 
-# codex round 3 [NIT #2]: model_types served by vllm_mlx.models.* shims.
-# transformers' AutoConfig / PreTrainedConfig won't recognize these, and
-# mlx-lm's load() internally uses AutoTokenizer (which routes through
-# AutoConfig). We must skip that path entirely for these models and use
-# the lower-level load_model() + direct tokenizer.json load instead.
-#
-# Initialized with the archs whose vendor modules ship inside vllm_mlx and
-# never need dynamic registration (``deepseek_v4`` is pure Python inside
-# ``vllm_mlx.models`` — if that import fails, the wheel is broken and the
-# earlier ``from ..models import deepseek_v4`` at every serve entry point
-# has already crashed). Conditionally registered archs like ``hy_v3`` are
-# added by ``_register_vendored_archs()`` only after their vendored module
-# successfully installs in ``sys.modules``, so a failure there does not
-# leave the arch advertised as vendored while the shim path silently
-# short-circuits (which would push users into an opaque later model-load
-# error instead of surfacing the actual registration failure).
-_VENDORED_MODEL_TYPES: set[str] = {"deepseek_v4"}
+# model_types served by vendored vllm_mlx.models.* shims. transformers'
+# AutoConfig / PreTrainedConfig won't recognize these, and mlx-lm's load()
+# internally uses AutoTokenizer (which routes through AutoConfig). We must
+# skip that path entirely for these models and use the lower-level
+# load_model() + direct tokenizer.json load instead. The Qwen-only build
+# ships no vendored non-Qwen architectures, so this set is empty.
+_VENDORED_MODEL_TYPES: set[str] = set()
 
 
 def _register_vendored_archs() -> None:
     """Make vendored model architectures visible to mlx-lm's importlib lookup.
 
-    mlx-lm resolves model_type → module via `importlib.import_module(
-    f"mlx_lm.models.{model_type}")`. Pre-registering our vendored modules in
-    sys.modules under that path lets it find them transparently. Idempotent.
+    The Qwen-only build vendors no non-Qwen architectures, so this is a
+    no-op. Kept as a stable hook for the loader's fallback path.
     """
-    import sys
-
-    if "mlx_lm.models.deepseek_v4" not in sys.modules:
-        try:
-            from ..models import deepseek_v4 as _ds_v4
-
-            # setdefault is atomic under the GIL; harmless if a concurrent
-            # caller raced ahead (we'd cache the same module either way).
-            sys.modules.setdefault("mlx_lm.models.deepseek_v4", _ds_v4)
-        except Exception as e:
-            logger.debug(f"deepseek_v4 vendored module unavailable: {e}")
-
-    if "mlx_lm.models.hy_v3" not in sys.modules:
-        # If mlx-lm ever ships native ``hy_v3`` support (upstream PR #1211
-        # merges into 0.32+), defer to their copy so we don't shadow real
-        # upstream bug fixes with a stale vendor. ``find_spec`` returns
-        # ``None`` when the sub-module doesn't exist, which is the current
-        # state on mlx-lm 0.31.3 → we fall through to our vendored install.
-        import importlib.util as _importlib_util
-
-        _native_spec = None
-        try:
-            _native_spec = _importlib_util.find_spec("mlx_lm.models.hy_v3")
-        except (ImportError, ValueError):
-            _native_spec = None
-
-        if _native_spec is None:
-            try:
-                from ..models import hy_v3 as _hy_v3
-
-                # Tencent Hunyuan 3 (295B/21B active MoE) — vendored from
-                # ml-explore/mlx-lm PR #1211 (open, unreviewed since 2026-04-27).
-                # Auto-defers to native support once mlx-lm 0.32+ merges the
-                # upstream PR; delete this vendor block after that.
-                sys.modules.setdefault("mlx_lm.models.hy_v3", _hy_v3)
-            except Exception as e:
-                # codex round 3 [NIT #2]: log at WARNING (not DEBUG) so the
-                # actionable root cause surfaces the moment the vendor fails
-                # to register — otherwise the user sees only a confusing
-                # later model-load failure with no pointer at what actually
-                # went wrong. Membership in ``_VENDORED_MODEL_TYPES`` is
-                # only granted below on the success branch, so a failure
-                # here leaves downstream code on the AutoTokenizer path
-                # rather than the (broken) shim path.
-                logger.warning(
-                    "hy_v3 vendored module failed to register — "
-                    "mlx-community/Hy3-preview-4bit will not load until "
-                    "resolved: %s",
-                    e,
-                )
-            else:
-                # Success: promote to the vendored-arch set so the
-                # tokenizer fallback path (``_is_vendored_arch_model``)
-                # routes HY3 loads through the vendor shim instead of
-                # ``AutoTokenizer`` (which doesn't recognize the arch in
-                # transformers ≤ 5.12).
-                _VENDORED_MODEL_TYPES.add("hy_v3")
-        else:
-            # Native ``mlx_lm.models.hy_v3`` is available — use it and
-            # graduate ``hy_v3`` to the vendored set so the tokenizer
-            # fallback still bypasses AutoTokenizer (transformers ≤ 5.12
-            # still doesn't know the arch, native mlx-lm module or not).
-            _VENDORED_MODEL_TYPES.add("hy_v3")
+    return
 
 
 def _is_vendored_arch_model(model_name: str) -> bool:
@@ -790,33 +717,6 @@ def _load_model_with_fallback_impl(model_name: str, tokenizer_config: dict = Non
             "skipping AutoConfig path and loading directly..."
         )
         return _load_with_tokenizer_fallback(model_name)
-
-    # Gemma 4: mlx-lm 0.31+ supports it natively. Only use our wrapper
-    # for older mlx-lm versions that lack gemma4 model support.
-    from ..models.gemma4_text import is_gemma4_model
-
-    if is_gemma4_model(model_name):
-        try:
-            # Try native mlx-lm load first (0.31+)
-            model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
-            logger.info("Gemma 4 loaded natively via mlx-lm")
-            if not getattr(tokenizer, "chat_template", None):
-                mp = _resolve_model_path(model_name)
-                if mp is not None:
-                    _apply_chat_template_sidecar(mp, tokenizer)
-            augment_eos_token_ids_from_generation_config(tokenizer, model_name)
-            repair_byte_level_decoder(tokenizer)
-            return model, tokenizer
-        except Exception as e:
-            # Fall back to our wrapper for older mlx-lm versions
-            # that lack native gemma4 architecture support
-            from ..models.gemma4_text import load_gemma4_text
-
-            logger.info(
-                f"Gemma 4 native load failed ({e}), "
-                "falling back to text-only wrapper (legacy mlx-lm)"
-            )
-            return load_gemma4_text(model_name, tokenizer_config)
 
     try:
         model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
