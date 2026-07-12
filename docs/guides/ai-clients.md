@@ -10,7 +10,7 @@ qMLX exposes two primary interfaces:
 
 | API | Endpoints | Use Case |
 |-----|-----------|----------|
-| **OpenAI-compatible** | `/v1/chat/completions`, `/v1/completions`, `/v1/models`, `/v1/embeddings`, `/v1/audio/transcriptions`, `/v1/audio/speech` | Most AI clients, frameworks, and IDEs |
+| **OpenAI-compatible** | `/v1/chat/completions`, `/v1/completions`, `/v1/models` | Most AI clients, frameworks, and IDEs |
 | **Anthropic-compatible** | `/v1/messages`, `/v1/messages/count_tokens` | Claude Code, OpenCode, and other Anthropic SDK consumers |
 
 Feature support available across both APIs:

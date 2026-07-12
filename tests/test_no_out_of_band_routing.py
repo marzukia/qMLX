@@ -32,6 +32,7 @@ import ast
 import importlib.resources
 import pathlib
 import re
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Constants — kept LOCAL to this file (not imported from test_no_mllm_flag)
@@ -450,7 +451,8 @@ def _iter_module_files() -> list[pathlib.Path]:
     upstream files. Vendored files (deepseek_v4.py) are explicitly
     excluded because they're upstream code held as-is for clean sync."""
     root = _pkg_root()
-    _VENDORED = frozenset({"models/deepseek_v4.py"})
+    # No vendored upstream model files remain after the Qwen-only trim.
+    _VENDORED: frozenset[str] = frozenset()
     out: list[pathlib.Path] = []
     for path in root.rglob("*.py"):
         if any(part.startswith("__") for part in path.parts[len(root.parts) :]):
@@ -1523,3 +1525,801 @@ def test_routing_write_allowed_locations_pins_canonical_paths():
                 f"`{rel}` but that file does not exist in vllm_mlx/. "
                 "Stale pin — fix or remove."
             )
+
+
+# ---------------------------------------------------------------------------
+# CLI argparse-surface routing-flag gate (recovered from the deleted
+# tests/test_no_mllm_flag.py, PR #20 follow-up). This is the one guard
+# from that file not covered by the per-request/env/header/setter gates
+# above: it asserts every routing-shaped CLI flag (--enable-*/--force-*/
+# --no-*/--disable-*) is either a registered RoutingFlagPair or an
+# explicit NON_ROUTING_FLAGS_ALLOWLIST entry, and bans the argparse
+# indirection shapes (custom Action, **unpack, getattr, non-literal flag,
+# dest= aliasing) that would smuggle one past the name scan.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RoutingFlagPair:
+    """A binary auto-routing decision exposed via paired CLI flags.
+
+    Fields:
+        force_on: ``--force-*`` / ``--mllm``-style flag that forces the
+            auto-detected behavior on.
+        force_off: ``--no-*``-style flag that forces it off.
+        desc: human-readable description used in test failure messages.
+        required_files: source files (relative to ``vllm_mlx/``) where
+            BOTH flags must appear in an ``add_argument()`` call. Every
+            CLI entrypoint that takes a model name and runs the
+            corresponding auto-detection is required. Adding a new
+            model-taking entrypoint = adding it to every relevant pair.
+        forwarded_kwargs: ``load_model(...)`` kwargs the CLI forwards
+            when this pair is set. Empty tuple = the override is
+            consumed at a higher layer (e.g. parser opt-outs short-
+            circuit in cli.py before ``load_model``). When non-empty,
+            ``test_routing_override_kwargs_are_forwarded_to_load_model``
+            requires every ``load_model`` call site that forwards any
+            one of these to forward all of them.
+        model_config_field: ``ModelConfig`` attribute that
+            ``EngineCore.__init__`` mutates when this pair's
+            ``EngineConfig`` field is set. ``None`` = the override
+            doesn't go through ModelConfig (e.g. ``--no-mllm`` mutates
+            ``BatchedEngine._is_mllm``). When non-``None``,
+            ``test_engine_core_applies_routing_overrides_from_registry``
+            asserts the mutation actually happens.
+    """
+
+    force_on: str
+    force_off: str
+    desc: str
+    required_files: tuple[str, ...]
+    forwarded_kwargs: tuple[str, ...]
+    model_config_field: str | None = None
+
+
+AUTO_ROUTING_FLAG_PAIRS: tuple[RoutingFlagPair, ...] = (
+    RoutingFlagPair(
+        force_on="--mllm",
+        force_off="--no-mllm",
+        desc="MLLM vs text-only routing (#393)",
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=("force_mllm", "force_text"),
+        # --mllm acts on BatchedEngine._is_mllm, not ModelConfig.
+        model_config_field=None,
+    ),
+    RoutingFlagPair(
+        force_on="--tool-call-parser",
+        force_off="--no-tool-call-parser",
+        desc="AliasProfile tool-call parser auto-selection",
+        required_files=("cli.py", "server.py"),
+        # Parser opt-outs are consumed in cli.py / server.py main()
+        # before load_model is ever called.
+        forwarded_kwargs=(),
+        model_config_field=None,
+    ),
+    RoutingFlagPair(
+        force_on="--reasoning-parser",
+        force_off="--no-reasoning-parser",
+        desc="AliasProfile reasoning parser auto-selection",
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=(),
+        model_config_field=None,
+    ),
+    RoutingFlagPair(
+        force_on="--force-hybrid",
+        force_off="--no-hybrid",
+        desc="ModelConfig.is_hybrid (gates spec/suffix decode)",
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=("force_hybrid", "no_hybrid"),
+        model_config_field="is_hybrid",
+    ),
+    RoutingFlagPair(
+        force_on="--force-spec-decode",
+        force_off="--no-spec-decode",
+        desc="ModelConfig.supports_spec_decode (gates MTP/DFlash/suffix)",
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=("force_spec_decode", "no_spec_decode"),
+        model_config_field="supports_spec_decode",
+    ),
+    RoutingFlagPair(
+        force_on="--force-openai-harmony-streaming",
+        force_off="--no-openai-harmony-streaming",
+        desc=(
+            "HarmonyStreamingRouter auto-upgrade gate (#516, PR #515 "
+            "follow-up). Auto-detection upgrades the legacy custom "
+            "harmony state machine to openai-harmony's StreamableParser "
+            "for matched-vocab gpt-oss tokenizers; the pair lets users "
+            "override either way without code changes."
+        ),
+        required_files=("cli.py", "server.py"),
+        forwarded_kwargs=(
+            "force_openai_harmony_streaming",
+            "no_openai_harmony_streaming",
+        ),
+        # Override acts on the streaming OutputRouter factory, NOT on
+        # ModelConfig — same shape as --mllm / --no-mllm.
+        model_config_field=None,
+    ),
+)
+
+# Flags whose name matches the routing-shape pattern (--force-*, --no-*,
+# --enable-*, --disable-*) but are intentionally NOT auto-routing
+# decisions. Feature toggles, prompt-template knobs, and runtime-perf
+# opt-ins live here. Add to this list if and only if the flag is
+# definitively not a binary auto-detection that could ever need a paired
+# escape hatch — when in doubt, register the pair in
+# AUTO_ROUTING_FLAG_PAIRS instead.
+NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # Auto-tool-choice is a behavior knob, not auto-detection.
+        "--enable-auto-tool-choice",
+        # Performance opt-in for jump-forward decoding bias.
+        "--enable-tool-logits-bias",
+        # Task #292: ``--enable-audio`` is a route-mounting UX knob, not a
+        # binary auto-detection. The audio-mode boot path auto-mounts
+        # ``/v1/audio/*`` from the registry hit; this flag is the
+        # text-mode-with-audio escape hatch (side-car deployments).
+        "--enable-audio",
+        # Hidden deprecated speculative-decoding compatibility aliases.
+        # They normalize into --speculative-config and are intentionally not
+        # auto-routing profile overrides.
+        "--enable-dflash",
+        "--enable-ddtree",
+        "--enable-mtp",
+        "--enable-kv-cache-quantization",
+        "--enable-kv-cache-turboquant",
+        "--enable-prefix-cache",
+        "--disable-prefix-cache",
+        # SSD KV-restore feature toggle, not a model auto-detection/router.
+        "--enable-disk-kv-restore",
+        # Chat-template toggle, not engine routing.
+        "--no-thinking",
+        # `--no-think` is a hidden back-compat alias of `--no-thinking` on
+        # `serve` (and the canonical name on `chat`). Same dest, same
+        # semantics — pure UX symmetry between the two subcommands.
+        "--no-think",
+        # CORS toggle.
+        "--enable-cors",
+        # Perf / UX toggles, not routing decisions.
+        "--force-disk-check",  # forces eager disk-space check
+        "--no-gc-control",  # disables Python GC tuning
+        "--no-memory-aware-cache",  # disables memory-aware cache sizing
+        # Privacy toggle.
+        "--no-telemetry",
+    }
+)
+
+# Derived from the registry — never edit these by hand. The whole point
+# of the dataclass restructure is that adding a new RoutingFlagPair
+# entry transparently extends every gate below.
+KWARGS_THAT_MUST_BE_FORWARDED: frozenset[str] = frozenset(
+    kw for p in AUTO_ROUTING_FLAG_PAIRS for kw in p.forwarded_kwargs
+)
+
+
+def _registered_flag_names() -> set[str]:
+    """All flag strings (force-on + force-off) currently in the registry."""
+    out: set[str] = set()
+    for p in AUTO_ROUTING_FLAG_PAIRS:
+        out.add(p.force_on)
+        out.add(p.force_off)
+    return out
+
+
+def _all_add_argument_flags(source: str) -> set[str]:
+    """All positional string literals passed to any ``add_argument()``
+    call in ``source``. Used by ``test_no_unregistered_routing_shaped_flags``
+    to enumerate every argparse flag in an entrypoint without missing
+    subparser blocks or argparse group calls."""
+    tree = ast.parse(source)
+    flags: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+        for arg in node.args:
+            if (
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value.startswith("-")
+            ):
+                flags.add(arg.value)
+    return flags
+
+
+def _add_argument_calls_with_custom_action(source: str) -> list[tuple[int, str]]:
+    """Find ``add_argument(..., action=<non-stdlib>)`` calls — a
+    contributor can sneak routing by writing a custom
+    ``argparse.Action`` subclass whose ``__call__`` mutates the
+    namespace bypassing every name/regex/dest check. Returns
+    ``(lineno, action_repr)`` pairs.
+
+    Allowed stdlib actions are the documented argparse strings:
+    ``store``, ``store_const``, ``store_true``, ``store_false``,
+    ``append``, ``append_const``, ``count``, ``help``, ``version``,
+    ``extend``. Anything else — a Name, Attribute, or non-allowlisted
+    string — is flagged for review. Closes round-4 cat-1 #A2 + cat-2
+    #4 (custom Action subclass routing flips).
+    """
+    _STDLIB_ACTION_STRINGS = frozenset(
+        {
+            "store",
+            "store_const",
+            "store_true",
+            "store_false",
+            "append",
+            "append_const",
+            "count",
+            "help",
+            "version",
+            "extend",
+        }
+    )
+    # Stdlib Action classes that may appear via Attribute reference
+    # (e.g. ``argparse.BooleanOptionalAction``). Trustworthy because they
+    # come from the standard library and don't write to attributes
+    # outside their declared dest.
+    _STDLIB_ACTION_CLASSES = frozenset(
+        {
+            "BooleanOptionalAction",  # Python 3.9+
+        }
+    )
+    tree = ast.parse(source)
+    offenders: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+        for kw in node.keywords:
+            if kw.arg != "action":
+                continue
+            if (
+                isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)
+                and kw.value.value in _STDLIB_ACTION_STRINGS
+            ):
+                continue
+            # `argparse.BooleanOptionalAction` (Attribute) or a bare
+            # `BooleanOptionalAction` (Name) is also stdlib.
+            if (
+                isinstance(kw.value, ast.Attribute)
+                and kw.value.attr in _STDLIB_ACTION_CLASSES
+            ):
+                continue
+            if isinstance(kw.value, ast.Name) and kw.value.id in _STDLIB_ACTION_CLASSES:
+                continue
+            # Anything else — custom class, non-allowlisted string — is suspicious.
+            try:
+                repr_str = ast.unparse(kw.value)
+            except Exception:
+                repr_str = "<unparseable>"
+            offenders.append((node.lineno, repr_str))
+    return offenders
+
+
+def _add_argument_calls_with_dict_kwarg_unpack(source: str) -> list[int]:
+    """Find ``add_argument(..., **dict_literal_or_var)`` calls. Round-5
+    subagent 1 #P2-3: dest aliasing via ``**{"dest": "force_mllm"}`` is
+    invisible to the per-kwarg scan because the keyword arg has
+    ``kw.arg is None``. Reject the unpack outright in entrypoint files
+    — there's no legitimate use of ``**`` for add_argument, and helper
+    dicts hide audit surface."""
+    tree = ast.parse(source)
+    offenders: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+        for kw in node.keywords:
+            if kw.arg is None:
+                offenders.append(node.lineno)
+                break
+    return offenders
+
+
+def _getattr_add_argument_calls(source: str) -> list[int]:
+    """Find ``getattr(p, "add_argument")(...)`` and string-concat
+    variants. Round-5 subagent 1 #P2-5: a ``getattr`` indirection
+    defeats the ``isinstance(func, ast.Attribute) and func.attr ==
+    "add_argument"`` predicate at the heart of every prong. There's no
+    legitimate use case in argparse code, so we ban the shape outright."""
+    tree = ast.parse(source)
+    offenders: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # Outer Call has Call as func (the result of getattr being called).
+        if not isinstance(node.func, ast.Call):
+            continue
+        inner = node.func
+        if not (isinstance(inner.func, ast.Name) and inner.func.id == "getattr"):
+            continue
+        if len(inner.args) < 2:
+            continue
+        name_arg = inner.args[1]
+        # Constant "add_argument" or string concat resolving to it.
+        if isinstance(name_arg, ast.Constant) and name_arg.value == "add_argument":
+            offenders.append(node.lineno)
+            continue
+        # String concat shape: "add_" + "argument".
+        try:
+            value = ast.literal_eval(name_arg)
+            if isinstance(value, str) and value == "add_argument":
+                offenders.append(node.lineno)
+        except (ValueError, TypeError):
+            # Non-literal — also suspicious (could resolve to add_argument
+            # at runtime). Flag the dynamic indirection.
+            offenders.append(node.lineno)
+    return offenders
+
+
+def _add_argument_calls_with_non_literal_flag(source: str) -> list[int]:
+    """Find ``add_argument(<non-Constant>, ...)`` calls where the first
+    positional argument is a variable, attribute, function call, or
+    subscript — i.e. the flag name is computed at runtime so the
+    static scan can't see it. Closes round-4 cat-2 #3 (helper-function
+    indirection like ``_add_routing_flag(p, "--force-text-mode", ...)``
+    where the constant lives in the call site of the helper, not the
+    ``add_argument`` itself)."""
+    tree = ast.parse(source)
+    offenders: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+            continue
+        if not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant):
+            continue
+        # Allow `argparse.SUPPRESS` — the only legitimate non-literal
+        # first arg in our codebase.
+        if isinstance(first, ast.Attribute) and first.attr == "SUPPRESS":
+            continue
+        offenders.append(node.lineno)
+    return offenders
+
+
+def _routing_shaped_constants_in_module(source: str) -> set[str]:
+    """Find string constants in a module that LOOK LIKE a single pure
+    routing flag (``--force-*``, ``--no-*``, etc.), regardless of where
+    they appear. Catches round-4 cat-2 #3 and #5 where the flag literal
+    lives in a helper-function call site (``_add_routing_flag(p,
+    "--force-text-mode", ...)``) or a plugin-registry call
+    (``register_plugin("--no-vision-tower", ...)``) instead of an
+    ``add_argument()`` call.
+
+    Anchored regex requires the whole string to be a single flag —
+    ``"--force-hybrid"`` matches, ``"--force-hybrid and --no-hybrid are
+    mutually exclusive"`` (an error message) does not. Embedded flag
+    names in error messages and docstrings are noise, not bypass."""
+    # DeepSeek round-4 fix (PR #409): real argparse flag names accept
+    # uppercase letters (`--enable-TurboQuant`). The lowercase-only
+    # character class let any such flag escape the Constant-string
+    # scan (prong 2 of test_no_unregistered_routing_shaped_flags).
+    # IGNORECASE on the whole pattern keeps the prefix list (force/no/
+    # enable/disable) case-insensitive too — there is no legitimate
+    # reason to spell those uppercase, but bypass-proof beats minimal.
+    routing_pattern = re.compile(
+        r"^--(?:force|no|enable|disable)-[a-zA-Z0-9-]+$", re.IGNORECASE
+    )
+    tree = ast.parse(source)
+    flags: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if routing_pattern.match(node.value):
+                flags.add(node.value)
+    return flags
+
+
+# Static seed (current known entrypoints). Discovery must produce a
+# SUPERSET of this — if discovery returns fewer files, something
+# downstream changed and we want a loud failure.
+_KNOWN_ENTRYPOINTS_SEED: frozenset[str] = frozenset({"cli.py", "server.py"})
+
+
+# Codex round-G hardening (PR #409): every scanner that looks for
+# ``load_model(...)`` calls must resolve aliases. The name is
+# overloaded (mlx_lm / mlx_audio / internal workers), and rounds E/F
+# showed `from vllm_mlx.server import load_model as lm` and
+# `from vllm_mlx import server; server.load_model(...)` both slip a
+# literal-name match. Single helper used by every scan to stop the
+# whack-a-mole.
+def _load_model_aliases_in_tree(
+    tree: ast.AST,
+) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Return ``(direct_aliases, module_aliases, pkg_aliases)``:
+
+    - ``direct_aliases``: local names bound to ``load_model`` (e.g.
+      ``"load_model"`` from ``from vllm_mlx.server import load_model``,
+      or ``"lm"`` from ``... import load_model as lm``).
+    - ``module_aliases``: local names bound to the ``vllm_mlx.server``
+      module (e.g. ``"server"`` from ``from vllm_mlx import server``,
+      ``"srv"`` from ``import vllm_mlx.server as srv``, or the
+      two-segment ``"vllm_mlx.server"`` from bare
+      ``import vllm_mlx.server``).
+    - ``pkg_aliases``: local names bound to the top-level ``vllm_mlx``
+      package (e.g. ``"vllm_mlx"`` from ``import vllm_mlx`` or
+      ``"vm"`` from ``import vllm_mlx as vm``). Used to recognize
+      ``<pkg_alias>.server.load_model(...)`` call shapes
+      (DeepSeek round-3 #3).
+    """
+    # ``pkg_aliases``: top-level package aliases used with
+    # ``<pkg>.server.load_model(...)`` access (DeepSeek round-3 #3).
+    # Tracked here, consulted by ``_call_targets_load_model``.
+    direct: set[str] = set()
+    module: set[str] = set()
+    pkg_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            # ImportFrom shapes that reference vllm_mlx.server:
+            #   absolute:  from vllm_mlx.server import load_model
+            #              (module="vllm_mlx.server", level=0)
+            #   absolute:  from vllm_mlx import server
+            #              (module="vllm_mlx", level=0)
+            #   relative:  from .server import load_model
+            #              (module="server", level=1)
+            #   relative:  from . import server
+            #              (module=None, level=1)
+            #
+            # Codex round-H fix (PR #409): the prior absolute-only
+            # matching missed cli.py's `from .server import load_model`
+            # and `from . import server`, silently dropping cli.py from
+            # the forwarding-audit gate. Recognize relative forms by
+            # checking ``node.level >= 1`` and matching the residual
+            # module-name suffix.
+            absolute_server = node.level == 0 and node.module == "vllm_mlx.server"
+            relative_server = node.level >= 1 and node.module == "server"
+            absolute_pkg = node.level == 0 and node.module == "vllm_mlx"
+            relative_pkg = node.level >= 1 and node.module is None
+
+            if absolute_server or relative_server:
+                for alias in node.names:
+                    if alias.name == "load_model":
+                        direct.add(alias.asname or "load_model")
+            elif absolute_pkg or relative_pkg:
+                for alias in node.names:
+                    if alias.name == "server":
+                        module.add(alias.asname or "server")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "vllm_mlx.server":
+                    module.add(alias.asname or "vllm_mlx.server")
+                # DeepSeek round-3 fix #3: `import vllm_mlx` lets
+                # callers write `vllm_mlx.server.load_model(...)`. We
+                # track the top-level package alias separately so
+                # `_call_targets_load_model` can reach into the
+                # ``<alias>.server.load_model`` two-level attribute
+                # chain even when only the package was imported.
+                if alias.name == "vllm_mlx":
+                    pkg_aliases.add(alias.asname or "vllm_mlx")
+    return frozenset(direct), frozenset(module), frozenset(pkg_aliases)
+
+
+def _call_targets_load_model(
+    call: ast.Call,
+    direct_aliases: frozenset[str],
+    module_aliases: frozenset[str],
+    pkg_aliases: frozenset[str] = frozenset(),
+) -> bool:
+    """Return True iff ``call`` invokes ``vllm_mlx.server.load_model``
+    (under any of the import shapes captured by
+    ``_load_model_aliases_in_tree``). Handles:
+
+      - ``load_model(...)`` / ``lm(...)`` — direct alias name
+      - ``server.load_model(...)`` / ``srv.load_model(...)`` —
+        single-level Attribute receiver against ``module_aliases``
+      - ``vllm_mlx.server.load_model(...)`` — two-level Attribute
+        receiver collapsed against ``module_aliases``
+      - ``<pkg>.server.load_model(...)`` where ``<pkg>`` is in
+        ``pkg_aliases`` — DeepSeek round-3 #3 fix for the
+        ``import vllm_mlx`` shape.
+    """
+    func = call.func
+    if isinstance(func, ast.Name) and func.id in direct_aliases:
+        return True
+    if isinstance(func, ast.Attribute) and func.attr == "load_model":
+        receiver = func.value
+        receiver_name: str | None = None
+        if isinstance(receiver, ast.Name):
+            receiver_name = receiver.id
+        elif (
+            isinstance(receiver, ast.Attribute)
+            and isinstance(receiver.value, ast.Name)
+            and f"{receiver.value.id}.{receiver.attr}" == "vllm_mlx.server"
+        ):
+            receiver_name = "vllm_mlx.server"
+        if receiver_name is not None and receiver_name in module_aliases:
+            return True
+        # DeepSeek round-3 #3: ``<pkg_alias>.server.load_model(...)``
+        # — receiver is an Attribute(value=Name(pkg_alias), attr="server").
+        if (
+            isinstance(receiver, ast.Attribute)
+            and isinstance(receiver.value, ast.Name)
+            and receiver.attr == "server"
+            and receiver.value.id in pkg_aliases
+        ):
+            return True
+    return False
+
+
+def _discover_entrypoints() -> set[str]:
+    """Discover every file under ``vllm_mlx/`` that either calls
+    ``add_argument(...)`` or ``load_model(...)``. Returns paths
+    relative to the package root (e.g. ``"cli.py"`` or
+    ``"routes/audio_route.py"``).
+
+    Closes round-3 bypass: contributor adds a new entrypoint file
+    (e.g. ``vllm_mlx/serve.py`` with its own argparse) that the
+    hardcoded gate-file list would never check."""
+    root = _pkg_root()
+    discovered: set[str] = set()
+
+    for path in root.rglob("*.py"):
+        # DeepSeek round-3 fix (PR #409): skip only DIRECTORY parts
+        # starting with ``__`` (e.g. ``__pycache__``). The previous
+        # check walked ``path.parts`` which includes the filename, so
+        # ``__init__.py`` matched the dunder prefix and was skipped —
+        # silently dropping any entrypoint code that lives in an
+        # ``__init__.py``. Now only the directory chain (``parent.parts``)
+        # is checked.
+        parent_parts = path.parent.parts[len(root.parts) :]
+        if any(part.startswith("__") for part in parent_parts):
+            continue
+
+        try:
+            source = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+
+        # Codex round-G: detect ALL load_model alias shapes before the
+        # call scan, so a new entrypoint using `from vllm_mlx import
+        # server` / `import vllm_mlx.server as srv` doesn't slip
+        # discovery.
+        direct_aliases, module_aliases, pkg_aliases = _load_model_aliases_in_tree(tree)
+
+        # Codex round-H fix (PR #409): the later prongs in
+        # ``test_no_unregistered_routing_shaped_flags`` ban indirect
+        # add_argument shapes (``getattr(p, "add_argument")(...)``,
+        # ``**unpack`` kwargs, custom Action subclasses). Those bans
+        # only run on discovered files, so if discovery requires a
+        # direct ``Attribute`` add_argument call, a new entrypoint
+        # using only the indirect shape would skip discovery AND skip
+        # the ban — the very bypass the bans exist to catch.
+        # Broaden discovery: flag a file that mentions the literal
+        # STRING "add_argument" AND imports argparse. The combination
+        # catches indirect shapes (getattr / __dict__ / dynamic
+        # dispatch) without false-positiving on a stray docstring or
+        # log message that happens to mention "add_argument" outside
+        # an argparse context (DeepSeek round-5 #4).
+        mentions_add_argument_literal = any(
+            isinstance(n, ast.Constant)
+            and isinstance(n.value, str)
+            and n.value == "add_argument"
+            for n in ast.walk(tree)
+        )
+        imports_argparse = any(
+            (isinstance(n, ast.Import) and any(a.name == "argparse" for a in n.names))
+            or (isinstance(n, ast.ImportFrom) and n.module == "argparse")
+            for n in ast.walk(tree)
+        )
+        mentions_indirect_add_argument = (
+            mentions_add_argument_literal and imports_argparse
+        )
+
+        has_routing_shape = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            # add_argument detection (direct form): argparse method.
+            if isinstance(func, ast.Attribute) and func.attr == "add_argument":
+                for arg in node.args:
+                    if (
+                        isinstance(arg, ast.Constant)
+                        and isinstance(arg.value, str)
+                        and arg.value.startswith("--")
+                    ):
+                        has_routing_shape = True
+                        break
+            elif _call_targets_load_model(
+                node, direct_aliases, module_aliases, pkg_aliases
+            ):
+                # Any caller of OUR load_model (under any alias) is by
+                # definition an entrypoint that needs the forwarding check.
+                has_routing_shape = True
+
+            if has_routing_shape:
+                break
+
+        if not has_routing_shape and mentions_indirect_add_argument:
+            # Codex round-H + DeepSeek round-5 #4: the file references
+            # "add_argument" via something other than a direct Attribute
+            # call AND imports argparse — exactly the indirect shape
+            # the later add_argument-shape bans want to scan. Force
+            # discovery so those bans run.
+            has_routing_shape = True
+
+        if has_routing_shape:
+            rel = path.relative_to(root).as_posix()
+            discovered.add(rel)
+
+    missing_seed = _KNOWN_ENTRYPOINTS_SEED - discovered
+    assert not missing_seed, (
+        f"Entrypoint discovery dropped known files: {sorted(missing_seed)}. "
+        "Either a known entrypoint was deleted or the discovery logic "
+        "regressed. If deletion was intentional, update "
+        "_KNOWN_ENTRYPOINTS_SEED to match."
+    )
+    return discovered
+
+
+def test_no_unregistered_routing_shaped_flags():
+    """SOP gate (red-team #1, PR #408): every CLI flag whose name
+    matches the routing-shape pattern (``--force-*``, ``--no-*``,
+    ``--enable-*``, ``--disable-*``) MUST be in
+    ``AUTO_ROUTING_FLAG_PAIRS`` (registered as a binary routing
+    decision) OR in ``NON_ROUTING_FLAGS_ALLOWLIST`` (intentionally a
+    feature toggle, not a routing decision).
+
+    The previous registry was a closed-set check — it only verified
+    "known pairs are intact" and silently passed when a contributor
+    added a new ``--audio`` / ``--enable-thinking`` flag without
+    realizing they'd added an auto-routing decision. This test is the
+    complement: enumerate every routing-shaped flag in the source and
+    require a deliberate registration or allowlist decision.
+
+    Scans every file discovered by ``_discover_entrypoints()`` — not
+    a hardcoded list. Adding a new entrypoint file is automatically
+    included (round-3 bypass #1.4 fix).
+
+    Pick option 2 (allowlist) only when you're sure the flag is a UX
+    knob, not a binary auto-detection that could ever go wrong. When
+    in doubt, register the pair — the cost of an extra registry entry
+    is zero, the cost of a missed escape hatch is a Tylast-style
+    issue + patch release."""
+    routing_pattern = re.compile(r"^--(?:force|no|enable|disable)-")
+
+    discovered: set[str] = set()
+    pkg_root = _pkg_root()
+    registered_kwargs = KWARGS_THAT_MUST_BE_FORWARDED
+    failures: list[str] = []
+    for relpath in _discover_entrypoints():
+        source = (pkg_root / relpath).read_text()
+
+        # Prong 1: positional flag-string literals in add_argument calls
+        # (original gate).
+        for flag in _all_add_argument_flags(source):
+            if routing_pattern.match(flag):
+                discovered.add(flag)
+
+        # Prong 2: routing-shaped string constants anywhere in the
+        # module — catches helper-function indirection (round-4 cat-2
+        # #3) and plugin-registry calls (round-4 cat-2 #5) where the
+        # literal lives outside the add_argument() call.
+        for flag in _routing_shaped_constants_in_module(source):
+            discovered.add(flag)
+
+        # Prong 3: `dest=` aliasing — innocent-looking flag with a
+        # routing-kwarg dest is still a routing flag (round-4 cat-1).
+        # Walk each add_argument call individually so we can pair the
+        # dest= with its actual flag name. A registered flag using its
+        # natural dest (e.g. `--force-hybrid` + `dest="force_hybrid"`)
+        # is fine; an unregistered flag aliasing onto a routing kwarg
+        # is the attack.
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "add_argument"):
+                continue
+            dest_val: str | None = None
+            for kw in node.keywords:
+                if (
+                    kw.arg == "dest"
+                    and isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, str)
+                ):
+                    dest_val = kw.value.value
+            if dest_val is None or dest_val not in registered_kwargs:
+                continue
+            # dest IS a registered routing kwarg. Allow ONLY when at
+            # least one positional flag name on this call matches a
+            # registered routing flag — that's the legitimate "explicit
+            # dest=" pattern. If every flag name on the call is
+            # unregistered, this is dest= aliasing.
+            flag_names_on_call = [
+                arg.value
+                for arg in node.args
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            ]
+            registered_flag_set = _registered_flag_names()
+            if not any(fn in registered_flag_set for fn in flag_names_on_call):
+                failures.append(
+                    f"{relpath}:{node.lineno} add_argument({flag_names_on_call!r}, "
+                    f"dest={dest_val!r}) — dest aliases a registered routing "
+                    "kwarg under an unregistered flag name (round-4 cat-1). "
+                    "Either rename the flag to a registered routing flag, "
+                    "or remove dest= and route through cli.py main() with "
+                    "an explicit name."
+                )
+
+        # Prong 4: custom argparse.Action subclasses — these can mutate
+        # the namespace bypassing every name-based check (round-4
+        # cat-1 #A2 + cat-2 #4).
+        for lineno, action_repr in _add_argument_calls_with_custom_action(source):
+            failures.append(
+                f"{relpath}:{lineno} uses non-stdlib argparse action "
+                f"{action_repr!r}. Custom Action subclasses can mutate the "
+                "namespace bypassing every routing check — write the routing "
+                "logic in cli.py main() with explicit kwargs to load_model "
+                "instead (round-4 cat-1 #A2 + cat-2 #4). If you genuinely "
+                "need a custom Action for non-routing reasons, add an "
+                "allowlist branch to _add_argument_calls_with_custom_action "
+                "with a comment."
+            )
+
+        # Prong 5: helper-function indirection — add_argument(<non-Constant>,
+        # ...) where the flag name is computed at runtime (round-4 cat-2 #3).
+        for lineno in _add_argument_calls_with_non_literal_flag(source):
+            failures.append(
+                f"{relpath}:{lineno} calls add_argument() with a non-literal "
+                "first positional argument. Flag names must be string "
+                "literals so the SOP gate can audit them. Helper functions "
+                "that wrap add_argument() defeat AST scanning (round-4 cat-2 "
+                "#3). Spell out the add_argument call site directly."
+            )
+
+        # Prong 6: add_argument(..., **dict-unpack) — round-5 subagent 1
+        # #P2-3 (dest aliasing via unpacked dict literal). Reject the
+        # ** shape outright in entrypoint files.
+        for lineno in _add_argument_calls_with_dict_kwarg_unpack(source):
+            failures.append(
+                f"{relpath}:{lineno} calls add_argument() with **dict-unpack. "
+                "Spell out every kwarg explicitly so the SOP gate can audit "
+                "dest=/action=/etc (round-5 subagent 1 #P2-3 bypass)."
+            )
+
+        # Prong 7: getattr(p, "add_argument")(...) — round-5 subagent 1
+        # #P2-5 (Attribute-access indirection). No legitimate use of
+        # getattr on a parser for add_argument; ban the shape.
+        for lineno in _getattr_add_argument_calls(source):
+            failures.append(
+                f"{relpath}:{lineno} uses getattr(...)('add_argument')(...) "
+                "indirection — defeats every AST predicate that matches "
+                "Attribute(attr='add_argument'). Use p.add_argument(...) "
+                "directly (round-5 subagent 1 #P2-5 bypass)."
+            )
+
+    registered = _registered_flag_names()
+    unregistered = discovered - registered - NON_ROUTING_FLAGS_ALLOWLIST
+
+    if unregistered:
+        failures.append(
+            f"Found {len(unregistered)} routing-shaped flag(s) not in either "
+            f"AUTO_ROUTING_FLAG_PAIRS or NON_ROUTING_FLAGS_ALLOWLIST:\n  "
+            + "\n  ".join(sorted(unregistered))
+            + "\n\nFor each, choose ONE:\n"
+            "  (a) Register the pair in AUTO_ROUTING_FLAG_PAIRS (preferred — "
+            "every binary auto-routing decision needs both directions per "
+            "SOP §10, and this auto-extends every other gate in this file).\n"
+            "  (b) Add to NON_ROUTING_FLAGS_ALLOWLIST if the flag is a feature "
+            "toggle / UX knob, NOT a binary auto-detection.\n"
+            "Don't pick (b) unless you're sure — the wrong choice lets the next "
+            "#393 ship silently."
+        )
+
+    assert not failures, "\n\n".join(failures)

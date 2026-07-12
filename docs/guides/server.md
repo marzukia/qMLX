@@ -42,7 +42,6 @@ qmlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
 | `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
-| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'qmlx-serve[embeddings]'`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
 
@@ -98,22 +97,6 @@ GET /v1/models
 ```
 
 Returns available models.
-
-### Embeddings
-
-```bash
-POST /v1/embeddings
-```
-
-```python
-response = client.embeddings.create(
-    model="mlx-community/multilingual-e5-small-mlx",
-    input="Hello world"
-)
-print(response.data[0].embedding[:5])  # First 5 dimensions
-```
-
-See [Embeddings Guide](embeddings.md) for details.
 
 ### Health Check
 
@@ -745,7 +728,7 @@ sudo systemctl start qmlx
 
 When `--api-key` (or the `QMLX_API_KEY` env var) is set, every
 request to the OpenAI-style routes (`/v1/chat/completions`,
-`/v1/embeddings`, `/v1/audio/*`, `/v1/models`, ...) must carry a valid
+`/v1/models`, ...) must carry a valid
 `Authorization: Bearer <key>` header — anonymous requests get `401`.
 
 The auth check is wired via FastAPI route dependencies at app
