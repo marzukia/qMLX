@@ -66,7 +66,6 @@ from vllm_mlx.service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
 )
-from vllm_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
 from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
 
 # ──────────────────────────────────────────────────────────────────
@@ -309,59 +308,6 @@ def test_t2_forced_prefix_deepseek_v3_rejects_unsafe_tool_names():
         assert _forced_tool_call_prefix("deepseek_r1_0528", name) is None
 
 
-def test_t2_deepseek_v31_parser_consumes_assembled_envelope():
-    """End-to-end shape check: when the model continues from the
-    injected prefix and emits ``{"city":"Tokyo"}<｜tool▁call▁end｜>``
-    ``<｜tool▁calls▁end｜>``, the parser MUST extract a non-empty
-    ``arguments`` string — that's the entire point of injecting the
-    prefix.
-    """
-    prefix = _forced_tool_call_prefix("deepseek_v31", "get_weather")
-    assert prefix is not None
-    # Simulate the model's continuation past the injected prefix.
-    full = (
-        prefix + '{"city":"Tokyo","units":"c"}<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
-    )
-    parser = DeepSeekV31ToolParser(tokenizer=None)
-    parser.reset()
-    result = parser.extract_tool_calls(full, None)
-    assert result.tools_called
-    assert result.tool_calls[0]["name"] == "get_weather"
-
-
-def test_t2_deepseek_v3_parser_consumes_assembled_envelope():
-    """R12-5 round-trip: the V3 prefix opens through the
-    ``function<sep>NAME\\n``\\`json\\n`` fence opener. When the model
-    continues with the arguments body + closing fence + envelope
-    closers, ``DeepSeekV3ToolParser.extract_tool_calls`` must extract
-    the call with the right name and a JSON-parseable arguments
-    string."""
-    import json as _json
-
-    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import (
-        DeepSeekV3ToolParser,
-    )
-
-    prefix = _forced_tool_call_prefix("deepseek_v3", "get_weather")
-    assert prefix is not None
-    # Model continues with the JSON body, the closing fence, then the
-    # block + envelope closers (exactly what the V3 chat template
-    # emits at end-of-tool).
-    full = (
-        prefix
-        + '{"city":"Tokyo","units":"c"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
-    )
-    parser = DeepSeekV3ToolParser(tokenizer=None)
-    parser.reset()
-    result = parser.extract_tool_calls(full, None)
-    assert result.tools_called
-    assert result.tool_calls[0]["name"] == "get_weather"
-    assert _json.loads(result.tool_calls[0]["arguments"]) == {
-        "city": "Tokyo",
-        "units": "c",
-    }
-
-
 def test_t2_deepseek_v3_alias_uses_same_prefix_as_r1_0528():
     """R12-5: ``deepseek_v3`` and ``deepseek_r1_0528`` are aliases of
     the same V3 parser and MUST produce identical forced-tool prefixes.
@@ -371,45 +317,6 @@ def test_t2_deepseek_v3_alias_uses_same_prefix_as_r1_0528():
     b = _forced_tool_call_prefix("deepseek_r1_0528", "x")
     assert a == b
     assert a is not None
-
-
-def test_t2_chat_route_wires_deepseek_v31_prefix_to_engine():
-    """Through the FULL chat route: ``tool_choice="required"`` + single
-    tool + ``deepseek_v31`` parser must ship a ``forced_assistant_prefix``
-    in the engine kwargs. Without it, T2 fails the same way as 0.8.3."""
-    engine = _RecordingEngine()
-    client = _make_client(engine, tool_call_parser="deepseek_v31")
-    resp = client.post(
-        "/v1/chat/completions",
-        json={
-            "model": "test-model",
-            "messages": [{"role": "user", "content": "weather in Tokyo in celsius?"}],
-            "tools": _WEATHER_TOOL,
-            "tool_choice": "required",
-            "max_tokens": 32,
-        },
-    )
-    # codex r2 NIT: assert the exact expected status BEFORE inspecting
-    # engine kwargs — a loose ``in (200, 422)`` would let a response-
-    # path regression slip through silently. The mock engine returns
-    # ``text="ok"`` with ``finish_reason="stop"``, so the route's
-    # post-parse path synthesises a tool call (single-tool
-    # ``required``) and ships 200.
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["choices"][0]["message"].get("tool_calls"), (
-        f"tool_choice=required must yield tool_calls in the response; got {body!r}"
-    )
-    # Separately assert that the prefix WAS injected into engine kwargs
-    # — this is the T2 invariant the test pins.
-    assert engine.last_chat_kwargs is not None
-    prefix_kw = engine.last_chat_kwargs.get("forced_assistant_prefix")
-    assert prefix_kw is not None, (
-        "deepseek_v31 + tool_choice=required + 1 tool must inject a "
-        "forced_assistant_prefix into engine kwargs (T2 fix)"
-    )
-    assert "<｜tool▁call▁begin｜>" in prefix_kw
-    assert "get_weather" in prefix_kw
 
 
 # ──────────────────────────────────────────────────────────────────

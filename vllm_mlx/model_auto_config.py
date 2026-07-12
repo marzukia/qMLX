@@ -130,86 +130,6 @@ class ModelConfig:
 # Model family patterns → optimal config.
 # Order matters: first match wins. More specific patterns go first.
 _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
-    # DeepSeek V4 / V4-Flash — sparse MoE with sliding-window attention
-    # (RotatingKVCache). Pure-attention so spec decode is safe; tool
-    # parser inherits the standard DeepSeek format. Upstream chat
-    # template is currently chat-only with no tools (see deepseek-ai
-    # discussion #16) — when fixed, just bump the parser here.
-    (
-        re.compile(r"deepseek.*v4", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="deepseek",
-            reasoning_parser=None,
-        ),
-    ),
-    # DeepSeek V3.1 (thinking-channel wire shape: NAME<sep>{json}).
-    # Matched before V3 / R1-0528 so the more specific pattern wins.
-    (
-        re.compile(r"deepseek.*v3\.1", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="deepseek_v31",
-            reasoning_parser="deepseek_r1",
-        ),
-    ),
-    # DeepSeek-R1-0528 (V3 chat template — function-typed fenced JSON).
-    # R12-5: split off the V3.1 parser to its own DeepSeekV3ToolParser.
-    (
-        re.compile(r"deepseek.*r1[-_]?0528", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="deepseek_v3",
-            reasoning_parser="deepseek_r1",
-        ),
-    ),
-    # DeepSeek R1 (non-0528) — has reasoning
-    (
-        re.compile(r"deepseek.*r1", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="deepseek",
-            reasoning_parser="deepseek_r1",
-        ),
-    ),
-    # DeepSeek V3 (vanilla checkpoints: V3-0324 etc.) — same
-    # function-typed fenced JSON wire shape as R1-0528. R12-5: route
-    # to the dedicated V3 parser so vanilla V3 users get the same
-    # forced-tool prefix injection as R1-0528 (codex r3 P2 — without
-    # this, a direct serve of ``deepseek-ai/DeepSeek-V3-0324`` falls
-    # through to the generic ``deepseek`` parser, which has neither
-    # the block-wise scanner hardening nor a forced-prefix branch).
-    # Matched AFTER V3.1 (above) so the more specific pattern wins.
-    (
-        re.compile(r"deepseek.*v3(?![._\d])", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="deepseek_v3",
-            reasoning_parser=None,
-        ),
-    ),
-    # DeepSeek (V2.5 and older) — no reasoning parser
-    (
-        re.compile(r"deepseek", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="deepseek",
-            reasoning_parser=None,
-        ),
-    ),
-    # UI-TARS (ByteDance) — Qwen2-VL / Qwen2.5-VL based GUI-agent VLM.
-    # Wire format is the literal ``Action: verb(kwargs)`` Computer-Use
-    # shape (see vllm_mlx.tool_parsers.ui_tars_tool_parser). MUST come
-    # BEFORE any generic Qwen2/Qwen2.5 pattern would otherwise match —
-    # full HF paths like ``mlx-community/UI-TARS-7B-DPO-4bit`` should
-    # resolve here, not to the generic Qwen3 fallback.
-    (
-        re.compile(r"ui[-_]?tars", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="ui_tars",
-            reasoning_parser="ui_tars",
-            is_hybrid=False,
-            # UI-TARS uses Qwen2-VL/Qwen2.5-VL mrope; spec decode hasn't
-            # been benched on the VLM variant. Keep off until verified
-            # to avoid silent quality regressions (mirrors the gemma 3n
-            # / phi-3.5 conservative defaults).
-            supports_spec_decode=False,
-        ),
-    ),
     # Qwopus (Qwen3.5 distilled with Claude Opus reasoning) — hybrid base
     (
         re.compile(r"qwopus", re.IGNORECASE),
@@ -262,35 +182,6 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
             is_hybrid=True,
             supports_spec_decode=False,
-        ),
-    ),
-    # Qwen3.6 MoE (A3B / A10B / generic MoE markers) — hybrid
-    # GatedDeltaNet + sparse experts, XML tool format. r6-A R6-C1: the
-    # earlier bare ``qwen3\.6`` regex also fired on the DENSE 27B variant
-    # (mlx-community/Qwen3.6-27B-4bit, model_type=qwen3_5), which carries
-    # GatedDeltaNet layers but wedges on metal::malloc when the engine
-    # opts into the hybrid throttle + prefix-boundary snapshot path. The
-    # MoE-marker gate keeps the hybrid stamp ON for the A3B (35B) MoE
-    # variants that actually need it, while the dense 27B falls through
-    # to the generic Qwen3 fallback (pure-attention contract).
-    (
-        re.compile(r"qwen3\.6.*(a3b|a10b|moe)", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="qwen3_coder_xml",
-            reasoning_parser="qwen3",
-            is_hybrid=True,
-            supports_spec_decode=False,
-        ),
-    ),
-    # Qwen3.6 dense (non-MoE) — same XML tool format, but NOT hybrid for
-    # routing purposes (see the MoE branch above for the r6-A R6-C1
-    # rationale: dense GatedDeltaNet variants wedge under the hybrid
-    # scheduler path on Metal).
-    (
-        re.compile(r"qwen3\.6", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="qwen3_coder_xml",
-            reasoning_parser="qwen3",
         ),
     ),
     # Qwen3.5 MoE (A3B / A10B / generic MoE markers) — hybrid
@@ -359,14 +250,6 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser="qwen3",
-        ),
-    ),
-    # GPT-OSS
-    (
-        re.compile(r"gpt[-_]?oss", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="harmony",
-            reasoning_parser="harmony",
         ),
     ),
     # Magistral (Mistral reasoning variant) — must precede generic

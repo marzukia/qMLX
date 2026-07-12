@@ -807,30 +807,6 @@ async def _non_stream(
 
     messages = _prepare_messages_for_engine(engine, openai_request)
 
-    # r5-B C-10 / C-11: tool-coupled UI-TARS sysprompt injection. PR
-    # #817 wired ``computer_20251022`` → ``computer`` tool translation
-    # on the Responses surface but never injected the canonical UI-TARS
-    # action-API sysprompt — so the model had no idea it was supposed
-    # to emit ``Action: click(...)`` and just described the click in
-    # English (F-R2-D). With the shared helper threaded here, the
-    # responses lane fires the SAME tool-coupled gate as
-    # ``/v1/chat/completions`` and ``/v1/messages``: when the request
-    # declares ``tools=[{type:"computer_20251022",...}]``, the UI-TARS
-    # sysprompt is prepended, the model emits ``Action: ...`` text,
-    # the parser surfaces it as a ``computer`` tool_call, and the
-    # response adapter (already in place since #817) translates that
-    # to a ``computer_call`` output item. Cross-lane parity restored.
-    from ..tool_parsers.ui_tars_tool_parser import (
-        maybe_inject_ui_tars_system_prompt as _maybe_inject_ui_tars_sysprompt,
-    )
-
-    messages = _maybe_inject_ui_tars_sysprompt(
-        messages,
-        tool_call_parser=cfg.tool_call_parser,
-        tool_choice=openai_request.tool_choice,
-        tools=openai_request.tools,
-    )
-
     chat_kwargs = {
         "max_tokens": _resolve_max_tokens(
             openai_request.max_tokens,
@@ -1682,23 +1658,6 @@ async def _stream_responses(
     )
     try:
         messages = _prepare_messages_for_engine(engine, openai_request)
-
-        # r5-B C-10 / C-11: tool-coupled UI-TARS sysprompt injection on
-        # the streaming responses lane. Same gate as the non-stream
-        # path above and the chat / messages lanes — see ``_non_stream``
-        # for the full rationale. The streaming response builder
-        # surfaces ``computer_call`` output items via the parser path
-        # downstream once the model is primed to emit ``Action: ...``.
-        from ..tool_parsers.ui_tars_tool_parser import (
-            maybe_inject_ui_tars_system_prompt as _maybe_inject_ui_tars_sysprompt,
-        )
-
-        messages = _maybe_inject_ui_tars_sysprompt(
-            messages,
-            tool_call_parser=cfg.tool_call_parser,
-            tool_choice=openai_request.tool_choice,
-            tools=openai_request.tools,
-        )
 
         chat_kwargs = {
             "max_tokens": _resolve_max_tokens(
