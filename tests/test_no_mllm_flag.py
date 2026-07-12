@@ -176,6 +176,8 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--enable-kv-cache-turboquant",
         "--enable-prefix-cache",
         "--disable-prefix-cache",
+        # SSD KV-restore feature toggle, not a model auto-detection/router.
+        "--enable-disk-kv-restore",
         # Chat-template toggle, not engine routing.
         "--no-thinking",
         # `--no-think` is a hidden back-compat alias of `--no-thinking` on
