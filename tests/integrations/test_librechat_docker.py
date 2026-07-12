@@ -98,9 +98,7 @@ if __name__ == "__main__":
         assert r.status_code == 200, f"{r.status_code} {r.text[:200]}"
         models = r.json()
         print(f"  models keys: {list(models.keys())[:20]}")
-        rapid_models = models.get("qMLX") or models.get("custom", {}).get(
-            "qMLX"
-        )
+        rapid_models = models.get("qMLX") or models.get("custom", {}).get("qMLX")
         assert rapid_models, f"No qMLX models in {models}"
         assert any("gemma" in m.lower() for m in rapid_models), (
             f"gemma not in {rapid_models}"

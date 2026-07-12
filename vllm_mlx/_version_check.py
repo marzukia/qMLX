@@ -257,10 +257,7 @@ def prompt_upgrade_if_available() -> bool:
         import subprocess
 
         info = detect_install_method()
-        print(
-            f"\nA newer qmlx is available: {latest_str} "
-            f"(current: {installed_str})."
-        )
+        print(f"\nA newer qmlx is available: {latest_str} (current: {installed_str}).")
         print(f"  Upgrade command: {info.upgrade_command}")
         try:
             answer = input("  Run it now? [Y/n] ").strip().lower()

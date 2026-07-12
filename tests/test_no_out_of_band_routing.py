@@ -1091,9 +1091,7 @@ def test_no_routing_shaped_request_headers():
     the routing-shape inside it has no legitimate use anywhere.
     """
     pkg_root = _pkg_root()
-    header_pattern = re.compile(
-        r"^X-qMLX-(?:Force|No|Enable|Disable)-", re.IGNORECASE
-    )
+    header_pattern = re.compile(r"^X-qMLX-(?:Force|No|Enable|Disable)-", re.IGNORECASE)
 
     offenders: list[str] = []
     for path in _iter_module_files():
@@ -1310,9 +1308,7 @@ def test_environb_detection_catches_bare_name_form():
     exercise the predicate directly by running an AST walk and
     counting matches.
     """
-    bare_form_source = (
-        "from os import environb\nenvironb[b'QMLX_FORCE_MLLM'] = b'1'\n"
-    )
+    bare_form_source = "from os import environb\nenvironb[b'QMLX_FORCE_MLLM'] = b'1'\n"
     attribute_form_source = "import os\nos.environb[b'QMLX_FORCE_MLLM'] = b'1'\n"
 
     def _count_environb_hits(source: str) -> int:

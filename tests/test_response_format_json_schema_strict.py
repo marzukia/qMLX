@@ -1604,9 +1604,7 @@ def test_metrics_reflects_strict_request_count_after_traffic():
             assert line.endswith(" 3"), line
             break
     else:
-        raise AssertionError(
-            "qmlx_response_format_strict_total sample line missing"
-        )
+        raise AssertionError("qmlx_response_format_strict_total sample line missing")
 
 
 # ---------------------------------------------------------------------------

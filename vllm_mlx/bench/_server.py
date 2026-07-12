@@ -119,9 +119,7 @@ def serve(
     if log_path is not None:
         log_fh = open(log_path, "w")
     else:
-        tmp_log = Path(
-            tempfile.mkstemp(prefix=f"qmlx-bench-{port}-", suffix=".log")[1]
-        )
+        tmp_log = Path(tempfile.mkstemp(prefix=f"qmlx-bench-{port}-", suffix=".log")[1])
         log_fh = open(tmp_log, "w")
     try:
         t_spawn = time.perf_counter()

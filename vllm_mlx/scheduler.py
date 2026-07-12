@@ -5579,8 +5579,11 @@ class Scheduler:
                 # limit, rejecting restores that actually fit. Opt back in with
                 # QMLX_ENABLE_HEADROOM_GUARD=1 (pending a rework that sizes
                 # the estimate honestly).
-                if (est_bytes > 0 and active + est_bytes > ceiling
-                        and os.environ.get("QMLX_ENABLE_HEADROOM_GUARD")):
+                if (
+                    est_bytes > 0
+                    and active + est_bytes > ceiling
+                    and os.environ.get("QMLX_ENABLE_HEADROOM_GUARD")
+                ):
                     _dkc.record_restore_reject("memory_headroom")
                     logger.info(
                         "[kv_restore] request=%s REJECT reason=memory_headroom "
