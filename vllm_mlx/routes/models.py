@@ -330,123 +330,6 @@ def _reported_modality_for_embedding(locked_id: str) -> str:
     return "text"
 
 
-def _resolve_audio_entry(model_id: str):
-    """Return the audio registry entry for ``model_id`` (alias OR HF id).
-
-    R11-B-F4 (Bo 0.8.12 dogfood): the wire-level ``/v1/models`` listing
-    for an audio-only alias (``qmlx serve kokoro``) advertised
-    ``capabilities=["text"]`` and ``modality=null`` because the
-    capability detector was wired only for text / VLM / embedding
-    lanes. Drop-in OpenAI clients couldn't tell an audio alias from a
-    text model from the wire — and the ``audio_lanes`` field they
-    DID get back was the server-wide lane-health snapshot, not the
-    per-entry capability hint.
-
-    The fix introspects the audio registry (the SAME source of truth
-    that drives ``serve_command``'s audio-mode fork — see
-    :mod:`vllm_mlx.audio.registry`) and returns the resolved entry
-    when ``model_id`` is a known audio alias OR a registered audio HF
-    id. Otherwise returns ``None`` so the text / VLM / embedding path
-    continues to own the entry.
-
-    The lookup is intentionally read-only and exception-tolerant: any
-    failure (``[audio]`` extra not installed, registry JSON parse
-    error) falls through to ``None`` so ``/v1/models`` stays 200.
-    """
-    try:
-        from ..audio.registry import resolve_audio_alias
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        return resolve_audio_alias(model_id)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _audio_routes_mounted() -> bool:
-    """Task #292: True iff the canonical ``/v1/audio/*`` router is attached.
-
-    On text-only servers (Bo R13/R14 fuzz wave) the audio router is
-    NOT registered, so ``/v1/audio/transcriptions`` etc. return a stock
-    FastAPI 404. ``/v1/models`` should reflect that — clients shouldn't
-    see ``audio_lanes={"stt":"degraded"}`` on a server that wouldn't
-    answer ``/v1/audio/transcriptions`` at all.
-
-    Codex r0 BLOCKING #1: the predicate ONLY inspects the live ASGI
-    app — never the ``ServerConfig.enable_audio_lane`` flag. The flag
-    is the upstream INPUT to the gate; the route table is the downstream
-    OUTPUT. A boot path that sets the flag but hasn't yet called the
-    registration hook would otherwise advertise ``audio_lanes`` while
-    ``/v1/audio/*`` still 404s.
-
-    Codex r2 BLOCKING: the previous prefix-scan implementation
-    false-positived on operator-added subpaths (e.g.
-    ``/v1/audio/health`` probes) — same shape as the
-    ``register_audio_routes`` NIT that codex r0 caught. Now we check
-    the app-local sentinel attribute that
-    :func:`vllm_mlx.routes.audio.register_audio_routes` stamps on the
-    app on a successful registration. The sentinel is the single source
-    of truth for "the canonical audio router is mounted on this app".
-
-    Falls through to False on any inspection failure (defensive — the
-    listing must stay 200 even if the app/router shape changes).
-    """
-    try:
-        from ..routes.audio import _AUDIO_REGISTRATION_SENTINEL
-        from ..server import app as _server_app
-    except Exception:  # noqa: BLE001
-        return False
-    try:
-        return bool(getattr(_server_app, _AUDIO_REGISTRATION_SENTINEL, False))
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _audio_lane_snapshot() -> dict[str, str] | None:
-    """Return the current per-lane audio status, or ``None`` when no
-    deep probe has run.
-
-    F-K-CAPABILITIES-OMIT-AUDIO: surfaces the recorded outcome of
-    :func:`vllm_mlx.audio.probe.deep_probe_audio_lane` on every
-    ``ModelInfo`` returned by ``/v1/models``. Pre-fix, audio lane
-    health was invisible — a Whisper backend that 500'd on every
-    request still advertised the same ``capabilities`` list as a
-    healthy one. Now a degraded lane shows up as
-    ``audio_lanes: {"stt": "degraded", ...}`` so dashboards / the
-    desktop can warn before sending real traffic.
-
-    Task #292 (Bo R13/R14): if the audio router is NOT mounted on the
-    live ASGI app (text-only server boot, no ``--enable-audio``), this
-    returns ``None`` so ``/v1/models`` doesn't advertise lane health
-    for routes that would answer 404. The pre-fix shape was
-    misleading: a text-only Qwen3-7B-4bit server reported
-    ``audio_lanes={"stt":"missing","tts":"missing"}`` even though
-    ``/v1/audio/transcriptions`` was about to 500.
-
-    The function is intentionally tolerant: any failure resolving
-    the probe module (e.g. ``[audio]`` extra not installed, so the
-    probe module isn't even reachable) returns ``None`` rather than
-    raising. ``/v1/models`` MUST stay 200 even when the audio probe
-    is broken.
-    """
-    if not _audio_routes_mounted():
-        return None
-    try:
-        from ..audio import probe as _audio_probe
-    except Exception:  # noqa: BLE001
-        return None
-    snapshot: dict[str, str] = {}
-    for lane in ("stt", "tts"):
-        try:
-            entry = _audio_probe.audio_lane_status(lane)
-        except Exception:  # noqa: BLE001
-            continue
-        status = entry.get("status") if isinstance(entry, dict) else None
-        if status and status != "unknown":
-            snapshot[lane] = status
-    return snapshot or None
-
-
 def effective_parsers_for(
     model_id: str, profile_tool_parser: str | None, profile_reasoning_parser: str | None
 ) -> tuple[str | None, str | None]:
@@ -634,39 +517,6 @@ def _build_model_info(model_id: str) -> ModelInfo:
     # failures fall through to ``None`` and the client uses its own
     # per-family fallback. See ``_resolve_context_window`` docstring.
     context_window = _resolve_context_window(model_id)
-    # F-K-CAPABILITIES-OMIT-AUDIO: per-lane audio status snapshot, or
-    # ``None`` when the deep probe never ran (e.g.
-    # ``QMLX_AUDIO_DEEP_PROBE`` unset). Identical value is
-    # attached to every entry — the listing's role is to advertise
-    # SERVER-WIDE backend health, not per-model audio capability
-    # (which would require a separate dry-run per audio alias).
-    audio_lanes = _audio_lane_snapshot()
-
-    # R11-B-F4 (Bo 0.8.12 dogfood): audio aliases get an audio-shaped
-    # ModelInfo regardless of whether the registry has a text profile
-    # for the id (it never does — audio aliases are NOT in
-    # ``model_aliases.aliases.json``). The lookup is via
-    # :func:`_resolve_audio_entry` so both the short alias (``kokoro``)
-    # and the registered HF id (``mlx-community/Kokoro-82M-bf16``) land
-    # on the same shape. Pre-fix both forms came back as
-    # ``capabilities=["text"]`` / ``modality=null`` and drop-in OpenAI
-    # clients couldn't tell audio aliases apart from text models.
-    audio_entry = _resolve_audio_entry(model_id)
-    if audio_entry is not None:
-        # The per-entry ``audio.<kind>`` capability + ``modality="audio"``
-        # is the wire-level distinction. ``audio_lanes`` (server-wide
-        # health) is still attached so dashboards see degraded backends
-        # for the audio aliases too.
-        if audio_entry.type == "tts":
-            audio_caps = ["audio.speech"]
-        else:
-            audio_caps = ["audio.transcription"]
-        return ModelInfo(
-            id=model_id,
-            modality="audio",
-            capabilities=audio_caps,
-            audio_lanes=audio_lanes,
-        )
 
     locked = _locked_embedding_id()
     if locked is not None and model_id == locked:
@@ -683,7 +533,6 @@ def _build_model_info(model_id: str) -> ModelInfo:
                 modality=_reported_modality_for_embedding(locked),
                 capabilities=["embedding"],
                 context_window=context_window,
-                audio_lanes=audio_lanes,
             )
         sampling = (
             dict(profile.recommended_sampling)
@@ -703,7 +552,6 @@ def _build_model_info(model_id: str) -> ModelInfo:
             modality=_reported_modality_for_embedding(locked),
             capabilities=["embedding"],
             context_window=context_window,
-            audio_lanes=audio_lanes,
         )
 
     if profile is None:
@@ -736,7 +584,6 @@ def _build_model_info(model_id: str) -> ModelInfo:
                     tool_call_parser=eff_tool,
                     reasoning_parser=eff_reasoning,
                     context_window=context_window,
-                    audio_lanes=audio_lanes,
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -746,7 +593,6 @@ def _build_model_info(model_id: str) -> ModelInfo:
             tool_call_parser=eff_tool,
             reasoning_parser=eff_reasoning,
             context_window=context_window,
-            audio_lanes=audio_lanes,
         )
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
@@ -785,7 +631,6 @@ def _build_model_info(model_id: str) -> ModelInfo:
         modality=_reported_modality(model_id, profile.modality),
         capabilities=capabilities,
         context_window=context_window,
-        audio_lanes=audio_lanes,
     )
 
 

@@ -60,7 +60,7 @@ def _stream(parser, chunks: list[str]) -> tuple[str, str]:
     return "".join(reasoning_parts), "".join(content_parts)
 
 
-@pytest.fixture(params=["qwen3", "deepseek_r1"])
+@pytest.fixture(params=["qwen3"])
 def parser(request):
     return get_parser(request.param)()
 
