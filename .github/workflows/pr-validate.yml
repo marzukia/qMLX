@@ -36,8 +36,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write  # post scorecard comment
-  issues: write         # gh's pr-comment writes via issues API
+  pull-requests: read  # gh pr view/diff in the fetch step
 
 jobs:
   validate:
@@ -145,47 +144,6 @@ jobs:
             validate.log
             /tmp/pr_validate/pr-${{ steps.prnum.outputs.pr }}/
           retention-days: 14
-
-      - name: Post scorecard as PR comment
-        if: github.event_name == 'pull_request'
-        # External-fork PRs run with a read-only GITHUB_TOKEN by
-        # design (GitHub's security model — the fork could otherwise
-        # abuse write access via a malicious workflow change). The
-        # comment-post will then fail with
-        # ``GraphQL: Resource not accessible by integration``.
-        # That's expected and must not block merge: the scorecard is
-        # still uploaded as an artifact in the previous step, and the
-        # ``Block merge on pipeline failure`` step below is what
-        # actually gates merge on the pipeline verdict. Marking this
-        # step best-effort keeps the comment for the common
-        # (internal-PR) path without turning every external-fork PR
-        # red — the actual verdict is already enforced separately.
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ steps.prnum.outputs.pr }}
-        run: |
-          # Wrap the scorecard in a stable marker so we can find and
-          # UPDATE our prior comment on subsequent runs instead of
-          # spamming a new comment per push (`gh pr comment` doesn't
-          # have an "upsert" mode; we implement it with `gh api`).
-          MARKER="<!-- pr-validate-scorecard -->"
-          BODY=$(printf '%s\n\n%s\n' "$MARKER" "$(cat scorecard.md)")
-          # Find prior bot comment carrying our marker.
-          PRIOR_ID=$(gh api \
-            "repos/${{ github.repository }}/issues/$PR/comments" \
-            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" \
-            | head -1)
-          if [ -n "$PRIOR_ID" ]; then
-            echo "Updating prior scorecard comment $PRIOR_ID"
-            jq -n --arg body "$BODY" '{body: $body}' \
-              | gh api -X PATCH \
-                "repos/${{ github.repository }}/issues/comments/$PRIOR_ID" \
-                --input -
-          else
-            echo "Posting new scorecard comment"
-            gh pr comment "$PR" --repo "${{ github.repository }}" --body "$BODY"
-          fi
 
       - name: Block merge on pipeline failure
         if: steps.validate.outputs.exit_code != '0'
