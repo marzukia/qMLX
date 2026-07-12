@@ -986,134 +986,14 @@ class BatchedEngine(BaseEngine):
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
 
     async def _start_mllm(self) -> None:
-        """Start the MLLM engine with MLLMScheduler (continuous batching)."""
-        import concurrent.futures
+        """MLLM (vision) serving was removed in the Qwen-only build.
 
-        from ..engine_core import _init_mlx_step_thread
-        from ..mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
-        from ..models.mllm import MLXMultimodalLM
-        from ..scheduler import SchedulerConfig
-
-        # MLLM-tuned default for ``prefill_step_size``. Vision tokens balloon
-        # the prompt size on VLMs (~2200 tokens for a 1920×1080 Qwen3-VL
-        # screenshot), so we override only when the user left the text-LLM
-        # default (2048) — see the bump-policy comment below for the rationale.
-        _MLLM_DEFAULT_PREFILL_STEP_SIZE = MLLMSchedulerConfig.__dataclass_fields__[
-            "prefill_step_size"
-        ].default
-
-        # Load the MLLM model on a dedicated worker thread (#170 / #174 fix
-        # extended to MLLM). mlx-lm 0.31.3+ tags every mx.array with the
-        # calling thread's default stream, and MLLMScheduler.batch_generator
-        # later evals against these weights. Loading on the asyncio loop
-        # thread and stepping on a separate mllm-step worker would crash with
-        # "There is no Stream(gpu, N) in current thread" on the first request.
-        # The same executor is then handed to MLLMScheduler so step calls
-        # land on the model-owning thread.
-        self._model_load_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1,
-            thread_name_prefix="mllm-step",
-            initializer=_init_mlx_step_thread,
-        )
-
-        def _load_mllm() -> MLXMultimodalLM:
-            instance = MLXMultimodalLM(
-                self._model_name,
-                trust_remote_code=self._trust_remote_code,
-            )
-            instance.load()
-            return instance
-
-        self._mllm_instance = self._model_load_executor.submit(_load_mllm).result()
-
-        self._model = self._mllm_instance.model
-        self._processor = self._mllm_instance.processor
-
-        # Fail fast at startup if the language backbone is a hybrid model
-        # (linear-attention or recurrent layers, producing ArraysCache /
-        # MambaCache). MLLM continuous batching builds a BatchKVCache via
-        # KVCache.merge(), which requires standard KVCache or RotatingKVCache;
-        # otherwise the first request raises ValueError mid-prefill.
-        # Catching it now means a clear startup error instead of the user
-        # seeing "Batch generation failed" on their very first image request
-        # (GitHub #352, Qwen3.6-35B-A3B + --mllm).
-        language_model = getattr(self._model, "language_model", self._model)
-        cache_type = self._model_load_executor.submit(
-            _probe_mllm_cache_type, language_model
-        ).result()
-        if cache_type is not None:
-            raise RuntimeError(
-                f"Model '{self._model_name}' uses a hybrid/linear-attention "
-                f"language backbone ({cache_type}), which is incompatible "
-                f"with --mllm continuous batching (requires standard KVCache "
-                f"or RotatingKVCache). Drop --mllm for text-only use, or pick "
-                f"a non-hybrid VLM (Qwen3-VL, Gemma-3, etc.). See #352."
-            )
-
-        # Create MLLM scheduler config with batch generator support
-        if self._scheduler_config and hasattr(self._scheduler_config, "max_num_seqs"):
-            max_num_seqs = self._scheduler_config.max_num_seqs
-        else:
-            max_num_seqs = 16  # Default for continuous batching
-
-        # Get batch sizes from config if available. Fallback defaults match
-        # SchedulerConfig's canonical defaults so a config object missing
-        # these fields (e.g., a stripped-down test double) does not silently
-        # downgrade MLLM batch sizes vs the standard text path.
-        prefill_batch_size = getattr(self._scheduler_config, "prefill_batch_size", 8)
-        completion_batch_size = getattr(
-            self._scheduler_config, "completion_batch_size", 32
-        )
-        # ``prefill_step_size`` for MLLM is the per-request budget that
-        # caps total prompt tokens (vision + text). See
-        # ``_resolve_mllm_prefill_step_size`` for the bump-policy
-        # rationale (#682).
-        prefill_step_size = _resolve_mllm_prefill_step_size(
-            getattr(self._scheduler_config, "prefill_step_size", None),
-            text_default=SchedulerConfig.__dataclass_fields__[
-                "prefill_step_size"
-            ].default,
-            mllm_default=_MLLM_DEFAULT_PREFILL_STEP_SIZE,
-        )
-        # Carry the user-configured admission cap across to the MLLM
-        # scheduler. Without this, a server started with
-        # ``SchedulerConfig(max_concurrent_requests=N)`` would always
-        # admission-gate MLLM routes against the dataclass default —
-        # leaving memory-constrained vision deployments without the
-        # configured backpressure protection (codex R5). Fallback 256
-        # matches ``MLLMSchedulerConfig``'s own dataclass default so
-        # the no-explicit-config programmatic construction path (no
-        # ``scheduler_config`` passed to ``BatchedEngine``) still
-        # admission-gates rather than passing ``None`` through and
-        # silently disabling the cap (codex R8).
-        max_concurrent_requests = getattr(
-            self._scheduler_config, "max_concurrent_requests", 256
-        )
-
-        mllm_config = MLLMSchedulerConfig(
-            max_num_seqs=max_num_seqs,
-            prefill_batch_size=prefill_batch_size,
-            completion_batch_size=completion_batch_size,
-            prefill_step_size=prefill_step_size,
-            enable_vision_cache=True,
-            vision_cache_size=100,
-            max_concurrent_requests=max_concurrent_requests,
-        )
-
-        # Create and start MLLM scheduler — pass the model-owning executor so
-        # _step_no_queue runs on the same thread as model load.
-        self._mllm_scheduler = MLLMScheduler(
-            model=self._model,
-            processor=self._processor,
-            config=mllm_config,
-            step_executor=self._model_load_executor,
-        )
-        await self._mllm_scheduler.start()
-
-        logger.info(
-            f"MLLM Scheduler started with continuous batching: "
-            f"max_num_seqs={max_num_seqs}, prefill_batch={prefill_batch_size}, "
-            f"completion_batch={completion_batch_size}"
+        ``_is_mllm`` is always False for the text-only models this build
+        serves, so ``start()`` never routes here. Kept as a stub so the
+        dispatch in ``start()`` stays structurally intact.
+        """
+        raise RuntimeError(
+            "MLLM/vision serving is not available in this text-only build."
         )
 
     async def _start_llm(self) -> None:

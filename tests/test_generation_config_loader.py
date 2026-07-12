@@ -440,23 +440,3 @@ class TestAugmentEosFromGenerationConfig:
         sched._actual_tokenizer = tok
         sched.config = SchedulerConfig()
         assert sched._get_stop_tokens() == {1, 106}
-
-    def test_mllm_scheduler_reads_rapid_stash_via_get_stop_tokens(self):
-        """End-to-end union: a raw HF tokenizer with the qMLX
-        extras stash on RAPID_EXTRA_EOS_ATTR is correctly unioned
-        by ``MLLMScheduler._get_stop_tokens``."""
-        from vllm_mlx.mllm_scheduler import MLLMScheduler
-        from vllm_mlx.utils.tokenizer import RAPID_EXTRA_EOS_ATTR
-
-        class _HFTok:
-            eos_token_id = 1
-
-        tok = _HFTok()
-        setattr(tok, RAPID_EXTRA_EOS_ATTR, (1, 106))
-
-        class _Processor:
-            tokenizer = tok
-
-        sched = MLLMScheduler.__new__(MLLMScheduler)
-        sched.processor = _Processor()
-        assert sched._get_stop_tokens() == {1, 106}

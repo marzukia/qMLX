@@ -74,19 +74,6 @@ def __getattr__(name):
 
         return getattr(paged_cache, name)
 
-    # MLLM cache (with legacy VLM aliases)
-    if name in (
-        "MLLMCacheManager",
-        "MLLMCacheStats",
-        "VLMCacheManager",
-        "VLMCacheStats",
-    ):
-        from vllm_mlx import mllm_cache
-
-        # Map legacy VLM names to MLLM
-        mllm_name = name.replace("VLM", "MLLM") if name.startswith("VLM") else name
-        return getattr(mllm_cache, mllm_name)
-
     # Model registry
     if name in ("get_registry", "ModelOwnershipError"):
         from vllm_mlx import model_registry

@@ -232,21 +232,18 @@ def _function_loads_global(func, name: str) -> bool:
     )
 
 
-def test_check_is_wired_into_serve_and_bench():
+def test_check_is_wired_into_serve():
     """The pre-flight is useless if we forget to call it. Bytecode
-    inspection asserts both serve_command and bench_command actually
-    reference ``_check_memory_capacity`` so a future refactor that
-    silently drops the call is caught.
+    inspection asserts serve_command actually references
+    ``_check_memory_capacity`` so a future refactor that silently drops
+    the call is caught.
 
     Round-2 review noted that the prior source-grep version passed
     on stale comments containing the literal symbol. Bytecode loads
-    don't include comments — only real references survive compilation.
+    don't include comments, only real references survive compilation.
     """
     from vllm_mlx import cli
 
     assert _function_loads_global(cli.serve_command, "_check_memory_capacity"), (
         "serve_command must call _check_memory_capacity"
-    )
-    assert _function_loads_global(cli.bench_command, "_check_memory_capacity"), (
-        "bench_command must call _check_memory_capacity"
     )

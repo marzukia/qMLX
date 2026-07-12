@@ -101,10 +101,6 @@ dependencies = [
     # so the very first Tab raises TypeError mid-handshake and the shell
     # silently shows nothing. 3.6.0 ships the variadic signature fix.
     "argcomplete>=3.6",
-    # WebSocket client for ``qmlx share`` — connects to the
-    # rapidserver Worker as the reverse-tunnel transport. Pure Python,
-    # ~200 KB. Replaces the prior frpc Go binary download.
-    "websockets>=12.0",
     # openai-harmony — official harmony-protocol streaming parser. Used
     # by ``HarmonyStreamingRouter`` (output_router_harmony.py) to route
     # gpt-oss tool calls correctly (issue #513 / cluster #444 #455
@@ -162,10 +158,6 @@ dflash = [
 mtp = [
     "pillow>=10.0.0",
 ]
-# Embedding endpoint
-embeddings = [
-    "mlx-embeddings>=0.1.0",
-]
 # HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py).
 # Off the hot path — only maintainers who seed models.rapidmlx.com need
 # this. Users NEVER install [mirror]; the client-side download path
@@ -178,7 +170,7 @@ chat = [
     "gradio>=4.0.0",
     "pytz>=2024.1",
 ]
-# All extras — union of vision + chat + embeddings.
+# All extras — union of vision + chat.
 # Expanded directly to avoid a self-dependency that breaks
 # pip install .[all] and editable installs.
 all = [
@@ -191,8 +183,6 @@ all = [
     # chat
     "gradio>=4.0.0",
     "pytz>=2024.1",
-    # embeddings
-    "mlx-embeddings>=0.1.0",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
 ]
 # Test runtime — the *minimum* deps `pytest tests/` needs to import the
@@ -276,12 +266,10 @@ mlx = "vllm_mlx.plugin:mlx_platform_plugin"
 [project.scripts]
 qmlx = "vllm_mlx.cli:main"
 qmlx-chat = "vllm_mlx.gradio_app:main"
-qmlx-bench = "vllm_mlx.benchmark:main"
 # Deprecated pre-rename aliases — kept so existing users' scripts/muscle
 # memory keep working. Prefer the qmlx* commands above.
 vllm-mlx = "vllm_mlx.cli:main"
 vllm-mlx-chat = "vllm_mlx.gradio_app:main"
-vllm-mlx-bench = "vllm_mlx.benchmark:main"
 
 [tool.setuptools.package-data]
 vllm_mlx = [
@@ -305,15 +293,6 @@ target-version = ["py310", "py311", "py312", "py313"]
 
 [tool.ruff]
 line-length = 88
-
-[tool.ruff.format]
-# Vendored upstream files — keep formatting identical to the source PR
-# so future syncs produce a clean diff.
-exclude = [
-    "vllm_mlx/models/deepseek_v4.py",
-    "vllm_mlx/models/gemma4_vendored/*.py",
-    "vllm_mlx/models/hy_v3.py",
-]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
@@ -343,21 +322,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Vendored from ml-explore/mlx-lm PR #1192 (Blaizzy). Keep as-is so
-# upstream syncs remain a clean diff. Drop this once mlx-lm 0.32+
-# ships native deepseek_v4 support and we delete the vendored copy.
-"vllm_mlx/models/deepseek_v4.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
-# Vendored from Blaizzy/mlx-vlm 0.6.3 for the Gemma 4 text-only
-# fresh-install regression fix (#1017, closes 0.10.0 dead-end). Keep
-# lint quiet on the copy so upstream diffs stay clean. Sync policy
-# and rationale in vllm_mlx/models/gemma4_vendored/__init__.py.
-"vllm_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
-# Vendored from ml-explore/mlx-lm PR #1211 (kernelpool, add-hy3-preview,
-# b7635e9c) for Tencent Hunyuan 3 (295B/21B active MoE) as part of the
-# 0.11.0 vendor drop. PR is open with zero maintainer reviews since
-# 2026-04-27. Keep lint quiet on the copy so upstream sync diffs stay
-# clean. Sync policy in vllm_mlx/models/hy_v3.py module docstring.
-"vllm_mlx/models/hy_v3.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]
