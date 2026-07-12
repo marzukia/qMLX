@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qmlx-serve"
-version = "0.12.2"
+version = "0.13.0"
 description = "Disk KV restore for hybrid MoE models on Apple Silicon. A Qwen-specialised fork of qMLX that keeps a 122B model warm on a Mac."
 readme = "README.md"
 license = {text = "MIT AND Apache-2.0"}
