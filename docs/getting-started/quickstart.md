@@ -78,29 +78,6 @@ pip install 'qmlx-serve[chat]'
 # Then launch — see `qmlx help` for the UI entry point in your install.
 ```
 
-## Multimodal Models
-
-For image / video understanding, use a VLM (requires the `[vision]` extra —
-`pip install 'qmlx-serve[vision]'`):
-
-```bash
-qmlx serve gemma-4-26b-4bit --mllm --port 8000
-```
-
-```python
-response = client.chat.completions.create(
-    model="default",
-    messages=[{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "What's in this image?"},
-            {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
-        ]
-    }],
-    max_tokens=256
-)
-```
-
 ## Reasoning Models
 
 Reasoning parsers are auto-detected from the model name. The server splits
@@ -118,22 +95,6 @@ response = client.chat.completions.create(
 )
 print(response.choices[0].message.content)            # final answer
 print(response.choices[0].message.reasoning_content)  # thinking trace
-```
-
-## Embeddings
-
-Generate text embeddings for semantic search and RAG (install the
-`[embeddings]` extra first):
-
-```bash
-qmlx serve qwen3.5-4b-4bit --embedding-model mlx-community/multilingual-e5-small-mlx
-```
-
-```python
-response = client.embeddings.create(
-    model="mlx-community/multilingual-e5-small-mlx",
-    input="Hello world"
-)
 ```
 
 ## Tool Calling
@@ -156,9 +117,6 @@ qmlx serve devstral-24b-4bit \
 
 - [Server Guide](../guides/server.md) - Full server configuration
 - [Python API](../guides/python-api.md) - Direct API usage
-- [Multimodal Guide](../guides/multimodal.md) - Images and video
-- [Audio Guide](../guides/audio.md) - Speech-to-Text and Text-to-Speech
-- [Embeddings Guide](../guides/embeddings.md) - Text embeddings
 - [Reasoning Models](../guides/reasoning.md) - Thinking models
 - [Tool Calling](../guides/tool-calling.md) - Function calling
 - [SDK Compatibility Notes](../guides/sdk-compat.md) - Where qmlx deviates from OpenAI/Anthropic specs
