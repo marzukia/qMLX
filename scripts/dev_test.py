@@ -84,8 +84,6 @@ def run_unit():
             "tests/test_event_loop.py",
             "--deselect",
             "tests/test_batching_deterministic.py",
-            "--deselect",
-            "tests/test_reasoning_parsers.py",
         ],
         "Unit tests (pytest)",
         timeout=120,
