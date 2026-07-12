@@ -536,138 +536,6 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     print(f"  or pass a full path like: {full_path_example}")
 
 
-def _embedding_not_found_exception_classes() -> tuple[type[BaseException], ...]:
-    """Return the concrete exception classes the embedding loader raises
-    for a missing model.
-
-    pr_validate codex r1 NIT: matching ``"not found"`` as a substring of
-    the exception text was too loose — a future ``ValueError("config
-    field 'x' not found in tensor map")`` from a corrupt model could be
-    mis-translated as the alias/HF-id hint, masking the real bug. Bind
-    to the actual classes so the wrap-path only fires on the
-    well-defined not-found shape.
-
-    Lazy import so the base install (no ``[embeddings]`` extra, no
-    ``huggingface_hub`` shadow) stays free of these imports until the
-    code path actually runs. Missing classes are silently skipped — the
-    caller's tuple-based ``except`` accepts an empty tuple as a no-op,
-    so a sparse environment falls back to "re-raise everything", which
-    is the safe default.
-    """
-    classes: list[type[BaseException]] = [FileNotFoundError]
-    try:  # mlx_embeddings — installed via the [embeddings] extra
-        from mlx_embeddings.utils import ModelNotFoundError
-
-        classes.append(ModelNotFoundError)
-    except Exception:  # pragma: no cover — defensive
-        pass
-    try:  # huggingface_hub — transitive of mlx_embeddings
-        from huggingface_hub.errors import (
-            EntryNotFoundError,
-            RepositoryNotFoundError,
-        )
-
-        classes.append(RepositoryNotFoundError)
-        classes.append(EntryNotFoundError)
-    except Exception:  # pragma: no cover — defensive
-        pass
-    return tuple(classes)
-
-
-def _resolve_embedding_alias(name: str) -> tuple[str, bool]:
-    """Resolve a ``--embedding-model`` alias through the shared registry.
-
-    D-EMBED-ALIAS: Sarah F-S2-1 — the positional chat-model arg goes
-    through ``resolve_model`` at the CLI dispatch (cli.py ~5660), but
-    the ``--embedding-model`` flag was passed verbatim to
-    ``mlx_embeddings.load`` and crashed with ``ModelNotFoundError`` on
-    any alias.
-
-    Returns ``(resolved, did_resolve)``. ``did_resolve`` is True when
-    the registry actually mapped ``name`` to a different HF path —
-    used by the caller to log the alias hop.
-    """
-    from .model_aliases import resolve_model
-
-    resolved = resolve_model(name)
-    return resolved, resolved != name
-
-
-def _load_embedding_model_or_exit(args, load_fn) -> None:
-    """Pre-load ``--embedding-model`` with the H-08 install guard and
-    the D-EMBED-ALIAS alias-resolution + clean error-wrapping path.
-
-    Lifted out of ``serve_command`` so the dispatch sequence can be
-    unit-tested without booting the full engine — the pr_validate
-    codex r0 BLOCKING #1 noted that the in-test exercising the
-    behaviour at module scope didn't actually invoke the CLI path,
-    so a regression that removed the alias resolution would pass.
-    Calling this helper directly gives the test surgical coverage.
-
-    ``args`` mirrors the ``argparse.Namespace`` shape — only
-    ``embedding_model`` is read and (on alias hit) mutated.
-    ``load_fn`` is the embedding-loader callable
-    (``vllm_mlx.server.load_embedding_model``) — passed in so tests
-    can mock it without monkeypatching the server module.
-
-    Failure modes that exit cleanly:
-
-    * Missing ``[embeddings]`` extra → ``sys.exit(2)`` with install
-      hint (H-08, ``require_mlx_embeddings_or_exit``).
-    * Loader raises ``ModelNotFoundError`` / ``RepositoryNotFoundError``
-      / ``FileNotFoundError`` → ``sys.exit(1)`` with an actionable
-      hint pointing at the alias registry and the canonical HF id
-      format. Any OTHER ``Exception`` re-raises so unrelated bugs
-      surface with their real trace.
-
-    Audio-mode integration (deferred #258 / r11-K coordination): if
-    ``_serve_audio_mode`` ever needs to honour ``--embedding-model``
-    (e.g. an STT lane that exposes embeddings of the transcript), the
-    audio path MUST route through this helper rather than duplicate
-    the guard logic. The probe + alias resolve + error-wrap are a
-    single source of truth — a second copy in the audio dispatcher
-    would drift on the next H-08/H-09/H-13 follow-up. The helper is
-    intentionally independent of the text-LM serve path so the audio
-    boot path can call it without dragging in the chat-engine
-    machinery.
-    """
-    from .embedding import require_mlx_embeddings_or_exit
-
-    require_mlx_embeddings_or_exit()
-
-    original_embed = args.embedding_model
-    resolved_embed, did_resolve = _resolve_embedding_alias(original_embed)
-    if did_resolve:
-        print(f"  Embedding alias: {original_embed} → {resolved_embed}")
-        args.embedding_model = resolved_embed
-    print(f"Pre-loading embedding model: {args.embedding_model}")
-    # Bind to the concrete not-found classes the loader can raise
-    # (mlx_embeddings.utils.ModelNotFoundError +
-    # huggingface_hub.errors.RepositoryNotFoundError/EntryNotFoundError
-    # + stdlib FileNotFoundError for the local-path branch). Any OTHER
-    # exception class falls through unchanged so unrelated bugs (corrupt
-    # safetensors mid-load, Metal OOM, schema mismatch) surface with
-    # their real trace — pr_validate codex r1 NIT closure (the prior
-    # ``"not found"`` substring match was too loose).
-    not_found_exc_classes = _embedding_not_found_exception_classes()
-    try:
-        load_fn(args.embedding_model, lock=True)
-    except not_found_exc_classes as exc:
-        print(
-            f"\n  Error: --embedding-model '{original_embed}' could not "
-            f"be loaded ({type(exc).__name__}: {exc})."
-        )
-        print(
-            "  Tip: use a registered embedding alias (see "
-            "``qmlx ls`` for the list — e.g. "
-            "``embeddinggemma-300m-6bit``) or pass the full "
-            "HuggingFace id (e.g. "
-            "``mlx-community/embeddinggemma-300m-6bit``).\n"
-        )
-        sys.exit(1)
-    print(f"Embedding model loaded: {args.embedding_model}")
-
-
 def _check_disk_space(model_name: str, force: bool = False) -> None:
     """Verify there's enough disk space to download the model.
 
@@ -1812,26 +1680,6 @@ def serve_command(args):
     _max_tokens_is_explicit = _arg_max_tokens is not None
     effective_max_tokens = _arg_max_tokens if _arg_max_tokens is not None else 32768
 
-    # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
-    # fire first thing in ``serve_command`` — before
-    # ``prompt_upgrade_if_available`` (which may exit 0 on user
-    # decline), before ``_ensure_model_downloaded`` (which can take
-    # minutes on a cold cache), and well before the startup banner
-    # gets printed. Pre-fix the check lived deeper in the function so
-    # the operator saw the alias-resolved log line, the startup banner,
-    # the feature list, AND the model id BEFORE the
-    # "requires the [embeddings] extra" error and ``sys.exit(2)``,
-    # which read as a successful boot followed by a mysterious failure
-    # — Diego logged this as a warning-and-fall-through bug because
-    # the banner masked the actual exit. Hoisting the probe to the
-    # very top of ``serve_command`` puts the error first, with no
-    # banner output before it. ``mlx_embeddings`` import stays lazy so
-    # the base install (no ``[embeddings]`` extra) keeps booting.
-    if getattr(args, "embedding_model", None):
-        from .embedding import require_mlx_embeddings_or_exit
-
-        require_mlx_embeddings_or_exit()
-
     _normalize_speculative_config_or_exit(args)
 
     # DDTree has an external experimental runtime and its validated target
@@ -2321,8 +2169,6 @@ def serve_command(args):
             _dflash_ignored.append("--tool-call-parser")
         if getattr(args, "reasoning_parser", None):
             _dflash_ignored.append("--reasoning-parser")
-        if getattr(args, "embedding_model", None):
-            _dflash_ignored.append("--embedding-model")
         if getattr(args, "mcp_config", None):
             _dflash_ignored.append("--mcp-config")
         if _dflash_ignored:
@@ -2353,8 +2199,6 @@ def serve_command(args):
             _ddtree_ignored.append("--tool-call-parser")
         if getattr(args, "reasoning_parser", None):
             _ddtree_ignored.append("--reasoning-parser")
-        if getattr(args, "embedding_model", None):
-            _ddtree_ignored.append("--embedding-model")
         if getattr(args, "mcp_config", None):
             _ddtree_ignored.append("--mcp-config")
         if _ddtree_ignored:
@@ -2412,21 +2256,6 @@ def serve_command(args):
     if args.mcp_config:
         print(f"MCP config: {args.mcp_config}")
         os.environ["QMLX_MCP_CONFIG"] = args.mcp_config
-
-    # Pre-load embedding model if specified.
-    #
-    # H-08 install guard + D-EMBED-ALIAS alias-resolution + clean
-    # ModelNotFoundError wrapping all live in the shared helper so the
-    # standalone ``python -m vllm_mlx.server`` entry behaves identically.
-    # See :func:`_load_embedding_model_or_exit` for the full contract;
-    # F-H08-INCOMPLETE / D-CAPABILITIES already pre-flighted
-    # ``require_mlx_embeddings_or_exit`` at the top of ``serve_command``
-    # but the helper re-probes defensively so any caller that
-    # synthesizes an ``args`` namespace and jumps into the load path
-    # still gets the install-hint exit instead of a raw
-    # ``ModuleNotFoundError``.
-    if args.embedding_model:
-        _load_embedding_model_or_exit(args, server.load_embedding_model)
 
     # Warn about deprecated flags
     if getattr(args, "simple_engine", False):
@@ -6295,17 +6124,6 @@ Examples:
         type=str,
         default=None,
         help="API key for cloud model (overrides environment variable).",
-    )
-    # Embedding model option
-    serve_parser.add_argument(
-        "--embedding-model",
-        type=str,
-        default=None,
-        help=(
-            "Pre-load an embedding model at startup (e.g. "
-            "mlx-community/embeddinggemma-300m-6bit). Requires the "
-            "[embeddings] extra: pip install 'qmlx-serve[embeddings]'."
-        ),
     )
     # Parent-PID watchdog (rapid-desktop issue #449). When set, the
     # sidecar polls ``os.getppid()`` every 2 s and self-terminates if

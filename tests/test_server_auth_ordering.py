@@ -195,7 +195,6 @@ PROTECTED_ROUTER_MODULES = (
     "vllm_mlx.routes.cache",
     "vllm_mlx.routes.chat",
     "vllm_mlx.routes.completions",
-    "vllm_mlx.routes.embeddings",
     "vllm_mlx.routes.mcp_routes",
     "vllm_mlx.routes.models",
     "vllm_mlx.routes.responses",

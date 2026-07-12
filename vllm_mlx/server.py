@@ -1053,39 +1053,6 @@ def _detect_native_tool_support() -> bool:
         return False
 
 
-def load_embedding_model(
-    model_name: str | None,
-    *,
-    lock: bool = False,
-    reuse_existing: bool = True,
-) -> None:
-    """Load or reuse the embedding model engine when configured."""
-    global _embedding_engine, _embedding_model_locked
-
-    if not model_name:
-        return
-
-    if lock:
-        _embedding_model_locked = model_name
-
-    if (
-        reuse_existing
-        and _embedding_engine is not None
-        and _embedding_engine.model_name == model_name
-    ):
-        return
-
-    from .embedding import EmbeddingEngine
-
-    _embedding_engine = EmbeddingEngine(model_name)
-    _embedding_engine.load()
-
-    # Sync into config for route modules
-    cfg = get_config()
-    cfg.embedding_engine = _embedding_engine
-    cfg.embedding_model_locked = _embedding_model_locked
-
-
 def load_model(
     model_name: str,
     scheduler_config=None,
@@ -1568,7 +1535,6 @@ from .routes.anthropic import router as _anthropic_router
 from .routes.cache import router as _cache_router
 from .routes.chat import router as _chat_router
 from .routes.completions import router as _completions_router
-from .routes.embeddings import router as _embeddings_router
 from .routes.health import admin_router as _health_admin_router
 from .routes.health import probe_router as _probe_router
 from .routes.health import router as _health_router
@@ -1588,7 +1554,6 @@ app.include_router(_chat_router)
 app.include_router(_completions_router)
 app.include_router(_anthropic_router)
 app.include_router(_responses_router)
-app.include_router(_embeddings_router)
 app.include_router(_mcp_router)
 app.include_router(_cache_router)
 
@@ -1845,16 +1810,6 @@ Examples:
         help="Enable jump-forward decoding bias for tool call structural tokens",
     )
     parser.add_argument(
-        "--embedding-model",
-        type=str,
-        default=None,
-        help=(
-            "Pre-load an embedding model at startup (e.g. "
-            "mlx-community/all-MiniLM-L6-v2-4bit). Requires the "
-            "[embeddings] extra: pip install 'qmlx-serve[embeddings]'."
-        ),
-    )
-    parser.add_argument(
         "--default-temperature",
         type=float,
         default=None,
@@ -1916,19 +1871,6 @@ Examples:
     from .cli import _port_preflight_or_die
 
     _port_preflight_or_die(args.host, args.port, model=args.model)
-
-    # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
-    # fire BEFORE logging configuration and the security/banner side
-    # effects below. Pre-fix on this entrypoint the probe ran AFTER the
-    # parser-init log lines and the security summary, then the user
-    # saw "error: --embedding-model requires the [embeddings] extra"
-    # interleaved with banner output and exit-2 — Diego logged this
-    # as a warning-and-fall-through. Hoisting the probe puts the
-    # error first with nothing else on stderr/stdout before it.
-    if getattr(args, "embedding_model", None):
-        from .embedding import require_mlx_embeddings_or_exit
-
-        require_mlx_embeddings_or_exit()
 
     uvicorn_log_level = configure_logging(args.log_level)
 
@@ -2050,20 +1992,6 @@ Examples:
                 f"'{args.reasoning_parser}': {e}. Continuing without a "
                 f"reasoning parser."
             )
-
-    # Pre-load embedding model if specified. The H-08 guard already
-    # fired at the top of this function (F-H08-INCOMPLETE fix); by the
-    # time we reach this point either ``args.embedding_model`` is None
-    # or ``mlx_embeddings`` is importable. The shared helper re-probes
-    # defensively as belt-and-braces and also performs the D-EMBED-ALIAS
-    # alias-resolution + ModelNotFoundError translation so behaviour
-    # matches the unified ``qmlx serve`` path exactly. Lazy import
-    # to avoid a circular at module-load time (cli imports server in
-    # ``serve_command``; server imports cli only inside this branch).
-    if args.embedding_model:
-        from .cli import _load_embedding_model_or_exit
-
-        _load_embedding_model_or_exit(args, load_embedding_model)
 
     # Build a SchedulerConfig so user-supplied flags on this standalone entry
     # (`python -m vllm_mlx.server` / `mise run`) reach the engine. Pre-0.6.52

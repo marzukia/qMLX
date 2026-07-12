@@ -158,10 +158,6 @@ dflash = [
 mtp = [
     "pillow>=10.0.0",
 ]
-# Embedding endpoint
-embeddings = [
-    "mlx-embeddings>=0.1.0",
-]
 # HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py).
 # Off the hot path — only maintainers who seed models.rapidmlx.com need
 # this. Users NEVER install [mirror]; the client-side download path
@@ -174,7 +170,7 @@ chat = [
     "gradio>=4.0.0",
     "pytz>=2024.1",
 ]
-# All extras — union of vision + chat + embeddings.
+# All extras — union of vision + chat.
 # Expanded directly to avoid a self-dependency that breaks
 # pip install .[all] and editable installs.
 all = [
@@ -187,8 +183,6 @@ all = [
     # chat
     "gradio>=4.0.0",
     "pytz>=2024.1",
-    # embeddings
-    "mlx-embeddings>=0.1.0",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
 ]
 # Test runtime — the *minimum* deps `pytest tests/` needs to import the
