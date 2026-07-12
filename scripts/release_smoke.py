@@ -87,7 +87,6 @@ IMPORT_TARGETS = (
     "vllm_mlx.scheduler",
     "vllm_mlx.server",
     "vllm_mlx.cli",
-    "vllm_mlx.benchmark",
 )
 
 
