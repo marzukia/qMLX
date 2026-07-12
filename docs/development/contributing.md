@@ -41,7 +41,6 @@ A correctness test asks *"does the model + our code produce the right output?"* 
 | Suite | Bucket | Model used today |
 |---|---|---|
 | `tests/` unit + integration | correctness | `mlx-community/Qwen3-0.6B-8bit` |
-| `scripts/pr_validate/` stress + agent matrix | correctness | per `scripts/pr_validate/golden_models.yaml` (all 8-bit) |
 | `scripts/bench_dflash.py`, `scripts/bench_suffix_decoding_integrated.py`, `harness/runs/` | perf | 4-bit aliases (user reality) |
 | `make check` (`qmlx bench ... --tier check`) | smoke / boot sanity | `mlx-community/Qwen3.5-4B-MLX-4bit` (4-bit, ~30s boot) |
 | `make full` (`qmlx bench ... --tier full`) | mixed | 8-bit for correctness suites, 4-bit for bench suites; separate baselines per precision |
@@ -51,7 +50,7 @@ A correctness test asks *"does the model + our code produce the right output?"* 
 
 **Hardware constraints:**
 
-- GitHub `test-apple-silicon` (macos-14, M1/M2, 16 GB RAM) — large 8-bit models don't fit. Stick to 8-bit *small* models on CI (`mlx-community/Qwen3-0.6B-8bit`, `mlx-community/Qwen3.5-4B-MLX-8bit` at most). The big-model 8-bit correctness gate runs in `pr_validate` on the maintainer's M-series box, not on GitHub CI.
+- GitHub `test-apple-silicon` (macos-14, M1/M2, 16 GB RAM) — large 8-bit models don't fit. Stick to 8-bit *small* models on CI (`mlx-community/Qwen3-0.6B-8bit`, `mlx-community/Qwen3.5-4B-MLX-8bit` at most). The big-model 8-bit correctness gate runs on the maintainer's M-series box (via `make release-check-m3`), not on GitHub CI.
 - Local M-series with 64 GB+ — no constraint, run anything.
 
 **When adding a new test:**

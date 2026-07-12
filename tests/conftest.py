@@ -9,7 +9,7 @@ actually standalone scripts invoked by the doctor harness via
 subprocess against a live server (see
 ``vllm_mlx/doctor/checks/api.py``). pytest must not run them as
 unit tests — every call would fail with ``URLError`` and the
-diff-aware ``targeted_tests`` step in ``scripts/pr_validate``
+a naive ``pytest tests/`` run
 would flag any newly-added test in such a file as a regression.
 
 The marker lives in conftest (loaded only by pytest) so the
@@ -61,8 +61,8 @@ def pytest_collection_modifyitems(config, items):
     # Skip items inside script-only modules (regression_suite.py etc.)
     # — see ``_SCRIPT_ONLY_MODULES`` above. ``pytest_ignore_collect`` is
     # not called when the file is named explicitly on the command line
-    # (which is exactly what ``scripts/pr_validate`` does for diff-
-    # adjacent files), so the skip has to happen post-collection.
+    # (which is exactly what happens when a file is passed by name),
+    # so the skip has to happen post-collection.
     skip_script_only = pytest.mark.skip(
         reason="Standalone script — runs as subprocess via doctor harness, "
         "not pytest. See tests/conftest.py::_SCRIPT_ONLY_MODULES."

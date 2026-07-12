@@ -4,7 +4,7 @@ The maintainer-side gauntlet that every PR — internal or external, AI-authored
 
 ## Why this doc exists
 
-`main` auto-publishes to PyPI + Homebrew on any commit matching `chore: bump version to X.Y.Z` (see [`releasing.md`](releasing.md)). A bad PR landing on `main` is in users' `pip install` paths within minutes. The PR-validation pipeline (`scripts/pr_validate/`) catches the common cases; this SOP captures the judgment calls around it that aren't easily automated.
+`main` auto-publishes to PyPI + Homebrew on any commit matching `chore: bump version to X.Y.Z` (see [`releasing.md`](releasing.md)). A bad PR landing on `main` is in users' `pip install` paths within minutes. CI (`ci.yml`: ruff lint/format + the unit test matrix) catches the common cases; this SOP captures the judgment calls around it that aren't easily automated.
 
 ## Step 0 — Necessity check (before anything else)
 
@@ -132,17 +132,18 @@ The worktree is the only safe pattern — `trap`-based stash recovery in an inte
 
 Never assume — confirm. Document any confirmed pre-existing fails in the PR description.
 
-## Step 6 — pr_validate (recommended for substantive PRs)
+## Step 6 — run the tests locally (recommended for substantive PRs)
 
 ```bash
-python3.12 -m scripts.pr_validate.pr_validate <PR#> --verbose
+python3 -m pytest tests/ -x
+ruff check && ruff format --check
 ```
 
-Multi-step pipeline: `fetch → deepseek_review → supply_chain → lint → targeted_tests → full_unit → stress_e2e_bench`. See [`scripts/pr_validate/README.md`](../../scripts/pr_validate/README.md).
+`ci.yml` runs the same lint + unit-test matrix on every PR. Model-correctness and live-server gates that ubuntu can't provide run on M3 via `make release-check-m3`.
 
 ## Step 7 — Supply-chain audit
 
-`pr_validate`'s `supply_chain` step covers the foundation: hook-file modifications, dependency CVEs (`pip-audit`), suspicious code patterns. **Review the warnings it surfaces — don't just check the green dot.**
+Run `pip-audit` and eyeball the diff for hook-file modifications and suspicious code patterns before merge. **Review what it surfaces — don't just trust a green CI dot.**
 
 Manual checks for the gaps the automated step doesn't cover today (tracked as follow-ups in #320):
 
@@ -224,22 +225,22 @@ Before merge, the PR description must accurately reflect actual current state:
 
 ## CI coverage of these steps
 
-The full `pr_validate` pipeline runs on every PR via `.github/workflows/pr-validate.yml` — the scorecard is posted as a PR comment so you can see verdicts without leaving the PR page. The table below maps each SOP step to its CI status:
+`ci.yml` runs lint + the unit-test matrix on every PR. The table below maps each SOP step to its CI status:
 
 | Step | CI coverage | Local-only | Notes |
 |---|---|---|---|
 | 0 — necessity | — | judgment | can't automate |
-| 1 — pre-flight | `version-check.yml` blast-radius detection + `pr_validate.fetch` (in pr-validate.yml) | — | PR-template fields still need a human read |
-| 2 — codex review | `pr_validate.codex_review` step skips on CI (no `~/.codex/auth.json`); humans run codex locally | maintainer | runs in the human's terminal; conclusions feed the PR thread |
+| 1 — pre-flight | `version-check.yml` blast-radius detection | — | PR-template fields still need a human read |
+| 2 — codex review | not automated; humans run codex locally | maintainer | runs in the human's terminal; conclusions feed the PR thread |
 | 3 — test coverage | `ci.yml` (existence of `tests/test_<scope>*.py` files) | mutation spot-check | mutation testing is the cheap manual step |
 | 4 — lint + format | `ci.yml` lint job (ruff, ruff format, audit_cli_config_fidelity, gha-pinning advisory, parser microbench) | — | full coverage |
-| 5 — broader unit suite | `ci.yml` test-matrix (linux-compat subset) + test-apple-silicon (mlx-dependent) | `pr_validate.full_unit` on M3 | CI covers the two surfaces it can; full tests/ tree runs on M3 |
-| 6 — pr_validate | **pipeline** (7 of 9 steps) auto via `pr-validate.yml` | `stress_e2e_bench` + `full_unit` | both skipped steps need MLX / a live server; covered by `make release-check-m3` |
-| 7 — supply chain | `pr_validate.supply_chain` (auto) + gha-pinning advisory | license drift + transitive deps still need a human read | partial automation; pip-audit is automated |
+| 5 — broader unit suite | `ci.yml` test-matrix (linux-compat subset) + test-apple-silicon (mlx-dependent) | full `tests/` tree on M3 | CI covers the two surfaces it can; full tests/ tree runs on M3 |
+| 6 — local test run | `ci.yml` lint + unit-test matrix (auto) | stress + full `tests/` tree on M3 | model-correctness / live-server gates need MLX; covered by `make release-check-m3` |
+| 7 — supply chain | `ci.yml` gha-pinning advisory | `pip-audit` + license drift + transitive deps need a human read | manual pip-audit before merge |
 | 8 — bench `make check` | — | **M3** (needs MLX + cached weights) | inference-touching PRs only |
 | 9 — Anthropic-compat | — | **M3** (needs MLX + live server) | parser/router PRs only — covered by `make release-check-m3` |
-| 10 — CI gate | `ci.yml` aggregation + `pr-validate.yml` scorecard | — | full coverage |
-| 11 — PR description audit | `pr_validate.cl_description_quality` (auto in pr-validate.yml) | final read | automated rejects empty bodies and bad titles |
+| 10 — CI gate | `ci.yml` aggregation | — | full coverage |
+| 11 — PR description audit | — | final read | human reads the PR body + title |
 | 12 — merge | `auto-release.yml` regex match + `release-preflight.yml` PF-1 subject pre-check | — | strict subject enforced both PR-time and post-merge |
 
 For release-time gates (the gauntlet that fires on bump PRs and the M3 manual checklist), see [`releasing.md` § "Pre-release validation gauntlet"](releasing.md#pre-release-validation-gauntlet).
@@ -254,7 +255,7 @@ After the CI build-out, the human-only surface on a typical PR is:
 - Step 7 partial — license + transitive dep eyeball when deps change
 - Steps 8 + 9 — only for inference-touching PRs, via `make release-check-m3`
 
-Everything else is automated. The `pr_validate` scorecard comment is the single source of truth for "is this PR mergeable?"
+Everything else is automated. `ci.yml` (lint + unit-test matrix) is the single source of truth for "is this PR mergeable?"
 
 ## Common pitfalls
 
@@ -266,7 +267,7 @@ Everything else is automated. The `pr_validate` scorecard comment is the single 
 - **Auto-deploy blast radius** — merging to main with version bump = instant PyPI + Homebrew release. External PR review must include the Step 7 supply-chain audit before merge.
 - **Squash-suffix trap** — GitHub's default squash-merge appends `(#NN)` to the subject, breaking `auto-release.yml`'s regex. Always pass `--subject` to `gh pr merge` for bump PRs. `release-preflight.yml` PF-1 catches this pre-merge.
 - **`skip-version-bump` label refire** — adding the label after `version-check.yml` has already failed does NOT auto-re-run the workflow (the label-add event isn't a `pull_request` event the bypass step listens to). Either close+reopen the PR or push a commit to refire. Memory: `gotcha_skip_version_bump_label_after_run`.
-- **A/B classify validation-surfaced bugs** — when `pr_validate` or codex surfaces a bug, replay against base/main before deciding it's PR-introduced. Pre-existing bugs are follow-up issues, not PR scope creep. Memory: `feedback_pr_scope_ab_classify_first`.
+- **A/B classify validation-surfaced bugs** — when CI or codex surfaces a bug, replay against base/main before deciding it's PR-introduced. Pre-existing bugs are follow-up issues, not PR scope creep. Memory: `feedback_pr_scope_ab_classify_first`.
 - **Codex+DeepSeek convergence asymmetry** — codex converges in ~9 rounds, DeepSeek is asymptotic. Run codex to convergence, then ONE DeepSeek round. Memory: `codex_deepseek_convergence_asymmetry`.
 - **Pre-existing pre-existing flake confirmation** — use a worktree, not `git stash`. The stash pattern leaves work stashed if pytest crashes mid-run.
 
@@ -274,7 +275,7 @@ Everything else is automated. The `pr_validate` scorecard comment is the single 
 
 The following items are agreed-good but not yet implemented; tracked in [#320](https://github.com/raullenchai/Rapid-MLX/issues/320):
 
-- License-drift check in `scripts/pr_validate/steps/supply_chain.py` (the docstring claims it; the code doesn't).
+- License-drift check in the supply-chain audit (not yet implemented).
 - GitHub Actions SHA-pinning enforcement when workflows change.
 - PR-time transitive-dep audit (currently only release-time).
 - Per-PR install-size delta comment (`du -sh` site-packages diff vs main).

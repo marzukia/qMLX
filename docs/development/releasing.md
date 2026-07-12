@@ -29,7 +29,7 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
    shipped in v0.6.53 (#408): code that imports cleanly on the dev
    machine because the dev mlx has a symbol that hasn't appeared in any
    released wheel yet. Every other gate (`make smoke/check/full`,
-   `pr_validate`, codex review) runs against the dev mlx and is blind
+   codex review) runs against the dev mlx and is blind
    to this class of bug. **Do not push a version bump commit if this
    fails** — the failure indicates every `pip install` user will crash
    on import.
@@ -162,7 +162,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 
 ### CI coverage — what runs without you lifting a finger
 
-**Every PR** → `pr-validate.yml` runs the `pr_validate` pipeline (7 of 9 steps; `stress_e2e_bench` and `full_unit` skipped because both need MLX/a live server which ubuntu-latest can't provide). The scorecard is posted as a PR comment so contributor + maintainer see the verdict without leaving the PR page. The skipped pair is covered on M3 by `make release-check-m3` at release time.
+**Model-correctness + live-server gates** (stress, agent matrix) can't run on ubuntu-latest, so they're covered on M3 by `make release-check-m3` at release time rather than in PR CI.
 
 **Every bump PR** (title matches `chore: bump version to X.Y.Z`) → `release-preflight.yml` adds PF-1, G1, G10 (advisory), G11. The `preflight-summary` job aggregates them so the bump PR has a single required check.
 
@@ -177,7 +177,7 @@ MODEL=qwen3.6-27b-4bit make release-check-m3   # override
 
 Wrapped by [`scripts/release_check_m3.sh`](../../scripts/release_check_m3.sh). It boots `qmlx serve` once on port 8000, then runs G5 (stress) + G7 (anthropic + pydantic_ai + smolagents) + G7b (agent harness layer: a single `qmlx bench <model> --tier harness` sweep across codex / opencode / hermes / aider / langchain) + G6 (parallel-tool-call cap repro) + G9 (10-seq latency) + G8b (parser microbench, M3 perf baseline) sequentially. The server is killed on exit.
 
-G7b covers the live-server harness path that `pr-validate`'s unit-level profile tests can't reach. Split in two parts so each is honestly scoped:
+G7b covers the live-server harness path that PR-time CI's unit-level profile tests can't reach. Split in two parts so each is honestly scoped:
 
 - **Part A** — `qmlx agents codex / opencode / hermes / aider / langchain --test`. Smoke-tests `/v1/chat/completions` parser/router behavior for the five first-class harnesses. `AgentTestRunner` (`vllm_mlx/agents/testing.py`) only knows the Chat Completions endpoint today, so this part does **not** exercise `/v1/responses`.
 - **Part B** — direct curl probes against `/v1/responses` (one non-stream, one SSE). Verifies the Codex-CLI shim added in v0.7.10 is reachable and emits at minimum `response.created` and `response.completed` in the right order. Part B is the only thing in the entire CI + M3 gauntlet that actually touches the Responses route at request time. If you change the route's event sequence, Part B is what catches it.
@@ -198,7 +198,7 @@ If any sub-gate fails, the script exits non-zero with the failure pinpointed. Do
 
 ### Performance-only PRs
 
-For PRs that are explicitly about perf changes (a kernel rewrite, a new fast path), the perf-side gates aren't optional — but they're also not standard PR-CI material because perf measurements on M1 ubuntu runners are meaningless. Convention: run `make release-check-m3` manually on the perf branch, paste the before/after numbers into the PR description, and link the run log. Maintainer reviews the numbers as part of Step 6 (pr_validate doesn't auto-fail; the human reads them).
+For PRs that are explicitly about perf changes (a kernel rewrite, a new fast path), the perf-side gates aren't optional — but they're also not standard PR-CI material because perf measurements on M1 ubuntu runners are meaningless. Convention: run `make release-check-m3` manually on the perf branch, paste the before/after numbers into the PR description, and link the run log. Maintainer reviews the numbers as part of the merge SOP; the perf gates don't auto-fail, the human reads them.
 
 ### Gates with known pitfalls
 
