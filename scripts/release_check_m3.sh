@@ -378,11 +378,6 @@ spread = max(results) - min(results)
 print(f"\nmean={mean:.1f} spread={spread:.1f} (first-run cold cache excluded from variance)")
 EOF
 
-#-------------------- G8 parser microbench ------------------------
-line
-echo "  G8 — parser microbench (extract_tool_calls × 10000)"
-line
-"$PY" scripts/microbench_parsers.py
 
 #-------------------- G12 random-coverage -------------------------
 # Randomized sweep across small/medium aliases × harnesses × rounds.

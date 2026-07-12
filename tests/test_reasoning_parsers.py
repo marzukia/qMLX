@@ -2217,5 +2217,3 @@ class TestHarmonyStreaming:
 
         assert "thinking" in "".join(reasoning_parts)
         assert "answer" in "".join(content_parts)
-
-

@@ -248,9 +248,7 @@ def _patched_draft_dir(source: Path) -> Path:
     import hashlib
 
     root = Path(
-        os.environ.get(
-            "QMLX_DDTREE_PATCH_CACHE", "~/.cache/qmlx/ddtree-drafts"
-        )
+        os.environ.get("QMLX_DDTREE_PATCH_CACHE", "~/.cache/qmlx/ddtree-drafts")
     ).expanduser()
     digest = hashlib.sha1(str(source.resolve()).encode("utf-8")).hexdigest()[:16]
     return root / f"{source.name}-{digest}"

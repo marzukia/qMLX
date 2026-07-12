@@ -289,6 +289,4 @@ def get_cache_dir() -> str:
     # best-effort and silently rebuilds, so the moved location just costs a
     # one-time recompute; any stale ~/.cache/vllm-mlx/ dir is inert and safe
     # to delete.
-    return os.path.join(
-        os.path.expanduser("~"), ".cache", "qmlx", "prefix_cache", leaf
-    )
+    return os.path.join(os.path.expanduser("~"), ".cache", "qmlx", "prefix_cache", leaf)

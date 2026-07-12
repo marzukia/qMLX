@@ -119,9 +119,7 @@ def test_models_command_mentions_chat_pull_serve_in_tip():
     """The footer should advertise the four canonical actions."""
     out = _capture_models_output()
     for cmd in ("info", "pull", "chat", "serve"):
-        assert f"qmlx {cmd}" in out, (
-            f"footer tip missing 'qmlx {cmd}' suggestion"
-        )
+        assert f"qmlx {cmd}" in out, f"footer tip missing 'qmlx {cmd}' suggestion"
 
 
 def test_models_command_subparser_smoke():

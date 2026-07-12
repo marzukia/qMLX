@@ -434,13 +434,9 @@ def test_route_renders_offered_computed_reused(metrics_client):
     assert _sample_value(body, "qmlx_prompt_tokens_computed_total") == 380
     # reused: memory = 120, disk = 128
     assert (
-        _sample_value(body, 'qmlx_prompt_tokens_reused_total{source="memory"}')
-        == 120
+        _sample_value(body, 'qmlx_prompt_tokens_reused_total{source="memory"}') == 120
     )
-    assert (
-        _sample_value(body, 'qmlx_prompt_tokens_reused_total{source="disk"}')
-        == 128
-    )
+    assert _sample_value(body, 'qmlx_prompt_tokens_reused_total{source="disk"}') == 128
     # offered - computed == total reused
     assert 628 - 380 == 120 + 128
 
@@ -465,9 +461,7 @@ def test_route_renders_kv_restore_hit_miss(metrics_client):
         _base_stats(honest_metrics=_honest_block())
     )
     body = metrics_client.client.get("/metrics").text
-    assert (
-        "# HELP qmlx_kv_restore_total Disk KV restore attempts by result" in body
-    )
+    assert "# HELP qmlx_kv_restore_total Disk KV restore attempts by result" in body
     assert _sample_value(body, 'qmlx_kv_restore_total{result="hit"}') == 2
     assert _sample_value(body, 'qmlx_kv_restore_total{result="miss"}') == 1
     # Disk hit rate = 2 / (2 + 1) computable in PromQL from these two series.
@@ -502,13 +496,11 @@ def test_route_renders_ttft_and_decode_histograms(metrics_client):
     assert _sample_value(body, "qmlx_ttft_seconds_count") == 1
     assert _sample_value(body, "qmlx_ttft_seconds_sum") == pytest.approx(0.30)
     assert _sample_value(body, "qmlx_decode_tokens_per_second_count") == 1
-    assert _sample_value(
-        body, "qmlx_decode_tokens_per_second_sum"
-    ) == pytest.approx(5.0)
-    # +Inf bucket equals count.
-    assert (
-        _sample_value(body, 'qmlx_decode_tokens_per_second_bucket{le="+Inf"}') == 1
+    assert _sample_value(body, "qmlx_decode_tokens_per_second_sum") == pytest.approx(
+        5.0
     )
+    # +Inf bucket equals count.
+    assert _sample_value(body, 'qmlx_decode_tokens_per_second_bucket{le="+Inf"}') == 1
 
 
 def test_route_renders_restore_reject_reasons(metrics_client):
@@ -531,15 +523,11 @@ def test_route_renders_restore_reject_reasons(metrics_client):
     body = metrics_client.client.get("/metrics").text
     assert "# TYPE qmlx_kv_restore_reject_total counter" in body
     assert (
-        _sample_value(
-            body, 'qmlx_kv_restore_reject_total{reason="memory_headroom"}'
-        )
+        _sample_value(body, 'qmlx_kv_restore_reject_total{reason="memory_headroom"}')
         == 3
     )
     assert (
-        _sample_value(
-            body, 'qmlx_kv_restore_reject_total{reason="kv_dtype_mismatch"}'
-        )
+        _sample_value(body, 'qmlx_kv_restore_reject_total{reason="kv_dtype_mismatch"}')
         == 1
     )
 
@@ -604,6 +592,6 @@ def test_no_series_equals_prompt_plus_gen_over_wall(metrics_client):
         assert val != pytest.approx(forbidden), f"amortized lie leaked: {line}"
 
     # Sanity: the honest decode sum IS present and equals (100-1)/4.0.
-    assert _sample_value(
-        body, "qmlx_decode_tokens_per_second_sum"
-    ) == pytest.approx(99 / 4.0)
+    assert _sample_value(body, "qmlx_decode_tokens_per_second_sum") == pytest.approx(
+        99 / 4.0
+    )

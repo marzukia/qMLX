@@ -354,9 +354,7 @@ Note: Make sure the qmlx server is running with a multimodal model:
                 result = response.json()
                 return result["choices"][0]["message"]["content"]
             except requests.exceptions.ConnectionError:
-                return (
-                    "Error: Cannot connect to server. Make sure qmlx is running."
-                )
+                return "Error: Cannot connect to server. Make sure qmlx is running."
             except requests.exceptions.Timeout:
                 return "Error: Timeout - server took too long to respond."
             except Exception as e:

@@ -20,14 +20,9 @@ from vllm_mlx.tool_parsers import ToolParserManager
 # ─── Fixtures ────────────────────────────────────────────────────────
 
 
-
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # GLM-4.7 (glm47) — ported from vLLM test_glm4_moe_tool_parser.py
 # ═══════════════════════════════════════════════════════════════════════
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -35,9 +30,7 @@ from vllm_mlx.tool_parsers import ToolParserManager
 # ═══════════════════════════════════════════════════════════════════════
 
 
-
 # ─── Fixtures for new parsers ────────────────────────────────────────
-
 
 
 @pytest.fixture
@@ -50,7 +43,6 @@ def deepseekv31_parser():
 def qwen3coder_parser():
     cls = ToolParserManager.get_tool_parser("qwen3_coder_xml")
     return cls(tokenizer=None)
-
 
 
 @pytest.fixture
@@ -109,8 +101,6 @@ def qwen3coder_request():
 # ═══════════════════════════════════════════════════════════════════════
 # Seed-OSS — ported from vLLM test_seed_oss_tool_parser.py
 # ═══════════════════════════════════════════════════════════════════════
-
-
 
 
 # ═══════════════════════════════════════════════════════════════════════

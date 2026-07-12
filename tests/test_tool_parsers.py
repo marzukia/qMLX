@@ -418,6 +418,7 @@ class TestEdgeCases:
         parsed_args = json.loads(result.tool_calls[0]["arguments"])
         assert parsed_args["level1"]["level2"]["level3"] == [1, 2, 3]
 
+
 class TestStreamingParsing:
     """Test streaming tool call parsing."""
 
