@@ -70,9 +70,9 @@ soak:
 # script gets a usable error instead of GNU make's bare "No rule
 # to make target".
 check full benchmark update-baselines:
-	@echo "error: 'make $@' was removed. The doctor tier harness moved"
-	@echo "       to 'qmlx bench <model> --tier smoke|speed|harness|all'"
-	@echo "       in v0.7.22. See harness/README.md."
+	@echo "error: 'make $@' no longer exists. The doctor tier harness"
+	@echo "       was removed in the Qwen-only simplification, with no"
+	@echo "       drop-in replacement command."
 	@exit 2
 
 # ---------- release gate ----------
