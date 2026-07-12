@@ -70,13 +70,6 @@ Some tests require a running server or a downloaded model; they skip themselves 
 
 The PR template asks why the change is needed and whether AI was used. Both questions are inherited from upstream and kept because they work. Say what problem the change fixes in concrete terms, and if AI wrote or reviewed part of the diff, say which part and how you verified it. Nobody asks for prompt transcripts. The standard is simple: you should be able to explain the intent and behaviour of every change in your PR.
 
-The repository ships upstream's PR validation pipeline (`scripts/pr_validate/`). Running it is optional but useful:
-
-```bash
-PR_VALIDATE_NO_DEEPSEEK=1 PR_VALIDATE_NO_STRESS=1 \
-    python3 -m scripts.pr_validate.pr_validate <PR#>
-```
-
 ## Code style
 
 - `ruff` for linting and formatting

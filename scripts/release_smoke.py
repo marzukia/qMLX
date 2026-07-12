@@ -5,7 +5,7 @@
 Catches the class of bug that #408 shipped: code that imports cleanly on
 the dev machine because the local mlx (or any other runtime dep) has a
 symbol/API that hasn't appeared in a released wheel yet. The dev gates
-(`make smoke/check/full`, `pr_validate`, codex review) all run against
+(`make smoke/check/full`, codex review) all run against
 the dev mlx and silently agree with each other.
 
 This script creates a brand-new venv and either:

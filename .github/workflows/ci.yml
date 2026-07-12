@@ -111,8 +111,6 @@ jobs:
             tests/test_tool_injection.py \
             tests/test_streaming_latency.py \
             tests/test_streaming_newlines.py \
-            tests/test_pr_validate_runner.py \
-            tests/test_pr_validate_codex.py \
             tests/test_validate_release_subject.py \
             tests/test_check_gha_pinning.py \
             tests/test_check_mlx_upstream_calls.py \

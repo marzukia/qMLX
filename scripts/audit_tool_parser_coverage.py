@@ -17,7 +17,7 @@ via an EXPLICIT ``--tool-call-parser X`` CLI choice and never exercised
 in the matrix can silently mis-handle the wire format the user's actual
 model emits — exactly what happened to ``qwen3_xml`` in #425.
 
-Source of truth: ``scripts/pr_validate/golden_models.yaml::overrides``.
+Source of truth: ``scripts/golden_models.yaml::overrides``.
 Each override carries an ``args: [--enable-auto-tool-choice, --tool-call-parser, X, ...]``
 list; the parser names in those lists are the matrix-tested set. Every
 registered ``ToolParserManager`` name must either appear there or be in
@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-GOLDEN_MODELS = REPO_ROOT / "scripts" / "pr_validate" / "golden_models.yaml"
+GOLDEN_MODELS = REPO_ROOT / "scripts" / "golden_models.yaml"
 
 
 # Explicit exemptions. Each entry MUST carry a reason — review forces the
@@ -103,7 +103,7 @@ MATRIX_EXEMPT: dict[str, str] = {
     "hy3": "alias of hy_v3",
     # UI-TARS (ByteDance) — GUI-agent VLM. Adding a real golden_models
     # entry requires running a Qwen2-VL / Qwen2.5-VL backbone in the
-    # pr_validate matrix (mlx-vlm path, not the plain mlx-lm path the
+    # golden-models matrix (mlx-vlm path, not the plain mlx-lm path the
     # other matrix entries use). Track as TODO until vision-VLM matrix
     # support lands.
     "ui_tars": "TODO: add UI-TARS-1.5-7B-4bit to golden_models once the VLM matrix supports mlx-vlm-backed Computer-Use models",
@@ -127,7 +127,7 @@ def _load_yaml(path: Path) -> dict:
 def parsers_in_matrix(golden_models_path: Path) -> set[str]:
     """Extract every ``--tool-call-parser X`` value from golden_models.yaml
     overrides. The override args list is the source of truth — that's the
-    exact CLI flag the pr_validate matrix passes to the server.
+    exact CLI flag the golden-models matrix passes to the server.
     """
     cfg = _load_yaml(golden_models_path)
     parsers: set[str] = set()
@@ -186,7 +186,7 @@ def main() -> int:
     print("Action:")
     print(
         "  - Add a ``--tool-call-parser`` override to "
-        "``scripts/pr_validate/golden_models.yaml`` that exercises this "
+        "``scripts/golden_models.yaml`` that exercises this "
         "parser end-to-end."
     )
     print(

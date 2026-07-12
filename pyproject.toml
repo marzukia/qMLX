@@ -184,19 +184,18 @@ all = [
 # Test runtime — the *minimum* deps `pytest tests/` needs to import the
 # suite and collect every test without a plugin-missing error. Kept
 # narrow on purpose so:
-#   1. `pr_validate` (scripts/pr_validate/_test_env.py) can install JUST
-#      this when its env check finds plugins missing, without dragging
-#      in the linter/typer toolchain.
+#   1. a CI job or contributor can install JUST this set when plugins
+#      are missing, without dragging in the linter/typer toolchain.
 #   2. Contributors who only want to run tests don't have to install the
 #      full dev toolbox.
 # The canonical source of truth: if pytest needs it to collect/run a
 # test, it goes here, not in `dev`.
-# Closes #185 — pr_validate's targeted_tests + full_unit gates have
+# Closes #185 — orchestrated test runs have
 # been crashing across multiple fix waves because pytest-asyncio
 # (required by `asyncio_mode = auto` in pytest.ini) keeps falling out
 # of the host Python after `pip install --no-deps --force-reinstall .`
 # in orchestrated runs. The systematic fix is to publish the test deps
-# as their own extras so pr_validate can re-install them from the
+# as their own extras so orchestrated runs can re-install them from the
 # canonical source, instead of every script hand-maintaining a list.
 test = [
     "pytest>=7.0.0",
@@ -218,18 +217,16 @@ test = [
     # refactor silently drop the ``[vision]`` extra).
     'tomli>=2.0.1; python_version < "3.11"',
     # Full-unit imports / runs optional-surface tests too. Keep these in
-    # [test] so pr_validate can rebuild a venv that actually runs
+    # [test] so orchestrated runs can rebuild a venv that actually runs
     # ``pytest tests/`` without hand-installed local extras.
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
 ]
 dev = [
-    # Test runtime (must mirror the `test` extras above; a unit test in
-    # tests/test_pr_validate_test_env.py asserts every `test` dep is
-    # also in `dev` so a future drift can't silently break the
-    # "install dev, run pytest" workflow contributors have used since
-    # day one).
+    # Test runtime (must mirror the `test` extras above so a future
+    # drift can't silently break the "install dev, run pytest" workflow
+    # contributors have used since day one).
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "prometheus_client>=0.16.0",
@@ -237,9 +234,9 @@ dev = [
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
-    # Linters / typer — NOT in the `test` extras because pr_validate
-    # only needs to *run* the tests; lint is its own pipeline step
-    # (ruff) and runs from the host environment.
+    # Linters / typer — NOT in the `test` extras because running the
+    # tests doesn't need them; lint is its own CI step (ruff) and runs
+    # from the host environment.
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",

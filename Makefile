@@ -82,8 +82,7 @@ release-smoke:
 # Full M3-only release gauntlet — runs every gate that needs a live
 # `qmlx serve` (G5/G6/G7/G8 end-to-end perf/G9). The CI-side gates
 # (G1/G3/G10/G11/PF-1) run automatically on the bump PR via
-# .github/workflows/release-preflight.yml; pr_validate runs on every PR
-# via .github/workflows/pr-validate.yml. This target covers what CI
+# .github/workflows/release-preflight.yml. This target covers what CI
 # cannot — every gate that boots a real server.
 #
 # Time budget: ~15-20 minutes on M3 Ultra with weights warm-cached
