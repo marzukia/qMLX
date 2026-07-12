@@ -306,15 +306,6 @@ target-version = ["py310", "py311", "py312", "py313"]
 [tool.ruff]
 line-length = 88
 
-[tool.ruff.format]
-# Vendored upstream files — keep formatting identical to the source PR
-# so future syncs produce a clean diff.
-exclude = [
-    "vllm_mlx/models/deepseek_v4.py",
-    "vllm_mlx/models/gemma4_vendored/*.py",
-    "vllm_mlx/models/hy_v3.py",
-]
-
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 ignore = [
@@ -343,21 +334,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Vendored from ml-explore/mlx-lm PR #1192 (Blaizzy). Keep as-is so
-# upstream syncs remain a clean diff. Drop this once mlx-lm 0.32+
-# ships native deepseek_v4 support and we delete the vendored copy.
-"vllm_mlx/models/deepseek_v4.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
-# Vendored from Blaizzy/mlx-vlm 0.6.3 for the Gemma 4 text-only
-# fresh-install regression fix (#1017, closes 0.10.0 dead-end). Keep
-# lint quiet on the copy so upstream diffs stay clean. Sync policy
-# and rationale in vllm_mlx/models/gemma4_vendored/__init__.py.
-"vllm_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
-# Vendored from ml-explore/mlx-lm PR #1211 (kernelpool, add-hy3-preview,
-# b7635e9c) for Tencent Hunyuan 3 (295B/21B active MoE) as part of the
-# 0.11.0 vendor drop. PR is open with zero maintainer reviews since
-# 2026-04-27. Keep lint quiet on the copy so upstream sync diffs stay
-# clean. Sync policy in vllm_mlx/models/hy_v3.py module docstring.
-"vllm_mlx/models/hy_v3.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]
