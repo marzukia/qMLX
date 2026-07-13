@@ -45,7 +45,6 @@ def _make_scheduler(
         tokenizer=DummyTokenizer(),
         config=SchedulerConfig(
             enable_prefix_cache=enable_prefix_cache,
-            use_memory_aware_cache=False,
             pflash_config=pflash_config,
         ),
     )

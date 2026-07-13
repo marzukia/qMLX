@@ -79,24 +79,25 @@ qmlx serve model --stream-interval 5
 
 ## Memory Management
 
-For large models, the prefix cache can consume significant memory. The memory-aware cache automatically manages this:
+For large models, KV state reuse is served from the disk checkpoint tier
+(SSD-first), so it does not compete for RAM. Restore-on-miss is on by
+default; opt out with `--disable-disk-kv-restore`:
 
 ```bash
-# Auto-detect (uses 20% of available RAM)
+# Disk KV restore is on by default
 qmlx serve model
 
-# Explicit limit
-qmlx serve model --cache-memory-mb 2048
+# Tune the checkpoint interval (0 disables writes)
+qmlx serve model --kv-disk-checkpoint-interval 512
 
-# Custom percentage
-qmlx serve model --cache-memory-percent 0.10
+# Opt out of restore-on-miss
+qmlx serve model --disable-disk-kv-restore
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--cache-memory-mb` | Set explicit limit in MB |
-| `--cache-memory-percent` | Fraction of available RAM (default: 0.20) |
-| `--no-memory-aware-cache` | Use legacy entry-count based cache |
+| `--kv-disk-checkpoint-interval` | Token interval for disk KV snapshots (0 disables) |
+| `--enable-disk-kv-restore` / `--disable-disk-kv-restore` | Toggle restore-on-miss (default: enabled) |
 
 ## Prefix Cache
 
