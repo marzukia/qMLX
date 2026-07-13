@@ -1729,12 +1729,9 @@ class MemoryAwarePrefixCache:
             # the disk checkpoint are orthogonal concerns; without this the
             # disk KV restore feature is dead for hybrid models (mirror never
             # fires, content index stays empty).
-            _cb = self._disk_persist_cb
-            if _cb is not None:
-                try:
-                    _cb(list(tokens), cache)
-                except Exception as _e:  # pragma: no cover — mirror best-effort
-                    logger.debug(f"[disk_persist] hybrid mirror failed: {_e}")
+            # Disk mirror decoupled: the boundary checkpoint is now written
+            # by Scheduler._disk_persist_boundary at the store call sites, so
+            # store() no longer touches disk (single writer). #16.
             return False
 
         tokens_key = tuple(tokens)
@@ -1863,16 +1860,8 @@ class MemoryAwarePrefixCache:
             f"total={self._current_memory / _BYTES_PER_MB:.1f}MB"
         )
 
-        # Persistent-tier mirror (lock already released). Best-effort: hand the
-        # just-stored (tokens, cache) to the disk layer so disk coverage tracks
-        # in-memory coverage exactly, sub-prefix snapshots included.
-        cb = self._disk_persist_cb
-        if cb is not None:
-            try:
-                cb(list(tokens), cache)
-            except Exception as _e:  # pragma: no cover — mirror is best-effort
-                logger.debug(f"[disk_persist] mirror failed: {_e}")
-
+        # Disk mirror decoupled (#16): boundary checkpoints are written by
+        # Scheduler._disk_persist_boundary at the store call sites, not here.
         return True
 
     def _remove_from_sorted(self, key: tuple[int, ...]) -> None:
