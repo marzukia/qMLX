@@ -1297,7 +1297,7 @@ def _render_prometheus(cfg: Any) -> str:
     # present so the metric series stays stable across deploys that swap
     # cache implementations via flags.
     cache_stats: dict[str, Any] | None = None
-    for cache_key in ("paged_cache", "prefix_cache"):
+    for cache_key in ("memory_aware_cache", "paged_cache", "prefix_cache"):
         candidate = stats.get(cache_key)
         if isinstance(candidate, dict):
             cache_stats = candidate
