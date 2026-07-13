@@ -57,10 +57,10 @@ class _FakeQwenApplicator:
             content = m.get("content") or ""
             tcs = m.get("tool_calls") or []
             tc_txt = "".join(
-                "<tool_call>%s</tool_call>" % tc["function"]["name"] for tc in tcs
+                "<tool_call>{}</tool_call>".format(tc["function"]["name"]) for tc in tcs
             )
             out.append(
-                "<|im_start|>%s\n%s%s<|im_end|>\n" % (m["role"], content, tc_txt)
+                "<|im_start|>{}\n{}{}<|im_end|>\n".format(m["role"], content, tc_txt)
             )
         s = "".join(out)
         if add_generation_prompt:
@@ -105,6 +105,5 @@ def test_roundtrip_generation_matches_history_render():
     # generation-prompt prefix (no scaffold on either side).
     assert hist.startswith(gen_prompt), (
         "history render diverges from the generation prompt at the turn boundary:\n"
-        "gen : %r\nhist: %r"
-        % (gen_prompt[-40:], hist[len(gen_prompt) - 40 : len(gen_prompt) + 20])
+        f"gen : {gen_prompt[-40:]!r}\nhist: {hist[len(gen_prompt) - 40 : len(gen_prompt) + 20]!r}"
     )
