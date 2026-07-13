@@ -5,13 +5,20 @@ appends an empty ``<think>\\n\\n</think>\\n\\n`` to the GENERATION prompt when
 ``enable_thinking`` is False, but does NOT reproduce it when the same assistant
 turn is later rendered as history in a multi-turn tool conversation. The
 checkpoint (with scaffold) then diverges from the next turn's prefix (without),
-forcing a cold re-prefill on every tool turn. The fix strips the scaffold from
-the generation prompt so generation matches the scaffold-free history render.
+forcing a cold re-prefill on every tool turn.
+
+The identical empty scaffold can also appear MID-history, wrapped around a
+completed think-less assistant tool-call turn (observed live as
+``kv_restore_divergence deep miss`` where the cached render carried the
+scaffold and the incoming render did not). A tail-only strip never touched
+those, so the fix strips EVERY occurrence of the exact empty scaffold from the
+rendered prompt. Real ``<think>...content...</think>`` blocks are a different
+string and must never be touched.
 """
 
 from vllm_mlx.utils.chat_template import (
     _GEN_THINK_SCAFFOLD,
-    _strip_gen_think_scaffold,
+    _strip_think_scaffold,
     apply_chat_template,
 )
 
@@ -20,28 +27,81 @@ SCAFFOLD = _GEN_THINK_SCAFFOLD  # "<think>\n\n</think>\n\n"
 
 def test_strip_helper_removes_trailing_scaffold():
     p = "<|im_start|>assistant\n" + SCAFFOLD
-    assert _strip_gen_think_scaffold(p) == "<|im_start|>assistant\n"
+    assert _strip_think_scaffold(p) == "<|im_start|>assistant\n"
 
 
 def test_strip_helper_noop_without_scaffold():
     # thinking-enabled generation ends with an OPEN think tag, must be untouched
     p = "<|im_start|>assistant\n<think>\n"
-    assert _strip_gen_think_scaffold(p) == p
+    assert _strip_think_scaffold(p) == p
     # plain text, no think at all
     q = "<|im_start|>assistant\nhello"
-    assert _strip_gen_think_scaffold(q) == q
+    assert _strip_think_scaffold(q) == q
 
 
-def test_strip_helper_only_strips_suffix():
-    # a scaffold mid-string (real prior reasoning-less turn) must stay
-    p = "<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>...</tool_call><|im_end|>\n"
-    assert _strip_gen_think_scaffold(p) == p
+def test_strip_helper_removes_mid_history_scaffold():
+    """The empty scaffold wrapped around a completed think-less assistant
+    tool-call turn, with more turns after it, must be stripped too. This is
+    the exact shape of the observed live divergence (cached_next carried
+    ``<think>\\n\\n</think>\\n\\n<tool_call>...``, incoming_next started at
+    ``<tool_call>...``)."""
+    p = (
+        "<|im_start|>user\nfix the bug<|im_end|>\n"
+        "<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>\n"
+        "<function=todowrite>...</function>\n</tool_call><|im_end|>\n"
+        "<|im_start|>tool\nok<|im_end|>\n"
+        "<|im_start|>assistant\ndone<|im_end|>\n"
+    )
+    expected = (
+        "<|im_start|>user\nfix the bug<|im_end|>\n"
+        "<|im_start|>assistant\n<tool_call>\n"
+        "<function=todowrite>...</function>\n</tool_call><|im_end|>\n"
+        "<|im_start|>tool\nok<|im_end|>\n"
+        "<|im_start|>assistant\ndone<|im_end|>\n"
+    )
+    assert _strip_think_scaffold(p) == expected
+
+
+def test_strip_helper_removes_all_occurrences():
+    p = "<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>a</tool_call>" + SCAFFOLD
+    assert _strip_think_scaffold(p) == "<|im_start|>assistant\n<tool_call>a</tool_call>"
+
+
+def test_strip_helper_preserves_real_reasoning_block():
+    """A non-empty think block is a different string and must NOT be stripped."""
+    p = (
+        "<|im_start|>assistant\n"
+        "<think>\nreal reasoning about the bug\n</think>\n\n"
+        "<tool_call>bash</tool_call><|im_end|>\n"
+    )
+    assert _strip_think_scaffold(p) == p
+
+
+def test_renders_differing_only_by_scaffold_normalize_identically():
+    """The divergence-prevention property: a checkpoint-time render that
+    contains the empty scaffold and a restore-time render that omits it must
+    normalize to the SAME final string, so the token prefix cannot diverge."""
+    prefix = "<|im_start|>user\nfix the bug<|im_end|>\n<|im_start|>assistant\n"
+    suffix = (
+        "<tool_call>\n<function=todowrite>...</function>\n</tool_call><|im_end|>\n"
+        "<|im_start|>tool\nok<|im_end|>\n<|im_start|>assistant\n"
+    )
+    with_scaffold = prefix + SCAFFOLD + suffix
+    without_scaffold = prefix + suffix
+    assert _strip_think_scaffold(with_scaffold) == _strip_think_scaffold(
+        without_scaffold
+    )
+    assert _strip_think_scaffold(with_scaffold) == without_scaffold
 
 
 class _FakeQwenApplicator:
     """Mimics the Qwen3.5 asymmetry: the generation prompt gets the empty
     scaffold when thinking is disabled, but completed assistant turns in history
     do not (this is the exact behaviour observed on real captured payloads)."""
+
+    # When set, completed assistant tool-call turns in history ALSO carry the
+    # empty scaffold — the mid-history variant of the same asymmetry.
+    scaffold_in_history = False
 
     def apply_chat_template(
         self,
@@ -59,8 +119,13 @@ class _FakeQwenApplicator:
             tc_txt = "".join(
                 "<tool_call>{}</tool_call>".format(tc["function"]["name"]) for tc in tcs
             )
+            scaffold = ""
+            if self.scaffold_in_history and m["role"] == "assistant" and tcs:
+                scaffold = "<think>\n\n</think>\n\n"
             out.append(
-                "<|im_start|>{}\n{}{}<|im_end|>\n".format(m["role"], content, tc_txt)
+                "<|im_start|>{}\n{}{}{}<|im_end|>\n".format(
+                    m["role"], scaffold, content, tc_txt
+                )
             )
         s = "".join(out)
         if add_generation_prompt:
@@ -68,6 +133,10 @@ class _FakeQwenApplicator:
             if enable_thinking is False:
                 s += "<think>\n\n</think>\n\n"  # the asymmetric scaffold
         return s
+
+
+class _FakeQwenApplicatorScaffoldedHistory(_FakeQwenApplicator):
+    scaffold_in_history = True
 
 
 def test_generation_prompt_is_scaffold_free_when_thinking_disabled():
@@ -107,3 +176,32 @@ def test_roundtrip_generation_matches_history_render():
         "history render diverges from the generation prompt at the turn boundary:\n"
         f"gen : {gen_prompt[-40:]!r}\nhist: {hist[len(gen_prompt) - 40 : len(gen_prompt) + 20]!r}"
     )
+
+
+def test_scaffolded_and_scaffold_free_history_renders_converge():
+    """Two applicators that differ ONLY in whether completed assistant
+    tool-call turns carry the empty scaffold mid-history must produce the
+    SAME normalized prompt through apply_chat_template. This is the property
+    that makes checkpoint renders and restore renders always match."""
+    base = [{"role": "user", "content": "fix the bug"}]
+    asst = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"type": "function", "function": {"name": "todowrite"}}],
+    }
+    tool = {"role": "tool", "content": "ok"}
+    msgs = base + [asst, tool]
+    with_scaffold = apply_chat_template(
+        _FakeQwenApplicatorScaffoldedHistory(),
+        msgs,
+        enable_thinking=False,
+        model_name="qwen",
+    )
+    without_scaffold = apply_chat_template(
+        _FakeQwenApplicator(), msgs, enable_thinking=False, model_name="qwen"
+    )
+    assert with_scaffold == without_scaffold, (
+        "renders differing only by the mid-history empty scaffold did not "
+        f"normalize identically:\nwith   : {with_scaffold!r}\nwithout: {without_scaffold!r}"
+    )
+    assert SCAFFOLD not in with_scaffold
