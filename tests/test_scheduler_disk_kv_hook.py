@@ -455,3 +455,39 @@ def test_disk_persist_survives_ram_cache_deletion(isolated_root: Path) -> None:
     loaded = _dkc.get_content_index().lookup(prompt)
     assert loaded is not None
     assert loaded.token_offset == len(prompt)
+
+
+def test_cleanup_finished_store_site_writes_checkpoint(isolated_root: Path) -> None:
+    """End-to-end guard for the SSD-first PR3 (#16) store-site re-gate.
+
+    The other guard drives ``_disk_persist_boundary`` directly, so a future
+    regression that re-wraps the ``_cleanup_finished`` store block in a dead
+    condition would slip through. Drive the ACTUAL completion store site: a
+    finished request carrying ``_extracted_cache`` through
+    ``_cleanup_finished``, and assert a checkpoint lands and restores.
+    """
+    _dkc.reset_content_index_for_tests()
+    sched = _make_scheduler(interval=256)
+    sched.config.kv_disk_restore_enabled = True
+    assert not hasattr(sched, "memory_aware_cache")
+
+    req = Request(
+        request_id="fin-1",
+        prompt="ignored",
+        sampling_params=SamplingParams(max_tokens=2048),
+    )
+    req.prompt_token_ids = list(range(4000, 4000 + 250))
+    req.output_token_ids = list(range(9000, 9000 + 6))  # full seq = 256
+    req._extracted_cache = _seed_kv_cache(num_tokens=256)
+    sched.running = {req.request_id: req}
+
+    sched._cleanup_finished({req.request_id})
+
+    bodies = list(isolated_root.rglob("*.safetensors"))
+    assert bodies, f"_cleanup_finished store site wrote no checkpoint under {isolated_root}"
+
+    full = list(range(4000, 4000 + 250)) + list(range(9000, 9000 + 6))
+    loaded = _dkc.get_content_index().lookup(full)
+    assert loaded is not None
+    assert loaded.token_offset == 256
+    assert req.request_id not in sched.running

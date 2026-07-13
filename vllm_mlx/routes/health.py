@@ -302,8 +302,7 @@ async def status():
         # number-or-object schemas don't crash when prefix cache is
         # disabled via --disable-prefix-cache.
         "cache": (
-            stats.get("memory_aware_cache")
-            or stats.get("paged_cache")
+            stats.get("paged_cache")
             or stats.get("prefix_cache")
             or {"enabled": False}
         ),

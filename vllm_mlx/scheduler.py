@@ -5677,8 +5677,8 @@ class Scheduler:
         # via the content index). But they DO burn the disk cap and, before
         # this fix, evicted the received-prompt boundary checkpoints the next
         # turn needs, cold-filling the cache on every multi-step turn. The
-        # store mirror (``_disk_persist_mirror``, keyed on prompt_token_ids)
-        # already deposits the matchable boundary checkpoint the restore path
+        # store-site boundary write (``_disk_persist_boundary``, keyed on
+        # prompt_token_ids) already deposits the matchable boundary checkpoint the restore path
         # uses, so gating the interval hook off loses nothing restore relies
         # on. The only capability it forfeits is crash-resume of an in-flight
         # generation, which nothing reads (grep: no loader consumes interval
