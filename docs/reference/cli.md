@@ -41,7 +41,6 @@ qmlx serve <model> [options]
 | `--continuous-batching` | Enable batching for multi-user | False |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
 | `--cache-memory-percent` | Fraction of RAM for cache | 0.20 |
-| `--no-memory-aware-cache` | Use legacy entry-count cache | False |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--max-tokens` | Default max tokens | 32768 |
 | `--stream-interval` | Tokens per stream chunk | 1 |

@@ -37,7 +37,6 @@ Tests
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -50,10 +49,6 @@ KVCache = mlx_cache.KVCache
 
 import numpy as np  # noqa: E402
 
-from vllm_mlx.memory_cache import (  # noqa: E402
-    MemoryAwarePrefixCache,
-    MemoryCacheConfig,
-)
 from vllm_mlx.turboquant import (  # noqa: E402
     TurboQuantConfig,
     TurboQuantKVCache,
@@ -71,19 +66,6 @@ def _populated_kv(head_dim: int = 128, seq_len: int = 32, n_heads: int = 8):
     kv.keys = mx.array(rng.randn(1, n_heads, seq_len, head_dim).astype(np.float16))
     kv.values = mx.array(rng.randn(1, n_heads, seq_len, head_dim).astype(np.float16))
     kv.offset = seq_len
-    return kv
-
-
-def _populated_real_kv(head_dim: int = 128, seq_len: int = 32, n_heads: int = 8):
-    """Build a real ``mlx_lm.models.cache.KVCache`` (needed by the
-    MemoryAwarePrefixCache integration test — ``store`` paths run through
-    code that touches a real KVCache before any TurboQuant compression).
-    """
-    rng = np.random.RandomState(0)
-    keys = mx.array(rng.randn(1, n_heads, seq_len, head_dim).astype(np.float16))
-    values = mx.array(rng.randn(1, n_heads, seq_len, head_dim).astype(np.float16))
-    kv = KVCache()
-    kv.update_and_fetch(keys, values)
     return kv
 
 
@@ -338,109 +320,6 @@ class TestSavePromptCacheRoundTrip:
         assert [type(c).__name__ for c in loaded] == ["TurboQuantKVCache"] * 3
         assert [c.config.mode for c in loaded] == ["v4", "k8v4", "v4"]
         assert [c.config.bits for c in loaded] == [4, 4, 3]
-
-
-# ---------------------------------------------------------------------------
-# 3. Integration: MemoryAwarePrefixCache.save_to_disk reproduces the bug
-# ---------------------------------------------------------------------------
-
-
-class TestMemoryAwarePrefixCacheTurboQuant:
-    """This is the failure mode the bug report cites directly: the
-    radix shutdown flush walks ``_entries`` and calls
-    ``MemoryAwarePrefixCache.save_to_disk`` → ``save_prompt_cache``. Pre-fix
-    the per-entry write raised ``AttributeError`` and ZERO entries
-    persisted. Post-fix the entry survives → reloads on next boot."""
-
-    def _store_turboquant_entry(
-        self, cache: MemoryAwarePrefixCache, tokens, mode: str
-    ) -> TurboQuantKVCache:
-        kv = _populated_real_kv()
-        tq = TurboQuantKVCache.from_kv_cache(kv, TurboQuantConfig(bits=4, mode=mode))
-        cache.store(tokens, [tq])
-        return tq
-
-    def _assert_full_round_trip(self, cache, cache2, tokens, original_tq, mode):
-        """Shared post-load invariants — codex round 1 NIT #4 strengthening:
-        verify the reloaded entry is a TurboQuantKVCache with the same mode
-        and decodes byte-identically to the originally stored entry, not
-        merely that the token-key exists."""
-        assert tuple(tokens) in cache2._entries
-        entry = cache2._entries[tuple(tokens)]
-        # ``_CacheEntry.cache`` is the per-layer list; we stored a single
-        # TurboQuantKVCache layer.
-        assert len(entry.cache) == 1
-        loaded_layer = entry.cache[0]
-        assert isinstance(loaded_layer, TurboQuantKVCache), (
-            f"reload produced {type(loaded_layer).__name__}, not TurboQuantKVCache"
-        )
-        assert loaded_layer.config.mode == mode
-        assert loaded_layer.offset == original_tq.offset
-        assert loaded_layer.head_dim == original_tq.head_dim
-        # Byte-identical decode: same compressed inputs → same output.
-        kv_orig = original_tq.to_kv_cache()
-        kv_loaded = loaded_layer.to_kv_cache()
-        assert mx.array_equal(kv_orig.keys, kv_loaded.keys)
-        assert mx.array_equal(kv_orig.values, kv_loaded.values)
-
-    def test_k8v4_entry_survives_save_to_disk_and_reloads(self, tmp_path):
-        # Pre-fix repro: save_to_disk would log
-        # 'failed to save entry N: ... no attribute state'
-        # and return False with zero files written. Post-fix the entry
-        # commits and the next load_from_disk finds it.
-        cache = MemoryAwarePrefixCache(
-            model=object(),
-            config=MemoryCacheConfig(
-                max_memory_mb=64, max_entries=100, kv_turboquant=True
-            ),
-        )
-        tokens = list(range(32))
-        original_tq = self._store_turboquant_entry(cache, tokens, mode="k8v4")
-        assert len(cache) == 1
-
-        ok = cache.save_to_disk(str(tmp_path))
-        assert ok is True
-
-        # Per-entry files exist on disk — pre-fix this directory was empty.
-        files = set(os.listdir(tmp_path))
-        assert "index.json" in files
-        assert "entry_0.safetensors" in files
-        assert "entry_0_tokens.bin" in files
-
-        # Reload into a fresh cache — same config required because
-        # ``_cache_classes_compatible`` gates ``TurboQuantKVCache``
-        # on ``kv_turboquant=True``.
-        cache2 = MemoryAwarePrefixCache(
-            model=object(),
-            config=MemoryCacheConfig(
-                max_memory_mb=64, max_entries=100, kv_turboquant=True
-            ),
-        )
-        loaded = cache2.load_from_disk(str(tmp_path))
-        assert loaded == 1
-        self._assert_full_round_trip(cache, cache2, tokens, original_tq, mode="k8v4")
-
-    def test_v4_entry_survives_save_to_disk_and_reloads(self, tmp_path):
-        """V4 path uses the same ``state`` property — covering it guards
-        against a regression that fixes K8V4 in isolation."""
-        cache = MemoryAwarePrefixCache(
-            model=object(),
-            config=MemoryCacheConfig(
-                max_memory_mb=64, max_entries=100, kv_turboquant=True
-            ),
-        )
-        tokens = list(range(32))
-        original_tq = self._store_turboquant_entry(cache, tokens, mode="v4")
-        assert cache.save_to_disk(str(tmp_path)) is True
-
-        cache2 = MemoryAwarePrefixCache(
-            model=object(),
-            config=MemoryCacheConfig(
-                max_memory_mb=64, max_entries=100, kv_turboquant=True
-            ),
-        )
-        assert cache2.load_from_disk(str(tmp_path)) == 1
-        self._assert_full_round_trip(cache, cache2, tokens, original_tq, mode="v4")
 
 
 # ---------------------------------------------------------------------------

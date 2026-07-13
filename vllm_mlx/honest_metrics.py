@@ -21,9 +21,6 @@ that includes the prefill. Both overstate throughput on cache hits — the
 * ``prefill_kind`` — one of ``cold`` (no cache), ``extend`` (partial
   prefix reused, tail re-prefilled), ``exact`` (whole prompt reused,
   only the generation-kickoff token fed).
-* ``prefix_cache_match`` — the in-memory prefix cache's match-type
-  distribution (``exact``/``prefix``/``supersequence``/``lcp``/``miss``),
-  taken straight off the cache's ``_last_match_type``.
 * ``ttft`` histogram — ``first_token_time - arrival_time`` seconds.
 * ``decode_tps`` histogram — ``(num_output_tokens - 1) / (t_last_token
   - first_token_time)``, i.e. inter-token gaps divided by the pure decode
@@ -71,18 +68,6 @@ DECODE_TPS_BUCKET_BOUNDS: tuple[float, ...] = (
     100.0,
     150.0,
     200.0,
-)
-
-# Canonical in-memory prefix-cache match types (mirrors
-# ``MemoryAwarePrefixCache._last_match_type`` and the ``Request``
-# ``cache_hit_type`` docstring). Seeded at zero so every series is always
-# present in the exposition even before the first request lands.
-PREFIX_MATCH_TYPES: tuple[str, ...] = (
-    "exact",
-    "prefix",
-    "supersequence",
-    "lcp",
-    "miss",
 )
 
 
@@ -138,7 +123,6 @@ class HonestMetrics:
         self.prompt_tokens_computed = 0
         self.prompt_tokens_reused: dict[str, int] = {"memory": 0, "disk": 0}
         self.prefill_kind: dict[str, int] = {"cold": 0, "extend": 0, "exact": 0}
-        self.prefix_cache_match: dict[str, int] = {t: 0 for t in PREFIX_MATCH_TYPES}
         # Disk (SSD) KV-restore attempts by result. Request-level: exactly
         # one increment per request that actually ran a disk-checkpoint
         # lookup (hit == a checkpoint prefix was found, verified, AND
@@ -146,9 +130,9 @@ class HonestMetrics:
         # rejected before install). Requests that never engaged the
         # disk-restore path are counted as neither, so hit + miss ==
         # disk-restore attempts and hit / (hit + miss) is the true SSD
-        # hit rate. On this hybrid model the in-memory prefix cache always
-        # misses and the reuse rides on disk restore, so this — not
-        # prefix_cache_match — is the honest reuse-hit-rate surface.
+        # hit rate. Now that the in-memory prefix cache is gone, disk
+        # restore is the only reuse surface, so this is the honest
+        # reuse-hit-rate signal.
         self.kv_restore_result: dict[str, int] = {"hit": 0, "miss": 0}
         self._ttft = FixedBucketHistogram(TTFT_BUCKET_BOUNDS)
         self._decode_tps = FixedBucketHistogram(DECODE_TPS_BUCKET_BOUNDS)
@@ -188,18 +172,6 @@ class HonestMetrics:
             else:
                 kind = "extend"
             self.prefill_kind[kind] += 1
-
-    def record_prefix_match(self, match_type: str | None) -> None:
-        """Record one in-memory prefix-cache match-type observation.
-
-        Only the five canonical memory-cache match types are tracked; the
-        paged/legacy caches' coarse ``hit`` and the disk-restore ``disk``
-        tag are not prefix-cache match types and are intentionally not
-        folded in (they would need their own, differently-defined series).
-        """
-        if match_type in self.prefix_cache_match:
-            with self._lock:
-                self.prefix_cache_match[match_type] += 1
 
     def record_disk_restore(self, hit: bool) -> None:
         """Record one disk (SSD) KV-restore attempt as hit or miss.
@@ -255,7 +227,6 @@ class HonestMetrics:
                 "prompt_tokens_computed": self.prompt_tokens_computed,
                 "prompt_tokens_reused": dict(self.prompt_tokens_reused),
                 "prefill_kind": dict(self.prefill_kind),
-                "prefix_cache_match": dict(self.prefix_cache_match),
                 "kv_restore_result": dict(self.kv_restore_result),
                 "ttft_seconds": self._ttft.snapshot(),
                 "decode_tokens_per_second": self._decode_tps.snapshot(),
