@@ -1,5 +1,8 @@
 # PR Merge SOP
 
+> **Note (Qwen-only strip):** the release-automation workflows this SOP references (`auto-release.yml`, `version-check.yml`, `release-preflight.yml`, `publish.yml`) no longer exist. Releases are manual now (see `releasing.md`). The PR-review and merge steps below still apply; treat any mention of those workflows or their required checks as historical.
+
+
 The maintainer-side gauntlet that every PR — internal or external, AI-authored or human — passes through before merge to `main`.
 
 ## Why this doc exists
@@ -54,7 +57,7 @@ For first-time contributors learning the ropes: relax tone, not standards. Walk 
 ## Step 1 — Pre-flight
 
 - Read the PR description. If "what" or "why" is unclear, ask before touching anything.
-- Confirm `git status` clean; branch rebased on latest `raullenchai/main`. Heavy divergence → ask the contributor to rebase first.
+- Confirm `git status` clean; branch rebased on latest `origin/main`. Heavy divergence → ask the contributor to rebase first.
 - **Identify blast radius** (this gates which later steps fire):
   - **Inference-touching** (`vllm_mlx/{engine,scheduler,parsers,routes,reasoning,tool_parsers,memory_cache}/`, `vllm_mlx/runtime/`, `vllm_mlx/agents/`) → all gates required, including `make check` and Anthropic-compat round-trip.
   - **Surface-touching** (CLI flags, alias registry, `pyproject.toml`) → version-bump check fires; `make check` skip OK if no behavior change in generation path.
@@ -123,7 +126,7 @@ The MLLM / video files need real Qwen3-VL weights and hang locally — the CI ma
 **Pre-existing flakes** must be **proven** pre-existing by running the test on clean main. The naive `git stash && pytest && git stash pop` pattern leaves work stashed if pytest fails — use a worktree:
 
 ```bash
-git worktree add /tmp/main-check raullenchai/main
+git worktree add /tmp/main-check origin/main
 ( cd /tmp/main-check && python3.12 -m pytest <flake> -q )
 git worktree remove /tmp/main-check
 ```
@@ -187,10 +190,10 @@ Output must be a non-empty Anthropic-shaped response, no `!!!!!!` token-id-0 cor
 ## Step 10 — CI gate
 
 ```bash
-gh pr view <PR#> --repo raullenchai/Rapid-MLX --json mergeable,mergeStateStatus,statusCheckRollup
+gh pr view <PR#> --repo marzukia/qMLX --json mergeable,mergeStateStatus,statusCheckRollup
 ```
 
-Wait for `MERGEABLE (CLEAN)`. All checks must be `SUCCESS`. Required checks: `lint`, `type-check`, `version-check`, `test-matrix (3.10/3.11/3.12)`, `test-apple-silicon`, `tests`.
+Wait for `MERGEABLE (CLEAN)`. All checks must be `SUCCESS`. Required checks: `lint`, `type-check`, `test-matrix (3.10/3.11/3.12)`, `test-apple-silicon`, `tests`.
 
 **CI failure taxonomy** — different kinds of red are different problems:
 
@@ -216,12 +219,12 @@ Before merge, the PR description must accurately reflect actual current state:
 - **Squash-merge** for clean main history:
 
   ```bash
-  gh pr merge <PR#> --repo raullenchai/Rapid-MLX --squash --delete-branch
+  gh pr merge <PR#> --repo marzukia/qMLX --squash --delete-branch
   ```
 
 - If version was bumped: verify `Auto-release on version bump` workflow triggers post-merge.
 - If the squash subject contains `(#NN)` GitHub auto-suffix on a `chore: bump version to X.Y.Z` commit, override with `--subject` — the regex in `auto-release.yml` is strict.
-- After merge, verify `git log raullenchai/main --oneline -1` shows your squash commit.
+- After merge, verify `git log origin/main --oneline -1` shows your squash commit.
 
 ## CI coverage of these steps
 
@@ -273,7 +276,7 @@ Everything else is automated. `ci.yml` (lint + unit-test matrix) is the single s
 
 ## Tracked SOP improvements
 
-The following items are agreed-good but not yet implemented; tracked in [#320](https://github.com/raullenchai/Rapid-MLX/issues/320):
+The following items are agreed-good but not yet implemented; tracked in [#320](https://github.com/marzukia/qMLX/issues/320):
 
 - License-drift check in the supply-chain audit (not yet implemented).
 - GitHub Actions SHA-pinning enforcement when workflows change.
