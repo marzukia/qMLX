@@ -364,7 +364,6 @@ def test_scheduler_create_batch_generator_passes_top_k(monkeypatch):
         enable_suffix_decoding = False
 
     scheduler.config = _StubCfg()
-    scheduler.memory_aware_cache = None
 
     scheduler._create_batch_generator(sp)
 

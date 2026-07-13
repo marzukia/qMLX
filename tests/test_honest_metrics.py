@@ -118,25 +118,6 @@ def test_reuse_not_counted_when_install_scrubbed():
     assert snap["prefill_kind"] == {"cold": 1, "extend": 0, "exact": 0}
 
 
-def test_prefix_match_type_distribution():
-    """Only the five canonical memory-cache match types are tracked."""
-    hm = HonestMetrics()
-    for mt in ["exact", "exact", "prefix", "lcp", "miss", "supersequence"]:
-        hm.record_prefix_match(mt)
-    # unknowns (paged 'hit', disk-restore 'disk') are not match types
-    hm.record_prefix_match("hit")
-    hm.record_prefix_match("disk")
-    hm.record_prefix_match(None)
-    snap = hm.snapshot()
-    assert snap["prefix_cache_match"] == {
-        "exact": 2,
-        "prefix": 1,
-        "supersequence": 1,
-        "lcp": 1,
-        "miss": 1,
-    }
-
-
 def test_record_disk_restore_hit_and_miss():
     """The accumulator routes hit/miss into the right bucket, neither by default."""
     hm = HonestMetrics()
@@ -403,9 +384,6 @@ def _honest_block() -> dict[str, Any]:
     hm.record_prefill(200, 0, "miss", list(range(200)))  # cold
     hm.record_prefill(300, 120, "prefix", list(range(180)))  # extend, memory
     hm.record_prefill(128, 128, "disk", [])  # exact, disk
-    hm.record_prefix_match("miss")
-    hm.record_prefix_match("prefix")
-    hm.record_prefix_match("exact")
     hm.record_disk_restore(hit=True)
     hm.record_disk_restore(hit=True)
     hm.record_disk_restore(hit=False)
@@ -449,11 +427,6 @@ def test_route_renders_prefill_kind_and_match(metrics_client):
     assert _sample_value(body, 'qmlx_prefill_kind_total{kind="cold"}') == 1
     assert _sample_value(body, 'qmlx_prefill_kind_total{kind="extend"}') == 1
     assert _sample_value(body, 'qmlx_prefill_kind_total{kind="exact"}') == 1
-    assert _sample_value(body, 'qmlx_prefix_cache_match_total{type="miss"}') == 1
-    assert _sample_value(body, 'qmlx_prefix_cache_match_total{type="prefix"}') == 1
-    assert _sample_value(body, 'qmlx_prefix_cache_match_total{type="exact"}') == 1
-    # unused canonical types still present at 0 (flat-line, not "no data")
-    assert _sample_value(body, 'qmlx_prefix_cache_match_total{type="lcp"}') == 0
 
 
 def test_route_renders_kv_restore_hit_miss(metrics_client):
