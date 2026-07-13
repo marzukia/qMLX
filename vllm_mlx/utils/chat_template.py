@@ -874,6 +874,28 @@ def _looks_like_hy3(model_name: str) -> bool:
     return bool(_HY3_MODEL_NAME_RE.search(model_name))
 
 
+# Round-trip cache stability (F-thinkscaffold): when ``enable_thinking`` is
+# False the chat template appends an empty ``<think>\n\n</think>\n\n`` to the
+# GENERATION prompt (Qwen3.5 template, add_generation_prompt branch). That empty
+# scaffold lands in the KV checkpoint. But when the SAME assistant turn is later
+# re-rendered as history inside a multi-turn tool conversation, the template does
+# NOT reproduce the scaffold (verified on real captured payloads: 180/181
+# completed assistant tool-turns render as ``<|im_start|>assistant\n<tool_call>``
+# with no scaffold). So the checkpoint (scaffold) diverges from the next turn's
+# prefix (no scaffold) at the start of that turn, forcing a full cold re-prefill
+# on every tool turn. Fix: strip the trailing empty scaffold from the generation
+# prompt so generation matches the scaffold-free history render. Only matches the
+# exact empty-think suffix, so it is a no-op when thinking is enabled (that path
+# ends with an OPEN ``<think>\n``) and for the plain-text fallback.
+_GEN_THINK_SCAFFOLD = "<think>\n\n</think>\n\n"
+
+
+def _strip_gen_think_scaffold(prompt: str) -> str:
+    if isinstance(prompt, str) and prompt.endswith(_GEN_THINK_SCAFFOLD):
+        return prompt[: -len(_GEN_THINK_SCAFFOLD)]
+    return prompt
+
+
 def apply_chat_template(
     template_applicator,
     messages: list[dict],
@@ -1008,7 +1030,7 @@ def apply_chat_template(
         template_kwargs.setdefault("reasoning_effort", "low")
 
     try:
-        return template_applicator.apply_chat_template(messages, **template_kwargs)
+        return _strip_gen_think_scaffold(template_applicator.apply_chat_template(messages, **template_kwargs))
     except TypeError as e:
         # Step 1: retry without enable_thinking (many templates don't support it).
         # Codex round-1 NIT fix (PR #1070 finding #4): keep
@@ -1020,7 +1042,7 @@ def apply_chat_template(
         logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
         template_kwargs.pop("enable_thinking", None)
         try:
-            return template_applicator.apply_chat_template(messages, **template_kwargs)
+            return _strip_gen_think_scaffold(template_applicator.apply_chat_template(messages, **template_kwargs))
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
             # actually names it (codex R8 BLOCKING: unconditionally popping it
@@ -1081,4 +1103,4 @@ def apply_chat_template(
                     injected, **template_kwargs
                 )
 
-        return template_applicator.apply_chat_template(messages, **template_kwargs)
+        return _strip_gen_think_scaffold(template_applicator.apply_chat_template(messages, **template_kwargs))
