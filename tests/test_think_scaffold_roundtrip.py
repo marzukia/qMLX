@@ -10,9 +10,9 @@ the generation prompt so generation matches the scaffold-free history render.
 """
 
 from vllm_mlx.utils.chat_template import (
-    apply_chat_template,
-    _strip_gen_think_scaffold,
     _GEN_THINK_SCAFFOLD,
+    _strip_gen_think_scaffold,
+    apply_chat_template,
 )
 
 SCAFFOLD = _GEN_THINK_SCAFFOLD  # "<think>\n\n</think>\n\n"
@@ -44,15 +44,24 @@ class _FakeQwenApplicator:
     do not (this is the exact behaviour observed on real captured payloads)."""
 
     def apply_chat_template(
-        self, messages, tokenize=False, add_generation_prompt=False,
-        enable_thinking=None, tools=None, **kw
+        self,
+        messages,
+        tokenize=False,
+        add_generation_prompt=False,
+        enable_thinking=None,
+        tools=None,
+        **kw,
     ):
         out = []
         for m in messages:
             content = m.get("content") or ""
             tcs = m.get("tool_calls") or []
-            tc_txt = "".join("<tool_call>%s</tool_call>" % tc["function"]["name"] for tc in tcs)
-            out.append("<|im_start|>%s\n%s%s<|im_end|>\n" % (m["role"], content, tc_txt))
+            tc_txt = "".join(
+                "<tool_call>%s</tool_call>" % tc["function"]["name"] for tc in tcs
+            )
+            out.append(
+                "<|im_start|>%s\n%s%s<|im_end|>\n" % (m["role"], content, tc_txt)
+            )
         s = "".join(out)
         if add_generation_prompt:
             s += "<|im_start|>assistant\n"
@@ -63,8 +72,12 @@ class _FakeQwenApplicator:
 
 def test_generation_prompt_is_scaffold_free_when_thinking_disabled():
     msgs = [{"role": "user", "content": "fix the bug"}]
-    gen = apply_chat_template(_FakeQwenApplicator(), msgs, enable_thinking=False, model_name="qwen")
-    assert not gen.endswith(SCAFFOLD), "generation prompt still carries the empty think scaffold"
+    gen = apply_chat_template(
+        _FakeQwenApplicator(), msgs, enable_thinking=False, model_name="qwen"
+    )
+    assert not gen.endswith(SCAFFOLD), (
+        "generation prompt still carries the empty think scaffold"
+    )
     assert gen.endswith("<|im_start|>assistant\n")
 
 
@@ -75,14 +88,23 @@ def test_roundtrip_generation_matches_history_render():
     fake = _FakeQwenApplicator()
     base = [{"role": "user", "content": "fix the bug"}]
     # what the model saw at generation time (checkpoint prefix), fix applied:
-    gen_prompt = apply_chat_template(fake, base, enable_thinking=False, model_name="qwen")
+    gen_prompt = apply_chat_template(
+        fake, base, enable_thinking=False, model_name="qwen"
+    )
     # the model then generates a tool call; the completed turn as the client stores it:
-    asst = {"role": "assistant", "content": "", "tool_calls": [{"type": "function", "function": {"name": "bash"}}]}
+    asst = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"type": "function", "function": {"name": "bash"}}],
+    }
     # next turn's render of the SAME history:
-    hist = apply_chat_template(fake, base + [asst], enable_thinking=False, model_name="qwen")
+    hist = apply_chat_template(
+        fake, base + [asst], enable_thinking=False, model_name="qwen"
+    )
     # the history render up to the assistant turn must start with the exact
     # generation-prompt prefix (no scaffold on either side).
     assert hist.startswith(gen_prompt), (
         "history render diverges from the generation prompt at the turn boundary:\n"
-        "gen : %r\nhist: %r" % (gen_prompt[-40:], hist[len(gen_prompt) - 40:len(gen_prompt) + 20])
+        "gen : %r\nhist: %r"
+        % (gen_prompt[-40:], hist[len(gen_prompt) - 40 : len(gen_prompt) + 20])
     )
