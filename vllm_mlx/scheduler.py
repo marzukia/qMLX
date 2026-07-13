@@ -5265,6 +5265,13 @@ class Scheduler:
         return outputs, finished_ids
 
     def _disk_persist_mirror(self, tokens, cache) -> None:
+        """Delegating shim kept for the ``MemoryAwarePrefixCache._disk_persist_cb``
+        binding and for tests that reference this name. The write logic lives in
+        :meth:`_disk_persist_boundary`.
+        """
+        return self._disk_persist_boundary(tokens, cache)
+
+    def _disk_persist_boundary(self, tokens, cache) -> None:
         """Persist an in-memory prefix-cache store to disk, synchronously.
 
         Wired into MemoryAwarePrefixCache.store so disk coverage tracks memory
