@@ -68,8 +68,7 @@ pip install -e .
 ```sh
 qmlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
   --text-only --host 0.0.0.0 --port 8095 --max-num-seqs 1 \
-  --enable-prefix-cache --prefix-cache-index radix \
-  --enable-disk-kv-restore --kv-disk-checkpoint-interval 256
+  --enable-prefix-cache --kv-disk-checkpoint-interval 256
 ```
 
 Drop-in OpenAI / Anthropic API, same as upstream. `--text-only` is required: the vision path is incompatible with the hybrid continuous-batching that the cache work depends on.

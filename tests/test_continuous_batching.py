@@ -180,6 +180,14 @@ class TestContinuousBatchingIntegration:
                 max_num_seqs=32,
                 prefill_batch_size=8,
                 completion_batch_size=16,
+                # Benchmark measures batching vs sequential, not disk-cache
+                # reuse. SSD-first PR3 (#16) turned disk KV restore on by
+                # default; with these tiny repeated prompts the batch phase
+                # would otherwise restore the sequential phase's checkpoints
+                # from disk (slower than re-prefilling ~15 tokens), muddying
+                # the batching signal. Keep the disk tier out of the measurement.
+                kv_disk_checkpoint_interval=0,
+                kv_disk_restore_enabled=False,
             ),
         )
 

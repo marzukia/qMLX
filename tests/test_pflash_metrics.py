@@ -72,7 +72,6 @@ def _make_scheduler(pflash_config: PFlashConfig) -> Scheduler:
         tokenizer=_DummyTokenizer(),
         config=SchedulerConfig(
             enable_prefix_cache=False,
-            use_memory_aware_cache=False,
             pflash_config=pflash_config,
         ),
     )

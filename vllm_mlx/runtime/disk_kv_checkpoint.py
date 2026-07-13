@@ -1257,10 +1257,10 @@ class _CheckpointRef:
 class DiskCheckpointIndex:
     """Process-wide prompt→checkpoint map for restore-on-miss lookup.
 
-    Wraps a :class:`vllm_mlx.runtime.radix_index.RadixPrefixIndex` for the
-    O(prefix_len) longest-prefix walk and a side dict that carries the
-    checkpoint location the radix key alone can't (the radix only knows
-    "this token tuple is stored", not where its safetensors lives).
+    A ``_by_key`` dict maps each stored token tuple to a
+    :class:`_CheckpointRef` (where its safetensors lives). :meth:`lookup`
+    finds the longest indexed key that is a true prefix of the query with a
+    linear scan over that dict.
 
     Concurrency: guarded by its own ``RLock``. Per the module-level LOCK
     ORDERING note, this lock is the INNERMOST of the three checkpoint locks —
@@ -1273,10 +1273,7 @@ class DiskCheckpointIndex:
     """
 
     def __init__(self) -> None:
-        from .radix_index import RadixPrefixIndex
-
         self._lock = threading.RLock()
-        self._radix = RadixPrefixIndex()
         self._by_key: dict[tuple[int, ...], _CheckpointRef] = {}
 
     # ------------------------------------------------------------------ #
@@ -1321,8 +1318,6 @@ class DiskCheckpointIndex:
             save_uuid=save_uuid,
         )
         with self._lock:
-            if key not in self._by_key:
-                self._radix.insert(key)
             self._by_key[key] = ref
         return True
 
@@ -1369,8 +1364,6 @@ class DiskCheckpointIndex:
         indexed = 0
         with self._lock:
             for key, ref in collected:
-                if key not in self._by_key:
-                    self._radix.insert(key)
                 self._by_key[key] = ref
                 indexed += 1
         return indexed
@@ -1423,13 +1416,11 @@ class DiskCheckpointIndex:
             doomed = [k for k, ref in self._by_key.items() if ref.req_hash == req_hash]
             for key in doomed:
                 del self._by_key[key]
-                self._radix.remove(key)
             return len(doomed)
 
     def clear(self) -> None:
         """Reset the map (test hook / reindex)."""
         with self._lock:
-            self._radix.clear()
             self._by_key.clear()
 
     # ------------------------------------------------------------------ #
@@ -1505,7 +1496,15 @@ class DiskCheckpointIndex:
             # --- phase 1: in-memory resolution (index lock only) ---
             with self._lock:
                 n_entries = len(self._by_key)
-                _matched, key = self._radix.longest_prefix(query)
+                key = None
+                best_len = -1
+                for k in self._by_key:
+                    lk = len(k)
+                    if lk <= best_len or lk > len(query):
+                        continue
+                    if all(k[i] == query[i] for i in range(lk)):
+                        key = k
+                        best_len = lk
                 if key is None:
                     logger.info(
                         "[kv_restore_lookup] MISS reason=radix_no_prefix "
@@ -1637,7 +1636,6 @@ class DiskCheckpointIndex:
         reaches here after a hard gate failed.
         """
         with self._lock:
-            self._radix.remove(key)
             self._by_key.pop(key, None)
 
         if ref is not None:
@@ -1681,7 +1679,6 @@ class DiskCheckpointIndex:
         across disk I/O (there is none here).
         """
         with self._lock:
-            self._radix.remove(key)
             self._by_key.pop(key, None)
 
         logger.info(
@@ -1695,7 +1692,7 @@ class DiskCheckpointIndex:
         with self._lock:
             return {
                 "content_index_entries": len(self._by_key),
-                "content_index_nodes": self._radix.stats().get("node_count", 0),
+                "content_index_nodes": 0,
             }
 
 

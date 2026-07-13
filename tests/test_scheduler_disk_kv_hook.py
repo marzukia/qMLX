@@ -83,6 +83,11 @@ def _make_scheduler(interval: int = 256) -> Scheduler:
     cfg = SchedulerConfig()
     cfg.kv_disk_checkpoint_interval = interval
     cfg.kv_cache_dtype = "bf16"
+    # SSD-first PR3 (#16) flipped kv_disk_restore_enabled to True by default,
+    # which gates OFF the interval write hook (its tokens-less bodies pollute
+    # restore). These fixtures exercise the write hook, so default it off;
+    # the restore-gating tests set it True explicitly.
+    cfg.kv_disk_restore_enabled = False
     # Disable prefix-cache machinery so __init__ stays cheap and we
     # don't need a real model.
     cfg.enable_prefix_cache = False
@@ -338,7 +343,7 @@ def test_multistep_boundary_survives_interval_flood(isolated_root: Path) -> None
     # Deposit the boundary checkpoint via the real store mirror (matchable:
     # carries tokens_key == prompt, so it is indexed + restorable).
     prompt = list(range(1000, 1000 + 256))
-    sched._disk_persist_mirror(prompt, _seed_kv_cache(num_tokens=256))
+    sched._disk_persist_boundary(prompt, _seed_kv_cache(num_tokens=256))
 
     tok_blobs = list(isolated_root.rglob("*.tokens.bin"))
     assert len(tok_blobs) == 1, f"mirror did not deposit boundary blob: {tok_blobs}"
@@ -401,11 +406,15 @@ def test_interval_hook_skipped_when_restore_enabled(isolated_root: Path) -> None
 
 
 def test_interval_hook_still_writes_when_restore_disabled(isolated_root: Path) -> None:
-    """Control for the gate: with restore DISABLED (the default), the interval
+    """Control for the gate: with restore explicitly DISABLED, the interval
     hook still writes at the boundary — the gate must key off the restore
     flag only, not disable the hook wholesale.
+
+    Note: SSD-first PR3 (#16) flipped ``kv_disk_restore_enabled`` to True by
+    default, so this control sets it False explicitly.
     """
     sched = _make_scheduler(interval=256)
+    sched.config.kv_disk_restore_enabled = False
     assert sched.config.kv_disk_restore_enabled is False
     req = _make_request(num_tokens=512)
     _attach_stub_batch_generator(sched, req)
@@ -413,3 +422,36 @@ def test_interval_hook_still_writes_when_restore_disabled(isolated_root: Path) -
     sched._maybe_disk_checkpoint(req, response=SimpleNamespace())
 
     assert _dkc.get_stats()["writes"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 7) Disk write path survives the in-memory prefix-cache deletion (PR3, #16)
+# ---------------------------------------------------------------------------
+
+
+def test_disk_persist_survives_ram_cache_deletion(isolated_root: Path) -> None:
+    """Guard for SSD-first PR3 (#16): the four disk-persist store sites were
+    previously gated on ``self.memory_aware_cache is not None``. Deleting the
+    RAM prefix cache without re-gating on the disk predicate would silently
+    stop ALL disk writes.
+
+    Drive ``_disk_persist_boundary`` directly (the store-site body kept after
+    the RAM ``.store()`` calls were dropped) with a >=256-token cache and
+    assert (a) a checkpoint safetensors lands under ``get_default_root()`` and
+    (b) a second identical lookup resolves to it as a true-prefix restore hit.
+    """
+    _dkc.reset_content_index_for_tests()
+    sched = _make_scheduler(interval=256)
+    sched.config.kv_disk_restore_enabled = True
+    # Disk-only tier is default now; there is no memory_aware_cache attribute.
+    assert not hasattr(sched, "memory_aware_cache")
+
+    prompt = list(range(2000, 2000 + 256))
+    sched._disk_persist_boundary(prompt, _seed_kv_cache(num_tokens=256))
+
+    bodies = list(isolated_root.rglob("*.safetensors"))
+    assert bodies, f"disk write path produced no checkpoint under {isolated_root}"
+
+    loaded = _dkc.get_content_index().lookup(prompt)
+    assert loaded is not None
+    assert loaded.token_offset == len(prompt)
