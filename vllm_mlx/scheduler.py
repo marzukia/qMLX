@@ -2473,9 +2473,6 @@ class Scheduler:
                     config=cache_config,
                     radix_index=radix_idx,
                 )
-                # Persistent-tier mirror: every in-memory store also lands on
-                # disk (throttled), so disk restore covers what memory covers.
-                self.memory_aware_cache._disk_persist_cb = self._disk_persist_mirror
                 logger.info(
                     f"Memory-aware cache enabled: "
                     f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB, "
@@ -3039,6 +3036,7 @@ class Scheduler:
             # evict_prefixes=False: keep mid-prefill boundary entries so
             # that future requests with the same prefix but different
             # suffix get a prefix cache hit (critical for agentic multi-turn).
+            self._disk_persist_boundary(prompt_tokens, extracted_cache)
             stored = self.memory_aware_cache.store(
                 prompt_tokens, extracted_cache, evict_prefixes=False
             )
@@ -3219,6 +3217,7 @@ class Scheduler:
                 # evict_prefixes=False matches the prompt-cache save
                 # path — keep boundary entries so later turns with the
                 # same prefix but different suffix still hit.
+                self._disk_persist_boundary(prefix_tokens, reconstructed)
                 stored = self.memory_aware_cache.store(
                     prefix_tokens, reconstructed, evict_prefixes=False
                 )
@@ -3296,6 +3295,7 @@ class Scheduler:
                 self.memory_aware_cache.remove(list(old_key))
 
             _t0 = _time.monotonic()
+            self._disk_persist_boundary(prefix_tokens, reconstructed)
             stored = self.memory_aware_cache.store(prefix_tokens, reconstructed)
             _dt = _time.monotonic() - _t0
 
@@ -5272,20 +5272,17 @@ class Scheduler:
         return self._disk_persist_boundary(tokens, cache)
 
     def _disk_persist_boundary(self, tokens, cache) -> None:
-        """Persist an in-memory prefix-cache store to disk, synchronously.
+        """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
-        Wired into MemoryAwarePrefixCache.store so disk coverage tracks memory
-        coverage (whole-snapshot writes keyed on the exact tokens; never trim,
-        hybrid recurrent layers can't rewind, issue #163). The write is
-        synchronous: store() fires at the prompt/message boundary, and only at
-        that instant does the cache state exactly match ``tokens``, so
-        serializing here captures the correct snapshot. Deferring it to a
-        background thread raced the advancing cache and captured offset+1, and a
-        cheap frozen snapshot of an mlx cache isn't available (deepcopy fails,
-        shallow-copy aliases the in-place-mutated buffers). The cost is that a
-        deep prompt's multi-GB save runs inline on the boundary callback; an
-        off-thread frozen-snapshot writer is the perf follow-up, correctness
-        first. Never raises into the store hot path.
+        Called directly from the scheduler store sites (prompt / message
+        boundary / mid-prefill / completion). Reproduces the disk half of
+        ``MemoryAwarePrefixCache.store()``: hybrid recurrent-state entries are
+        written RAW (never trimmed, #1025/#1058/#163); trimmable entries are
+        trimmed then quantized to the on-disk footprint restore expects. A
+        checkpoint that already exists for this ``(req_hash, offset)`` is not
+        re-serialized, which reproduces store()'s exact-match skip without the
+        in-memory cache (the writer is atomic, so an existing file is complete).
+        Never raises into the caller.
         """
         try:
             interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
@@ -5294,24 +5291,60 @@ class Scheduler:
             if len(tokens) < 256:
                 # Cold-prefilling <256 tokens is instant; not worth a write.
                 return
-            # SYNCHRONOUS write. This runs from store() which fires at the
-            # prompt/message boundary — at that instant the cache state exactly
-            # matches ``tokens``, so serializing here captures the correct
-            # snapshot (no async cache-advance race, which corrupted the
-            # offset when the write was deferred). Perf: for deep prompts this
-            # is a multi-GB save; an off-thread FROZEN-snapshot writer is the
-            # optimization follow-up, but correctness first.
             import array as _arr
             import hashlib as _hl
 
+            from .memory_cache import (
+                _cache_has_non_trimmable,
+                _quantize_cache,
+                _trim_to_offset,
+                _turboquant_compress_cache,
+            )
             from .runtime import disk_kv_checkpoint as _dkc
 
             mname = getattr(self, "_model_name", None)
+            root = _dkc.get_default_root()
             raw = _arr.array("i", (int(t) for t in tokens)).tobytes()
             req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
+
+            # Dedup: reproduce store()'s exact-match skip without the RAM cache.
+            # The writer is atomic (temp + fsync + rename), so a present file is
+            # always complete; re-serializing would just repeat a multi-GB write
+            # on the hot repeat-prompt path.
+            if os.path.exists(_dkc.checkpoint_path(root, req_hash, len(tokens))):
+                return
+
+            # Hybrid recurrent-state caches are written RAW. Trimming a
+            # non-trimmable layer is the #1025/#1058/#163 bug. Trimmable caches
+            # are trimmed then quantized to the footprint restore expects
+            # (dtype + size checks on the restore path assume this).
+            if _cache_has_non_trimmable(cache):
+                write_cache = cache
+            else:
+                write_cache = _trim_to_offset(cache)
+                if (
+                    self.config.kv_cache_turboquant
+                    and len(tokens) >= self.config.kv_cache_min_quantize_tokens
+                ):
+                    write_cache = _turboquant_compress_cache(
+                        write_cache,
+                        self.config.kv_cache_turboquant_bits,
+                        self.config.kv_cache_turboquant_group_size,
+                        self.config.kv_cache_turboquant_mode,
+                    )
+                elif (
+                    self.config.kv_cache_quantization
+                    and len(tokens) >= self.config.kv_cache_min_quantize_tokens
+                ):
+                    write_cache = _quantize_cache(
+                        write_cache,
+                        self.config.kv_cache_quantization_bits,
+                        self.config.kv_cache_quantization_group_size,
+                    )
+
             _dkc.write_checkpoint(
-                cache,
-                root=_dkc.get_default_root(),
+                write_cache,
+                root=root,
                 req_hash=req_hash,
                 token_offset=len(tokens),
                 kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
@@ -5322,8 +5355,8 @@ class Scheduler:
                     "save_uuid": uuid.uuid4().hex,
                 },
             )
-        except Exception as _e:  # pragma: no cover — mirror is best-effort
-            logger.debug("[disk_persist] write failed: %s", _e)
+        except Exception as _e:  # pragma: no cover — boundary write is best-effort
+            logger.debug("[disk_persist] boundary write failed: %s", _e)
 
     def _maybe_disk_restore(self, request: Request, *, pflash_compressed: bool) -> None:
         """Restore a request's KV prefix from a disk checkpoint on a miss.
@@ -5935,6 +5968,9 @@ class Scheduler:
                             import time as _time
 
                             _store_t0 = _time.monotonic()
+                            self._disk_persist_boundary(
+                                full_token_sequence, request._extracted_cache
+                            )
                             stored = self.memory_aware_cache.store(
                                 full_token_sequence,
                                 request._extracted_cache,
