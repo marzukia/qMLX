@@ -229,7 +229,7 @@
 <section class="stats-band">
   <div class="section-inner">
     <h2 class="section-title">The cache is the whole game.</h2>
-    <p class="section-sub">Qwen3.5-122B is hybrid: roughly 75% of its layers are recurrent DeltaNet, which cannot be rewound, so the standard in-memory prefix cache misses 100% of the time. Disk KV restore is not a fallback here, it is the entire cache.</p>
+    <p class="section-sub">Qwen3.5-122B is hybrid: roughly 75% of its layers are recurrent DeltaNet, which cannot be rewound, so an in-memory prefix cache can never reuse them. qMLX drops the in-memory tier entirely and checkpoints the KV to SSD instead. Disk KV restore is not a fallback here, it is the only cache.</p>
     <div class="stats-grid">
       <div class="stat">
         <span class="stat-num">137&times;</span>
@@ -240,8 +240,8 @@
         <span class="stat-label">time to first token on that prompt, cold against warm</span>
       </div>
       <div class="stat">
-        <span class="stat-num">0 / 109</span>
-        <span class="stat-label">in-memory hits against disk hits in a normal window, which is why disk carries it</span>
+        <span class="stat-num">0</span>
+        <span class="stat-label">in-memory hits this hybrid arch could ever land, so that tier is gone. Disk carries 100% of reuse.</span>
       </div>
     </div>
   </div>
