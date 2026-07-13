@@ -256,9 +256,7 @@
 <pre><span class="cmd">qmlx serve</span> mlx-community/Qwen3.5-122B-A10B-4bit \
   <span class="flag">--text-only</span> --host 0.0.0.0 --port 8095 \
   --max-num-seqs 1 \
-  <span class="flag">--enable-prefix-cache</span> --prefix-cache-index radix \
-  <span class="flag">--enable-disk-kv-restore</span> \
-  --kv-disk-checkpoint-interval 256
+  <span class="flag">--enable-prefix-cache</span> --kv-disk-checkpoint-interval 256
 
 <span class="cmt"># next turn on a 130k conversation:</span>
 <span class="cmt"># sub-second restore instead of a cold prefill</span></pre>
