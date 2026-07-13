@@ -42,7 +42,6 @@ from ._sampler_fast_path import (  # noqa: E402
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .honest_metrics import HonestMetrics  # noqa: E402
-from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
@@ -141,18 +140,7 @@ class SchedulerConfig:
     enable_prefix_cache: bool = True
     prefix_cache_size: int = 100  # Max cached entries (legacy, ignored if memory-aware)
 
-    # R15-P1 (task #303): radix-tree prefix-cache index. ``"radix"`` (the
-    # default) wraps the memory-aware cache in a token trie that gives
-    # O(prefix_len) lookups and accounts for cross-request prefix dedup
-    # (the headline win on shared-system-prompt multi-tenant workloads:
-    # Cursor / Claude-Code-style backends). ``"hash"`` falls back to the
-    # legacy bisect-over-sorted-keys path — kept as an escape hatch in
-    # case a regression is found in production. Has no effect unless
-    # ``use_memory_aware_cache`` is True.
-    prefix_cache_index: str = "radix"
-
     # Memory-aware cache settings (recommended for large models)
-    use_memory_aware_cache: bool = True  # Use memory-based eviction
     cache_memory_mb: int | None = None  # None = auto-detect (20% of available RAM)
     cache_memory_percent: float = 0.20  # Fraction of available RAM if auto-detecting
 
@@ -193,7 +181,7 @@ class SchedulerConfig:
     # SchedulerConfig is enough — see
     # :mod:`vllm_mlx.runtime.disk_kv_checkpoint`.
     kv_disk_checkpoint_interval: int = 256
-    kv_disk_restore_enabled: bool = False
+    kv_disk_restore_enabled: bool = True
 
     # Paged cache settings (experimental - for memory efficiency)
     use_paged_cache: bool = (
@@ -2419,7 +2407,6 @@ class Scheduler:
 
         # Prefix cache for KV state reuse
         self.prefix_cache: PrefixCacheManager | None = None
-        self.memory_aware_cache: MemoryAwarePrefixCache | None = None
         self.paged_cache_manager: PagedCacheManager | None = None
         self.block_aware_cache: BlockAwarePrefixCache | None = None
 
@@ -2437,49 +2424,6 @@ class Scheduler:
                 logger.info(
                     f"Paged cache enabled: block_size={self.config.paged_cache_block_size}, "
                     f"max_blocks={self.config.max_cache_blocks}"
-                )
-            elif self.config.use_memory_aware_cache:
-                # Use memory-aware cache (recommended for large models)
-                cache_config = MemoryCacheConfig(
-                    max_memory_mb=self.config.cache_memory_mb,
-                    max_memory_percent=self.config.cache_memory_percent,
-                    kv_quantize=self.config.kv_cache_quantization,
-                    kv_bits=self.config.kv_cache_quantization_bits,
-                    kv_group_size=self.config.kv_cache_quantization_group_size,
-                    kv_min_quantize_tokens=self.config.kv_cache_min_quantize_tokens,
-                    kv_turboquant=self.config.kv_cache_turboquant,
-                    kv_turboquant_bits=self.config.kv_cache_turboquant_bits,
-                    kv_turboquant_group_size=self.config.kv_cache_turboquant_group_size,
-                    kv_turboquant_mode=self.config.kv_cache_turboquant_mode,
-                )
-                # R15-P1 (task #303): radix-tree prefix-cache index.
-                # Constructed when ``prefix_cache_index == "radix"`` and
-                # threaded into the memory-aware cache so store/fetch
-                # stay coherent. ``"hash"`` skips construction entirely.
-                radix_idx = None
-                if self.config.prefix_cache_index == "radix":
-                    try:
-                        from .runtime.radix_index import RadixPrefixIndex
-
-                        radix_idx = RadixPrefixIndex()
-                    except Exception as exc:  # pragma: no cover — defensive
-                        logger.warning(
-                            f"[radix] failed to construct RadixPrefixIndex: {exc}; "
-                            "falling back to hash index"
-                        )
-                        radix_idx = None
-                self.memory_aware_cache = MemoryAwarePrefixCache(
-                    model=model,
-                    config=cache_config,
-                    radix_index=radix_idx,
-                )
-                # Persistent-tier mirror: every in-memory store also lands on
-                # disk (throttled), so disk restore covers what memory covers.
-                self.memory_aware_cache._disk_persist_cb = self._disk_persist_mirror
-                logger.info(
-                    f"Memory-aware cache enabled: "
-                    f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB, "
-                    f"index={'radix' if radix_idx is not None else 'hash'}"
                 )
             else:
                 # Use legacy entry-count based prefix cache
@@ -2615,12 +2559,12 @@ class Scheduler:
         self._kv_bytes_per_token_resolved: bool = False
 
         # Prompt-boundary cache snapshot callback for the new mlx-lm 0.31+ API.
-        # Built lazily once memory_aware_cache exists and reused per step.
+        # Built lazily when disk checkpointing is enabled and reused per step.
         # Without this hook, hybrid models can't satisfy repeated identical
         # prompts via supersequence fallback (issue #163).
         self._prompt_cache_save_cb = (
             self._make_prompt_cache_save_callback()
-            if self.memory_aware_cache is not None
+            if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
             else None
         )
 
@@ -2898,7 +2842,10 @@ class Scheduler:
         # Our _install_chunked_prefill monkey-patches the old Batch API which was
         # removed in 0.31+. Skip the monkey-patch if the old API is unavailable.
         chunked_budget = self.config.chunked_prefill_tokens
-        need_chunked = chunked_budget > 0 or self.memory_aware_cache is not None
+        need_chunked = (
+            chunked_budget > 0
+            or (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
+        )
         _has_old_batch_api = hasattr(bg, "_process_prompts")
         if need_chunked and _has_old_batch_api:
             if chunked_budget <= 0:
@@ -2908,11 +2855,14 @@ class Scheduler:
                 chunked_budget = 999_999
             mid_prefill_cb = None
             save_interval = self.config.mid_prefill_save_interval
-            if save_interval > 0 and self.memory_aware_cache is not None:
+            if (
+                save_interval > 0
+                and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
+            ):
                 mid_prefill_cb = self._make_mid_prefill_save_callback(save_interval)
                 logger.info(f"[mid_prefill_cache] enabled, interval={save_interval}")
             prompt_cache_cb = None
-            if self.memory_aware_cache is not None:
+            if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0:
                 prompt_cache_cb = self._make_prompt_cache_save_callback()
             _install_chunked_prefill(
                 bg,
@@ -3036,19 +2986,13 @@ class Scheduler:
 
             prompt_tokens = list(request.prompt_token_ids)
             _t0 = _time.monotonic()
-            # evict_prefixes=False: keep mid-prefill boundary entries so
-            # that future requests with the same prefix but different
-            # suffix get a prefix cache hit (critical for agentic multi-turn).
-            stored = self.memory_aware_cache.store(
-                prompt_tokens, extracted_cache, evict_prefixes=False
-            )
+            self._disk_persist_boundary(prompt_tokens, extracted_cache)
             _dt = _time.monotonic() - _t0
-            if stored:
-                logger.info(
-                    f"[prompt_cache_save] request={request_id[:12]} "
-                    f"prompt_tokens={len(prompt_tokens)} "
-                    f"store_time={_dt:.3f}s"
-                )
+            logger.info(
+                f"[prompt_cache_save] request={request_id[:12]} "
+                f"prompt_tokens={len(prompt_tokens)} "
+                f"store_time={_dt:.3f}s"
+            )
 
         return _prompt_cache_save
 
@@ -3130,7 +3074,9 @@ class Scheduler:
         infrastructure is still present for clients that downgrade to
         the legacy API; this new path coexists rather than replaces it.
         """
-        if self.memory_aware_cache is None or not prompt_responses:
+        if (
+            getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
+        ) <= 0 or not prompt_responses:
             return
 
         boundary_uids: list[int] = []
@@ -3216,12 +3162,8 @@ class Scheduler:
             _t0 = _time.monotonic()
             stored = False
             try:
-                # evict_prefixes=False matches the prompt-cache save
-                # path — keep boundary entries so later turns with the
-                # same prefix but different suffix still hit.
-                stored = self.memory_aware_cache.store(
-                    prefix_tokens, reconstructed, evict_prefixes=False
-                )
+                self._disk_persist_boundary(prefix_tokens, reconstructed)
+                stored = True
             except Exception as exc:
                 logger.debug(
                     "[boundary_snapshot] store failed for uid=%s: %s", uid, exc
@@ -3230,9 +3172,8 @@ class Scheduler:
             # Mark the guard after the attempt (success OR failure) so a
             # repeated end_of_segment doesn't redo the expensive
             # extract+reconstruct cycle. A failed store usually means
-            # the entry already exists (returns False) or the cache is
-            # busy — retrying every step would be pure waste. DeepSeek
-            # finding #2 on PR #435.
+            # the cache is busy — retrying every step would be pure waste.
+            # DeepSeek finding #2 on PR #435.
             request._boundary_snapshot_taken = True
 
             if stored:
@@ -3290,29 +3231,19 @@ class Scheduler:
 
             prefix_tokens = list(request.prompt_token_ids[:total_cached])
 
-            # Remove previous intermediate entry to avoid memory waste
-            old_key = getattr(request, "_mid_prefill_cache_key", None)
-            if old_key is not None:
-                self.memory_aware_cache.remove(list(old_key))
-
             _t0 = _time.monotonic()
-            stored = self.memory_aware_cache.store(prefix_tokens, reconstructed)
+            self._disk_persist_boundary(prefix_tokens, reconstructed)
             _dt = _time.monotonic() - _t0
 
-            if stored:
-                request._mid_prefill_last_save = total_cached
-                request._mid_prefill_cache_key = tuple(prefix_tokens)
-                logger.info(
-                    f"[mid_prefill_cache] request={request_id[:12]} "
-                    f"saved {total_cached}/{len(request.prompt_token_ids)} tokens "
-                    f"({total_cached * 100 // len(request.prompt_token_ids)}%) "
-                    f"store_time={_dt:.3f}s"
-                )
-            else:
-                logger.debug(
-                    f"[mid_prefill_cache] request={request_id[:12]} "
-                    f"store rejected for {total_cached} tokens"
-                )
+            # Throttle key: advance unconditionally after the disk save so
+            # the interval gate above measures from the last persisted point.
+            request._mid_prefill_last_save = total_cached
+            logger.info(
+                f"[mid_prefill_cache] request={request_id[:12]} "
+                f"saved {total_cached}/{len(request.prompt_token_ids)} tokens "
+                f"({total_cached * 100 // len(request.prompt_token_ids)}%) "
+                f"store_time={_dt:.3f}s"
+            )
 
         return _mid_prefill_save
 
@@ -3389,9 +3320,7 @@ class Scheduler:
             # server runs a single model, the cache is always valid.
             if self.batch_generator is not None:
                 n_entries = 0
-                if self.memory_aware_cache is not None:
-                    n_entries = len(self.memory_aware_cache._entries)
-                elif self.prefix_cache is not None:
+                if self.prefix_cache is not None:
                     n_entries = (
                         len(self.prefix_cache)
                         if hasattr(self.prefix_cache, "__len__")
@@ -4032,18 +3961,10 @@ class Scheduler:
         instances missing the ``memory_aware_cache`` attribute (codex
         round-1 NIT on the R6-H6 patch).
         """
-        cache = getattr(self, "memory_aware_cache", None)
-        if cache is None:
-            return 0
-        # ``_max_memory`` is the bytes budget compute_memory_limit()
-        # resolved at cache init (env override > programmatic >
-        # heuristic > 8 GiB fallback). Pull it through a getattr so
-        # this helper is robust against fakes / older cache variants
-        # that don't expose the attribute.
-        max_memory = int(getattr(cache, "_max_memory", 0) or 0)
-        if max_memory <= 0:
-            return 0
-        return int(max_memory * self._resolve_pressure_evict_fraction())
+        # The in-memory prefix cache was removed (disk-only tier), so there is
+        # no self-pressure ledger to threshold against. The Metal-cap path
+        # still drives eviction.
+        return 0
 
     def _cache_self_pressure_current_bytes(self) -> int:
         """Snapshot of memory_aware_cache's current ledger in bytes.
@@ -4057,10 +3978,8 @@ class Scheduler:
         initialised Scheduler must NOT 500 the engine-loop pressure
         tick on attribute lookup.
         """
-        cache = getattr(self, "memory_aware_cache", None)
-        if cache is None:
-            return 0
-        return int(getattr(cache, "_current_memory", 0) or 0)
+        # In-memory prefix cache removed (disk-only tier); no ledger to report.
+        return 0
 
     def evict_prefix_cache_under_pressure(self, max_evict: int = 64) -> int:
         """LRU-evict prefix-cache entries while memory pressure persists.
@@ -4196,8 +4115,6 @@ class Scheduler:
 
         The three cache variants share an LRU policy but their
         internal data structures differ:
-        - ``memory_aware_cache``: OrderedDict-based, exposes
-          ``_evict_lru`` under its own lock.
         - ``prefix_cache``: trie + OrderedDict LRU.
         - ``block_aware_cache``: paged block table; out of scope for
           the pressure trigger (blocks are released by
@@ -4215,12 +4132,6 @@ class Scheduler:
         Exception as evict_exc:`` block surfaces the underlying
         failure on the first occurrence per process.
         """
-        if self.memory_aware_cache is not None:
-            with self.memory_aware_cache._lock:  # noqa: SLF001 — coordinated eviction
-                if not self.memory_aware_cache._entries:  # noqa: SLF001
-                    return False
-                self.memory_aware_cache._evict_lru()  # noqa: SLF001
-            return True
         if self.prefix_cache is not None:
             if not getattr(self.prefix_cache, "_lru", None):
                 return False
@@ -4388,39 +4299,6 @@ class Scheduler:
             else:
                 request.cache_hit_type = "miss"
                 request.remaining_tokens = request.prompt_token_ids
-        elif self.memory_aware_cache is not None:
-            # Use memory-aware prefix cache
-            import time as _time
-
-            _fetch_t0 = _time.monotonic()
-            cache, remaining = self.memory_aware_cache.fetch(request.prompt_token_ids)
-            _fetch_dt = _time.monotonic() - _fetch_t0
-            request.cache_hit_type = self.memory_aware_cache._last_match_type
-            # Issue #2: record the in-memory prefix-cache match-type
-            # distribution off the authoritative ``_last_match_type`` here,
-            # BEFORE a subsequent disk restore can overwrite
-            # ``cache_hit_type`` to "disk" (which would lose the fact that
-            # the in-memory cache missed on this prompt).
-            self.honest_metrics.record_prefix_match(
-                self.memory_aware_cache._last_match_type
-            )
-            if cache:
-                request.prompt_cache = cache
-                request.cached_tokens = len(request.prompt_token_ids) - len(remaining)
-                request.remaining_tokens = remaining
-                logger.info(
-                    f"[cache_fetch] request={request.request_id[:12]} HIT "
-                    f"prompt_tokens={len(request.prompt_token_ids)} "
-                    f"cached={request.cached_tokens} remaining={len(remaining)} "
-                    f"time={_fetch_dt:.3f}s"
-                )
-            else:
-                request.remaining_tokens = request.prompt_token_ids
-                logger.info(
-                    f"[cache_fetch] request={request.request_id[:12]} MISS "
-                    f"prompt_tokens={len(request.prompt_token_ids)} "
-                    f"time={_fetch_dt:.3f}s entries={len(self.memory_aware_cache._entries)}"
-                )
         elif self.prefix_cache is not None:
             # Use legacy prefix cache
             cache, remaining = self.prefix_cache.fetch_cache(request.prompt_token_ids)
@@ -4883,7 +4761,7 @@ class Scheduler:
             # otherwise there's nothing new to capture at the boundary.
             boundary_local_split: int | None = None
             if (
-                self.memory_aware_cache is not None
+                (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
                 and getattr(request, "prefix_boundary", 0) > 0
                 and len(tokens_to_process) > 1
             ):
@@ -4929,7 +4807,8 @@ class Scheduler:
                     # Recompute split against the now-full prompt
                     # (cached_tokens=0 so boundary == split).
                     if (
-                        self.memory_aware_cache is not None
+                        (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0)
+                        > 0
                         and getattr(request, "prefix_boundary", 0) > 0
                         and 0 < request.prefix_boundary < len(tokens_to_process)
                     ):
@@ -5264,28 +5143,18 @@ class Scheduler:
 
         return outputs, finished_ids
 
-    def _disk_persist_mirror(self, tokens, cache) -> None:
-        """Delegating shim kept for the ``MemoryAwarePrefixCache._disk_persist_cb``
-        binding and for tests that reference this name. The write logic lives in
-        :meth:`_disk_persist_boundary`.
-        """
-        return self._disk_persist_boundary(tokens, cache)
-
     def _disk_persist_boundary(self, tokens, cache) -> None:
-        """Persist an in-memory prefix-cache store to disk, synchronously.
+        """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
-        Wired into MemoryAwarePrefixCache.store so disk coverage tracks memory
-        coverage (whole-snapshot writes keyed on the exact tokens; never trim,
-        hybrid recurrent layers can't rewind, issue #163). The write is
-        synchronous: store() fires at the prompt/message boundary, and only at
-        that instant does the cache state exactly match ``tokens``, so
-        serializing here captures the correct snapshot. Deferring it to a
-        background thread raced the advancing cache and captured offset+1, and a
-        cheap frozen snapshot of an mlx cache isn't available (deepcopy fails,
-        shallow-copy aliases the in-place-mutated buffers). The cost is that a
-        deep prompt's multi-GB save runs inline on the boundary callback; an
-        off-thread frozen-snapshot writer is the perf follow-up, correctness
-        first. Never raises into the store hot path.
+        Called directly from the scheduler store sites (prompt / message
+        boundary / mid-prefill / completion). Reproduces the disk half of
+        ``MemoryAwarePrefixCache.store()``: hybrid recurrent-state entries are
+        written RAW (never trimmed, #1025/#1058/#163); trimmable entries are
+        trimmed then quantized to the on-disk footprint restore expects. A
+        checkpoint that already exists for this ``(req_hash, offset)`` is not
+        re-serialized, which reproduces store()'s exact-match skip without the
+        in-memory cache (the writer is atomic, so an existing file is complete).
+        Never raises into the caller.
         """
         try:
             interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
@@ -5294,24 +5163,60 @@ class Scheduler:
             if len(tokens) < 256:
                 # Cold-prefilling <256 tokens is instant; not worth a write.
                 return
-            # SYNCHRONOUS write. This runs from store() which fires at the
-            # prompt/message boundary — at that instant the cache state exactly
-            # matches ``tokens``, so serializing here captures the correct
-            # snapshot (no async cache-advance race, which corrupted the
-            # offset when the write was deferred). Perf: for deep prompts this
-            # is a multi-GB save; an off-thread FROZEN-snapshot writer is the
-            # optimization follow-up, but correctness first.
             import array as _arr
             import hashlib as _hl
 
+            from .memory_cache import (
+                _cache_has_non_trimmable,
+                _quantize_cache,
+                _trim_to_offset,
+                _turboquant_compress_cache,
+            )
             from .runtime import disk_kv_checkpoint as _dkc
 
             mname = getattr(self, "_model_name", None)
+            root = _dkc.get_default_root()
             raw = _arr.array("i", (int(t) for t in tokens)).tobytes()
             req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
+
+            # Dedup: reproduce store()'s exact-match skip without the RAM cache.
+            # The writer is atomic (temp + fsync + rename), so a present file is
+            # always complete; re-serializing would just repeat a multi-GB write
+            # on the hot repeat-prompt path.
+            if os.path.exists(_dkc.checkpoint_path(root, req_hash, len(tokens))):
+                return
+
+            # Hybrid recurrent-state caches are written RAW. Trimming a
+            # non-trimmable layer is the #1025/#1058/#163 bug. Trimmable caches
+            # are trimmed then quantized to the footprint restore expects
+            # (dtype + size checks on the restore path assume this).
+            if _cache_has_non_trimmable(cache):
+                write_cache = cache
+            else:
+                write_cache = _trim_to_offset(cache)
+                if (
+                    self.config.kv_cache_turboquant
+                    and len(tokens) >= self.config.kv_cache_min_quantize_tokens
+                ):
+                    write_cache = _turboquant_compress_cache(
+                        write_cache,
+                        self.config.kv_cache_turboquant_bits,
+                        self.config.kv_cache_turboquant_group_size,
+                        self.config.kv_cache_turboquant_mode,
+                    )
+                elif (
+                    self.config.kv_cache_quantization
+                    and len(tokens) >= self.config.kv_cache_min_quantize_tokens
+                ):
+                    write_cache = _quantize_cache(
+                        write_cache,
+                        self.config.kv_cache_quantization_bits,
+                        self.config.kv_cache_quantization_group_size,
+                    )
+
             _dkc.write_checkpoint(
-                cache,
-                root=_dkc.get_default_root(),
+                write_cache,
+                root=root,
                 req_hash=req_hash,
                 token_offset=len(tokens),
                 kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
@@ -5322,8 +5227,8 @@ class Scheduler:
                     "save_uuid": uuid.uuid4().hex,
                 },
             )
-        except Exception as _e:  # pragma: no cover — mirror is best-effort
-            logger.debug("[disk_persist] write failed: %s", _e)
+        except Exception as _e:  # pragma: no cover — boundary write is best-effort
+            logger.debug("[disk_persist] boundary write failed: %s", _e)
 
     def _maybe_disk_restore(self, request: Request, *, pflash_compressed: bool) -> None:
         """Restore a request's KV prefix from a disk checkpoint on a miss.
@@ -5772,8 +5677,8 @@ class Scheduler:
         # via the content index). But they DO burn the disk cap and, before
         # this fix, evicted the received-prompt boundary checkpoints the next
         # turn needs, cold-filling the cache on every multi-step turn. The
-        # store mirror (``_disk_persist_mirror``, keyed on prompt_token_ids)
-        # already deposits the matchable boundary checkpoint the restore path
+        # store-site boundary write (``_disk_persist_boundary``, keyed on
+        # prompt_token_ids) already deposits the matchable boundary checkpoint the restore path
         # uses, so gating the interval hook off loses nothing restore relies
         # on. The only capability it forfeits is crash-resume of an in-flight
         # generation, which nothing reads (grep: no loader consumes interval
@@ -5888,6 +5793,39 @@ class Scheduler:
                 and request.prompt_token_ids
                 and not pflash_skip_store
             ):
+                # Disk checkpoint tier: persist independently of the legacy RAM
+                # caches (block-aware / prefix). SSD-first PR3 (#16) makes disk
+                # its own always-on tier gated on the checkpoint interval, so it
+                # does not displace whichever legacy cache (if any) is active.
+                if (
+                    (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
+                    and hasattr(request, "_extracted_cache")
+                    and request._extracted_cache is not None
+                ):
+                    try:
+                        full_token_sequence = list(request.prompt_token_ids) + list(
+                            request.output_token_ids
+                        )
+                        import time as _time
+
+                        _store_t0 = _time.monotonic()
+                        self._disk_persist_boundary(
+                            full_token_sequence, request._extracted_cache
+                        )
+                        _store_dt = _time.monotonic() - _store_t0
+
+                        logger.info(
+                            f"[cache_store] request={request_id[:12]} "
+                            f"tokens={len(full_token_sequence)} "
+                            f"({len(request.prompt_token_ids)} prompt + {len(request.output_token_ids)} output) "
+                            f"time={_store_dt:.3f}s"
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"Failed to persist disk cache for {request_id}: {e}"
+                        )
+
+                # Legacy RAM cache tiers (mutually exclusive).
                 if self.block_aware_cache is not None:
                     # Store in paged cache
                     # Key includes both prompt and output tokens for multi-turn chat caching
@@ -5915,59 +5853,6 @@ class Scheduler:
                     # NOTE: Do NOT call release_cache here - blocks should persist
                     # for future requests to share. The LRU eviction will clean up
                     # unused blocks when under memory pressure.
-
-                elif self.memory_aware_cache is not None:
-                    # Keep mid-prefill entry as prefix cache for future
-                    # requests that share a common prefix (e.g. same system
-                    # prompt + tools but different user message).  LRU
-                    # eviction handles memory pressure.
-
-                    # Store in memory-aware prefix cache
-                    # Key includes both prompt and output tokens for multi-turn chat caching
-                    if (
-                        hasattr(request, "_extracted_cache")
-                        and request._extracted_cache is not None
-                    ):
-                        try:
-                            full_token_sequence = list(request.prompt_token_ids) + list(
-                                request.output_token_ids
-                            )
-                            import time as _time
-
-                            _store_t0 = _time.monotonic()
-                            stored = self.memory_aware_cache.store(
-                                full_token_sequence,
-                                request._extracted_cache,
-                                evict_prefixes=False,
-                            )
-                            _store_dt = _time.monotonic() - _store_t0
-                            # NOTE: We intentionally do NOT store a prompt-only
-                            # cache entry.  Hybrid Mamba+Transformer models
-                            # (like Qwen3-Coder-Next) have MambaCache layers
-                            # whose state is cumulative and cannot be trimmed
-                            # back to "prompt only".  Reusing such state causes
-                            # the model to immediately produce EOS.
-                            # The full prompt+output entry is stored above; a
-                            # future request with the same prompt will hit the
-                            # supersequence match path in the fetch, which is
-                            # now disabled for safety (see memory_cache.py).
-
-                            logger.info(
-                                f"[cache_store] request={request_id[:12]} "
-                                f"tokens={len(full_token_sequence)} "
-                                f"({len(request.prompt_token_ids)} prompt + {len(request.output_token_ids)} output) "
-                                f"stored={stored} time={_store_dt:.3f}s "
-                                f"cache_entries={len(self.memory_aware_cache._entries)} "
-                                f"cache_mem={self.memory_aware_cache._current_memory / 1e6:.0f}MB"
-                            )
-                            # Release the original FP16 cache reference so
-                            # memory can be reclaimed (the quantized copy
-                            # lives inside the prefix cache now).
-                            request._extracted_cache = None
-                        except Exception as e:
-                            logger.debug(
-                                f"Failed to store memory-aware cache for {request_id}: {e}"
-                            )
 
                 elif self.prefix_cache is not None:
                     # Store in legacy prefix cache
@@ -6050,8 +5935,6 @@ class Scheduler:
         # Clear caches
         if self.block_aware_cache is not None:
             self.block_aware_cache.clear()
-        if self.memory_aware_cache is not None:
-            self.memory_aware_cache.clear()
         if self.prefix_cache is not None:
             self.prefix_cache.clear()
 
@@ -6489,8 +6372,6 @@ class Scheduler:
         # Include cache stats
         if self.block_aware_cache is not None:
             stats["paged_cache"] = self.block_aware_cache.get_stats()
-        elif self.memory_aware_cache is not None:
-            stats["memory_aware_cache"] = self.memory_aware_cache.get_stats()
         elif self.prefix_cache is not None:
             stats["prefix_cache"] = self.prefix_cache.get_stats()
         return stats
@@ -6499,8 +6380,6 @@ class Scheduler:
         """Get cache statistics."""
         if self.block_aware_cache is not None:
             return self.block_aware_cache.get_stats()
-        elif self.memory_aware_cache is not None:
-            return self.memory_aware_cache.get_stats()
         elif self.prefix_cache is not None:
             return self.prefix_cache.get_stats()
         return None
@@ -6561,8 +6440,6 @@ class Scheduler:
         # Clear caches
         if self.block_aware_cache is not None:
             self.block_aware_cache.clear()
-        if self.memory_aware_cache is not None:
-            self.memory_aware_cache.clear()
         if self.prefix_cache is not None:
             self.prefix_cache.clear()
 
@@ -6601,26 +6478,21 @@ class Scheduler:
     # -----------------------------------------------------------------
 
     def save_cache_to_disk(self, cache_dir: str, should_abort=None) -> bool:
-        """Save prefix cache to disk for persistence across restarts.
+        """Persist prefix cache to disk for reuse across restarts.
 
-        ``should_abort`` is an optional ``Callable[[float], bool]``
-        (the ``float`` is the next entry's predicted write duration)
-        that signals the lifespan SIGTERM-grace deadline to the per-
-        entry loop inside ``MemoryAwarePrefixCache.save_to_disk``.
-        Zero-arg callables are accepted via auto-detection for
-        backwards compatibility. See that method's docstring for the
-        partial-commit guarantee.
+        No-op now that the in-memory prefix cache is gone: boundary
+        checkpoints are written to disk continuously via
+        :meth:`_disk_persist_boundary`, so there is no separate RAM
+        ledger to flush on shutdown.
         """
-        if self.memory_aware_cache is not None:
-            return self.memory_aware_cache.save_to_disk(
-                cache_dir, should_abort=should_abort
-            )
-        logger.info("[cache_persist] no memory-aware cache to save")
+        logger.info("[cache_persist] disk-only cache; nothing to flush on save")
         return False
 
     def load_cache_from_disk(self, cache_dir: str) -> int:
-        """Load prefix cache from disk. Returns number of entries loaded."""
-        if self.memory_aware_cache is not None:
-            return self.memory_aware_cache.load_from_disk(cache_dir)
-        logger.info("[cache_persist] no memory-aware cache to load into")
+        """Load prefix cache from disk. Returns number of entries loaded.
+
+        No-op now that the in-memory prefix cache is gone: disk
+        checkpoints are discovered lazily by the restore-on-miss path.
+        """
+        logger.info("[cache_persist] disk-only cache; nothing to preload")
         return 0

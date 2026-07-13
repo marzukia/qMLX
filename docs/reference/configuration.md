@@ -34,7 +34,6 @@
 |--------|-------------|---------|
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
 | `--cache-memory-percent` | Fraction of RAM for cache | `0.20` |
-| `--no-memory-aware-cache` | Use legacy entry-count cache | `false` |
 | `--use-paged-cache` | Enable paged KV cache | `false` |
 | `--paged-cache-block-size` | Tokens per block | `64` |
 | `--max-cache-blocks` | Maximum blocks | `1000` |

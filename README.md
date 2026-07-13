@@ -37,6 +37,17 @@ The result: a follow-up question on a 130,000-token conversation goes from a mul
 - **Honest, phase-split metrics**: real decode tok/s (decode window only), real prefill throughput (excludes cached tokens), disk-restore hit rate, TTFT. No amortised (prompt+gen)/wall throughput lie.
 - **Live divergence logging** that pinpoints the exact token where a prefix-cache match broke, so this class of bug is diagnosable in minutes.
 
+## Design principles
+
+- **Built for the Mac Studio, not portability.** Optimise for Apple Silicon and unified memory. No abstraction tax to keep a CUDA path alive.
+- **Hybrid attention and DeltaNet are first-class.** Recurrent state cannot be trimmed like a KV block, so the cache path branches on it explicitly instead of pretending it is KV-only.
+- **SSD cache streaming is a first-class tier, not a fallback.** Unified memory is scarce. Reusable context lives on NVMe and streams back, rather than being hoarded in RAM.
+- **Specialise for the models you run.** Qwen-first. Breadth is a cost, not a feature.
+- **Honest about the concurrency profile.** Single-user, `--max-num-seqs 1`. A component that earns zero hits gets deleted, not tuned.
+- **Correctness beats cleverness on the cache path.** A wrong restore does not throw, it corrupts. Verify the token blob byte-for-byte, quarantine bad checkpoints, prove changes on real traffic.
+- **Measure on the real box.** Numbers come from an M3 Ultra with real models, not CI that cannot load a 122B.
+- **Lean by default.** Minimal dependencies, no cruft.
+
 ## Status
 
 Alpha. It runs one model (Qwen3.5-122B-A10B) on one class of machine (M3 Ultra, 96GB+ unified). Qwen-first, and honest about what is built and what is not. Decode slows gradually with context because the dense-attention layers re-read a growing KV each token, but there is no cliff: it stays usable well past 100k tokens on this hardware. Windowed attention to flatten that curve further is on the roadmap.
@@ -68,8 +79,7 @@ pip install -e .
 ```sh
 qmlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
   --text-only --host 0.0.0.0 --port 8095 --max-num-seqs 1 \
-  --enable-prefix-cache --prefix-cache-index radix \
-  --enable-disk-kv-restore --kv-disk-checkpoint-interval 256
+  --enable-prefix-cache --kv-disk-checkpoint-interval 256
 ```
 
 Drop-in OpenAI / Anthropic API, same as upstream. `--text-only` is required: the vision path is incompatible with the hybrid continuous-batching that the cache work depends on.

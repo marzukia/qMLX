@@ -2454,10 +2454,7 @@ def serve_command(args):
         completion_batch_size=args.completion_batch_size,
         enable_prefix_cache=enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
-        # R15-P1 (task #303): radix-tree prefix-cache index.
-        prefix_cache_index=getattr(args, "prefix_cache_index", "radix"),
         # Memory-aware cache options
-        use_memory_aware_cache=not args.no_memory_aware_cache,
         cache_memory_mb=args.cache_memory_mb,
         cache_memory_percent=args.cache_memory_percent,
         # Paged cache options
@@ -2518,7 +2515,12 @@ def serve_command(args):
         # hot-path call with ``should_checkpoint`` so the cost when off
         # is one int comparison.
         kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 256),
-        kv_disk_restore_enabled=getattr(args, "enable_disk_kv_restore", False),
+        # SSD-first (#16): restore-on-miss is on by default; --disable-disk-kv-restore
+        # opts out. Mirrors the --enable/--disable-prefix-cache pattern.
+        kv_disk_restore_enabled=(
+            getattr(args, "enable_disk_kv_restore", True)
+            and not getattr(args, "disable_disk_kv_restore", False)
+        ),
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
@@ -2620,14 +2622,8 @@ def serve_command(args):
         print(
             f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}"
         )
-    elif enable_prefix_cache and not args.no_memory_aware_cache:
-        cache_info = (
-            f"{args.cache_memory_mb}MB"
-            if args.cache_memory_mb
-            else f"{args.cache_memory_percent * 100:.0f}% of RAM"
-        )
-        index_choice = getattr(args, "prefix_cache_index", "radix")
-        print(f"Memory-aware cache: {cache_info} (index={index_choice})")
+    elif enable_prefix_cache:
+        print(f"Prefix cache: max_entries={args.prefix_cache_size}")
         if args.kv_cache_turboquant:
             mode = args.kv_cache_turboquant
             if mode == "k8v4":
@@ -2650,8 +2646,6 @@ def serve_command(args):
                 f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
                 f"group_size={args.kv_cache_quantization_group_size}"
             )
-    elif enable_prefix_cache:
-        print(f"Prefix cache: max_entries={args.prefix_cache_size}")
 
     # Check port availability before loading model (avoid wasting RAM on conflict).
     # Set SO_REUSEADDR to match uvicorn's bind behavior — without it, this
@@ -5393,27 +5387,6 @@ Examples:
         default=0.20,
         help="Fraction of available RAM for cache if auto-detecting (default: 0.20)",
     )
-    serve_parser.add_argument(
-        "--no-memory-aware-cache",
-        action="store_true",
-        help="Disable memory-aware cache, use legacy entry-count based cache",
-    )
-    # R15-P1 (task #303): radix-tree prefix-cache index. Default ``radix``
-    # accelerates lookup and accounts for cross-request prefix dedup on
-    # shared-system-prompt workloads. ``hash`` is the legacy bisect path,
-    # kept as an escape hatch if a regression is found in production.
-    serve_parser.add_argument(
-        "--prefix-cache-index",
-        type=str,
-        default="radix",
-        choices=("radix", "hash"),
-        help=(
-            "Prefix-cache lookup index: 'radix' (default, R15-P1) uses a "
-            "token trie for O(prefix_len) lookups and surfaces dedup-bytes-"
-            "saved on /metrics; 'hash' falls back to the legacy bisect-over-"
-            "sorted-keys path."
-        ),
-    )
     # KV cache quantization options
     # ``--kv-cache-dtype`` (R15 task #300) is the canonical knob: int4 is
     # the new default because Apple Silicon decode is memory-bandwidth-
@@ -5544,12 +5517,18 @@ Examples:
     serve_parser.add_argument(
         "--enable-disk-kv-restore",
         action="store_true",
+        default=True,
         help=(
             "Reload a verified KV prefix from disk on a cache miss instead "
-            "of re-prefilling (R15 #303, experimental, default OFF). Requires "
-            "--kv-disk-checkpoint-interval. Byte-verified and dtype/schema/"
-            "memory gated; any mismatch falls back to prefill."
+            "of re-prefilling (R15 #303, default: enabled — SSD-first, #16). "
+            "Requires --kv-disk-checkpoint-interval. Byte-verified and dtype/"
+            "schema/memory gated; any mismatch falls back to prefill."
         ),
+    )
+    serve_parser.add_argument(
+        "--disable-disk-kv-restore",
+        action="store_true",
+        help="Disable disk KV restore-on-miss (opt out of SSD-first reuse).",
     )
     serve_parser.add_argument(
         "--stream-interval",

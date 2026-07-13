@@ -436,7 +436,7 @@ Example response:
     "cache_memory_gb": 2.3
   },
   "cache": {
-    "type": "memory_aware_cache",
+    "type": "prefix_cache",
     "entries": 5,
     "hit_rate": 0.87,
     "memory_mb": 2350

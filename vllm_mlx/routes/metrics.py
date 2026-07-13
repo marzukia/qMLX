@@ -1096,19 +1096,6 @@ def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
         )
         out.append(f'qmlx_kv_restore_total{{result="{result}"}} {monotonic}')
 
-    match = hm.get("prefix_cache_match")
-    if not isinstance(match, dict):
-        match = {}
-    out.append(
-        "# HELP qmlx_prefix_cache_match_total In-memory prefix-cache "
-        "lookups by match type (issue #2). Sourced from the cache's "
-        "_last_match_type at fetch time."
-    )
-    out.append("# TYPE qmlx_prefix_cache_match_total counter")
-    for match_type in ("exact", "prefix", "supersequence", "lcp", "miss"):
-        raw = int(_coerce_number(match.get(match_type)))
-        out.append(f'qmlx_prefix_cache_match_total{{type="{match_type}"}} {raw}')
-
     out.extend(
         _render_histogram(
             "qmlx_ttft_seconds",
@@ -1459,104 +1446,6 @@ def _render_prometheus(cfg: Any) -> str:
                     "below the cap."
                 ),
                 int(_coerce_number(cache_stats.get("current_memory_bytes"))),
-            )
-        )
-
-    # ---- R15-P1 radix-tree prefix-cache index (task #303) -------------
-    # Radix counters live inside the same ``cache_stats`` dict, nested
-    # under ``"radix"``. They are emitted under the
-    # ``qmlx_prefix_cache_radix_*`` namespace so the legacy
-    # ``qmlx_prefix_cache_*`` series stay byte-identical for
-    # dashboards. All counters here are process-monotonic — the radix
-    # never resets its cumulative counters on ``clear()`` (see
-    # ``RadixStats`` doc) — so the sticky accumulator is not required.
-    # The gauges (node_count, entry_count, max_depth, lookup_p50/p99)
-    # naturally move up and down, so they are emitted directly without
-    # a sticky-counter pin.
-    radix_stats = cache_stats.get("radix") if cache_stats is not None else None
-    if isinstance(radix_stats, dict):
-        for raw_key, metric_name, help_text in (
-            (
-                "hits",
-                "qmlx_prefix_cache_radix_hits_total",
-                "Prefix-cache radix-index lookups that resolved to a stored entry.",
-            ),
-            (
-                "misses",
-                "qmlx_prefix_cache_radix_misses_total",
-                "Prefix-cache radix-index lookups that resolved to no entry.",
-            ),
-            (
-                "inserts",
-                "qmlx_prefix_cache_radix_inserts_total",
-                "Prefix-cache radix-index inserts (one per cache store).",
-            ),
-            (
-                "removes",
-                "qmlx_prefix_cache_radix_removes_total",
-                "Prefix-cache radix-index removes (LRU evict + explicit remove).",
-            ),
-            (
-                "deduped_prefix_bytes_saved",
-                "qmlx_prefix_cache_radix_deduped_bytes_total",
-                (
-                    "Cumulative wire-format bytes that the radix index "
-                    "collapsed into shared prefix nodes — i.e. the on-disk "
-                    "footprint a hash-keyed index would have re-stored. "
-                    "Headline number for the 30-80% footprint-reduction "
-                    "success criterion."
-                ),
-            ),
-        ):
-            lines.extend(
-                _fmt_metric(
-                    metric_name,
-                    "counter",
-                    help_text,
-                    int(_coerce_number(radix_stats.get(raw_key))),
-                )
-            )
-        for raw_key, metric_name, help_text in (
-            (
-                "node_count",
-                "qmlx_prefix_cache_radix_nodes",
-                "Live count of radix-tree nodes (one per shared/unique token edge).",
-            ),
-            (
-                "entry_count",
-                "qmlx_prefix_cache_radix_entries",
-                "Live count of terminal nodes (== entries the radix indexes).",
-            ),
-            (
-                "max_depth",
-                "qmlx_prefix_cache_radix_max_depth",
-                "Deepest path through the radix (longest stored sequence).",
-            ),
-        ):
-            lines.extend(
-                _fmt_metric(
-                    metric_name,
-                    "gauge",
-                    help_text,
-                    int(_coerce_number(radix_stats.get(raw_key))),
-                )
-            )
-        # Lookup-latency gauges are emitted in seconds (Prometheus convention).
-        # Floats pass through ``_fmt_metric`` unchanged.
-        lines.extend(
-            _fmt_metric(
-                "qmlx_prefix_cache_radix_lookup_p50_seconds",
-                "gauge",
-                "p50 lookup latency over the last 256 radix queries, in seconds.",
-                float(_coerce_number(radix_stats.get("lookup_p50_seconds"))),
-            )
-        )
-        lines.extend(
-            _fmt_metric(
-                "qmlx_prefix_cache_radix_lookup_p99_seconds",
-                "gauge",
-                "p99 lookup latency over the last 256 radix queries, in seconds.",
-                float(_coerce_number(radix_stats.get("lookup_p99_seconds"))),
             )
         )
 

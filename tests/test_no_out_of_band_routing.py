@@ -1671,7 +1671,9 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--enable-prefix-cache",
         "--disable-prefix-cache",
         # SSD KV-restore feature toggle, not a model auto-detection/router.
+        # On by default (#16); the disable flag is the opt-out direction.
         "--enable-disk-kv-restore",
+        "--disable-disk-kv-restore",
         # Chat-template toggle, not engine routing.
         "--no-thinking",
         # `--no-think` is a hidden back-compat alias of `--no-thinking` on
@@ -1683,7 +1685,6 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # Perf / UX toggles, not routing decisions.
         "--force-disk-check",  # forces eager disk-space check
         "--no-gc-control",  # disables Python GC tuning
-        "--no-memory-aware-cache",  # disables memory-aware cache sizing
         # Privacy toggle.
         "--no-telemetry",
     }

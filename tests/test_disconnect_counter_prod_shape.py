@@ -84,7 +84,6 @@ def _make_scheduler() -> Scheduler:
         tokenizer=_DummyTokenizer(),
         config=SchedulerConfig(
             enable_prefix_cache=False,
-            use_memory_aware_cache=False,
         ),
     )
 
