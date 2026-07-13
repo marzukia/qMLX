@@ -1030,7 +1030,9 @@ def apply_chat_template(
         template_kwargs.setdefault("reasoning_effort", "low")
 
     try:
-        return _strip_gen_think_scaffold(template_applicator.apply_chat_template(messages, **template_kwargs))
+        return _strip_gen_think_scaffold(
+            template_applicator.apply_chat_template(messages, **template_kwargs)
+        )
     except TypeError as e:
         # Step 1: retry without enable_thinking (many templates don't support it).
         # Codex round-1 NIT fix (PR #1070 finding #4): keep
@@ -1042,7 +1044,9 @@ def apply_chat_template(
         logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
         template_kwargs.pop("enable_thinking", None)
         try:
-            return _strip_gen_think_scaffold(template_applicator.apply_chat_template(messages, **template_kwargs))
+            return _strip_gen_think_scaffold(
+                template_applicator.apply_chat_template(messages, **template_kwargs)
+            )
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
             # actually names it (codex R8 BLOCKING: unconditionally popping it
@@ -1103,4 +1107,6 @@ def apply_chat_template(
                     injected, **template_kwargs
                 )
 
-        return _strip_gen_think_scaffold(template_applicator.apply_chat_template(messages, **template_kwargs))
+        return _strip_gen_think_scaffold(
+            template_applicator.apply_chat_template(messages, **template_kwargs)
+        )
