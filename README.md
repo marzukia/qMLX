@@ -24,7 +24,7 @@
 
 ## Why this exists
 
-Qwen3.5-122B-A10B is a hybrid: about 75% of its layers are DeltaNet (recurrent, linear-attention) and 25% are full attention. The recurrent state cannot be rewound to an earlier position, so the standard in-memory prefix cache drops every entry that contains those layers. On this model it misses 100% of the time. In a normal window we measured zero in-memory hits against 109 disk hits.
+Qwen3.5-122B-A10B is a hybrid: about 75% of its layers are DeltaNet (recurrent, linear-attention) and 25% are full attention. The recurrent state cannot be rewound to an earlier position, so a standard in-memory prefix cache drops every entry that contains those layers. On this model it missed 100% of the time (zero in-memory hits against 109 disk hits in a normal window), so we removed it. There is no in-memory prefix cache; disk is the only reuse tier.
 
 So the only thing that keeps the model warm is disk KV restore: checkpoint the attention KV to SSD, page it back on the next turn. It is not a fallback here, it is the entire cache. qMLX is that subsystem built properly, plus the fixes needed to make it hold on real agentic-coding traffic.
 
