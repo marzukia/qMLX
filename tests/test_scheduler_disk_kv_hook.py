@@ -484,7 +484,9 @@ def test_cleanup_finished_store_site_writes_checkpoint(isolated_root: Path) -> N
     sched._cleanup_finished({req.request_id})
 
     bodies = list(isolated_root.rglob("*.safetensors"))
-    assert bodies, f"_cleanup_finished store site wrote no checkpoint under {isolated_root}"
+    assert bodies, (
+        f"_cleanup_finished store site wrote no checkpoint under {isolated_root}"
+    )
 
     full = list(range(4000, 4000 + 250)) + list(range(9000, 9000 + 6))
     loaded = _dkc.get_content_index().lookup(full)
