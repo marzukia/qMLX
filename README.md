@@ -84,6 +84,17 @@ qmlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
 
 Drop-in OpenAI / Anthropic API, same as upstream. `--text-only` is required: the vision path is incompatible with the hybrid continuous-batching that the cache work depends on.
 
+## Disk KV cache size
+
+The disk KV checkpoint store is the only cache tier, so its size cap sets how much cross-turn reuse survives. It defaults to **100 GiB** and evicts oldest-first once the total crosses the cap, draining to 80% of it before stopping (a high/low-water scheme that avoids thrashing a single eviction at the boundary).
+
+Two environment variables tune it. Both are read at scan time, so you can change them without touching code or restarting for the value to take:
+
+- `QMLX_KV_CHECKPOINT_MAX_BYTES` sets the cap in bytes. Default `107374182400` (100 GiB). Use `214748364800` for 200 GiB, and so on. `0` disables cap eviction entirely (unbounded, only sane if you manage disk yourself).
+- `QMLX_KV_CHECKPOINT_LOW_WATER` sets the low-water fraction eviction drains to, between 0 and 1. Default `0.80`.
+
+Checkpoints live under `~/.cache/qmlx/kv_checkpoints/`. The store grows to the cap then holds steady near the low-water mark, so pick a cap that leaves headroom on that volume. The old 20 GiB default was far too small for agentic traffic: it evicted nearly every checkpoint it wrote, so most turns fell back to a cold prefill.
+
 ## Recommended sampling
 
 Qwen3.5-122B-A10B ships a `generation_config` of temperature 0.6, top_p 0.95, top_k 20, but no repetition penalty (it defaults to 1.0). With no penalty the model can loop on long generations. Add these server defaults for Qwen's recommended thinking-mode profile plus a mild repetition penalty:

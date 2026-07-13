@@ -32,7 +32,7 @@ cache layer (specifically the ``prompt_cache/`` package at commit
   ``cache_dir.new/`` → ``cache_dir`` rename in ``MemoryAwarePrefixCache``.
 - **Disk-budget eviction**: oldest-first across all checkpoints in
   ``~/.cache/qmlx/kv_checkpoints/``, capped at a configurable byte cap
-  (default 20 GiB, env override ``QMLX_KV_CHECKPOINT_MAX_BYTES``).
+  (default 100 GiB, env override ``QMLX_KV_CHECKPOINT_MAX_BYTES``).
   ``mtime``-ordered LRU rather than the size-aware policy in PR #326 because
   the qmlx scheduler is single-tenant per process and the cap exists
   primarily to keep a runaway agent from filling the disk, not to optimize
@@ -122,10 +122,11 @@ logger = logging.getLogger(__name__)
 # vllm_mlx/positioned_kv_cache.py).
 DEFAULT_CHECKPOINT_INTERVAL = 256
 
-# Disk cap default: 20 GiB. The env override is honoured at scan-time so an
-# operator can shrink/grow without restarting the server. Picked to match the
-# headroom rapid-desktop reserves under ~/.cache/qmlx (#194).
-DEFAULT_MAX_DISK_BYTES = 20 * 1024 * 1024 * 1024
+# Disk cap default: 100 GiB. The env override is honoured at scan-time so an
+# operator can shrink/grow without restarting the server. Sized so multi-turn
+# agentic reuse actually survives on disk: at 20 GiB real traffic churned
+# almost every checkpoint it wrote. Override with QMLX_KV_CHECKPOINT_MAX_BYTES.
+DEFAULT_MAX_DISK_BYTES = 100 * 1024 * 1024 * 1024
 _DISK_CAP_ENV = "QMLX_KV_CHECKPOINT_MAX_BYTES"
 
 # Low-water mark for cap eviction. When the total crosses ``max_bytes`` (high
