@@ -97,16 +97,20 @@ Checkpoints live under `~/.cache/qmlx/kv_checkpoints/`. The store grows to the c
 
 ## Recommended sampling
 
-Qwen3.5-122B-A10B ships a `generation_config` of temperature 0.6, top_p 0.95, top_k 20, but no repetition penalty (it defaults to 1.0). With no penalty the model can loop on long generations. Add these server defaults for Qwen's recommended thinking-mode profile plus a mild repetition penalty:
+Qwen3.5-122B-A10B's official model card gives per-mode sampling profiles. For agentic / tool-calling use (non-thinking "Instruct" mode), use these server defaults:
 
 ```sh
-  --default-temperature 0.6 \
-  --default-top-p 0.95 \
+  --default-temperature 0.7 \
+  --default-top-p 0.8 \
   --default-top-k 20 \
-  --default-repetition-penalty 1.05
+  --default-min-p 0.0 \
+  --default-repetition-penalty 1.0 \
+  --default-presence-penalty 1.5
 ```
 
-These are `--default-*`, so a client can still override any of them per request. Keep the repetition penalty mild (1.05) so it does not degrade code output.
+The anti-repetition lever is `presence_penalty`, not `repetition_penalty`. The card recommends setting `presence_penalty` between 0 and 2 to stop endless repetitions; too high (toward 2) can cause occasional language mixing and a slight quality drop, so 1.5 is a good default and 1.0 to 1.2 if you see mixing. Leave `repetition_penalty` at 1.0 (Qwen tunes for `presence_penalty` instead). Never greedy-decode (temperature 0 or top_k 1); it triggers exactly these repetition loops, and aggressive quants (3.7-bit and below) make the noisy tail worse.
+
+For thinking mode the card suggests temperature 1.0, top_p 0.95, top_k 20, presence_penalty 1.5. These are all `--default-*`, so a client can override any of them per request.
 
 ## Credit
 
