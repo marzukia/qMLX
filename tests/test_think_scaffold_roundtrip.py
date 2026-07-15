@@ -139,14 +139,34 @@ class _FakeQwenApplicatorScaffoldedHistory(_FakeQwenApplicator):
     scaffold_in_history = True
 
 
-def test_generation_prompt_is_scaffold_free_when_thinking_disabled():
+def test_generation_prompt_keeps_primer_when_thinking_disabled():
+    """Runaway-reasoning fix: with enable_thinking=False +
+    add_generation_prompt=True the Qwen3.5 template ends the prompt with the
+    empty-think primer. That primer tells the model thinking is already done, so
+    it emits the answer / tool_call immediately. The blind global strip (#30/#31)
+    deleted it, leaving the prompt bare at ``<|im_start|>assistant\n``; the model
+    then opened its own <think> and ran to max_tokens (~23 min). The primer must
+    survive on the generation tail."""
     msgs = [{"role": "user", "content": "fix the bug"}]
     gen = apply_chat_template(
         _FakeQwenApplicator(), msgs, enable_thinking=False, model_name="qwen"
     )
-    assert not gen.endswith(SCAFFOLD), (
-        "generation prompt still carries the empty think scaffold"
+    assert gen.endswith(SCAFFOLD), (
+        "generation-tail empty-think primer was stripped (runaway-reasoning bug)"
     )
+    # exactly one scaffold: the trailing primer, nothing left mid-prompt
+    assert gen.count(SCAFFOLD) == 1
+
+
+def test_generation_prompt_thinking_enabled_has_no_primer():
+    """No-op case: thinking enabled never emits the empty primer (the real
+    template ends with an OPEN ``<think>``), so nothing is preserved and nothing
+    runs away for a different reason."""
+    msgs = [{"role": "user", "content": "hi"}]
+    gen = apply_chat_template(
+        _FakeQwenApplicator(), msgs, enable_thinking=True, model_name="qwen"
+    )
+    assert SCAFFOLD not in gen
     assert gen.endswith("<|im_start|>assistant\n")
 
 
@@ -170,12 +190,21 @@ def test_roundtrip_generation_matches_history_render():
     hist = apply_chat_template(
         fake, base + [asst], enable_thinking=False, model_name="qwen"
     )
-    # the history render up to the assistant turn must start with the exact
-    # generation-prompt prefix (no scaffold on either side).
-    assert hist.startswith(gen_prompt), (
-        "history render diverges from the generation prompt at the turn boundary:\n"
-        f"gen : {gen_prompt[-40:]!r}\nhist: {hist[len(gen_prompt) - 40 : len(gen_prompt) + 20]!r}"
+    # The generation tail now carries the empty-think primer (runaway fix), while
+    # the completed assistant turn re-rendered as history does NOT. So the two
+    # renders share the pre-primer prefix but intentionally differ at the primer
+    # boundary. That one-turn cold re-prefill is the accepted cost of preventing
+    # the runaway (correctness over the #30/#31 tail optimisation); the
+    # mid-history normalisation itself is unaffected.
+    assert gen_prompt.endswith(SCAFFOLD)
+    base_prefix = gen_prompt[: -len(SCAFFOLD)]
+    assert hist.startswith(base_prefix), (
+        "history render diverges from the generation prompt BEFORE the primer:\n"
+        f"gen : {base_prefix[-40:]!r}\nhist: {hist[len(base_prefix) - 40 : len(base_prefix) + 20]!r}"
     )
+    # the divergence is exactly the primer: history continues into the tool_call,
+    # it does not repeat the empty scaffold at that point.
+    assert not hist[len(base_prefix) :].startswith(SCAFFOLD)
 
 
 def test_scaffolded_and_scaffold_free_history_renders_converge():
@@ -204,4 +233,8 @@ def test_scaffolded_and_scaffold_free_history_renders_converge():
         "renders differing only by the mid-history empty scaffold did not "
         f"normalize identically:\nwith   : {with_scaffold!r}\nwithout: {without_scaffold!r}"
     )
-    assert SCAFFOLD not in with_scaffold
+    # mid-history empty scaffolds are gone; only the single trailing generation
+    # primer remains (the runaway fix), so the cache-key normalisation invariant
+    # #30/#31 still holds while the primer survives.
+    assert with_scaffold.count(SCAFFOLD) == 1
+    assert with_scaffold.endswith(SCAFFOLD)
