@@ -1608,18 +1608,28 @@ def _resolve_max_tokens(
     value is also a hard upper bound and must not receive additive
     headroom.
     """
+    # Server-side OUTPUT-token ceiling (QMLX_MAX_OUTPUT_TOKENS, default 8192,
+    # <=0 disables). Bounds worst-case single-slot occupancy: with
+    # --max-num-seqs=1 one generation holds the sole slot for
+    # max_tokens / tok_s, so an unbounded client value (e.g. 32000) head-of-line
+    # blocks every queued request. This caps output only; input/context length
+    # is untouched.
+    try:
+        _cap = int(os.environ.get("QMLX_MAX_OUTPUT_TOKENS", "8192"))
+    except (TypeError, ValueError):
+        _cap = 8192
     if request_value is not None:
-        # Hard cap per client contract.
-        return request_value
+        # Hard cap per client contract, then the server ceiling.
+        return min(request_value, _cap) if _cap > 0 else request_value
     cfg = get_config()
     base = cfg.default_max_tokens
-    if cfg.default_max_tokens_is_explicit:
-        return base
-    if enable_thinking is False:
-        return base
-    if cfg.reasoning_parser_name and base > 0 and base < 4096:
-        return base + cfg.thinking_token_budget
-    return base
+    if cfg.default_max_tokens_is_explicit or enable_thinking is False:
+        resolved = base
+    elif cfg.reasoning_parser_name and base > 0 and base < 4096:
+        resolved = base + cfg.thinking_token_budget
+    else:
+        resolved = base
+    return min(resolved, _cap) if _cap > 0 else resolved
 
 
 def _resolve_temperature(request_value: float | None) -> float:
