@@ -317,30 +317,59 @@ def _is_attention_layer(class_name: str) -> bool:
 # descendant or an in-flight reader).
 _persistent_refcount: dict[str, int] = {}
 _transient_refcount: dict[str, int] = {}
+# child_id -> base_id: the single base each delta pins. The edge map makes the
+# refcount idempotent (registering the same child twice does not double-count)
+# and lets eviction decrement a base WITHOUT re-reading the evicted delta's
+# sidecar — the in-memory edge is the source of truth for "is this a delta and
+# which base does it hold". Kept in lock-step with ``_persistent_refcount``.
+_child_base_edge: dict[str, str] = {}
 
 
 def _ckpt_id(req_hash: str, token_offset: int) -> str:
     return f"{req_hash}:{int(token_offset)}"
 
 
-def _incref_persistent(req_hash: str, token_offset: int) -> None:
-    if not req_hash or token_offset <= 0:
+def _register_delta_edge(child_id: str, base_id: str) -> None:
+    """Record that delta ``child_id`` pins base ``base_id`` (+1 on the base).
+
+    Idempotent: re-registering the same edge is a no-op, and re-parenting a
+    child to a different base moves the count (decref old, incref new). This is
+    the ONLY place ``_persistent_refcount`` is incremented, so a caller that
+    re-writes the same delta path cannot double-count the base.
+    """
+    if not child_id or not base_id:
         return
-    key = _ckpt_id(req_hash, token_offset)
     with _DISK_LOCK:
-        _persistent_refcount[key] = _persistent_refcount.get(key, 0) + 1
+        old = _child_base_edge.get(child_id)
+        if old == base_id:
+            return  # already counted this exact edge
+        if old is not None:
+            cur = _persistent_refcount.get(old, 0) - 1
+            if cur <= 0:
+                _persistent_refcount.pop(old, None)
+            else:
+                _persistent_refcount[old] = cur
+        _child_base_edge[child_id] = base_id
+        _persistent_refcount[base_id] = _persistent_refcount.get(base_id, 0) + 1
 
 
-def _decref_persistent(req_hash: str, token_offset: int) -> None:
-    if not req_hash or token_offset <= 0:
+def _unregister_delta_edge(child_id: str) -> None:
+    """Drop delta ``child_id`` (evicted / quarantined): -1 on its base.
+
+    No-op when ``child_id`` is not a known delta, so eviction can call it
+    unconditionally for any unlinked checkpoint without reading its sidecar.
+    """
+    if not child_id:
         return
-    key = _ckpt_id(req_hash, token_offset)
     with _DISK_LOCK:
-        cur = _persistent_refcount.get(key, 0) - 1
+        base_id = _child_base_edge.pop(child_id, None)
+        if base_id is None:
+            return
+        cur = _persistent_refcount.get(base_id, 0) - 1
         if cur <= 0:
-            _persistent_refcount.pop(key, None)
+            _persistent_refcount.pop(base_id, None)
         else:
-            _persistent_refcount[key] = cur
+            _persistent_refcount[base_id] = cur
 
 
 def _incref_transient(req_hash: str, token_offset: int) -> None:
@@ -369,10 +398,11 @@ def _is_protected(req_hash: str, token_offset: int) -> bool:
 
 
 def reset_refcounts_for_tests() -> None:
-    """Test-only: clear both refcount maps."""
+    """Test-only: clear the refcount + edge maps."""
     with _DISK_LOCK:
         _persistent_refcount.clear()
         _transient_refcount.clear()
+        _child_base_edge.clear()
 
 
 def rebuild_refcounts(root: str) -> None:
@@ -386,6 +416,7 @@ def rebuild_refcounts(root: str) -> None:
     empty on rebuild.
     """
     counts: dict[str, int] = {}
+    edges: dict[str, str] = {}
     with _DISK_LOCK:
         for path, _mtime, _size in scan_checkpoints(root):
             parsed = _parse_checkpoint_path(path)
@@ -397,10 +428,16 @@ def rebuild_refcounts(root: str) -> None:
             b_hash = str(side.get("base_hash") or "")
             b_off = int(side.get("base_offset") or 0)
             if b_hash and b_off > 0:
-                key = _ckpt_id(b_hash, b_off)
-                counts[key] = counts.get(key, 0) + 1
+                child_id = _ckpt_id(parsed[0], parsed[1])
+                base_id = _ckpt_id(b_hash, b_off)
+                if child_id in edges:  # idempotent per child
+                    continue
+                edges[child_id] = base_id
+                counts[base_id] = counts.get(base_id, 0) + 1
         _persistent_refcount.clear()
         _persistent_refcount.update(counts)
+        _child_base_edge.clear()
+        _child_base_edge.update(edges)
 
 
 # ---------------------------------------------------------------------------
@@ -1128,14 +1165,18 @@ def write_checkpoint(
             _STATS.bytes = _measure_root_bytes(root)
 
         # Chain-aware eviction bookkeeping: a committed delta pins its parent
-        # by +1 on the persistent refcount so ``enforce_disk_cap`` never evicts
-        # a base with a live descendant. Maintained incrementally (no O(N)
-        # sidecar rescan on the write hot path); still under ``_DISK_LOCK``, the
-        # same lock eviction's protection check reads under.
+        # so ``enforce_disk_cap`` never evicts a base with a live descendant.
+        # Registering the edge is idempotent (a re-write of the same delta path
+        # does not double-count) and incremental (no O(N) sidecar rescan on the
+        # write hot path). Still under ``_DISK_LOCK`` — the same lock eviction's
+        # protection check reads under.
         if final_kind == "delta" and resolved_delta is not None:
-            _incref_persistent(
-                str(resolved_delta.get("base_hash") or ""),
-                int(resolved_delta.get("base_offset") or 0),
+            _register_delta_edge(
+                _ckpt_id(req_hash, token_offset),
+                _ckpt_id(
+                    str(resolved_delta.get("base_hash") or ""),
+                    int(resolved_delta.get("base_offset") or 0),
+                ),
             )
 
         # Radix hand-off — best-effort, mirrors the in-process store path.
@@ -1509,12 +1550,7 @@ def load_checkpoint_chain(leaf_path: str) -> LoadedCheckpoint | None:
             if not os.path.isfile(link["path"]):
                 aborted = True
                 break
-            _transient_refcount[_ckpt_id(link["req_hash"], link["offset"])] = (
-                _transient_refcount.get(
-                    _ckpt_id(link["req_hash"], link["offset"]), 0
-                )
-                + 1
-            )
+            _incref_transient(link["req_hash"], link["offset"])
             pinned.append((link["req_hash"], link["offset"]))
         if aborted:
             for rh, off in pinned:
@@ -1770,10 +1806,6 @@ def enforce_disk_cap(
             parsed = _parse_checkpoint_path(path)
             if parsed is not None and _is_protected(parsed[0], parsed[1]):
                 continue
-            # Read the sidecar BEFORE unlinking so an evicted DELTA can decrement
-            # its parent's persistent refcount (one JSON read per evicted delta,
-            # not per candidate). A base carries no base_* link and skips this.
-            evicted_side = _read_sidecar_for_path(path)
             try:
                 os.unlink(path)
             except OSError as e:
@@ -1781,11 +1813,13 @@ def enforce_disk_cap(
                     f"[disk_kv_checkpoint] eviction unlink({path!r}) failed: {e}"
                 )
                 continue
-            if evicted_side and evicted_side.get("kind") == "delta":
-                _decref_persistent(
-                    str(evicted_side.get("base_hash") or ""),
-                    int(evicted_side.get("base_offset") or 0),
-                )
+            # Drop this checkpoint's delta edge (no-op if it is a base): -1 on
+            # its parent's refcount so the parent can become evictable once its
+            # last descendant is gone. The in-memory edge is authoritative, so
+            # no sidecar read is needed (and an unreadable sidecar can't strand
+            # the decrement).
+            if parsed is not None:
+                _unregister_delta_edge(_ckpt_id(parsed[0], parsed[1]))
             sidecar = path.replace(_CHECKPOINT_EXT, _METADATA_EXT)
             try:
                 os.unlink(sidecar)
@@ -2289,6 +2323,11 @@ class DiskCheckpointIndex:
             self._by_key.pop(key, None)
 
         if ref is not None:
+            # A quarantined delta is gone for good (renamed to .corrupt, and
+            # rebuild_refcounts won't re-see it), so drop its edge and release
+            # the +1 it held on its base — otherwise the base is pinned against
+            # eviction for the rest of the process lifetime. No-op for a base.
+            _unregister_delta_edge(_ckpt_id(ref.req_hash, offset))
             with _DISK_LOCK:
                 for src in (
                     checkpoint_path(ref.root, ref.req_hash, offset),

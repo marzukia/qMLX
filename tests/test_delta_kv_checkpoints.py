@@ -298,6 +298,46 @@ def test_a_chained_restore_bit_identical_to_full(root: str):
     assert _dkc._cache_offset_matches(loaded.cache, 400)
 
 
+def test_a2_recurrent_taken_from_newest_link_only(root: str):
+    """The recurrent (ArraysCache) state must come from the NEWEST link, never a
+    base/intermediate link. Give the base a DISTINCT recurrent snapshot from the
+    leaf and assert the restore matches the leaf's, not the base's.
+    """
+    canon = _canonical_full(400, with_recurrent=True, seed=0)
+    tokens = _tokens(400, salt=20)
+    leaf_recurrent = [x for x in canon[-1].state]
+    # Base carries a DIFFERENT recurrent snapshot (as it would in a real session,
+    # where recurrent state evolves token to token).
+    base_cache = _slice_full_to(canon, 200)
+    distinct_rec = ArraysCache(2)
+    distinct_rec[0] = mx.random.normal((1, 4, 16, 16), key=mx.random.key(4242))
+    distinct_rec[1] = mx.random.normal((1, 3, 12), key=mx.random.key(4243))
+    mx.eval(distinct_rec.state)
+    base_cache[-1] = distinct_rec
+    # sanity: the two recurrent snapshots really differ.
+    assert not mx.array_equal(distinct_rec.state[0], leaf_recurrent[0]).item()
+
+    _write_link(root, salt=20, idx=0, offset=200, cache_at_offset=base_cache, tokens=tokens)
+    parent = _dkc.get_content_index().longest_strict_prefix(tokens)
+    dcache = _dkc.build_delta_cache(canon, 200, 400)
+    leaf_path, _ = _write_link(
+        root, salt=20, idx=1, offset=400, cache_at_offset=canon, tokens=tokens,
+        kind="delta", delta_cache=dcache,
+        delta_meta={
+            "base_hash": parent.req_hash, "base_offset": 200,
+            "base_save_uuid": parent.save_uuid, "delta_range": [200, 400],
+            "chain_depth": 1,
+        },
+    )
+    loaded = _dkc.load_checkpoint_chain(leaf_path)
+    assert loaded is not None
+    restored_rec = loaded.cache[-1].state
+    # Must equal the LEAF's recurrent, and must NOT equal the base's.
+    assert mx.array_equal(restored_rec[0], leaf_recurrent[0]).item()
+    assert mx.array_equal(restored_rec[1], leaf_recurrent[1]).item()
+    assert not mx.array_equal(restored_rec[0], distinct_rec.state[0]).item()
+
+
 def test_a_lookup_routes_delta_through_chain(root: str):
     """The content-index lookup must assemble a delta leaf via the chain (its own
     short attention would otherwise fail the offset guard)."""
@@ -350,6 +390,29 @@ def test_b_broken_chain_falls_back_to_base_prefix(root: str):
     assert 384 not in {r.token_offset for r in _dkc.get_content_index()._by_key.values()}
 
 
+def test_b2_quarantining_a_delta_leaf_decrefs_its_base(root: str):
+    """A HARD-corrupt delta leaf that gets quarantined during lookup must release
+    the +1 it held on its base — otherwise the base is pinned against eviction
+    for the whole process lifetime (the quarantine refcount-leak path)."""
+    canon, tokens, links = _build_chain(root, [200, 400], salt=21)
+    base, delta = links[0], links[1]
+    assert delta["kind"] == "delta"
+    assert _dkc._persistent_refcount.get(f"{base['req_hash']}:200", 0) == 1
+    # Corrupt the delta's tokens blob (flip a token byte → HARD content mismatch,
+    # not an io_error) so lookup quarantines the leaf.
+    tok = delta["path"].replace(".safetensors", ".tokens.bin")
+    data = bytearray(Path(tok).read_bytes())
+    data[-1] ^= 0xFF
+    Path(tok).write_bytes(bytes(data))
+
+    loaded = _dkc.get_content_index().lookup(tokens)
+    # Falls back to the base's shorter prefix after quarantining the leaf.
+    assert loaded is not None and loaded.token_offset == 200
+    # The quarantined delta released its hold on the base.
+    assert _dkc._persistent_refcount.get(f"{base['req_hash']}:200", 0) == 0
+    assert f"{delta['req_hash']}:400" not in _dkc._child_base_edge
+
+
 # ---------------------------------------------------------------------------
 # (c) eviction never orphans a base with a live descendant
 # ---------------------------------------------------------------------------
@@ -381,6 +444,14 @@ def test_c_eviction_never_orphans_live_base(root: str):
     # The evictable leaf went; the protected base stayed.
     assert base_present
     assert not delta_present
+    # After the delta is evicted its base's refcount is decremented back to 0
+    # (edge dropped) — otherwise the base would be pinned forever and never
+    # reclaimable. Guards the decref path (a leak here would pass without this).
+    assert _dkc._persistent_refcount.get(f"{base['req_hash']}:256", 0) == 0
+    assert f"{delta['req_hash']}:512" not in _dkc._child_base_edge
+    # A follow-up eviction pass can now reclaim the (unprotected) base.
+    _dkc.enforce_disk_cap(root, max_bytes=1, low_water_fraction=1.0)
+    assert not os.path.exists(base["path"])
 
 
 # ---------------------------------------------------------------------------
