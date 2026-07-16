@@ -1657,6 +1657,57 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
+    # ---- Delta-checkpoint observability (design §7) -------------------
+    lines.extend(
+        _fmt_metric(
+            "qmlx_kv_checkpoint_delta_bytes_saved_total",
+            "counter",
+            (
+                "Cumulative bytes saved by writing delta checkpoints instead "
+                "of full ones (the attention rows before the parent offset a "
+                "delta omits). 0 until the delta path is enabled."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("delta_bytes_saved"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "qmlx_kv_checkpoint_chain_length",
+            "gauge",
+            (
+                "Depth (base + deltas) of the most recently assembled delta "
+                "chain on the restore path. Gauge, reflects the last chain "
+                "walked rather than a cumulative total."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("chain_length"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "qmlx_kv_checkpoint_restore_link_count_total",
+            "counter",
+            (
+                "Cumulative delta-chain links walked across every chain "
+                "restore (sum of assembled chain depths); divided by the "
+                "assembly count it gives the mean chain depth."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("restore_link_count"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "qmlx_kv_checkpoint_orphan_events_total",
+            "counter",
+            (
+                "Cumulative chain-load failures caused by a missing or evicted "
+                "link (broken chain or eviction race), each logged at warning "
+                "as 'chain broken' / 'orphaned delta'. Expected near 0; a "
+                "spike means eviction is orphaning live chains."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("orphan_events"))),
+        )
+    )
+
     # ---- R15-P4 disk-KV restore-reject reasons (issue #10) -------------
     # ``disk_kv_checkpoint.get_stats()`` already tracks a per-reason tally
     # of restores that were looked up but refused a validation guard and
