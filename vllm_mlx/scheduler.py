@@ -2927,10 +2927,12 @@ class Scheduler:
                     # 0.9.13 PR-B: EV depth controller knobs.
                     max_k=getattr(self.config, "mtp_max_k", 3),
                     disable_auto_k=getattr(self.config, "mtp_disable_auto_k", False),
-                    controller_key=getattr(self, "_model_name", None)
-                    or getattr(self.model_config, "name", None)
-                    if getattr(self, "model_config", None) is not None
-                    else None,
+                    controller_key=(
+                        getattr(self, "_model_name", None)
+                        or getattr(self.model_config, "name", None)
+                        if getattr(self, "model_config", None) is not None
+                        else None
+                    ),
                 )
 
         # Install SuffixDecoding (drafter-free spec-decode).
@@ -5214,6 +5216,60 @@ class Scheduler:
                         self.config.kv_cache_quantization_group_size,
                     )
 
+            # Delta path (off by default). Discover the longest strict-prefix
+            # checkpoint as a parent via the content index, build a delta body
+            # (attention sliced to [base_offset, len(tokens)); recurrent whole),
+            # and hand both to the writer, which re-validates the parent under
+            # _DISK_LOCK and falls back to a full base if it was evicted (TOCTOU).
+            # A keyframe every N deltas writes a full base to bound chain length.
+            delta_kind = "full"
+            delta_cache = None
+            delta_meta = None
+            if _dkc.delta_checkpoints_enabled() and not (
+                _dkc.model_requires_full_checkpoint(mname)
+            ):
+                try:
+                    parent = _dkc.get_content_index().longest_strict_prefix(tokens)
+                    if parent is not None:
+                        pside = _dkc.read_sidecar(
+                            root, parent.req_hash, parent.token_offset
+                        )
+                        parent_depth = (
+                            int((pside or {}).get("chain_depth", 0) or 0)
+                            if pside is not None
+                            else 0
+                        )
+                        child_depth = parent_depth + 1
+                        base_offset = int(parent.token_offset)
+                        # Keyframe: when the next depth reaches N, write a full
+                        # base instead (resets the chain, bounds restore links).
+                        if (
+                            pside is not None
+                            and not _dkc.should_write_keyframe(parent_depth)
+                            and 0 < base_offset < len(tokens)
+                        ):
+                            built = _dkc.build_delta_cache(
+                                write_cache, base_offset, len(tokens)
+                            )
+                            if built is not None:
+                                delta_cache = built
+                                delta_kind = "delta"
+                                delta_meta = {
+                                    "base_hash": parent.req_hash,
+                                    "base_offset": base_offset,
+                                    "base_save_uuid": parent.save_uuid,
+                                    "delta_range": [base_offset, len(tokens)],
+                                    "chain_depth": child_depth,
+                                }
+                except Exception as _delta_err:  # pragma: no cover — best-effort
+                    logger.debug(
+                        "[disk_persist] delta planning failed: %s; full base",
+                        _delta_err,
+                    )
+                    delta_kind = "full"
+                    delta_cache = None
+                    delta_meta = None
+
             _dkc.write_checkpoint(
                 write_cache,
                 root=root,
@@ -5226,6 +5282,9 @@ class Scheduler:
                     "tokens_key": list(tokens),
                     "save_uuid": uuid.uuid4().hex,
                 },
+                kind=delta_kind,
+                delta_cache=delta_cache,
+                delta_meta=delta_meta,
             )
         except Exception as _e:  # pragma: no cover — boundary write is best-effort
             logger.debug("[disk_persist] boundary write failed: %s", _e)
@@ -5420,13 +5479,19 @@ class Scheduler:
                 )
                 return
 
-            # (d) full-vs-partial mode must match the running model. For the
-            # Qwen3.5 hybrid (and any MODELS_REQUIRING_FULL_CHECKPOINT member)
-            # this forces a full checkpoint; a partial restore is refused.
+            # (d) full-vs-partial mode. A model in MODELS_REQUIRING_FULL_CHECKPOINT
+            # (e.g. Gemma-4 sliding window) can only restore a whole-blob
+            # checkpoint, so refuse anything not stamped full. The reverse is
+            # NOT a mismatch: a whole-blob checkpoint (``requires_full`` True,
+            # e.g. a legacy v1 Qwen3.5 write from before the delta feature) is
+            # always safe to restore into a model that no longer needs full —
+            # restoring the whole cache is correct regardless. An assembled
+            # delta chain reports the leaf's ``requires_full`` (False for
+            # Qwen3.5), which is only refused by a genuinely full-only model.
             expected_full = _dkc.model_requires_full_checkpoint(
                 getattr(self, "_model_name", None)
             )
-            if bool(loaded.requires_full_checkpoint) != bool(expected_full):
+            if expected_full and not bool(loaded.requires_full_checkpoint):
                 _dkc.record_restore_reject("full_checkpoint_mismatch")
                 logger.info(
                     "[kv_restore] request=%s REJECT reason=full_checkpoint_mismatch "
