@@ -522,9 +522,7 @@ def build_delta_cache(
             # token axis (2) is not packed, so slice each component on axis 2.
             ks = tuple(t[:, :, base_offset:current_offset, :] for t in keys)
             vs = tuple(t[:, :, base_offset:current_offset, :] for t in values)
-            new = QuantizedKVCache(
-                group_size=layer.group_size, bits=layer.bits
-            )
+            new = QuantizedKVCache(group_size=layer.group_size, bits=layer.bits)
             new.state = (ks, vs)
             new.offset = current_offset - base_offset
         else:  # KVCache (bf16 / fp16) — the hybrid-model attention path

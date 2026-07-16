@@ -79,9 +79,9 @@ def _canonical_full(
             v = mx.random.normal((1, 2, n, 64), key=mx.random.key(seed + L * 2 + 1))
         else:
             c = KVCache()
-            k = mx.random.normal(
-                (1, 2, n, 8), key=mx.random.key(seed + L * 2)
-            ).astype(mx.bfloat16)
+            k = mx.random.normal((1, 2, n, 8), key=mx.random.key(seed + L * 2)).astype(
+                mx.bfloat16
+            )
             v = mx.random.normal(
                 (1, 2, n, 8), key=mx.random.key(seed + L * 2 + 1)
             ).astype(mx.bfloat16)
@@ -145,8 +145,12 @@ def _assert_attention_bit_identical(expected: list, got: list) -> None:
             ek, ev = e.state
             gk, gv = g.state
             for j in range(3):
-                assert mx.array_equal(ek[j], gk[j]).item(), f"layer {i} qkey[{j}] differ"
-                assert mx.array_equal(ev[j], gv[j]).item(), f"layer {i} qval[{j}] differ"
+                assert mx.array_equal(
+                    ek[j], gk[j]
+                ).item(), f"layer {i} qkey[{j}] differ"
+                assert mx.array_equal(
+                    ev[j], gv[j]
+                ).item(), f"layer {i} qval[{j}] differ"
             assert g.offset == e.offset
 
 
@@ -270,19 +274,31 @@ def test_a_chained_restore_bit_identical_to_full(root: str):
     tokens = _tokens(400)
     # base (full) at 300, delta over [300, 400).
     _write_link(
-        root, salt=0, idx=0, offset=300,
-        cache_at_offset=_slice_full_to(canon, 300), tokens=tokens,
+        root,
+        salt=0,
+        idx=0,
+        offset=300,
+        cache_at_offset=_slice_full_to(canon, 300),
+        tokens=tokens,
     )
     parent = _dkc.get_content_index().longest_strict_prefix(tokens)
     assert parent is not None and parent.token_offset == 300
     dcache = _dkc.build_delta_cache(canon, 300, 400)
     assert dcache is not None
     leaf_path, _ = _write_link(
-        root, salt=0, idx=1, offset=400, cache_at_offset=canon, tokens=tokens,
-        kind="delta", delta_cache=dcache,
+        root,
+        salt=0,
+        idx=1,
+        offset=400,
+        cache_at_offset=canon,
+        tokens=tokens,
+        kind="delta",
+        delta_cache=dcache,
         delta_meta={
-            "base_hash": parent.req_hash, "base_offset": 300,
-            "base_save_uuid": parent.save_uuid, "delta_range": [300, 400],
+            "base_hash": parent.req_hash,
+            "base_offset": 300,
+            "base_save_uuid": parent.save_uuid,
+            "delta_range": [300, 400],
             "chain_depth": 1,
         },
     )
@@ -317,15 +333,25 @@ def test_a2_recurrent_taken_from_newest_link_only(root: str):
     # sanity: the two recurrent snapshots really differ.
     assert not mx.array_equal(distinct_rec.state[0], leaf_recurrent[0]).item()
 
-    _write_link(root, salt=20, idx=0, offset=200, cache_at_offset=base_cache, tokens=tokens)
+    _write_link(
+        root, salt=20, idx=0, offset=200, cache_at_offset=base_cache, tokens=tokens
+    )
     parent = _dkc.get_content_index().longest_strict_prefix(tokens)
     dcache = _dkc.build_delta_cache(canon, 200, 400)
     leaf_path, _ = _write_link(
-        root, salt=20, idx=1, offset=400, cache_at_offset=canon, tokens=tokens,
-        kind="delta", delta_cache=dcache,
+        root,
+        salt=20,
+        idx=1,
+        offset=400,
+        cache_at_offset=canon,
+        tokens=tokens,
+        kind="delta",
+        delta_cache=dcache,
         delta_meta={
-            "base_hash": parent.req_hash, "base_offset": 200,
-            "base_save_uuid": parent.save_uuid, "delta_range": [200, 400],
+            "base_hash": parent.req_hash,
+            "base_offset": 200,
+            "base_save_uuid": parent.save_uuid,
+            "delta_range": [200, 400],
             "chain_depth": 1,
         },
     )
@@ -344,17 +370,29 @@ def test_a_lookup_routes_delta_through_chain(root: str):
     canon = _canonical_full(512, with_recurrent=True)
     tokens = _tokens(512)
     _write_link(
-        root, salt=1, idx=0, offset=256,
-        cache_at_offset=_slice_full_to(canon, 256), tokens=tokens,
+        root,
+        salt=1,
+        idx=0,
+        offset=256,
+        cache_at_offset=_slice_full_to(canon, 256),
+        tokens=tokens,
     )
     parent = _dkc.get_content_index().longest_strict_prefix(tokens)
     dcache = _dkc.build_delta_cache(canon, 256, 512)
     _write_link(
-        root, salt=1, idx=1, offset=512, cache_at_offset=canon, tokens=tokens,
-        kind="delta", delta_cache=dcache,
+        root,
+        salt=1,
+        idx=1,
+        offset=512,
+        cache_at_offset=canon,
+        tokens=tokens,
+        kind="delta",
+        delta_cache=dcache,
         delta_meta={
-            "base_hash": parent.req_hash, "base_offset": 256,
-            "base_save_uuid": parent.save_uuid, "delta_range": [256, 512],
+            "base_hash": parent.req_hash,
+            "base_offset": 256,
+            "base_save_uuid": parent.save_uuid,
+            "delta_range": [256, 512],
             "chain_depth": 1,
         },
     )
@@ -387,7 +425,9 @@ def test_b_broken_chain_falls_back_to_base_prefix(root: str):
     assert loaded.token_offset == 128
     _assert_attention_bit_identical(_slice_full_to(canon, 128), loaded.cache)
     # The broken leaf was dropped from the index (fallback loop advanced).
-    assert 384 not in {r.token_offset for r in _dkc.get_content_index()._by_key.values()}
+    assert 384 not in {
+        r.token_offset for r in _dkc.get_content_index()._by_key.values()
+    }
 
 
 def test_b2_quarantining_a_delta_leaf_decrefs_its_base(root: str):
@@ -496,19 +536,31 @@ def test_e_delta_ranges_contiguous_under_overshoot(root: str):
     canon = _canonical_full(515, with_recurrent=True)
     tokens = _tokens(515)
     _write_link(
-        root, salt=5, idx=0, offset=258,
-        cache_at_offset=_slice_full_to(canon, 258), tokens=tokens,
+        root,
+        salt=5,
+        idx=0,
+        offset=258,
+        cache_at_offset=_slice_full_to(canon, 258),
+        tokens=tokens,
     )
     parent = _dkc.get_content_index().longest_strict_prefix(tokens)
     assert parent.token_offset == 258
     dcache = _dkc.build_delta_cache(canon, 258, 515)
     leaf_path, _ = _write_link(
-        root, salt=5, idx=1, offset=515, cache_at_offset=canon, tokens=tokens,
-        kind="delta", delta_cache=dcache,
+        root,
+        salt=5,
+        idx=1,
+        offset=515,
+        cache_at_offset=canon,
+        tokens=tokens,
+        kind="delta",
+        delta_cache=dcache,
         delta_meta={
-            "base_hash": parent.req_hash, "base_offset": 258,
+            "base_hash": parent.req_hash,
+            "base_offset": 258,
             "base_save_uuid": parent.save_uuid,
-            "delta_range": [258, 515], "chain_depth": 1,
+            "delta_range": [258, 515],
+            "chain_depth": 1,
         },
     )
     side = _dkc.read_sidecar(root, _dkc.request_hash("s5-link1", "m"), 515)
@@ -547,8 +599,11 @@ def test_f_concurrent_restore_shared_base(root: str):
     # One base, two deltas (one per leaf) pointing at it.
     rh_base = _dkc.request_hash("s6-base", "m")
     _dkc.write_checkpoint(
-        _slice_full_to(base_cache, 200), root=root, req_hash=rh_base,
-        token_offset=200, model_name="m",
+        _slice_full_to(base_cache, 200),
+        root=root,
+        req_hash=rh_base,
+        token_offset=200,
+        model_name="m",
         extra_metadata={"tokens_key": shared, "save_uuid": "uuid-base6"},
     )
 
@@ -556,12 +611,19 @@ def test_f_concurrent_restore_shared_base(root: str):
         dcache = _dkc.build_delta_cache(canon, 200, 360)
         rh = _dkc.request_hash(f"s6-leaf{salt}", "m")
         p = _dkc.write_checkpoint(
-            canon, root=root, req_hash=rh, token_offset=360, model_name="m",
+            canon,
+            root=root,
+            req_hash=rh,
+            token_offset=360,
+            model_name="m",
             extra_metadata={"tokens_key": tokens, "save_uuid": f"uuid-leaf{salt}"},
-            kind="delta", delta_cache=dcache,
+            kind="delta",
+            delta_cache=dcache,
             delta_meta={
-                "base_hash": rh_base, "base_offset": 200,
-                "base_save_uuid": "uuid-base6", "delta_range": [200, 360],
+                "base_hash": rh_base,
+                "base_offset": 200,
+                "base_save_uuid": "uuid-base6",
+                "delta_range": [200, 360],
                 "chain_depth": 1,
             },
         )
@@ -599,8 +661,12 @@ def test_g_mixed_schema_v1_base_v2_delta(root: str):
     canon = _canonical_full(400, with_recurrent=True)
     tokens = _tokens(400, salt=7)
     base_path, base_uuid = _write_link(
-        root, salt=7, idx=0, offset=200,
-        cache_at_offset=_slice_full_to(canon, 200), tokens=tokens,
+        root,
+        salt=7,
+        idx=0,
+        offset=200,
+        cache_at_offset=_slice_full_to(canon, 200),
+        tokens=tokens,
     )
     # Rewrite the base sidecar as a LEGACY v1 checkpoint: schema_version 1, no
     # ``kind`` key (implicit full base). Keep save_uuid so the delta can pin it.
@@ -617,11 +683,19 @@ def test_g_mixed_schema_v1_base_v2_delta(root: str):
     assert parent.token_offset == 200
     dcache = _dkc.build_delta_cache(canon, 200, 400)
     leaf_path, _ = _write_link(
-        root, salt=7, idx=1, offset=400, cache_at_offset=canon, tokens=tokens,
-        kind="delta", delta_cache=dcache,
+        root,
+        salt=7,
+        idx=1,
+        offset=400,
+        cache_at_offset=canon,
+        tokens=tokens,
+        kind="delta",
+        delta_cache=dcache,
         delta_meta={
-            "base_hash": parent.req_hash, "base_offset": 200,
-            "base_save_uuid": base_uuid, "delta_range": [200, 400],
+            "base_hash": parent.req_hash,
+            "base_offset": 200,
+            "base_save_uuid": base_uuid,
+            "delta_range": [200, 400],
             "chain_depth": 1,
         },
     )
@@ -640,8 +714,12 @@ def test_h_quantized_slice_chain_bit_exact(root: str):
     canon = _canonical_full(384, with_recurrent=True, quantized=True)
     tokens = _tokens(384, salt=8)
     _write_link(
-        root, salt=8, idx=0, offset=192,
-        cache_at_offset=_slice_full_to(canon, 192), tokens=tokens,
+        root,
+        salt=8,
+        idx=0,
+        offset=192,
+        cache_at_offset=_slice_full_to(canon, 192),
+        tokens=tokens,
     )
     parent = _dkc.get_content_index().longest_strict_prefix(tokens)
     dcache = _dkc.build_delta_cache(canon, 192, 384)
@@ -651,11 +729,19 @@ def test_h_quantized_slice_chain_bit_exact(root: str):
     assert q_delta.offset == 192
     assert q_delta.state[0][0].shape[2] == 192  # packed keys, token axis
     leaf_path, _ = _write_link(
-        root, salt=8, idx=1, offset=384, cache_at_offset=canon, tokens=tokens,
-        kind="delta", delta_cache=dcache,
+        root,
+        salt=8,
+        idx=1,
+        offset=384,
+        cache_at_offset=canon,
+        tokens=tokens,
+        kind="delta",
+        delta_cache=dcache,
         delta_meta={
-            "base_hash": parent.req_hash, "base_offset": 192,
-            "base_save_uuid": parent.save_uuid, "delta_range": [192, 384],
+            "base_hash": parent.req_hash,
+            "base_offset": 192,
+            "base_save_uuid": parent.save_uuid,
+            "delta_range": [192, 384],
             "chain_depth": 1,
         },
     )
@@ -704,19 +790,31 @@ def test_obs_delta_bytes_saved_ticks_on_delta_write(root: str):
     tokens = _tokens(400, salt=30)
     # Full base @200 saves nothing.
     _write_link(
-        root, salt=30, idx=0, offset=200,
-        cache_at_offset=_slice_full_to(canon, 200), tokens=tokens,
+        root,
+        salt=30,
+        idx=0,
+        offset=200,
+        cache_at_offset=_slice_full_to(canon, 200),
+        tokens=tokens,
     )
     assert _dkc.get_stats()["delta_bytes_saved"] == before
     # Delta @400 over [200, 400) saves the [0, 200) attention rows.
     parent = _dkc.get_content_index().longest_strict_prefix(tokens)
     dcache = _dkc.build_delta_cache(canon, 200, 400)
     _write_link(
-        root, salt=30, idx=1, offset=400, cache_at_offset=canon, tokens=tokens,
-        kind="delta", delta_cache=dcache,
+        root,
+        salt=30,
+        idx=1,
+        offset=400,
+        cache_at_offset=canon,
+        tokens=tokens,
+        kind="delta",
+        delta_cache=dcache,
         delta_meta={
-            "base_hash": parent.req_hash, "base_offset": 200,
-            "base_save_uuid": parent.save_uuid, "delta_range": [200, 400],
+            "base_hash": parent.req_hash,
+            "base_offset": 200,
+            "base_save_uuid": parent.save_uuid,
+            "delta_range": [200, 400],
             "chain_depth": 1,
         },
     )
@@ -838,29 +936,46 @@ def _write_full_only_delta_leaf(root, model_name):
     tokens = _tokens(400, salt=50)
     rh_base = _dkc.request_hash("guard-base", model_name)
     _dkc.write_checkpoint(
-        _slice_full_to(canon, 200), root=root, req_hash=rh_base,
-        token_offset=200, model_name=model_name, requires_full_checkpoint=False,
+        _slice_full_to(canon, 200),
+        root=root,
+        req_hash=rh_base,
+        token_offset=200,
+        model_name=model_name,
+        requires_full_checkpoint=False,
         extra_metadata={"tokens_key": list(tokens[:200]), "save_uuid": "u-gbase"},
     )
     _dkc.get_content_index().index_checkpoint(
-        list(tokens[:200]), root=root, req_hash=rh_base, token_offset=200,
+        list(tokens[:200]),
+        root=root,
+        req_hash=rh_base,
+        token_offset=200,
         save_uuid="u-gbase",
     )
     dcache = _dkc.build_delta_cache(canon, 200, 400)
     rh_leaf = _dkc.request_hash("guard-leaf", model_name)
     _dkc.write_checkpoint(
-        canon, root=root, req_hash=rh_leaf, token_offset=400,
-        model_name=model_name, requires_full_checkpoint=False,
+        canon,
+        root=root,
+        req_hash=rh_leaf,
+        token_offset=400,
+        model_name=model_name,
+        requires_full_checkpoint=False,
         extra_metadata={"tokens_key": list(tokens), "save_uuid": "u-gleaf"},
-        kind="delta", delta_cache=dcache,
+        kind="delta",
+        delta_cache=dcache,
         delta_meta={
-            "base_hash": rh_base, "base_offset": 200,
-            "base_save_uuid": "u-gbase", "delta_range": [200, 400],
+            "base_hash": rh_base,
+            "base_offset": 200,
+            "base_save_uuid": "u-gbase",
+            "delta_range": [200, 400],
             "chain_depth": 1,
         },
     )
     _dkc.get_content_index().index_checkpoint(
-        list(tokens), root=root, req_hash=rh_leaf, token_offset=400,
+        list(tokens),
+        root=root,
+        req_hash=rh_leaf,
+        token_offset=400,
         save_uuid="u-gleaf",
     )
     return tokens

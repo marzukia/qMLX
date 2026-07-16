@@ -2927,10 +2927,12 @@ class Scheduler:
                     # 0.9.13 PR-B: EV depth controller knobs.
                     max_k=getattr(self.config, "mtp_max_k", 3),
                     disable_auto_k=getattr(self.config, "mtp_disable_auto_k", False),
-                    controller_key=getattr(self, "_model_name", None)
-                    or getattr(self.model_config, "name", None)
-                    if getattr(self, "model_config", None) is not None
-                    else None,
+                    controller_key=(
+                        getattr(self, "_model_name", None)
+                        or getattr(self.model_config, "name", None)
+                        if getattr(self, "model_config", None) is not None
+                        else None
+                    ),
                 )
 
         # Install SuffixDecoding (drafter-free spec-decode).
