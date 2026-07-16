@@ -237,7 +237,6 @@ dev = [
     # Linters / typer — NOT in the `test` extras because running the
     # tests doesn't need them; lint is its own CI step (ruff) and runs
     # from the host environment.
-    "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
@@ -280,11 +279,6 @@ vllm_mlx = [
 where = ["."]
 include = ["vllm_mlx*"]
 
-[tool.black]
-line-length = 88
-target-version = ["py310", "py311", "py312", "py313"]
-
-[tool.ruff]
 line-length = 88
 
 [tool.ruff.lint]
