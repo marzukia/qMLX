@@ -145,12 +145,12 @@ def _assert_attention_bit_identical(expected: list, got: list) -> None:
             ek, ev = e.state
             gk, gv = g.state
             for j in range(3):
-                assert mx.array_equal(
-                    ek[j], gk[j]
-                ).item(), f"layer {i} qkey[{j}] differ"
-                assert mx.array_equal(
-                    ev[j], gv[j]
-                ).item(), f"layer {i} qval[{j}] differ"
+                assert mx.array_equal(ek[j], gk[j]).item(), (
+                    f"layer {i} qkey[{j}] differ"
+                )
+                assert mx.array_equal(ev[j], gv[j]).item(), (
+                    f"layer {i} qval[{j}] differ"
+                )
             assert g.offset == e.offset
 
 
