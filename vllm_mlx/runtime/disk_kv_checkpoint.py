@@ -270,6 +270,17 @@ def delta_keyframe_interval() -> int:
     return n if n >= 1 else _DELTA_KEYFRAME_DEFAULT
 
 
+def should_write_keyframe(parent_chain_depth: int) -> bool:
+    """True when a would-be delta whose parent is at ``parent_chain_depth`` must
+    instead be written as a full base (a keyframe).
+
+    Fires when the child's depth (``parent_chain_depth + 1``) reaches the
+    keyframe interval N, so on-disk chains never exceed depth N-1 and a restore
+    walks at most N links. O(1), no chain walk (design §4).
+    """
+    return (int(parent_chain_depth) + 1) >= delta_keyframe_interval()
+
+
 # Cache classes whose on-disk state is an appendable, token-indexed attention
 # KV (sliceable on axis 2 into deltas). Everything else — GatedDeltaNet
 # ``ArraysCache``, Mamba, rotating/sliding window — carries a fixed-size or
@@ -289,6 +300,203 @@ def _layer_class_name(layer: Any) -> str:
 def _is_attention_layer(class_name: str) -> bool:
     """True when a layer of this cache class holds sliceable attention KV."""
     return class_name in ATTENTION_CACHE_CLASSES
+
+
+# ---------------------------------------------------------------------------
+# Chain refcounts (guard eviction from orphaning a base with live descendants)
+# ---------------------------------------------------------------------------
+#
+# ``_persistent_refcount[id]`` = number of live deltas whose base_hash/base_offset
+# point at ``id`` (a checkpoint's true in-degree; a base can fan out to many
+# children from branching conversations). Maintained INCREMENTALLY: +1 on delta
+# commit, -1 when a descendant is evicted, with a full rebuild from sidecar edges
+# only at startup. ``_transient_refcount[id]`` = number of in-flight chain reads
+# touching ``id`` (the restore-side read lock, §3). Both are read under
+# ``_DISK_LOCK`` by :func:`enforce_disk_cap`; a checkpoint with EITHER > 0 is
+# never unlinked (invariant 3: eviction never removes a checkpoint with a live
+# descendant or an in-flight reader).
+_persistent_refcount: dict[str, int] = {}
+_transient_refcount: dict[str, int] = {}
+
+
+def _ckpt_id(req_hash: str, token_offset: int) -> str:
+    return f"{req_hash}:{int(token_offset)}"
+
+
+def _incref_persistent(req_hash: str, token_offset: int) -> None:
+    if not req_hash or token_offset <= 0:
+        return
+    key = _ckpt_id(req_hash, token_offset)
+    with _DISK_LOCK:
+        _persistent_refcount[key] = _persistent_refcount.get(key, 0) + 1
+
+
+def _decref_persistent(req_hash: str, token_offset: int) -> None:
+    if not req_hash or token_offset <= 0:
+        return
+    key = _ckpt_id(req_hash, token_offset)
+    with _DISK_LOCK:
+        cur = _persistent_refcount.get(key, 0) - 1
+        if cur <= 0:
+            _persistent_refcount.pop(key, None)
+        else:
+            _persistent_refcount[key] = cur
+
+
+def _incref_transient(req_hash: str, token_offset: int) -> None:
+    key = _ckpt_id(req_hash, token_offset)
+    with _DISK_LOCK:
+        _transient_refcount[key] = _transient_refcount.get(key, 0) + 1
+
+
+def _decref_transient(req_hash: str, token_offset: int) -> None:
+    key = _ckpt_id(req_hash, token_offset)
+    with _DISK_LOCK:
+        cur = _transient_refcount.get(key, 0) - 1
+        if cur <= 0:
+            _transient_refcount.pop(key, None)
+        else:
+            _transient_refcount[key] = cur
+
+
+def _is_protected(req_hash: str, token_offset: int) -> bool:
+    """True when this checkpoint has a live descendant or an in-flight reader.
+
+    O(1) dict lookups; called under ``_DISK_LOCK`` from the eviction loop.
+    """
+    key = _ckpt_id(req_hash, token_offset)
+    return _persistent_refcount.get(key, 0) > 0 or _transient_refcount.get(key, 0) > 0
+
+
+def reset_refcounts_for_tests() -> None:
+    """Test-only: clear both refcount maps."""
+    with _DISK_LOCK:
+        _persistent_refcount.clear()
+        _transient_refcount.clear()
+
+
+def rebuild_refcounts(root: str) -> None:
+    """Recompute ``_persistent_refcount`` from sidecar base_* edges under ``root``.
+
+    Called once at startup (from :func:`build_content_index`) so deltas a
+    previous process left on disk protect their bases before the first eviction
+    pass. One sidecar-JSON read per checkpoint; the O(N) cost is paid once at
+    boot, NOT on the per-write enforce path (which maintains the map
+    incrementally). The transient map is process-local and intentionally left
+    empty on rebuild.
+    """
+    counts: dict[str, int] = {}
+    with _DISK_LOCK:
+        for path, _mtime, _size in scan_checkpoints(root):
+            parsed = _parse_checkpoint_path(path)
+            if parsed is None:
+                continue
+            side = _read_sidecar_for_path(path)
+            if not side or side.get("kind") != "delta":
+                continue
+            b_hash = str(side.get("base_hash") or "")
+            b_off = int(side.get("base_offset") or 0)
+            if b_hash and b_off > 0:
+                key = _ckpt_id(b_hash, b_off)
+                counts[key] = counts.get(key, 0) + 1
+        _persistent_refcount.clear()
+        _persistent_refcount.update(counts)
+
+
+# ---------------------------------------------------------------------------
+# Sidecar + parent-resident helpers (delta write/restore)
+# ---------------------------------------------------------------------------
+
+
+def _read_sidecar_for_path(path: str) -> dict[str, Any] | None:
+    """Read+parse the JSON sidecar paired with a checkpoint safetensors ``path``."""
+    meta_path_str = path.replace(_CHECKPOINT_EXT, _METADATA_EXT)
+    if not os.path.isfile(meta_path_str):
+        return None
+    try:
+        with open(meta_path_str, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def read_sidecar(root: str, req_hash: str, token_offset: int) -> dict[str, Any] | None:
+    """Read the sidecar for ``(req_hash, token_offset)`` under ``root``."""
+    return _read_sidecar_for_path(checkpoint_path(root, req_hash, token_offset))
+
+
+def _parent_resident(
+    root: str, base_hash: str, base_offset: int, base_save_uuid: str | None
+) -> bool:
+    """True when the parent checkpoint is still fully on disk (TOCTOU recheck).
+
+    Requires the body AND the tokens blob (restore needs the tokens blob to
+    byte-verify) and, when ``base_save_uuid`` is known, that the parent's
+    sidecar still carries that exact uuid (a re-materialised parent with a
+    different uuid is NOT the same content). Called under ``_DISK_LOCK``.
+    """
+    body = checkpoint_path(root, base_hash, base_offset)
+    if not os.path.isfile(body):
+        return False
+    if not os.path.isfile(tokens_path(root, base_hash, base_offset)):
+        return False
+    if base_save_uuid:
+        side = _read_sidecar_for_path(body)
+        if not side or str(side.get("save_uuid") or "") != str(base_save_uuid):
+            return False
+    return True
+
+
+def build_delta_cache(
+    cache: list[Any], base_offset: int, current_offset: int
+) -> list[Any] | None:
+    """Build a delta cache body: attention sliced to [base_offset, current_offset),
+    recurrent layers snapshotted whole.
+
+    Returns a new cache list where each attention layer (``KVCache`` /
+    ``QuantizedKVCache``) carries only its ``[base_offset:current_offset]`` rows
+    on the token axis (axis 2) and each recurrent layer is passed through
+    unchanged (the current whole snapshot). Returns None if the geometry is
+    inconsistent (an attention layer whose live offset != ``current_offset``, or
+    an empty range), so the caller falls back to a full base rather than writing
+    a mis-sliced delta.
+    """
+    try:
+        from mlx_lm.models.cache import KVCache, QuantizedKVCache
+    except ImportError:  # pragma: no cover
+        return None
+    if base_offset < 0 or current_offset <= base_offset:
+        return None
+    out: list[Any] = []
+    for layer in cache:
+        cls = _layer_class_name(layer)
+        if not _is_attention_layer(cls):
+            # Recurrent / window state: snapshot whole (unchanged).
+            out.append(layer)
+            continue
+        off = getattr(layer, "offset", None)
+        if not isinstance(off, int) or off != current_offset:
+            # The delta slice would not line up with the claimed offset.
+            return None
+        keys, values = layer.state  # trimmed to offset already
+        if cls == "QuantizedKVCache":
+            # State is ((k_packed, k_scales, k_biases), (v_packed, ...)); the
+            # token axis (2) is not packed, so slice each component on axis 2.
+            ks = tuple(t[:, :, base_offset:current_offset, :] for t in keys)
+            vs = tuple(t[:, :, base_offset:current_offset, :] for t in values)
+            new = QuantizedKVCache(
+                group_size=layer.group_size, bits=layer.bits
+            )
+            new.state = (ks, vs)
+            new.offset = current_offset - base_offset
+        else:  # KVCache (bf16 / fp16) — the hybrid-model attention path
+            ks = keys[:, :, base_offset:current_offset, :]
+            vs = values[:, :, base_offset:current_offset, :]
+            new = KVCache()
+            new.state = (ks, vs)  # setter derives offset from ks.shape[2]
+        out.append(new)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +848,9 @@ def write_checkpoint(
     model_name: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
     radix_index: Any | None = None,
+    kind: str = "full",
+    delta_cache: list[Any] | None = None,
+    delta_meta: dict[str, Any] | None = None,
 ) -> str | None:
     """Write one cache snapshot to disk at ``token_offset`` atomically.
 
@@ -749,6 +960,35 @@ def write_checkpoint(
                 except (TypeError, ValueError):
                     tokens_for_blob = None
 
+        # Delta vs full decision, made HERE under ``_DISK_LOCK`` so the parent
+        # re-validation and the write share the same lock the trailing
+        # eviction holds (TOCTOU, design §1). ``delta_cache`` is the sliced
+        # attention + full recurrent body the caller pre-built; ``delta_meta``
+        # carries the parent link. If the parent was evicted between the
+        # caller's content-index discovery and now, fall back to a full base
+        # (serialize ``cache``, the untrimmed-history whole snapshot) so the
+        # write is never orphaned.
+        write_body = cache
+        final_kind = "full"
+        resolved_delta: dict[str, Any] | None = None
+        if kind == "delta" and delta_cache is not None and delta_meta is not None:
+            b_hash = str(delta_meta.get("base_hash") or "")
+            b_off = int(delta_meta.get("base_offset") or 0)
+            b_uuid = delta_meta.get("base_save_uuid")
+            if b_hash and b_off > 0 and _parent_resident(root, b_hash, b_off, b_uuid):
+                write_body = delta_cache
+                final_kind = "delta"
+                resolved_delta = delta_meta
+            else:
+                logger.info(
+                    "[disk_kv_checkpoint] delta parent %s@%d gone at write time; "
+                    "writing full base at %s@%d",
+                    b_hash,
+                    b_off,
+                    req_hash,
+                    token_offset,
+                )
+
         # Build the safetensors metadata that ships INSIDE the file.
         # ``save_prompt_cache`` requires str→str — JSON-encode the
         # boolean / int fields so the round-trip is faithful.
@@ -757,12 +997,13 @@ def write_checkpoint(
             "kv_dtype": kv_dtype,
             "requires_full_checkpoint": "true" if requires_full_checkpoint else "false",
             "save_uuid": save_uuid,
+            "kind": final_kind,
         }
         if model_name:
             st_meta["model_name"] = str(model_name)
 
         try:
-            save_prompt_cache(tmp_path, cache, metadata=st_meta)
+            save_prompt_cache(tmp_path, write_body, metadata=st_meta)
             # Durably commit the body BEFORE the rename. Same rationale as
             # ``memory_cache.py`` R8-M7 codex r1 BLOCKING #3 — without
             # the fsync a SIGTERM-driven shutdown could leave a renamed
@@ -833,7 +1074,25 @@ def write_checkpoint(
             "save_uuid": save_uuid,
             "has_tokens": tokens_persisted,
             "tokens_count": tokens_count,
+            # Delta-chain bookkeeping. ``kind`` is owned by the writer so a
+            # caller can't forge it. A full base has chain_depth 0 and no base_*
+            # link; a delta carries the parent link + its depth (parent depth+1),
+            # which drives the O(1) keyframe trigger with no chain walk.
+            "kind": final_kind,
+            "chain_depth": (
+                int(resolved_delta.get("chain_depth", 1))
+                if resolved_delta is not None
+                else 0
+            ),
         }
+        if resolved_delta is not None:
+            meta_payload["base_hash"] = str(resolved_delta.get("base_hash") or "")
+            meta_payload["base_offset"] = int(resolved_delta.get("base_offset") or 0)
+            meta_payload["base_save_uuid"] = resolved_delta.get("base_save_uuid")
+            meta_payload["delta_range"] = [
+                int(resolved_delta.get("base_offset") or 0),
+                int(token_offset),
+            ]
         if extra_metadata:
             for k, v in extra_metadata.items():
                 if k in meta_payload:
@@ -867,6 +1126,17 @@ def write_checkpoint(
         with _STATS_LOCK:
             _STATS.writes += 1
             _STATS.bytes = _measure_root_bytes(root)
+
+        # Chain-aware eviction bookkeeping: a committed delta pins its parent
+        # by +1 on the persistent refcount so ``enforce_disk_cap`` never evicts
+        # a base with a live descendant. Maintained incrementally (no O(N)
+        # sidecar rescan on the write hot path); still under ``_DISK_LOCK``, the
+        # same lock eviction's protection check reads under.
+        if final_kind == "delta" and resolved_delta is not None:
+            _incref_persistent(
+                str(resolved_delta.get("base_hash") or ""),
+                int(resolved_delta.get("base_offset") or 0),
+            )
 
         # Radix hand-off — best-effort, mirrors the in-process store path.
         if radix_index is not None and extra_metadata is not None:
@@ -1112,6 +1382,237 @@ def load_checkpoint(path: str) -> LoadedCheckpoint | None:
         )
 
 
+def _resolve_chain(leaf_path: str) -> list[dict[str, Any]] | None:
+    """Walk ``base_hash`` parent links from a delta leaf back to its root base.
+
+    Returns the chain ordered base→leaf as a list of link dicts
+    (``path``/``req_hash``/``offset``/``sidecar``/``tokens``), or None on ANY
+    doubt (missing/unreadable sidecar, a broken link, a base_save_uuid that
+    doesn't pin its parent, a per-link tokens blob that isn't its offset-length
+    prefix, or a cycle / over-long chain). Reads sidecars + tokens blobs only;
+    takes no lock (the caller re-validates residency under ``_DISK_LOCK``).
+    """
+    root = os.path.dirname(os.path.dirname(leaf_path))
+    chain: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    path = leaf_path
+    # A well-formed chain is at most keyframe_interval links; allow slack for a
+    # v1-base + off-by-one, then bail to guard against a cycle / corrupt link.
+    bound = delta_keyframe_interval() + 8
+    for _ in range(bound):
+        parsed = _parse_checkpoint_path(path)
+        side = _read_sidecar_for_path(path)
+        if parsed is None or side is None:
+            return None
+        rh, off = parsed
+        tokens, _uuid = _read_checkpoint_tokens(path)
+        if tokens is None or len(tokens) != off:
+            # Per-link integrity: the tokens blob must exist and cover exactly
+            # this link's claimed offset (defense against a re-materialised base).
+            return None
+        chain.append(
+            {
+                "path": path,
+                "req_hash": rh,
+                "offset": off,
+                "sidecar": side,
+                "tokens": tokens,
+            }
+        )
+        if side.get("kind") != "delta":
+            break  # reached the root base
+        b_hash = str(side.get("base_hash") or "")
+        b_off = int(side.get("base_offset") or 0)
+        if not b_hash or b_off <= 0:
+            return None
+        parent_path = checkpoint_path(root, b_hash, b_off)
+        if parent_path in seen:
+            return None  # cycle
+        seen.add(parent_path)
+        path = parent_path
+    else:
+        return None  # exceeded the length bound without hitting a base
+
+    chain.reverse()  # base → leaf
+    # base_save_uuid pin + contiguous-prefix check across every adjacent pair.
+    for parent, child in zip(chain, chain[1:]):
+        cside = child["sidecar"]
+        pin = cside.get("base_save_uuid")
+        if pin and str(pin) != str(parent["sidecar"].get("save_uuid") or ""):
+            return None
+        p_off = parent["offset"]
+        if child["tokens"][:p_off] != parent["tokens"]:
+            return None
+    return chain
+
+
+def _read_link_attention_layer(
+    arrays: dict[str, Any], idx: int, class_name: str
+) -> tuple[Any, Any] | None:
+    """Pull one attention layer's stored (keys, values) out of an ``mx.load`` dict.
+
+    A delta link's stored attention tensor is ALREADY that link's contiguous
+    contribution (the writer sliced it), so reading it whole here is exactly the
+    slice to concat — and because ``mx.load`` mmaps lazily, the co-resident
+    recurrent tensors are never faulted in. bf16 attention round-trips through
+    ``mx.load`` (the installed safetensors mlx framework cannot read bf16 via
+    ``safe_open.get_slice`` — see the module note), so this is the selective
+    reader for the whole feature.
+    """
+    if class_name == "QuantizedKVCache":
+        try:
+            keys = tuple(arrays[f"{idx}.0.{j}"] for j in range(3))
+            values = tuple(arrays[f"{idx}.1.{j}"] for j in range(3))
+        except KeyError:
+            return None
+        return keys, values
+    kk = arrays.get(f"{idx}.0")
+    vv = arrays.get(f"{idx}.1")
+    if kk is None or vv is None:
+        return None
+    return kk, vv
+
+
+def load_checkpoint_chain(leaf_path: str) -> LoadedCheckpoint | None:
+    """Assemble a full cache from a delta chain (base + deltas → leaf).
+
+    Reads the recurrent state from the NEWEST link only (a delta still carries a
+    whole recurrent snapshot; loading every link's ~147MB copy would make
+    restore slower than a cold prefill) and concatenates the attention history
+    one layer at a time to cap peak RAM at a single layer's worth across the
+    whole chain (``mx.concatenate`` is not streaming — assembling all layers at
+    once can spike tens of GB on a deep chain). Returns None on ANY failure so
+    the caller degrades to a shorter-prefix or cold restore, never a corrupt
+    one (evict-on-fail, §5).
+
+    Transient read lock (§3): every link's refcount is bumped under
+    ``_DISK_LOCK`` before the unlocked body reads and dropped under the lock
+    after, so a concurrent eviction either loses the race (skips a
+    refcounted link) or wins it (a link is already gone at increment time and
+    we abort to evict-on-fail).
+    """
+    try:
+        import mlx.core as mx
+        from mlx_lm.models.cache import load_prompt_cache
+    except ImportError:  # pragma: no cover
+        return None
+
+    chain = _resolve_chain(leaf_path)
+    if chain is None:
+        return None
+
+    # --- transient read lock: increment every link, aborting if any is gone ---
+    pinned: list[tuple[str, int]] = []
+    with _DISK_LOCK:
+        aborted = False
+        for link in chain:
+            if not os.path.isfile(link["path"]):
+                aborted = True
+                break
+            _transient_refcount[_ckpt_id(link["req_hash"], link["offset"])] = (
+                _transient_refcount.get(
+                    _ckpt_id(link["req_hash"], link["offset"]), 0
+                )
+                + 1
+            )
+            pinned.append((link["req_hash"], link["offset"]))
+        if aborted:
+            for rh, off in pinned:
+                _decref_transient(rh, off)
+            pinned = []
+    if not pinned:
+        return None
+
+    try:
+        leaf = chain[-1]
+        leaf_side = leaf["sidecar"]
+        # Leaf load (whole): gives correctly-typed cache objects, the newest
+        # recurrent snapshot, and the leaf's own attention contribution.
+        leaf_cache = load_prompt_cache(leaf["path"])
+        attn_idx = [
+            i
+            for i, layer in enumerate(leaf_cache)
+            if _is_attention_layer(_layer_class_name(layer))
+        ]
+
+        # Pre-open every non-leaf link once via mx.load (mmap, lazy); attention
+        # tensors are pulled per layer below, recurrent tensors never touched.
+        prior_arrays: list[tuple[dict[str, Any], dict[str, str]]] = []
+        for link in chain[:-1]:
+            arrs, meta = mx.load(link["path"], return_metadata=True)
+            prior_arrays.append((arrs, meta))
+
+        leaf_offset = leaf["offset"]
+        for i in attn_idx:
+            cls = _layer_class_name(leaf_cache[i])
+            slices_k: list[Any] = []
+            slices_v: list[Any] = []
+            ok = True
+            for arrs, meta in prior_arrays:
+                link_cls = str(meta.get(f"2.{i}", cls))
+                got = _read_link_attention_layer(arrs, i, link_cls)
+                if got is None:
+                    ok = False
+                    break
+                slices_k.append(got[0])
+                slices_v.append(got[1])
+            if not ok:
+                return None
+            # Leaf's own contribution comes from the loaded object's state.
+            leaf_state = leaf_cache[i].state
+            slices_k.append(leaf_state[0])
+            slices_v.append(leaf_state[1])
+
+            if cls == "QuantizedKVCache":
+                # Concat each of the 3 quantized components on the token axis.
+                cat_k = tuple(
+                    mx.concatenate([s[j] for s in slices_k], axis=2) for j in range(3)
+                )
+                cat_v = tuple(
+                    mx.concatenate([s[j] for s in slices_v], axis=2) for j in range(3)
+                )
+                leaf_cache[i].state = (cat_k, cat_v)
+                leaf_cache[i].offset = leaf_offset
+                mx.eval(cat_k, cat_v)
+            else:
+                cat_k = mx.concatenate(slices_k, axis=2)
+                cat_v = mx.concatenate(slices_v, axis=2)
+                leaf_cache[i].state = (cat_k, cat_v)  # setter derives offset
+                mx.eval(cat_k, cat_v)
+            # Drop this layer's slice references before the next layer so peak
+            # RAM stays at one assembled layer's worth (§3 stream concat).
+            slices_k = []
+            slices_v = []
+
+        token_offset = int(
+            leaf_side.get("token_offset")
+            if leaf_side.get("token_offset") is not None
+            else leaf_offset
+        )
+        kv_dtype = str(leaf_side.get("kv_dtype") or "bf16")
+        requires_full = bool(leaf_side.get("requires_full_checkpoint", False))
+
+        with _STATS_LOCK:
+            _STATS.loads += 1
+
+        return LoadedCheckpoint(
+            cache=leaf_cache,
+            token_offset=token_offset,
+            kv_dtype=kv_dtype,
+            requires_full_checkpoint=requires_full,
+            metadata=leaf_side,
+            path=leaf["path"],
+        )
+    except Exception as e:
+        logger.warning(
+            "[disk_kv_checkpoint] chain assembly failed for %r: %s", leaf_path, e
+        )
+        return None
+    finally:
+        for rh, off in pinned:
+            _decref_transient(rh, off)
+
+
 def scan_checkpoints(root: str) -> list[tuple[str, float, int]]:
     """Return ``[(path, mtime, size_bytes), …]`` for every committed checkpoint.
 
@@ -1256,6 +1757,23 @@ def enforce_disk_cap(
         for path, _mtime, size in (*unmatchable, *matchable):
             if total <= low_water:
                 break
+            # Chain-aware protection (§4). Never unlink a checkpoint that still
+            # has a live descendant (persistent refcount) or an in-flight chain
+            # reader (transient refcount) — that is invariant 3 and it is HARD,
+            # not an LRU preference. Bases are the oldest files, so without this
+            # the oldest-first loop would delete a base before its deltas and
+            # orphan the chain on every pass. Protected entries are simply
+            # skipped; among the rest the existing unmatchable-first / oldest-
+            # mtime order is preserved. (If everything left is protected the loop
+            # frees nothing this pass and the next write's pass retries once a
+            # leaf has been evicted and its base decref'd to 0.)
+            parsed = _parse_checkpoint_path(path)
+            if parsed is not None and _is_protected(parsed[0], parsed[1]):
+                continue
+            # Read the sidecar BEFORE unlinking so an evicted DELTA can decrement
+            # its parent's persistent refcount (one JSON read per evicted delta,
+            # not per candidate). A base carries no base_* link and skips this.
+            evicted_side = _read_sidecar_for_path(path)
             try:
                 os.unlink(path)
             except OSError as e:
@@ -1263,6 +1781,11 @@ def enforce_disk_cap(
                     f"[disk_kv_checkpoint] eviction unlink({path!r}) failed: {e}"
                 )
                 continue
+            if evicted_side and evicted_side.get("kind") == "delta":
+                _decref_persistent(
+                    str(evicted_side.get("base_hash") or ""),
+                    int(evicted_side.get("base_offset") or 0),
+                )
             sidecar = path.replace(_CHECKPOINT_EXT, _METADATA_EXT)
             try:
                 os.unlink(sidecar)
@@ -1453,6 +1976,34 @@ class DiskCheckpointIndex:
                 self._by_key[key] = ref
                 indexed += 1
         return indexed
+
+    def longest_strict_prefix(self, query_tokens) -> _CheckpointRef | None:
+        """Return the indexed checkpoint that is the longest STRICT prefix of
+        ``query_tokens`` (length < len(query)), or None.
+
+        Used at delta-WRITE time to discover a parent for the checkpoint about
+        to be written: the current tokens minus at least one tail token. Unlike
+        :meth:`lookup` (which accepts an equal-length match and byte-verifies on
+        disk), this is an in-memory, strict-prefix query — the writer re-validates
+        the parent on disk under ``_DISK_LOCK`` (TOCTOU) before trusting it.
+        """
+        try:
+            q = [int(t) for t in query_tokens]
+        except (TypeError, ValueError):
+            return None
+        if not q:
+            return None
+        best: _CheckpointRef | None = None
+        best_len = -1
+        with self._lock:
+            for k, ref in self._by_key.items():
+                lk = len(k)
+                if lk <= best_len or lk >= len(q):
+                    continue
+                if all(k[i] == q[i] for i in range(lk)):
+                    best = ref
+                    best_len = lk
+        return best
 
     def nearest_divergence(self, query_tokens):
         """Diagnostics: indexed key with the longest common prefix vs
@@ -1655,11 +2206,24 @@ class DiskCheckpointIndex:
                     # HARD: bytes genuinely wrong / incompatible. Quarantine.
                     self._quarantine(key, ref, offset, "tokens_blob_verify_fail")
                 continue
-            loaded = load_checkpoint(ref.path)
+            # A delta leaf must be assembled up its base_hash chain; a full base
+            # loads directly. The chain assembler is gated on the delta feature
+            # flag — with it off, an on-disk delta is treated as unrestorable
+            # here (soft-evict → fall back to the base's own shorter prefix).
+            side = _read_sidecar_for_path(ref.path)
+            is_delta = bool(side and side.get("kind") == "delta")
+            if is_delta and delta_checkpoints_enabled():
+                loaded = load_checkpoint_chain(ref.path)
+            elif is_delta:
+                loaded = None
+            else:
+                loaded = load_checkpoint(ref.path)
             if loaded is None:
                 # TRANSIENT: schema guard aside, a None here can be a momentary
-                # mmap / OOM failure to materialise. Soft-evict (no disk
-                # rename) so the fallback advances without destroying the file.
+                # mmap / OOM failure to materialise, or a delta whose chain could
+                # not be assembled (base evicted). Soft-evict (no disk rename) so
+                # the fallback advances to the base's shorter prefix without
+                # destroying a file that a later rescan can re-link.
                 logger.info(
                     "[kv_restore_lookup] MISS reason=load_checkpoint_none offset=%d",
                     offset,
@@ -1814,6 +2378,13 @@ def build_content_index(root: str | None = None) -> int:
     """
     if root is None:
         root = get_default_root()
+    # Recompute the chain refcounts from on-disk edges at the same time so a
+    # delta a previous process left on disk protects its base before the first
+    # eviction pass. Best-effort: a rebuild failure must not block indexing.
+    try:
+        rebuild_refcounts(root)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug(f"[disk_kv_checkpoint] refcount rebuild failed: {e}")
     return get_content_index().build_from_root(root)
 
 
@@ -2139,16 +2710,25 @@ __all__ = [
     "DiskCheckpointIndex",
     "LoadedCheckpoint",
     "MODELS_REQUIRING_FULL_CHECKPOINT",
+    "DELTA_SLICEABLE_HYBRID_MODELS",
     "RequestCheckpointState",
     "build_content_index",
+    "build_delta_cache",
     "checkpoint_path",
     "cleanup_request",
+    "delta_checkpoints_enabled",
+    "delta_keyframe_interval",
     "enforce_disk_cap",
     "get_content_index",
     "get_default_root",
     "get_stats",
     "load_checkpoint",
+    "load_checkpoint_chain",
     "maybe_write_checkpoint",
+    "read_sidecar",
+    "rebuild_refcounts",
+    "reset_refcounts_for_tests",
+    "should_write_keyframe",
     "metadata_path",
     "model_requires_full_checkpoint",
     "record_hook_error",

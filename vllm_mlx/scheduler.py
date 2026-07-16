@@ -5214,6 +5214,58 @@ class Scheduler:
                         self.config.kv_cache_quantization_group_size,
                     )
 
+            # Delta path (off by default). Discover the longest strict-prefix
+            # checkpoint as a parent via the content index, build a delta body
+            # (attention sliced to [base_offset, len(tokens)); recurrent whole),
+            # and hand both to the writer, which re-validates the parent under
+            # _DISK_LOCK and falls back to a full base if it was evicted (TOCTOU).
+            # A keyframe every N deltas writes a full base to bound chain length.
+            delta_kind = "full"
+            delta_cache = None
+            delta_meta = None
+            if _dkc.delta_checkpoints_enabled():
+                try:
+                    parent = _dkc.get_content_index().longest_strict_prefix(tokens)
+                    if parent is not None:
+                        pside = _dkc.read_sidecar(
+                            root, parent.req_hash, parent.token_offset
+                        )
+                        parent_depth = (
+                            int((pside or {}).get("chain_depth", 0) or 0)
+                            if pside is not None
+                            else 0
+                        )
+                        child_depth = parent_depth + 1
+                        base_offset = int(parent.token_offset)
+                        # Keyframe: when the next depth reaches N, write a full
+                        # base instead (resets the chain, bounds restore links).
+                        if (
+                            pside is not None
+                            and not _dkc.should_write_keyframe(parent_depth)
+                            and 0 < base_offset < len(tokens)
+                        ):
+                            built = _dkc.build_delta_cache(
+                                write_cache, base_offset, len(tokens)
+                            )
+                            if built is not None:
+                                delta_cache = built
+                                delta_kind = "delta"
+                                delta_meta = {
+                                    "base_hash": parent.req_hash,
+                                    "base_offset": base_offset,
+                                    "base_save_uuid": parent.save_uuid,
+                                    "delta_range": [base_offset, len(tokens)],
+                                    "chain_depth": child_depth,
+                                }
+                except Exception as _delta_err:  # pragma: no cover — best-effort
+                    logger.debug(
+                        "[disk_persist] delta planning failed: %s; full base",
+                        _delta_err,
+                    )
+                    delta_kind = "full"
+                    delta_cache = None
+                    delta_meta = None
+
             _dkc.write_checkpoint(
                 write_cache,
                 root=root,
@@ -5226,6 +5278,9 @@ class Scheduler:
                     "tokens_key": list(tokens),
                     "save_uuid": uuid.uuid4().hex,
                 },
+                kind=delta_kind,
+                delta_cache=delta_cache,
+                delta_meta=delta_meta,
             )
         except Exception as _e:  # pragma: no cover — boundary write is best-effort
             logger.debug("[disk_persist] boundary write failed: %s", _e)
