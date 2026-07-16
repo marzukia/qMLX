@@ -157,11 +157,14 @@ _DISK_CAP_LOW_WATER = _resolve_low_water()
 #   at that position, not just the offset. Our writer captures the entire
 #   ``prompt_cache`` list, which includes the live window state, so the
 #   loader gets a faithful resume point.
-# - **Qwen3.5 hybrid attention**: full-attention and sliding layers
-#   alternate. The sliding layers have the same constraint as Gemma 4; we
-#   therefore checkpoint both layer types together — there's no benefit to
-#   per-layer slicing because the cache state has to round-trip in
-#   lock-step.
+#
+# Qwen3.5 is NOT here anymore: its full-attention layers store K post-RoPE and
+# token-indexed on axis 2, so an appended token never rewrites an earlier row
+# and the attention history is sliceable into deltas (the recurrent GatedDeltaNet
+# layers are still snapshotted whole — see the delta-checkpoint write/restore
+# path). The "must restore as one blob" bool below is now False for Qwen3.5; the
+# "attention-sliceable, recurrent-full" nuance lives in the delta write/restore
+# code, not in this flag.
 #
 # Pattern match is case-insensitive substring over BOTH the alias key and
 # the resolved HF path (mirrors ``kv_cache_dtype._is_sliding_window``).
@@ -173,6 +176,17 @@ MODELS_REQUIRING_FULL_CHECKPOINT: frozenset[str] = frozenset(
         "gemma-4",
         "gemma_4",
         "gemma4",
+    }
+)
+
+# Model families whose hybrid-attention cache IS delta-sliceable (attention
+# layers token-indexed post-RoPE, recurrent state snapshotted whole). The
+# ``hybrid_attention`` HF-config gate below returns "must checkpoint whole" for
+# any hybrid EXCEPT these — a future hybrid we haven't validated stays on the
+# safe full-blob path, while Qwen3.5 opts into slicing. Gate on model identity,
+# not just the raw hybrid flag (design §6).
+DELTA_SLICEABLE_HYBRID_MODELS: frozenset[str] = frozenset(
+    {
         "qwen3.5",
         "qwen3_5",
         "qwen35",
@@ -192,12 +206,18 @@ _METADATA_EXT = ".json"
 # the difference between a hit and a silent-corruption reload.
 _TOKENS_EXT = ".tokens.bin"
 
-# Highest sidecar ``schema_version`` this build knows how to load. The
-# writer stamps ``schema_version=1``; :func:`load_checkpoint` refuses any
-# sidecar whose version is absent or greater than this so a checkpoint from
-# a newer, format-shifted build can never be mis-read as a current one
-# (reject-and-reprefill on any doubt — a wrong restore corrupts silently).
-_KNOWN_SCHEMA_VERSION = 1
+# Highest sidecar ``schema_version`` this build knows how to load, and the
+# version the writer stamps. v2 adds the delta-checkpoint sidecar fields
+# (``kind``/``base_hash``/``base_offset``/``base_save_uuid``/``delta_range``/
+# ``chain_depth``); a v2 sidecar WITHOUT ``kind == "delta"`` is an implicit
+# full base and reads exactly like a v1 checkpoint. :func:`load_checkpoint`
+# refuses any sidecar whose version is absent or greater than
+# ``_KNOWN_SCHEMA_VERSION`` so a checkpoint from a newer, format-shifted build
+# can never be mis-read (reject-and-reprefill on any doubt — a wrong restore
+# corrupts silently). A v1 checkpoint (older writer) still loads: v1 <= 2, and
+# with no ``kind`` key it is treated as a full base, which is what it is.
+_KNOWN_SCHEMA_VERSION = 2
+_WRITER_SCHEMA_VERSION = 2
 # Tmp file name shape: ``<basename>.tmp.safetensors``. The trailing
 # ``.safetensors`` is REQUIRED because ``mlx.core.save_safetensors``
 # silently auto-appends ``.safetensors`` when the path does not already
@@ -211,6 +231,64 @@ _TMP_INFIX = ".tmp"
 # corrupt (a hard byte-verify / load failure). Renaming aside stops a
 # later ``build_content_index`` scan from re-adding the poisoned entry.
 _CORRUPT_SUFFIX = ".corrupt"
+
+
+# ---------------------------------------------------------------------------
+# Delta-checkpoint feature flag + tunables (all env, default OFF)
+# ---------------------------------------------------------------------------
+#
+# The whole delta write/restore path is gated behind ``DELTA_CHECKPOINTS_ENABLED``
+# and stays OFF until both the delta write/restore AND the chain-aware eviction
+# are live (design §7). With the flag off, the writer emits full bases exactly
+# as before and the restore path never walks a chain, so a rollout that trips a
+# bug degrades to today's behaviour with no cache-clear.
+_DELTA_ENABLED_ENV = "DELTA_CHECKPOINTS_ENABLED"
+_DELTA_KEYFRAME_ENV = "DELTA_CHECKPOINTS_KEYFRAME_INTERVAL"
+_DELTA_KEYFRAME_DEFAULT = 12
+
+
+def delta_checkpoints_enabled() -> bool:
+    """Return True when the delta-checkpoint path is switched on (env, default OFF)."""
+    raw = os.environ.get(_DELTA_ENABLED_ENV)
+    if raw is None:
+        return False
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def delta_keyframe_interval() -> int:
+    """Keyframe cadence N: a would-be delta at ``chain_depth == N`` writes a full
+    base instead, bounding chain length (restore cost) and blast radius (a lost
+    base strands at most N descendants). Env-overridable; default 12.
+    """
+    raw = os.environ.get(_DELTA_KEYFRAME_ENV)
+    if raw is None:
+        return _DELTA_KEYFRAME_DEFAULT
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return _DELTA_KEYFRAME_DEFAULT
+    return n if n >= 1 else _DELTA_KEYFRAME_DEFAULT
+
+
+# Cache classes whose on-disk state is an appendable, token-indexed attention
+# KV (sliceable on axis 2 into deltas). Everything else — GatedDeltaNet
+# ``ArraysCache``, Mamba, rotating/sliding window — carries a fixed-size or
+# window-bound recurrent state that must be snapshotted whole. Classification
+# is by cache class, available as an object type at write time and as the
+# ``2.<layer>`` metadata string at load time (architecture facts). For
+# Qwen3.5 this partition is exactly the ``(layer_idx + 1) % 4 == 0`` full-
+# attention layers, but keying on class keeps the write and restore classifiers
+# in lock-step (they MUST agree) and correct for any hybrid layout.
+ATTENTION_CACHE_CLASSES: frozenset[str] = frozenset({"KVCache", "QuantizedKVCache"})
+
+
+def _layer_class_name(layer: Any) -> str:
+    return type(layer).__name__
+
+
+def _is_attention_layer(class_name: str) -> bool:
+    """True when a layer of this cache class holds sliceable attention KV."""
+    return class_name in ATTENTION_CACHE_CLASSES
 
 
 # ---------------------------------------------------------------------------
@@ -489,14 +567,21 @@ def model_requires_full_checkpoint(
         if isinstance(flag, bool) and flag:
             return True
 
+    needle = f"{model_name or ''} {hf_path or ''}".lower()
+
     if hf_config is not None:
         sw = hf_config.get("sliding_window")
         if isinstance(sw, int) and sw > 0:
             return True
-        if hf_config.get("hybrid_attention"):
+        # A hybrid attention model needs a full-blob checkpoint UNLESS it is a
+        # family we validated as delta-sliceable (Qwen3.5). Gate on model
+        # identity, not just the raw hybrid flag: a future hybrid we haven't
+        # proven sliceable stays on the safe full path (design §6).
+        if hf_config.get("hybrid_attention") and not any(
+            pat in needle for pat in DELTA_SLICEABLE_HYBRID_MODELS
+        ):
             return True
 
-    needle = f"{model_name or ''} {hf_path or ''}".lower()
     return any(pat in needle for pat in MODELS_REQUIRING_FULL_CHECKPOINT)
 
 
@@ -738,7 +823,7 @@ def write_checkpoint(
         # Sidecar JSON — written AFTER the safetensors so a torn shutdown
         # can never leave a JSON pointing at a missing body.
         meta_payload: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": _WRITER_SCHEMA_VERSION,
             "token_offset": int(token_offset),
             "kv_dtype": str(kv_dtype),
             "requires_full_checkpoint": bool(requires_full_checkpoint),
