@@ -234,7 +234,7 @@ _CORRUPT_SUFFIX = ".corrupt"
 
 
 # ---------------------------------------------------------------------------
-# Delta-checkpoint feature flag + tunables (all env, default OFF)
+# Delta-checkpoint feature flag + tunables (all env, default ON)
 # ---------------------------------------------------------------------------
 #
 # The whole delta write/restore path is gated behind ``DELTA_CHECKPOINTS_ENABLED``
@@ -248,10 +248,10 @@ _DELTA_KEYFRAME_DEFAULT = 12
 
 
 def delta_checkpoints_enabled() -> bool:
-    """Return True when the delta-checkpoint path is switched on (env, default OFF)."""
+    """Return True when the delta-checkpoint path is switched on (env, default ON)."""
     raw = os.environ.get(_DELTA_ENABLED_ENV)
     if raw is None:
-        return False
+        return True
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
