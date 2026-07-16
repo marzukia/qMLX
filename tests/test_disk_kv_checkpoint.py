@@ -324,12 +324,26 @@ def test_sliding_window_checkpoint_records_full_flag(root: str):
 # ---------------------------------------------------------------------------
 
 
-def test_hybrid_attention_qwen35_detection_by_name():
-    """Qwen3.5 substring detection. The hybrid attention layout means
-    sliding + full layers alternate; both have to be checkpointed.
+def test_hybrid_attention_qwen35_is_delta_sliceable_not_full():
+    """Qwen3.5 is reclassified OUT of the full-checkpoint-only gate.
+
+    Its full-attention layers store K post-RoPE, token-indexed on axis 2, so
+    the attention history is sliceable into deltas (the recurrent layers are
+    still snapshotted whole by the delta write path). ``model_requires_full_
+    checkpoint`` must therefore return False for Qwen3.5 — by name AND under a
+    ``hybrid_attention`` hf_config, the two signals the old gate tripped on.
     """
-    assert _dkc.model_requires_full_checkpoint("qwen3.5-9b-4bit")
-    assert _dkc.model_requires_full_checkpoint("Qwen/Qwen3.5-Coder-32B")
+    assert not _dkc.model_requires_full_checkpoint("qwen3.5-9b-4bit")
+    assert not _dkc.model_requires_full_checkpoint("Qwen/Qwen3.5-Coder-32B")
+    # The hybrid_attention hf_config gate must not force full for Qwen3.5...
+    assert not _dkc.model_requires_full_checkpoint(
+        "qwen3.5-9b", hf_config={"hybrid_attention": True}
+    )
+    # ...but an UNVALIDATED future hybrid still stays on the safe full path
+    # (gate on model identity, not the raw flag — design §6).
+    assert _dkc.model_requires_full_checkpoint(
+        "some-future-hybrid", hf_config={"hybrid_attention": True}
+    )
 
 
 def test_hybrid_attention_checkpoint_records_flag(root: str):
@@ -639,7 +653,7 @@ def test_metadata_sidecar_shape(root: str):
     assert os.path.isfile(sidecar)
     with open(sidecar) as fh:
         data = json.load(fh)
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert data["token_offset"] == 512
     assert data["kv_dtype"] == "int4"
     assert data["requires_full_checkpoint"] is True
