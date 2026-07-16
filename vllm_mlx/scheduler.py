@@ -5420,13 +5420,19 @@ class Scheduler:
                 )
                 return
 
-            # (d) full-vs-partial mode must match the running model. For the
-            # Qwen3.5 hybrid (and any MODELS_REQUIRING_FULL_CHECKPOINT member)
-            # this forces a full checkpoint; a partial restore is refused.
+            # (d) full-vs-partial mode. A model in MODELS_REQUIRING_FULL_CHECKPOINT
+            # (e.g. Gemma-4 sliding window) can only restore a whole-blob
+            # checkpoint, so refuse anything not stamped full. The reverse is
+            # NOT a mismatch: a whole-blob checkpoint (``requires_full`` True,
+            # e.g. a legacy v1 Qwen3.5 write from before the delta feature) is
+            # always safe to restore into a model that no longer needs full —
+            # restoring the whole cache is correct regardless. An assembled
+            # delta chain reports the leaf's ``requires_full`` (False for
+            # Qwen3.5), which is only refused by a genuinely full-only model.
             expected_full = _dkc.model_requires_full_checkpoint(
                 getattr(self, "_model_name", None)
             )
-            if bool(loaded.requires_full_checkpoint) != bool(expected_full):
+            if expected_full and not bool(loaded.requires_full_checkpoint):
                 _dkc.record_restore_reject("full_checkpoint_mismatch")
                 logger.info(
                     "[kv_restore] request=%s REJECT reason=full_checkpoint_mismatch "
