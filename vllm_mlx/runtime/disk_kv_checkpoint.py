@@ -536,6 +536,36 @@ def build_delta_cache(
     return out
 
 
+def _cache_state_nbytes(cache: list[Any]) -> int:
+    """Best-effort sum of on-tensor byte sizes across a cache's state.
+
+    Walks each layer's ``state`` (KVCache -> (keys, values); QuantizedKVCache
+    -> ((packed, scales, biases), ...); ArraysCache -> tuple of arrays) and
+    sums ``.nbytes`` over every array found. Used to size the disk footprint a
+    delta write avoided versus a full one (the omitted attention slice).
+    ``.nbytes`` is shape metadata (no eval / copy), so this is cheap. A layer
+    that does not expose a walkable state is skipped rather than raising.
+    """
+    total = 0
+
+    def _walk(obj: Any) -> None:
+        nonlocal total
+        nb = getattr(obj, "nbytes", None)
+        if isinstance(nb, int):
+            total += nb
+            return
+        if isinstance(obj, (tuple, list)):
+            for item in obj:
+                _walk(item)
+
+    for layer in cache:
+        try:
+            _walk(layer.state)
+        except Exception:  # pragma: no cover — defensive, never break a write
+            continue
+    return total
+
+
 # ---------------------------------------------------------------------------
 # Stats dataclass — folded into Scheduler.get_stats() for /metrics
 # ---------------------------------------------------------------------------
@@ -580,6 +610,14 @@ class CheckpointStats:
     # partial mismatch vs a memory-headroom skip look identical in the loads
     # counter, which never moved because the load was refused).
     restore_rejects: dict[str, int] = field(default_factory=dict)
+    # Delta-checkpoint observability (design §7). ``delta_bytes_saved`` /
+    # ``restore_link_count`` / ``orphan_events`` are cumulative counters;
+    # ``chain_length`` is a gauge holding the depth of the most recently
+    # assembled chain.
+    delta_bytes_saved: int = 0
+    chain_length: int = 0
+    restore_link_count: int = 0
+    orphan_events: int = 0
 
 
 # Known restore-reject reasons. Emitted at 0 by /metrics even before the first
@@ -654,6 +692,10 @@ def get_stats() -> dict[str, int]:
             "bytes": _STATS.bytes,
             "evictions": _STATS.evictions,
             "hook_errors": _STATS.hook_errors,
+            "delta_bytes_saved": _STATS.delta_bytes_saved,
+            "chain_length": _STATS.chain_length,
+            "restore_link_count": _STATS.restore_link_count,
+            "orphan_events": _STATS.orphan_events,
             "restore_rejects": rejects,
         }
 
@@ -686,6 +728,49 @@ def record_restore_reject(reason: str) -> None:
     key = str(reason) or "unknown"
     with _STATS_LOCK:
         _STATS.restore_rejects[key] = _STATS.restore_rejects.get(key, 0) + 1
+
+
+def record_delta_bytes_saved(nbytes: int) -> None:
+    """Add ``nbytes`` to the cumulative delta-bytes-saved counter (design §7).
+
+    Called on a committed delta write with the difference between the full
+    checkpoint body that would have been stored and the smaller delta body
+    actually written. Non-positive values are ignored so the counter only ever
+    moves when a delta genuinely saved space.
+    """
+    n = int(nbytes)
+    if n <= 0:
+        return
+    with _STATS_LOCK:
+        _STATS.delta_bytes_saved += n
+
+
+def record_chain_assembled(chain_len: int) -> None:
+    """Record a successful delta-chain assembly (design §7).
+
+    Sets the ``chain_length`` gauge to the depth of the just-assembled chain
+    and adds that depth to the cumulative ``restore_link_count`` counter, so
+    operators see both the current chain depth and the total links walked
+    across every restore.
+    """
+    n = int(chain_len)
+    if n <= 0:
+        return
+    with _STATS_LOCK:
+        _STATS.chain_length = n
+        _STATS.restore_link_count += n
+
+
+def record_orphan_event() -> None:
+    """Bump the ``orphan_events`` counter (design §7).
+
+    Called when a chain load fails because a link (usually the base) is missing
+    or was evicted out from under the chain: a broken chain or an eviction
+    race. Paired with a greppable ``logger.warning`` at every call site so a
+    spike shows up in both the log and ``/metrics``.
+    """
+    with _STATS_LOCK:
+        _STATS.orphan_events += 1
 
 
 def reset_stats_for_tests() -> None:
@@ -1178,6 +1263,16 @@ def write_checkpoint(
                     int(resolved_delta.get("base_offset") or 0),
                 ),
             )
+            # Observability (§7): a delta body omits the attention rows before
+            # ``base_offset``. Record how many bytes that saved versus writing
+            # the full snapshot. ``cache`` is the full body, ``write_body`` the
+            # delta; the recurrent tensors are identical in both and cancel,
+            # leaving the omitted attention slice.
+            try:
+                saved = _cache_state_nbytes(cache) - _cache_state_nbytes(write_body)
+                record_delta_bytes_saved(saved)
+            except Exception:  # pragma: no cover — never break a write
+                pass
 
         # Radix hand-off — best-effort, mirrors the in-process store path.
         if radix_index is not None and extra_metadata is not None:
@@ -1439,6 +1534,10 @@ def _resolve_chain(leaf_path: str) -> list[dict[str, Any]] | None:
     path = leaf_path
     # A well-formed chain is at most keyframe_interval links; allow slack for a
     # v1-base + off-by-one, then bail to guard against a cycle / corrupt link.
+    # NOTE: lowering DELTA_CHECKPOINTS_KEYFRAME_INTERVAL at runtime below the
+    # depth of chains already on disk pushes those deeper chains past this bound,
+    # so they resolve to None here and degrade to a shorter-prefix or cold
+    # restore until a fresh keyframe re-roots them.
     bound = delta_keyframe_interval() + 8
     for _ in range(bound):
         parsed = _parse_checkpoint_path(path)
@@ -1520,9 +1619,14 @@ def load_checkpoint_chain(leaf_path: str) -> LoadedCheckpoint | None:
     Reads the recurrent state from the NEWEST link only (a delta still carries a
     whole recurrent snapshot; loading every link's ~147MB copy would make
     restore slower than a cold prefill) and concatenates the attention history
-    one layer at a time to cap peak RAM at a single layer's worth across the
-    whole chain (``mx.concatenate`` is not streaming — assembling all layers at
-    once can spike tens of GB on a deep chain). Returns None on ANY failure so
+    one layer at a time so only one layer's slices are held transiently rather
+    than all layers at once (``mx.concatenate`` is not streaming). Peak RAM is
+    NOT capped at a single layer's worth: ``prior_arrays`` mmaps every link for
+    the whole layer loop and the assembled attention accumulates into
+    ``leaf_cache`` layer by layer, so the peak is roughly twice the full
+    attention history and grows linearly with chain length, not per layer. The
+    per-layer concat only bounds the transient concatenation buffer. Returns
+    None on ANY failure so
     the caller degrades to a shorter-prefix or cold restore, never a corrupt
     one (evict-on-fail, §5).
 
@@ -1540,6 +1644,13 @@ def load_checkpoint_chain(leaf_path: str) -> LoadedCheckpoint | None:
 
     chain = _resolve_chain(leaf_path)
     if chain is None:
+        logger.warning(
+            "[disk_kv_checkpoint] chain broken: missing base for leaf %r "
+            "(unresolvable base_hash link, corrupt sidecar, or evicted base); "
+            "degrading to shorter-prefix / cold restore",
+            leaf_path,
+        )
+        record_orphan_event()
         return None
 
     # --- transient read lock: increment every link, aborting if any is gone ---
@@ -1557,6 +1668,13 @@ def load_checkpoint_chain(leaf_path: str) -> LoadedCheckpoint | None:
                 _decref_transient(rh, off)
             pinned = []
     if not pinned:
+        logger.warning(
+            "[disk_kv_checkpoint] orphaned delta (eviction race): a link in the "
+            "chain for leaf %r was evicted between resolve and pin; degrading to "
+            "shorter-prefix / cold restore",
+            leaf_path,
+        )
+        record_orphan_event()
         return None
 
     try:
@@ -1593,6 +1711,14 @@ def load_checkpoint_chain(leaf_path: str) -> LoadedCheckpoint | None:
                 slices_k.append(got[0])
                 slices_v.append(got[1])
             if not ok:
+                logger.warning(
+                    "[disk_kv_checkpoint] chain broken: link tensor for layer "
+                    "%d unreadable assembling leaf %r; degrading to "
+                    "shorter-prefix / cold restore",
+                    i,
+                    leaf_path,
+                )
+                record_orphan_event()
                 return None
             # Leaf's own contribution comes from the loaded object's state.
             leaf_state = leaf_cache[i].state
@@ -1615,8 +1741,10 @@ def load_checkpoint_chain(leaf_path: str) -> LoadedCheckpoint | None:
                 cat_v = mx.concatenate(slices_v, axis=2)
                 leaf_cache[i].state = (cat_k, cat_v)  # setter derives offset
                 mx.eval(cat_k, cat_v)
-            # Drop this layer's slice references before the next layer so peak
-            # RAM stays at one assembled layer's worth (§3 stream concat).
+            # Drop this layer's slice references before the next layer so the
+            # transient concat buffer holds one layer's slices, not all layers'
+            # (the assembled attention still accumulates into leaf_cache; see
+            # the peak-RAM note in the docstring).
             slices_k = []
             slices_v = []
 
@@ -1630,6 +1758,9 @@ def load_checkpoint_chain(leaf_path: str) -> LoadedCheckpoint | None:
 
         with _STATS_LOCK:
             _STATS.loads += 1
+        # Observability (§7): a chain assembled successfully. Record its depth
+        # (chain_length gauge) and add the links walked to restore_link_count.
+        record_chain_assembled(len(chain))
 
         return LoadedCheckpoint(
             cache=leaf_cache,

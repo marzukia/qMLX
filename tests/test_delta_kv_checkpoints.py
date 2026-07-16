@@ -689,3 +689,220 @@ def test_i_long_chain_restore_bounded(root: str, monkeypatch):
     _assert_attention_bit_identical(canon, loaded.cache)
     # Transient locks released; the deep read never leaked a refcount.
     assert not _dkc._transient_refcount
+
+
+# ---------------------------------------------------------------------------
+# Observability (design §7): delta-checkpoint metrics
+# ---------------------------------------------------------------------------
+
+
+def test_obs_delta_bytes_saved_ticks_on_delta_write(root: str):
+    """A committed delta write bumps ``delta_bytes_saved`` by the omitted
+    attention slice; a full base write leaves it untouched."""
+    before = _dkc.get_stats()["delta_bytes_saved"]
+    canon = _canonical_full(400, with_recurrent=True)
+    tokens = _tokens(400, salt=30)
+    # Full base @200 saves nothing.
+    _write_link(
+        root, salt=30, idx=0, offset=200,
+        cache_at_offset=_slice_full_to(canon, 200), tokens=tokens,
+    )
+    assert _dkc.get_stats()["delta_bytes_saved"] == before
+    # Delta @400 over [200, 400) saves the [0, 200) attention rows.
+    parent = _dkc.get_content_index().longest_strict_prefix(tokens)
+    dcache = _dkc.build_delta_cache(canon, 200, 400)
+    _write_link(
+        root, salt=30, idx=1, offset=400, cache_at_offset=canon, tokens=tokens,
+        kind="delta", delta_cache=dcache,
+        delta_meta={
+            "base_hash": parent.req_hash, "base_offset": 200,
+            "base_save_uuid": parent.save_uuid, "delta_range": [200, 400],
+            "chain_depth": 1,
+        },
+    )
+    saved = _dkc.get_stats()["delta_bytes_saved"] - before
+    # Two attention layers, 2 kv-heads, head_dim 8, bf16 (2 bytes), 200 omitted
+    # rows, keys + values: 2*(1*2*200*8*2)*2 = 25600 bytes.
+    assert saved == 2 * (1 * 2 * 200 * 8 * 2) * 2
+
+
+def test_obs_chain_metrics_tick_on_assembly(root: str):
+    """A successful chain assembly sets ``chain_length`` and adds to
+    ``restore_link_count``."""
+    canon, tokens, links = _build_chain(root, [128, 256, 384], salt=31)
+    assert [x["kind"] for x in links] == ["full", "delta", "delta"]
+    before_links = _dkc.get_stats()["restore_link_count"]
+    loaded = _dkc.load_checkpoint_chain(links[-1]["path"])
+    assert loaded is not None
+    stats = _dkc.get_stats()
+    assert stats["chain_length"] == 3  # base + 2 deltas
+    assert stats["restore_link_count"] == before_links + 3
+
+
+def test_obs_orphan_event_ticks_on_broken_chain(root: str):
+    """A chain whose base is missing bumps ``orphan_events`` and warns."""
+    canon, tokens, links = _build_chain(root, [128, 256], salt=32)
+    base, delta = links[0], links[1]
+    assert delta["kind"] == "delta"
+    # Remove the base body/sidecar/tokens so the delta can't resolve its chain.
+    for ext in (".safetensors", ".json", ".tokens.bin"):
+        p = base["path"].replace(".safetensors", ext)
+        if os.path.exists(p):
+            os.unlink(p)
+    before = _dkc.get_stats()["orphan_events"]
+    assert _dkc.load_checkpoint_chain(delta["path"]) is None
+    assert _dkc.get_stats()["orphan_events"] == before + 1
+
+
+# ---------------------------------------------------------------------------
+# MAJOR 2: delta write is gated on model identity, not just the flag
+# ---------------------------------------------------------------------------
+
+
+def _run_persist_boundary(root, monkeypatch, model_name, tokens, canon):
+    """Drive Scheduler._disk_persist_boundary with a stub ``self`` for two
+    boundaries (256 then full len) and return the second checkpoint's ``kind``.
+
+    Writes to ``root`` (via a monkeypatched default-root) so a full-prefix
+    parent exists for the second write; the delta-vs-full decision is then made
+    entirely by the gate under test.
+    """
+    from types import SimpleNamespace
+
+    from vllm_mlx.scheduler import Scheduler
+
+    monkeypatch.setattr(_dkc, "get_default_root", lambda: root)
+    cfg = SimpleNamespace(
+        kv_disk_checkpoint_interval=256,
+        kv_cache_turboquant=False,
+        kv_cache_quantization=False,
+        kv_cache_min_quantize_tokens=10**9,
+        kv_cache_dtype="bf16",
+    )
+    stub = SimpleNamespace(config=cfg, _model_name=model_name)
+    n = len(tokens)
+    # Boundary 1: the base (full) at 256.
+    Scheduler._disk_persist_boundary(stub, tokens[:256], _slice_full_to(canon, 256))
+    # Boundary 2: the full-length write, which discovers the 256 base as parent.
+    Scheduler._disk_persist_boundary(stub, tokens, canon)
+    import array as _arr
+    import hashlib as _hl
+
+    raw = _arr.array("i", (int(t) for t in tokens)).tobytes()
+    req_hash = _hl.sha256(str(model_name).encode() + raw).hexdigest()[:16]
+    side = _dkc.read_sidecar(root, req_hash, n)
+    assert side is not None, "second boundary did not write a checkpoint"
+    return side.get("kind")
+
+
+def test_major2_full_only_model_never_deltas(root: str, monkeypatch):
+    """A model in MODELS_REQUIRING_FULL_CHECKPOINT (gemma-4) must never emit a
+    delta even with DELTA_CHECKPOINTS_ENABLED on and a valid parent present."""
+    assert _dkc.model_requires_full_checkpoint("gemma-4")
+    canon = _canonical_full(512, with_recurrent=True, seed=40)
+    tokens = _tokens(512, salt=40)
+    kind = _run_persist_boundary(root, monkeypatch, "gemma-4", tokens, canon)
+    assert kind == "full"
+
+
+def test_major2_sliceable_model_does_delta(root: str, monkeypatch):
+    """Control for the gate: the SAME setup with a delta-sliceable model
+    (qwen3.5) DOES produce a delta, proving parent discovery works and the gate
+    is the only reason the full-only model above wrote full."""
+    assert not _dkc.model_requires_full_checkpoint("qwen3.5")
+    canon = _canonical_full(512, with_recurrent=True, seed=41)
+    tokens = _tokens(512, salt=41)
+    kind = _run_persist_boundary(root, monkeypatch, "qwen3.5-9b", tokens, canon)
+    assert kind == "delta"
+
+
+# ---------------------------------------------------------------------------
+# MINOR 4: restore-consistency guard rejects a partial checkpoint for a
+# full-only model (scheduler.py guard (d): expected_full and not requires_full)
+# ---------------------------------------------------------------------------
+
+
+class _HonestStub:
+    def __init__(self):
+        self.calls = []
+
+    def record_disk_restore(self, hit):
+        self.calls.append(hit)
+
+
+def _write_full_only_delta_leaf(root, model_name):
+    """Write a base + delta chain for ``model_name`` whose leaf sidecar is
+    stamped ``requires_full_checkpoint=False`` (a genuinely partial checkpoint),
+    indexed so the content-index lookup finds it. Returns the query tokens."""
+    canon = _canonical_full(400, with_recurrent=True, seed=50)
+    tokens = _tokens(400, salt=50)
+    rh_base = _dkc.request_hash("guard-base", model_name)
+    _dkc.write_checkpoint(
+        _slice_full_to(canon, 200), root=root, req_hash=rh_base,
+        token_offset=200, model_name=model_name, requires_full_checkpoint=False,
+        extra_metadata={"tokens_key": list(tokens[:200]), "save_uuid": "u-gbase"},
+    )
+    _dkc.get_content_index().index_checkpoint(
+        list(tokens[:200]), root=root, req_hash=rh_base, token_offset=200,
+        save_uuid="u-gbase",
+    )
+    dcache = _dkc.build_delta_cache(canon, 200, 400)
+    rh_leaf = _dkc.request_hash("guard-leaf", model_name)
+    _dkc.write_checkpoint(
+        canon, root=root, req_hash=rh_leaf, token_offset=400,
+        model_name=model_name, requires_full_checkpoint=False,
+        extra_metadata={"tokens_key": list(tokens), "save_uuid": "u-gleaf"},
+        kind="delta", delta_cache=dcache,
+        delta_meta={
+            "base_hash": rh_base, "base_offset": 200,
+            "base_save_uuid": "u-gbase", "delta_range": [200, 400],
+            "chain_depth": 1,
+        },
+    )
+    _dkc.get_content_index().index_checkpoint(
+        list(tokens), root=root, req_hash=rh_leaf, token_offset=400,
+        save_uuid="u-gleaf",
+    )
+    return tokens
+
+
+def test_minor4_partial_rejected_for_full_only_model(root: str, monkeypatch):
+    """A delta (partial) checkpoint stamped requires_full=False is REJECTED
+    for a full-only model (gemma-4): guard (d) bumps full_checkpoint_mismatch
+    and the request stays a miss. Reverting the guard line lets the partial
+    install (cache_hit_type becomes 'disk'), which flips both assertions."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.scheduler import Scheduler
+
+    monkeypatch.setattr(_dkc, "get_default_root", lambda: root)
+    tokens = _write_full_only_delta_leaf(root, "gemma-4")
+
+    cfg = SimpleNamespace(kv_disk_restore_enabled=True, kv_cache_dtype="bf16")
+    stub = SimpleNamespace(
+        config=cfg,
+        _model_name="gemma-4",
+        _disk_restore_index_built=True,
+        honest_metrics=_HonestStub(),
+        _resolve_metal_cap_bytes=lambda: 0,
+        _current_metal_active_bytes=lambda: 0,
+    )
+    request = SimpleNamespace(
+        request_id="req-guard-0001",
+        cache_hit_type="miss",
+        prompt_cache=None,
+        prompt_token_ids=list(tokens),
+        cached_tokens=0,
+        remaining_tokens=None,
+    )
+
+    before = _dkc.get_stats()["restore_rejects"].get("full_checkpoint_mismatch", 0)
+    Scheduler._maybe_disk_restore(stub, request, pflash_compressed=False)
+
+    after = _dkc.get_stats()["restore_rejects"].get("full_checkpoint_mismatch", 0)
+    assert after == before + 1, "guard (d) did not reject the partial checkpoint"
+    # The request was NOT restored: it stays a miss and re-prefills.
+    assert request.cache_hit_type == "miss"
+    assert request.prompt_cache is None
+    # Exactly one attempt recorded, as a miss.
+    assert stub.honest_metrics.calls == [False]

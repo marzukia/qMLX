@@ -5223,7 +5223,9 @@ class Scheduler:
             delta_kind = "full"
             delta_cache = None
             delta_meta = None
-            if _dkc.delta_checkpoints_enabled():
+            if _dkc.delta_checkpoints_enabled() and not (
+                _dkc.model_requires_full_checkpoint(mname)
+            ):
                 try:
                     parent = _dkc.get_content_index().longest_strict_prefix(tokens)
                     if parent is not None:
