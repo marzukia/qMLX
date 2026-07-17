@@ -281,6 +281,62 @@ def should_write_keyframe(parent_chain_depth: int) -> bool:
     return (int(parent_chain_depth) + 1) >= delta_keyframe_interval()
 
 
+# ---------------------------------------------------------------------------
+# Mid-prefill checkpoint feature flag + tunables (all env, default OFF)
+# ---------------------------------------------------------------------------
+#
+# The mid-prefill checkpoint path saves intermediate KV checkpoints during
+# initial prompt processing (prefill phase), enabling resume from a configurable
+# boundary (default 8192 tokens) if the prefill is interrupted. This is separate
+# from the generation-phase checkpoints (which write at 256-token boundaries).
+#
+# Gate: QMLX_MID_PREFILL_ENABLED (default OFF) — ships safely disabled.
+# Interval: QMLX_MID_PREFILL_CHECKPOINT_TOKENS (default 8192).
+_MID_PREFILL_ENABLED_ENV = "QMLX_MID_PREFILL_ENABLED"
+_MID_PREFILL_INTERVAL_ENV = "QMLX_MID_PREFILL_CHECKPOINT_TOKENS"
+_MID_PREFILL_INTERVAL_DEFAULT = 8192
+
+
+def mid_prefill_checkpoints_enabled() -> bool:
+    """Return True when mid-prefill checkpointing is switched on (env, default OFF).
+
+    When enabled, the scheduler triggers write_checkpoint() during the initial
+    prompt prefill at intervals of QMLX_MID_PREFILL_CHECKPOINT_TOKENS tokens.
+    This allows interrupted prefills (e.g., client disconnect at 20k tokens)
+    to resume from the last checkpoint (e.g., 8192) instead of starting over.
+    """
+    raw = os.environ.get(_MID_PREFILL_ENABLED_ENV)
+    if raw is None:
+        return False
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def mid_prefill_checkpoint_interval() -> int:
+    """Token boundary for mid-prefill checkpoints (env, default 8192).
+
+    During prefill, after processing this many tokens, trigger write_checkpoint()
+    once. The checkpoint uses the existing path/format: same .safetensors body,
+    .json sidecar, and .tokens.bin verification blob. On the next cold prefill
+    matching the same prefix, the restore finds this checkpoint and resumes from
+    that offset.
+
+    Returns:
+        Positive integer token count. Invalid values fall back to 8192.
+    """
+    raw = os.environ.get(_MID_PREFILL_INTERVAL_ENV)
+    if raw is None:
+        return _MID_PREFILL_INTERVAL_DEFAULT
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"[disk_kv_checkpoint] invalid {_MID_PREFILL_INTERVAL_ENV}={raw!r}; "
+            f"falling back to default {_MID_PREFILL_INTERVAL_DEFAULT}"
+        )
+        return _MID_PREFILL_INTERVAL_DEFAULT
+    return n if n >= 256 else _MID_PREFILL_INTERVAL_DEFAULT
+
+
 # Cache classes whose on-disk state is an appendable, token-indexed attention
 # KV (sliceable on axis 2 into deltas). Everything else — GatedDeltaNet
 # ``ArraysCache``, Mamba, rotating/sliding window — carries a fixed-size or
