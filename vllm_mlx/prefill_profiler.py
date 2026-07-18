@@ -3,7 +3,7 @@
 
 Instrument the model forward pass to measure where prefill time is spent.
 Outputs Prometheus counters breaking down prefill time into:
-- FFN/MoE: Feed-forward network and expert routing time  
+- FFN/MoE: Feed-forward network and expert routing time
 - Attention: Full attention score + softmax computation
 - DeltaNet: Recurrent state updates (for hybrid models)
 - Overhead: RoPE, normalization, residual connections
@@ -40,13 +40,27 @@ def _get_seq_bucket(num_tokens: int) -> str:
         return "32k+"
 
 
+# Sentinel attribute name to avoid double-wrapping a class
+_PROFILER_PATCHED_ATTR = "_qmlx_profiler_patched"
+
+
 class PrefillProfiler:
-    """Profiles prefill by wrapping model layers to time each phase."""
+    """Profiles prefill by wrapping model layers to time each phase.
+
+    IMPORTANT: Python dunder method lookup (e.g. __call__) bypasses instance
+    attributes and goes straight to the class.  We MUST patch the class-level
+    __call__, not the instance.  This is safe because qMLX runs with
+    --max-num-seqs 1 (single request at a time).
+    """
 
     def __init__(self):
         self._enabled = _is_profiler_enabled()
         self._phase_totals: dict[str, float] = defaultdict(float)
         self._wrapped: bool = False
+        self._model_wrapped: bool = False
+        self._call_count: int = 0
+        self._num_layers: int = 0
+        self._logger = __import__("logging").getLogger(__name__)
 
     @property
     def enabled(self) -> bool:
@@ -111,8 +125,45 @@ class PrefillProfiler:
             f"hidden_dim={hidden_dim}, heads={num_heads}"
         )
 
+    def _patch_class_call(self, obj: Any, phase: str):
+        """Patch the class-level __call__ of obj's class.
+
+        Returns True if a new patch was applied, False if already patched.
+        """
+        cls = type(obj)
+        if getattr(cls, _PROFILER_PATCHED_ATTR, False):
+            return False
+
+        original_call = cls.__call__
+        profiler = self
+
+        def profiled_call(self_inner, *args, **kwargs):
+            start = time.monotonic()
+            try:
+                result = original_call(self_inner, *args, **kwargs)
+                # Force GPU sync to get real wall-clock time, not just
+                # graph-construction time (MLX uses lazy evaluation).
+                import mlx.core as mx
+                mx.eval(result)
+                return result
+            finally:
+                elapsed = time.monotonic() - start
+                profiler._phase_totals[phase] += elapsed
+
+        cls.__call__ = profiled_call
+        setattr(cls, _PROFILER_PATCHED_ATTR, True)
+        self._logger.debug(
+            "[QMLX_PREFILL_PROFILER] Patched %s.%s.__call__ for phase=%s",
+            cls.__module__, cls.__name__, phase,
+        )
+        return True
+
     def wrap_layers_for_profiling(self, model: Any):
-        """Wrap model layers to profile each phase during forward pass."""
+        """Wrap model layers to profile each phase during forward pass.
+
+        Patches the CLASS-level __call__ (not instance) because Python dunder
+        method lookup bypasses instance attributes.
+        """
         if not self._enabled or self._wrapped:
             return
 
@@ -120,80 +171,132 @@ class PrefillProfiler:
         if not layers:
             return
 
-        # Wrap each layer type with proper closure handling
+        self._num_layers = len(layers)
+
+        patched_classes: set[str] = set()
+
         for layer in layers:
-            class_name = type(layer).__name__
+            # Attention layers
+            if hasattr(layer, "self_attn"):
+                cls_name = type(layer.self_attn).__name__
+                if cls_name not in patched_classes:
+                    if self._patch_class_call(layer.self_attn, "attention"):
+                        patched_classes.add(cls_name)
 
-            # Wrap attention layers
-            if "Attention" in class_name or "Attn" in class_name:
-                if hasattr(layer, "__call__"):
-                    orig_call = layer.__call__
+            # DeltaNet / linear attention layers
+            if hasattr(layer, "linear_attn"):
+                cls_name = type(layer.linear_attn).__name__
+                if cls_name not in patched_classes:
+                    if self._patch_class_call(layer.linear_attn, "deltanet"):
+                        patched_classes.add(cls_name)
 
-                    def make_attn_wrapper(original):
-                        def wrapped(*args, **kwargs):
-                            start = time.monotonic()
-                            try:
-                                return original(*args, **kwargs)
-                            finally:
-                                self._phase_totals["attention"] += time.monotonic() - start
-
-                        return wrapped
-
-                    layer.__call__ = make_attn_wrapper(orig_call)
-
-            # Wrap DeltaNet layers
-            elif "DeltaNet" in class_name:
-                if hasattr(layer, "__call__"):
-                    orig_call = layer.__call__
-
-                    def make_deltanet_wrapper(original):
-                        def wrapped(*args, **kwargs):
-                            start = time.monotonic()
-                            try:
-                                return original(*args, **kwargs)
-                            finally:
-                                self._phase_totals["deltanet"] += time.monotonic() - start
-
-                        return wrapped
-
-                    layer.__call__ = make_deltanet_wrapper(orig_call)
-
-            # Wrap FFN/MLP modules within layers
+            # FFN / MLP
             if hasattr(layer, "mlp"):
-                mlp = layer.mlp
-                if hasattr(mlp, "__call__"):
-                    orig_mlp = mlp.__call__
-
-                    def make_ffn_wrapper(original):
-                        def wrapped(*args, **kwargs):
-                            start = time.monotonic()
-                            try:
-                                return original(*args, **kwargs)
-                            finally:
-                                self._phase_totals["ffn"] += time.monotonic() - start
-
-                        return wrapped
-
-                    mlp.__call__ = make_ffn_wrapper(orig_mlp)
-
-            elif hasattr(layer, "feed_forward"):
-                ffn = layer.feed_forward
-                if hasattr(ffn, "__call__"):
-                    orig_ffn = ffn.__call__
-
-                    def make_ffn_wrapper(original):
-                        def wrapped(*args, **kwargs):
-                            start = time.monotonic()
-                            try:
-                                return original(*args, **kwargs)
-                            finally:
-                                self._phase_totals["ffn"] += time.monotonic() - start
-
-                        return wrapped
-
-                    ffn.__call__ = make_ffn_wrapper(orig_ffn)
+                cls_name = type(layer.mlp).__name__
+                if cls_name not in patched_classes:
+                    if self._patch_class_call(layer.mlp, "ffn"):
+                        patched_classes.add(cls_name)
 
         self._wrapped = True
+
+        self._logger.info(
+            "[QMLX_PREFILL_PROFILER] Patched %d unique layer classes for profiling",
+            len(patched_classes),
+        )
+
+    def wrap_model_call(self, model: Any):
+        """Wrap model.__call__ to trigger profiler dump after each prefill pass.
+
+        This is the key addition: the layer-level patches accumulate timing,
+        but we need a model-level wrapper to detect prefill vs decode and
+        trigger the dump at the right time.
+        """
+        if not self._enabled or self._model_wrapped:
+            return
+
+        model_cls = type(model)
+        if getattr(model_cls, _PROFILER_PATCHED_ATTR, False):
+            return
+
+        original_call = model_cls.__call__
+        profiler = self
+        in_prefill = [False]  # mutable to allow closure mutation
+        num_prefill_chunks = [0]
+        prefill_start_time = [0.0]
+
+        def profiled_model_call(self_inner, *args, **kwargs):
+            # Detect prefill: first arg is input_ids, multi-token = prefill
+            is_prefill = False
+            if args:
+                inputs = args[0]
+                if hasattr(inputs, "shape") and len(inputs.shape) > 1:
+                    if inputs.shape[1] > 1:
+                        is_prefill = True
+
+            # Transition: prefill -> decode (or end of prefill)
+            if in_prefill[0] and not is_prefill:
+                # Dump accumulated prefill timing
+                if profiler._phase_totals:
+                    wall = time.monotonic() - prefill_start_time[0]
+                    total = sum(profiler._phase_totals.values())
+                    parts = []
+                    for phase in ("attention", "deltanet", "ffn"):
+                        t = profiler._phase_totals.get(phase, 0)
+                        pct = (t / total * 100) if total > 0 else 0
+                        parts.append(f"{phase}={t:.3f}s ({pct:.1f}%)")
+                    profiler._logger.info(
+                        "[PREFILL_PROFILER] %s | measured=%.3f wall=%.3f chunks=%d",
+                        " | ".join(parts), total, wall, num_prefill_chunks[0],
+                    )
+                    profiler._phase_totals.clear()
+                in_prefill[0] = False
+                num_prefill_chunks[0] = 0
+
+            # Transition: decode -> prefill (start of new prefill)
+            if is_prefill and not in_prefill[0]:
+                in_prefill[0] = True
+                prefill_start_time[0] = time.monotonic()
+                profiler._phase_totals.clear()
+
+            if is_prefill:
+                num_prefill_chunks[0] += 1
+
+            result = original_call(self_inner, *args, **kwargs)
+            return result
+
+        model_cls.__call__ = profiled_model_call
+        setattr(model_cls, _PROFILER_PATCHED_ATTR, True)
+        self._model_wrapped = True
+
+        self._logger.info(
+            "[QMLX_PREFILL_PROFILER] Wrapped model.__call__ for prefill dump trigger"
+        )
+
+    def dump_if_active(self):
+        """Manual dump for debugging."""
+        if self._phase_totals:
+            self._dump_and_reset()
+
+    def _dump_and_reset(self):
+        """Log accumulated timing and reset counters."""
+        total = sum(self._phase_totals.values())
+        if total <= 0:
+            self._call_count = 0
+            return
+
+        parts = []
+        for phase in ("attention", "deltanet", "ffn"):
+            t = self._phase_totals.get(phase, 0)
+            pct = (t / total * 100) if total > 0 else 0
+            parts.append(f"{phase}={t:.3f}s ({pct:.1f}%)")
+
+        self._logger.info(
+            "[PREFILL_PROFILER] %s | total=%.3f%s",
+            " | ".join(parts), total, "s"
+        )
+
+        self._phase_totals.clear()
+        self._call_count = 0
 
     def record_and_emit_prefill(self, model: Any, num_tokens: int):
         """Profile a complete prefill pass and emit metrics."""
@@ -207,8 +310,7 @@ class PrefillProfiler:
         if not self._wrapped:
             self.analyze_and_log_model_config(model)
             self.wrap_layers_for_profiling(model)
-
-        # Metrics will be emitted by the wrappers during the forward pass
+            self.wrap_model_call(model)
 
     def emit_metrics(self, num_tokens: int):
         """Emit Prometheus-formatted metrics for current prefill."""
@@ -240,37 +342,22 @@ def get_profiler() -> PrefillProfiler:
 
 
 def install_prefill_profiling(batch_gen: Any):
-    """Install profiling hooks on BatchGenerator for prefill measurement."""
+    """Install profiling hooks on model layers for prefill measurement."""
     if not _is_profiler_enabled():
-        # Zero-overhead: no monkey patching when disabled
         return
 
     profiler = get_profiler()
     logger = __import__("logging").getLogger(__name__)
 
-    # Wrap the model's forward pass to detect prefill operations
-    orig_model_call = batch_gen.model.__call__
+    model = batch_gen.model
+    profiler.analyze_and_log_model_config(model)
+    profiler.wrap_layers_for_profiling(model)
+    profiler.wrap_model_call(model)
 
-    def profiled_model_call(*args, **kwargs):
-        inputs = args[0] if args else kwargs.get("inputs")
-
-        # Detect prefill: multi-token input (prompt processing)
-        if hasattr(inputs, "shape") and len(inputs.shape) > 1:
-            num_tokens = inputs.shape[1]
-            if num_tokens > 1:
-                profiler.record_and_emit_prefill(batch_gen.model, num_tokens)
-
-        result = orig_model_call(*args, **kwargs)
-
-        # Emit metrics after forward completes
-        if hasattr(inputs, "shape") and len(inputs.shape) > 1:
-            profiler.emit_metrics(inputs.shape[1])
-
-        return result
-
-    batch_gen.model.__call__ = profiled_model_call
-
-    logger.info("[QMLX_PREFILL_PROFILER] Installed profiling on BatchGenerator.model")
+    logger.info(
+        "[QMLX_PREFILL_PROFILER] Installed layer profiling on %d layers",
+        len(getattr(model, "layers", [])),
+    )
 
 
 def dump_prefill_profile():
