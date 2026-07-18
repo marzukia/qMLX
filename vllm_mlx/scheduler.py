@@ -45,6 +45,7 @@ from .honest_metrics import HonestMetrics  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
 from .prefill_profiler import install_prefill_profiling  # noqa: E402
+from .pflash_v2 import install_pflash_v2  # noqa: E402
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .utils.decode import IncrementalDecoder
@@ -2928,6 +2929,14 @@ class Scheduler:
             "yes",
         ):
             install_prefill_profiling(bg)
+
+        # Install PFlash v2 pattern compression when enabled.
+        if os.environ.get("QMLX_PFLASH_V2_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            install_pflash_v2(bg.model)
 
         # Server-side wiring for ``--speculative-config '{"method":"mtp"}'``.
         # This installs the vendored PR #990 ``mtp_generate_step`` hot
