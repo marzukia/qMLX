@@ -44,6 +44,8 @@ from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .honest_metrics import HonestMetrics  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
+from .pflash_v2 import install_pflash_v2  # noqa: E402
+from .prefill_profiler import install_prefill_profiling  # noqa: E402
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .utils.decode import IncrementalDecoder
@@ -2435,6 +2437,9 @@ class Scheduler:
                     f"Prefix cache enabled with max_entries={self.config.prefix_cache_size}"
                 )
 
+        # Mid-prefill checkpoint tracking (for new BatchGenerator API)
+        self._mid_prefill_save_interval: int = 0
+
         # Thread-safe set for deferred aborts (main thread → executor thread)
         # CPython GIL guarantees set.add() and `x in set` are atomic.
         self._pending_abort_ids: set[str] = set()
@@ -2855,12 +2860,19 @@ class Scheduler:
                 chunked_budget = 999_999
             mid_prefill_cb = None
             save_interval = self.config.mid_prefill_save_interval
-            if (
-                save_interval > 0
-                and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
-            ):
-                mid_prefill_cb = self._make_mid_prefill_save_callback(save_interval)
-                logger.info(f"[mid_prefill_cache] enabled, interval={save_interval}")
+            if save_interval > 0:
+                from .runtime import disk_kv_checkpoint as _dkc
+
+                if (
+                    _dkc.mid_prefill_checkpoints_enabled()
+                    and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0)
+                    > 0
+                ):
+                    mid_prefill_cb = self._make_mid_prefill_save_callback(save_interval)
+                    logger.info(
+                        f"[mid_prefill_cache] enabled, interval={save_interval} "
+                        f"(QMLX_MID_PREFILL_CHECKPOINT_TOKENS)"
+                    )
             prompt_cache_cb = None
             if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0:
                 prompt_cache_cb = self._make_prompt_cache_save_callback()
@@ -2882,6 +2894,23 @@ class Scheduler:
             # The per-message boundary save is wired via insert_segments
             # + end_of_segment — see _snapshot_boundary_segments
             # (issue #427).
+
+            # Mid-prefill checkpoint support on new API: track prefill
+            # progress per-request and trigger saves at configured intervals.
+            save_interval = self.config.mid_prefill_save_interval
+            from .runtime import disk_kv_checkpoint as _dkc
+
+            if (
+                save_interval > 0
+                and _dkc.mid_prefill_checkpoints_enabled()
+                and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
+            ):
+                self._mid_prefill_save_interval = save_interval
+                logger.info(
+                    f"[mid_prefill_cache] enabled on new API, interval={save_interval} "
+                    f"(QMLX_MID_PREFILL_CHECKPOINT_TOKENS)"
+                )
+
             if chunked_budget > 0:
                 logger.info(
                     "[chunked_prefill] mlx-lm 0.31+ removed the legacy "
@@ -2892,6 +2921,22 @@ class Scheduler:
                     chunked_budget,
                     self.config.prefill_step_size,
                 )
+
+        # Install prefill profiler when enabled (gated behind env var).
+        if os.environ.get("QMLX_PREFILL_PROFILER_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            install_prefill_profiling(bg)
+
+        # Install PFlash v2 pattern compression when enabled.
+        if os.environ.get("QMLX_PFLASH_V2_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            install_pflash_v2(bg.model)
 
         # Server-side wiring for ``--speculative-config '{"method":"mtp"}'``.
         # This installs the vendored PR #990 ``mtp_generate_step`` hot
@@ -3184,6 +3229,83 @@ class Scheduler:
                     f"saved {prefix_boundary} tokens at message boundary "
                     f"store_time={_dt:.3f}s"
                 )
+
+    def _trigger_mid_prefill_checkpoints(self, prompt_responses: list[Any]) -> None:
+        """Trigger mid-prefill checkpoints when we've hit the configured boundary.
+
+        Called after each prefill batch on the new BatchGenerator API (0.31+).
+        Checks if any request has crossed the mid-prefill checkpoint boundary
+        and saves the checkpoint if so.
+        """
+        if self._mid_prefill_save_interval <= 0:
+            return
+
+        from .runtime import disk_kv_checkpoint as _dkc
+
+        if not _dkc.mid_prefill_checkpoints_enabled():
+            return
+
+        for resp in prompt_responses:
+            uid = getattr(resp, "uid", None)
+            if uid is None:
+                continue
+
+            request_id = self.uid_to_request_id.get(uid)
+            if not request_id:
+                continue
+
+            request = self.requests.get(request_id)
+            if not request or not request.prompt_token_ids:
+                continue
+
+            # Skip PFlash-compressed requests
+            if _pflash_compressed(request):
+                continue
+
+            total_prompt = len(request.prompt_token_ids)
+            cached = request.cached_tokens or 0
+
+            # Check if we should save at this point
+            # We save when num_computed_tokens crosses a multiple of save_interval
+            current_computed = getattr(request, "_mid_prefill_processed", 0)
+
+            # Calculate how many tokens were just processed in this prefill batch
+            # For now, we use the prefilled count from the response if available
+            newly_prefilled = getattr(resp, "num_prefilled", 0)
+            if newly_prefilled > 0:
+                current_computed += newly_prefilled
+                request._mid_prefill_processed = current_computed
+
+            # Check if we've hit a checkpoint boundary
+            last_save = getattr(request, "_mid_prefill_last_save", 0)
+
+            if current_computed - last_save >= self._mid_prefill_save_interval:
+                # Save checkpoint at this boundary
+                try:
+                    # Extract current cache state
+                    if hasattr(resp, "cache") and resp.cache:
+                        extracted = self._extract_cache_states(resp.cache)
+                        if extracted:
+                            reconstructed = self._reconstruct_cache_from_states(
+                                extracted
+                            )
+                            if reconstructed:
+                                prefix_tokens = list(
+                                    request.prompt_token_ids[:current_computed]
+                                )
+                                self._disk_persist_boundary(
+                                    prefix_tokens, reconstructed
+                                )
+                                request._mid_prefill_last_save = current_computed
+                                logger.info(
+                                    f"[mid_prefill_cache] request={request_id[:12]} "
+                                    f"saved {current_computed}/{total_prompt} tokens "
+                                    f"({current_computed * 100 // total_prompt}%)"
+                                )
+                except Exception as e:
+                    logger.warning(
+                        f"[mid_prefill_cache] failed to save checkpoint for {request_id}: {e}"
+                    )
 
     def _make_mid_prefill_save_callback(self, save_interval: int):
         """Create a callback for saving intermediate KV cache during chunked prefill.
@@ -6107,6 +6229,12 @@ class Scheduler:
                     # older versions return a flat list of responses
                     if isinstance(raw_next, tuple):
                         prompt_responses, responses = raw_next
+
+                        # Mid-prefill checkpoint trigger: check if we've hit
+                        # the configured boundary during prefill.
+                        if self._mid_prefill_save_interval > 0:
+                            self._trigger_mid_prefill_checkpoints(prompt_responses)
+
                         self._snapshot_promoted_prompts(prompt_responses)
                         # issue #427: per-message boundary snapshot for
                         # multi-turn hybrid workloads (segment finished
@@ -6439,6 +6567,27 @@ class Scheduler:
             stats["paged_cache"] = self.block_aware_cache.get_stats()
         elif self.prefix_cache is not None:
             stats["prefix_cache"] = self.prefix_cache.get_stats()
+
+        # Phase 0b: cold-prefill frequency dashboard
+        try:
+            from .prefill_frequency_dashboard import get_dashboard
+
+            stats["prefill_frequency_dashboard"] = get_dashboard().snapshot()
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+        # Prefill profiler metrics (QMLX_PREFILL_PROFILER_ENABLED)
+        try:
+            from .prefill_profiler import get_profiler
+
+            profiler = get_profiler()
+            if profiler.enabled:
+                stats["prefill_profiler"] = {
+                    "_phase_totals": dict(profiler._phase_totals)
+                }
+        except Exception:  # pragma: no cover — defensive
+            pass
+
         return stats
 
     def get_cache_stats(self) -> dict[str, Any] | None:
