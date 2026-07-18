@@ -85,7 +85,7 @@ def compress_kv_pattern(keys, values, sink_tokens, tail_tokens, pool_window):
     middle_start = sink
     middle_end = L - tail
 
-    if middle_end <= middle_start or L <= sink + tail:
+    if middle_end <= middle_start or sink + tail >= L:
         return keys, values, L
 
     middle_len = middle_end - middle_start
@@ -104,8 +104,12 @@ def compress_kv_pattern(keys, values, sink_tokens, tail_tokens, pool_window):
     pooled_k = middle_k.reshape(B, H, n_pools, pw, D).mean(axis=3)
     pooled_v = middle_v.reshape(B, H, n_pools, pw, D).mean(axis=3)
 
-    comp_k = mx.concatenate([keys[:, :, :sink, :], pooled_k, keys[:, :, middle_end:, :]], axis=2)
-    comp_v = mx.concatenate([values[:, :, :sink, :], pooled_v, values[:, :, middle_end:, :]], axis=2)
+    comp_k = mx.concatenate(
+        [keys[:, :, :sink, :], pooled_k, keys[:, :, middle_end:, :]], axis=2
+    )
+    comp_v = mx.concatenate(
+        [values[:, :, :sink, :], pooled_v, values[:, :, middle_end:, :]], axis=2
+    )
 
     return comp_k, comp_v, sink + n_pools + tail
 
@@ -174,12 +178,17 @@ def install_pflash_v2(model: Any) -> bool:
                             keys = self_inner.rope(keys, offset=cache.offset)
 
                             # Update cache with full K/V
-                            full_keys, full_values = cache.update_and_fetch(keys, values)
+                            full_keys, full_values = cache.update_and_fetch(
+                                keys, values
+                            )
 
                             # Compress full KV for attention
                             comp_k, comp_v, comp_len = compress_kv_pattern(
-                                full_keys, full_values,
-                                cfg.sink_tokens, cfg.tail_tokens, cfg.pool_window,
+                                full_keys,
+                                full_values,
+                                cfg.sink_tokens,
+                                cfg.tail_tokens,
+                                cfg.pool_window,
                             )
 
                             from mlx_lm.models.base import scaled_dot_product_attention
@@ -187,14 +196,20 @@ def install_pflash_v2(model: Any) -> bool:
                             # No mask needed for prefill with compressed KV
                             # SDPA handles causal masking internally
                             output = scaled_dot_product_attention(
-                                queries, comp_k, comp_v, cache=None,
-                                scale=self_inner.scale, mask=None,
+                                queries,
+                                comp_k,
+                                comp_v,
+                                cache=None,
+                                scale=self_inner.scale,
+                                mask=None,
                             )
                             output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
 
                             logger.info(
                                 "[PFlash v2] prefill chunk L=%d total=%d comp=%d (%.1f%%)",
-                                L, total_seq, comp_len,
+                                L,
+                                total_seq,
+                                comp_len,
                                 (1 - comp_len / total_seq) * 100,
                             )
 
@@ -214,7 +229,9 @@ def install_pflash_v2(model: Any) -> bool:
 
         logger.info(
             "[PFlash v2] Layer %d: patched %s.%s",
-            i, cls.__module__, cls.__name__,
+            i,
+            cls.__module__,
+            cls.__name__,
         )
 
     if patched_classes:
@@ -222,7 +239,10 @@ def install_pflash_v2(model: Any) -> bool:
             "[PFlash v2] Installed on %d attention classes "
             "(sink=%d, tail=%d, pool=%d, min_seq=%d)",
             len(patched_classes),
-            cfg.sink_tokens, cfg.tail_tokens, cfg.pool_window, cfg.min_seq_length,
+            cfg.sink_tokens,
+            cfg.tail_tokens,
+            cfg.pool_window,
+            cfg.min_seq_length,
         )
 
     return bool(patched_classes)
