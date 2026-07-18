@@ -287,8 +287,10 @@ class TestCustomWhitelist:
 class TestMCPServerConfigSecurity:
     """Tests for security validation in MCPServerConfig."""
 
-    def test_valid_stdio_config(self):
+    def test_valid_stdio_config(self, monkeypatch):
         """Test that valid stdio config passes security validation."""
+        # Mock shutil.which so npx is found even on CI runners without node
+        monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "npx" else None)
         # This should not raise
         config = MCPServerConfig(
             name="test-server",
