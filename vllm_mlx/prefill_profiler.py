@@ -25,7 +25,11 @@ from typing import Any
 
 def _is_profiler_enabled() -> bool:
     """Check if prefill profiler is enabled via env var. Single fast check."""
-    return os.environ.get("QMLX_PREFILL_PROFILER_ENABLED", "").lower() in ("1", "true", "yes")
+    return os.environ.get("QMLX_PREFILL_PROFILER_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _get_seq_bucket(num_tokens: int) -> str:
@@ -144,6 +148,7 @@ class PrefillProfiler:
                 # Force GPU sync to get real wall-clock time, not just
                 # graph-construction time (MLX uses lazy evaluation).
                 import mlx.core as mx
+
                 mx.eval(result)
                 return result
             finally:
@@ -154,7 +159,9 @@ class PrefillProfiler:
         setattr(cls, _PROFILER_PATCHED_ATTR, True)
         self._logger.debug(
             "[QMLX_PREFILL_PROFILER] Patched %s.%s.__call__ for phase=%s",
-            cls.__module__, cls.__name__, phase,
+            cls.__module__,
+            cls.__name__,
+            phase,
         )
         return True
 
@@ -246,7 +253,10 @@ class PrefillProfiler:
                         parts.append(f"{phase}={t:.3f}s ({pct:.1f}%)")
                     profiler._logger.info(
                         "[PREFILL_PROFILER] %s | measured=%.3f wall=%.3f chunks=%d",
-                        " | ".join(parts), total, wall, num_prefill_chunks[0],
+                        " | ".join(parts),
+                        total,
+                        wall,
+                        num_prefill_chunks[0],
                     )
                     profiler._phase_totals.clear()
                 in_prefill[0] = False
@@ -291,8 +301,7 @@ class PrefillProfiler:
             parts.append(f"{phase}={t:.3f}s ({pct:.1f}%)")
 
         self._logger.info(
-            "[PREFILL_PROFILER] %s | total=%.3f%s",
-            " | ".join(parts), total, "s"
+            "[PREFILL_PROFILER] %s | total=%.3f%s", " | ".join(parts), total, "s"
         )
 
         self._phase_totals.clear()
@@ -321,8 +330,10 @@ class PrefillProfiler:
 
         # Output in Prometheus exposition format
         for phase, total_time in self._phase_totals.items():
-            print(f"# TYPE qmlx_prefill_phase_seconds counter")
-            print(f'qmlx_prefill_phase_seconds{{phase="{phase}",seq_bucket="{seq_bucket}"}} {total_time}')
+            print("# TYPE qmlx_prefill_phase_seconds counter")
+            print(
+                f'qmlx_prefill_phase_seconds{{phase="{phase}",seq_bucket="{seq_bucket}"}} {total_time}'
+            )
 
     def reset(self):
         """Reset accumulated timing data."""

@@ -42,9 +42,9 @@ from ._sampler_fast_path import (  # noqa: E402
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .honest_metrics import HonestMetrics  # noqa: E402
-from .prefill_profiler import install_prefill_profiling  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
+from .prefill_profiler import install_prefill_profiling  # noqa: E402
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .utils.decode import IncrementalDecoder
@@ -2864,7 +2864,8 @@ class Scheduler:
 
                 if (
                     _dkc.mid_prefill_checkpoints_enabled()
-                    and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
+                    and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0)
+                    > 0
                 ):
                     mid_prefill_cb = self._make_mid_prefill_save_callback(save_interval)
                     logger.info(
@@ -2896,6 +2897,8 @@ class Scheduler:
             # Mid-prefill checkpoint support on new API: track prefill
             # progress per-request and trigger saves at configured intervals.
             save_interval = self.config.mid_prefill_save_interval
+            from .runtime import disk_kv_checkpoint as _dkc
+
             if (
                 save_interval > 0
                 and _dkc.mid_prefill_checkpoints_enabled()
@@ -3274,7 +3277,9 @@ class Scheduler:
                     if hasattr(resp, "cache") and resp.cache:
                         extracted = self._extract_cache_states(resp.cache)
                         if extracted:
-                            reconstructed = self._reconstruct_cache_from_states(extracted)
+                            reconstructed = self._reconstruct_cache_from_states(
+                                extracted
+                            )
                             if reconstructed:
                                 prefix_tokens = list(
                                     request.prompt_token_ids[:current_computed]
@@ -6215,12 +6220,12 @@ class Scheduler:
                     # older versions return a flat list of responses
                     if isinstance(raw_next, tuple):
                         prompt_responses, responses = raw_next
-                        
+
                         # Mid-prefill checkpoint trigger: check if we've hit
                         # the configured boundary during prefill.
                         if self._mid_prefill_save_interval > 0:
                             self._trigger_mid_prefill_checkpoints(prompt_responses)
-                        
+
                         self._snapshot_promoted_prompts(prompt_responses)
                         # issue #427: per-message boundary snapshot for
                         # multi-turn hybrid workloads (segment finished

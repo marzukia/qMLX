@@ -1203,7 +1203,6 @@ def test_mid_prefill_checkpoint_scenario_32k_interrupt_20k_restore_at_8k(
     3. Simulate interruption at 1200 tokens (after 512 and 1024 written)
     4. Simulate resume: lookup should find checkpoint at offset 1024
     """
-    import os
 
     # Enable mid-prefill checkpoints with small interval for fast test
     monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "1")

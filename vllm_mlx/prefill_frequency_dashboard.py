@@ -25,7 +25,7 @@ from collections import deque
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .honest_metrics import HonestMetrics
+    pass
 
 logger = logging.getLogger(__name__)
 
