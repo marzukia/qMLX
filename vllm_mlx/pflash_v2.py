@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 def _is_enabled() -> bool:
-    return os.environ.get("QMLX_PFLASH_V2_ENABLED", "").lower() in ("1", "true", "yes")
+    val = os.environ.get("QMLX_PFLASH_V2_ENABLED", "").lower()
+    if val in ("0", "false", "no"):
+        return False
+    return True
 
 
 def _int_env(key: str, default: int) -> int:
@@ -36,7 +39,7 @@ def _int_env(key: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class PFlashV2Config:
-    enabled: bool = False
+    enabled: bool = True
     sink_tokens: int = 256
     tail_tokens: int = 2048
     pool_window: int = 64
