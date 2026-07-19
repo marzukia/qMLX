@@ -2373,13 +2373,12 @@ class DiskCheckpointIndex:
 
             if ref is None:
                 # Index inconsistency: the radix knows the key but the side
-                # map doesn't. Quarantine (in-memory only: no ref, so no
-                # disk paths) and fall back to a shorter prefix.
+                # map doesn't. Soft-evict so a later rescan can re-add it.
                 logger.info(
                     "[kv_restore_lookup] MISS reason=key_not_in_map matched_len=%d",
                     len(key),
                 )
-                self._quarantine(key, None, len(key), "key_not_in_map")
+                self._soft_evict(key)
                 continue
 
             offset = ref.token_offset
@@ -2389,14 +2388,14 @@ class DiskCheckpointIndex:
                     offset,
                     len(key),
                 )
-                self._quarantine(key, ref, offset, "offset_len_disagree")
+                self._soft_evict(key)
                 continue
             if list(key) != query[:offset]:
                 logger.info(
                     "[kv_restore_lookup] MISS reason=prefix_bytes_differ offset=%d",
                     offset,
                 )
-                self._quarantine(key, ref, offset, "prefix_bytes_differ")
+                self._soft_evict(key)
                 continue
 
             # --- phase 2: disk verify + materialise (index lock dropped) ---
@@ -2459,14 +2458,14 @@ class DiskCheckpointIndex:
                     offset,
                     loaded.token_offset,
                 )
-                self._quarantine(key, ref, offset, "loaded_offset_disagree")
+                self._soft_evict(key)
                 continue
             if not _cache_offset_matches(loaded.cache, offset):
                 logger.info(
                     "[kv_restore_lookup] MISS reason=cache_offset_mismatch offset=%d",
                     offset,
                 )
-                self._quarantine(key, ref, offset, "cache_offset_mismatch")
+                self._soft_evict(key)
                 continue
             return loaded
 
