@@ -78,7 +78,7 @@ def build_mtp_module(
     # Pull upstream building blocks from the installed mlx-lm. These
     # are PR #990's PUBLIC dependencies — none of them are modified by
     # the PR, so reusing them across versions is safe.
-    from mlx_lm.models.base import create_attention_mask
+    from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
     from mlx_lm.models.qwen3_5 import (
         MLP,
         Attention,
@@ -144,8 +144,6 @@ def build_mtp_module(
             )
 
         def __call__(self, x, mask=None, cache=None):
-            from mlx_lm.models.base import scaled_dot_product_attention
-
             B, L, _ = x.shape
 
             queries = self.q_proj(x)
