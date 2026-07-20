@@ -1204,6 +1204,21 @@ def _install_mtp_vendored(
                 gen.close()
             except Exception:  # noqa: BLE001
                 pass
+        _clear_gb_cache()
+
+        # Clear gb.prompt_cache references to prevent memory accumulation.
+        # The persistent GenerationBatch holds references to old KV caches
+        # that grow with each request. Clearing after generator close
+        # releases these references so the garbage collector can free them.
+        try:
+            if gb is not None and hasattr(gb, "prompt_cache"):
+                for c in gb.prompt_cache:
+                    if hasattr(c, "state"):
+                        c.state = None
+                    if hasattr(c, "rollback_state"):
+                        c.rollback_state = None
+        except Exception:  # noqa: BLE001
+            pass
 
     def _is_greedy_for_uid(uid: int) -> bool:
         """Return True when the request behind ``uid`` sampled at temp=0.
@@ -1299,6 +1314,7 @@ def _install_mtp_vendored(
                         _gen.close()
                     except Exception:  # noqa: BLE001
                         pass
+            _clear_gb_cache()
 
         def _mark_disabled(u: int) -> None:
             """Mark uid ``u`` as disabled (for pre-MTP soft-fall-
@@ -1308,6 +1324,18 @@ def _install_mtp_vendored(
             if uid_to_request_id is not None:
                 _term_req_id = uid_to_request_id.get(u)
             _disabled_uids[u] = _term_req_id
+
+        def _clear_gb_cache():
+            """Clear gb.prompt_cache to prevent memory leak."""
+            try:
+                if gb is not None and hasattr(gb, "prompt_cache"):
+                    for c in gb.prompt_cache:
+                        if hasattr(c, "state"):
+                            c.state = None
+                        if hasattr(c, "rollback_state"):
+                            c.rollback_state = None
+            except Exception:
+                pass
 
         def _sync_next_tokens_after_emit(
             gb_ref: Any,
@@ -1745,6 +1773,7 @@ def _install_mtp_vendored(
                             _gen.close()
                         except Exception:  # noqa: BLE001
                             pass
+                _clear_gb_cache()
                 raise RuntimeError(
                     f"[MTP-vendored] uid={uid} generator raised mid-"
                     f"stream ({type(e).__name__}: {e}); cannot fall "
