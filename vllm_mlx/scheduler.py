@@ -1444,31 +1444,10 @@ def _install_mtp_vendored(
                 _stats["ft_disabled"] += 1
                 return _orig_step()
 
-        if not _is_greedy_for_uid(uid):
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_non_greedy"] += 1
-            # Codex round-L BLOCKING #3: prior round-H revision raised
-            # ``RuntimeError`` here when sampling switched to non-
-            # greedy after MTP had already emitted. That killed the
-            # request on a legitimate runtime sampling-param change.
-            #
-            # Round-L fix: hand off to ``_orig_step`` regardless of
-            # state. The MTP generator is closed and the uid is
-            # marked disabled so subsequent steps skip MTP entirely.
-            # Same bounded stream-artifact tradeoff as the B>1 handoff
-            # above; see :func:`_log_mtp_mid_stream_handoff_once` for
-            # the operator-facing WARN contract.
-            if uid in _state:
-                _stats["ft_mid_stream_handoff"] += 1
-                _log_mtp_mid_stream_handoff_once(
-                    uid,
-                    "non_greedy",
-                    "sampling switched to temperature > 0 mid-stream",
-                )
-                _record_terminal_disable(uid)
-            else:
-                _mark_disabled(uid)
-            return _orig_step()
+        # Non-greedy requests now supported: sampling params are passed
+        # through to mtp_generate_step instead of hardcoding temp=0.0.
+        # The generator preserves the lossless marginal via its
+        # residual-distribution sample on reject for any temperature.
 
         _lp = getattr(gb, "logits_processors", None)
         if _lp and any(p for p in _lp if p):
@@ -1561,6 +1540,10 @@ def _install_mtp_vendored(
             # ``_num_tokens[i] >= self.max_tokens[i]``.
             gen_max = int(gb.max_tokens[0]) if gb.max_tokens else 4096
 
+            # Look up the request for sampling params (non-greedy MTP support).
+            _req_id = uid_to_request_id.get(uid) if uid_to_request_id is not None else None
+            req = requests.get(_req_id) if requests is not None and _req_id else None
+
             # Codex round-A blocker #2: construct the generator BEFORE
             # mutating ``gb.tokens[0]``. Prior revision appended the
             # first token first, then constructed the generator; on
@@ -1586,12 +1569,22 @@ def _install_mtp_vendored(
             # permanently disabled so we don't retry construction on
             # every subsequent step.
             try:
+                # Read sampling params from the request for non-greedy support.
+                _mtp_sp = getattr(req, "sampling_params", None) if req is not None else None
+                _mtp_temp = getattr(_mtp_sp, "temperature", 0.0) or 0.0
+                _mtp_top_p = getattr(_mtp_sp, "top_p", 0.0) or 0.0
+                _mtp_top_k = getattr(_mtp_sp, "top_k", 0) or 0
+                _mtp_min_p = getattr(_mtp_sp, "min_p", 0.0) or 0.0
+
                 gen = mtp_generate_step(
                     prompt=first_tok_arr.astype(mx.uint32),
                     model=mtp_model,
                     max_tokens=gen_max,
                     prompt_cache=gb.prompt_cache,
-                    temp=0.0,
+                    temp=_mtp_temp,
+                    top_p=_mtp_top_p,
+                    top_k=_mtp_top_k,
+                    min_p=_mtp_min_p,
                     # 0.9.13 PR-B: EV depth controller.
                     model_id=controller_key or f"mtp-model-{id(mtp_model)}",
                     max_k=max_k,
