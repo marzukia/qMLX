@@ -1128,5 +1128,14 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true
+  },
+  "qwen3.5-122b-oq4-mtp": {
+    "hf_path": "mlx-community/Qwen3.5-122B-A10B-oQ4-mtp",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": true,
+    "is_moe": true,
+    "pflash_tier": "verified"
   }
 }
