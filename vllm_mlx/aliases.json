@@ -1136,6 +1136,7 @@
     "is_hybrid": true,
     "supports_spec_decode": true,
     "is_moe": true,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "is_hybrid_explicit": true
   }
 }
