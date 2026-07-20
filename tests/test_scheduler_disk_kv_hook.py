@@ -493,3 +493,49 @@ def test_cleanup_finished_store_site_writes_checkpoint(isolated_root: Path) -> N
     assert loaded is not None
     assert loaded.token_offset == 256
     assert req.request_id not in sched.running
+
+
+def test_completion_checkpoint_keyed_on_stable_prompt_prefix(
+    isolated_root: Path,
+) -> None:
+    """Regression for the multi-turn KV-restore prefix break (#9).
+
+    The completion store site sees prompt + generated-output tokens. The output
+    tokens (empty ``<think></think>`` scaffold, tool-call formatting) do NOT
+    round-trip when the client re-tokenizes the conversation next turn, so a
+    checkpoint keyed on the prompt+output tail is never a prefix of the next
+    prompt: every turn falls back to the system-prompt checkpoint and cold-
+    prefills the whole conversation. The store site now marks the prompt length
+    as the round-trip-stable prefix, so the checkpoint is keyed (and its KV
+    sliced) to the prompt, and the NEXT turn's prompt matches it.
+    """
+    _dkc.reset_content_index_for_tests()
+    sched = _make_scheduler(interval=256)
+    sched.config.kv_disk_restore_enabled = True
+
+    prompt = list(range(1000, 1000 + 300))  # 300 round-trip-stable tokens
+    output = [40001, 40002, 40003]  # volatile generated-output tokens
+    req = Request(
+        request_id="turn-n",
+        prompt="ignored",
+        sampling_params=SamplingParams(max_tokens=2048),
+    )
+    req.prompt_token_ids = list(prompt)
+    req.output_token_ids = list(output)
+    req._extracted_cache = _seed_kv_cache(num_tokens=len(prompt) + len(output))
+    sched.running = {req.request_id: req}
+
+    sched._cleanup_finished({req.request_id})
+
+    idx = _dkc.get_content_index()
+    # Keyed on the PROMPT prefix, not the volatile prompt+output tail.
+    assert tuple(prompt) in idx._by_key
+    assert tuple(prompt + output) not in idx._by_key
+
+    # Next turn: the client re-tokenized the assistant turn to different IDs, so
+    # the stored output tokens are NOT a prefix, but the prompt is. The restore
+    # must land the growing prompt checkpoint, not fall back to nothing.
+    next_prompt = prompt + [50001, 50002] + [60001, 60002]
+    loaded = idx.lookup(next_prompt)
+    assert loaded is not None
+    assert loaded.token_offset == len(prompt)

@@ -5267,7 +5267,9 @@ class Scheduler:
 
         return outputs, finished_ids
 
-    def _disk_persist_boundary(self, tokens, cache) -> None:
+    def _disk_persist_boundary(
+        self, tokens, cache, *, stable_prefix_len: int | None = None
+    ) -> None:
         """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
         Called directly from the scheduler store sites (prompt / message
@@ -5293,34 +5295,68 @@ class Scheduler:
             from .memory_cache import (
                 _cache_has_non_trimmable,
                 _quantize_cache,
+                _slice_kv_to_length,
                 _trim_to_offset,
                 _turboquant_compress_cache,
             )
             from .runtime import disk_kv_checkpoint as _dkc
 
+            has_non_trimmable = _cache_has_non_trimmable(cache)
+
+            # Round-trip-stable keying (follow-up to #9). The completion store
+            # site hands us prompt + generated-output tokens, but the model's
+            # own output token IDs do NOT survive the client re-tokenizing the
+            # conversation text next turn (the empty ``<think></think>`` scaffold
+            # and tool-call formatting re-encode to different IDs). Keying a
+            # checkpoint on that volatile prompt+output tail means the next
+            # turn's prompt is never a prefix of the key, so every multi-turn
+            # request falls back to the system-prompt checkpoint and cold-
+            # prefills the whole conversation. When the caller marks the stable
+            # prefix (``stable_prefix_len`` == the prompt length), key AND
+            # persist ONLY that prefix so the next turn's re-tokenized prompt
+            # matches it; the small generated-output delta re-prefills cheaply.
+            # Requires a trimmable cache: a recurrent state can't be sliced to a
+            # shorter prefix (#1025/#1058), so hybrid models keep the full key
+            # (exact-match reuse only), unchanged.
+            key_tokens = list(tokens)
+            target_len = len(key_tokens)
+            if (
+                stable_prefix_len is not None
+                and 256 <= stable_prefix_len < target_len
+                and not has_non_trimmable
+            ):
+                key_tokens = key_tokens[:stable_prefix_len]
+                target_len = stable_prefix_len
+
             mname = getattr(self, "_model_name", None)
             root = _dkc.get_default_root()
-            raw = _arr.array("i", (int(t) for t in tokens)).tobytes()
+            raw = _arr.array("i", (int(t) for t in key_tokens)).tobytes()
             req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
 
             # Dedup: reproduce store()'s exact-match skip without the RAM cache.
             # The writer is atomic (temp + fsync + rename), so a present file is
             # always complete; re-serializing would just repeat a multi-GB write
             # on the hot repeat-prompt path.
-            if os.path.exists(_dkc.checkpoint_path(root, req_hash, len(tokens))):
+            if os.path.exists(_dkc.checkpoint_path(root, req_hash, target_len)):
                 return
 
             # Hybrid recurrent-state caches are written RAW. Trimming a
             # non-trimmable layer is the #1025/#1058/#163 bug. Trimmable caches
             # are trimmed then quantized to the footprint restore expects
             # (dtype + size checks on the restore path assume this).
-            if _cache_has_non_trimmable(cache):
+            if has_non_trimmable:
                 write_cache = cache
             else:
                 write_cache = _trim_to_offset(cache)
+                if target_len < len(tokens):
+                    # Persist only the round-trip-stable prefix; the generated
+                    # output KV is dropped (cheap to re-prefill next turn). A
+                    # KVCache is causal-append, so the first ``target_len`` rows
+                    # are exactly the prompt-prefix KV.
+                    write_cache = _slice_kv_to_length(write_cache, target_len)
                 if (
                     self.config.kv_cache_turboquant
-                    and len(tokens) >= self.config.kv_cache_min_quantize_tokens
+                    and target_len >= self.config.kv_cache_min_quantize_tokens
                 ):
                     write_cache = _turboquant_compress_cache(
                         write_cache,
@@ -5330,7 +5366,7 @@ class Scheduler:
                     )
                 elif (
                     self.config.kv_cache_quantization
-                    and len(tokens) >= self.config.kv_cache_min_quantize_tokens
+                    and target_len >= self.config.kv_cache_min_quantize_tokens
                 ):
                     write_cache = _quantize_cache(
                         write_cache,
@@ -5351,7 +5387,9 @@ class Scheduler:
                 _dkc.model_requires_full_checkpoint(mname)
             ):
                 try:
-                    parent = _dkc.get_content_index().longest_strict_prefix(tokens)
+                    parent = _dkc.get_content_index().longest_strict_prefix(
+                        key_tokens
+                    )
                     if parent is not None:
                         pside = _dkc.read_sidecar(
                             root, parent.req_hash, parent.token_offset
@@ -5368,10 +5406,10 @@ class Scheduler:
                         if (
                             pside is not None
                             and not _dkc.should_write_keyframe(parent_depth)
-                            and 0 < base_offset < len(tokens)
+                            and 0 < base_offset < target_len
                         ):
                             built = _dkc.build_delta_cache(
-                                write_cache, base_offset, len(tokens)
+                                write_cache, base_offset, target_len
                             )
                             if built is not None:
                                 delta_cache = built
@@ -5380,7 +5418,7 @@ class Scheduler:
                                     "base_hash": parent.req_hash,
                                     "base_offset": base_offset,
                                     "base_save_uuid": parent.save_uuid,
-                                    "delta_range": [base_offset, len(tokens)],
+                                    "delta_range": [base_offset, target_len],
                                     "chain_depth": child_depth,
                                 }
                 except Exception as _delta_err:  # pragma: no cover — best-effort
@@ -5396,12 +5434,12 @@ class Scheduler:
                 write_cache,
                 root=root,
                 req_hash=req_hash,
-                token_offset=len(tokens),
+                token_offset=target_len,
                 kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
                 requires_full_checkpoint=_dkc.model_requires_full_checkpoint(mname),
                 model_name=mname,
                 extra_metadata={
-                    "tokens_key": list(tokens),
+                    "tokens_key": list(key_tokens),
                     "save_uuid": uuid.uuid4().hex,
                 },
                 kind=delta_kind,
@@ -5997,7 +6035,9 @@ class Scheduler:
 
                         _store_t0 = _time.monotonic()
                         self._disk_persist_boundary(
-                            full_token_sequence, request._extracted_cache
+                            full_token_sequence,
+                            request._extracted_cache,
+                            stable_prefix_len=len(request.prompt_token_ids),
                         )
                         _store_dt = _time.monotonic() - _store_t0
 

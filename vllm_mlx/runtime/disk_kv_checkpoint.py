@@ -2283,6 +2283,48 @@ class DiskCheckpointIndex:
     # Lookup                                                             #
     # ------------------------------------------------------------------ #
 
+    def _log_partial_divergence(self, query, restored_offset: int) -> None:
+        """Diagnostics for the multi-turn KV-restore prefix break (#9).
+
+        Find the indexed checkpoint sharing the LONGEST common prefix with
+        ``query`` and, when that shared run reaches PAST the prefix we could
+        actually restore (``restored_offset``), log the exact token index where
+        it diverges plus the two differing token IDs (stored key vs incoming
+        query). A checkpoint that shares MORE tokens than we restored yet is not
+        a clean prefix is the signature of output-token round-trip drift: the
+        stored key carried the model's own output tokens, which the client
+        re-tokenized to different IDs next turn. Best-effort; never raises into
+        the (already slow) miss path.
+        """
+        try:
+            div = self.nearest_divergence(query)
+            if div is None:
+                return
+            nearest_offset, divergence_index, best_key = div
+            if divergence_index <= restored_offset:
+                # Nothing matched further than what we restored: no drift.
+                return
+            key_tok = (
+                best_key[divergence_index]
+                if divergence_index < len(best_key)
+                else None
+            )
+            q_tok = query[divergence_index] if divergence_index < len(query) else None
+            logger.info(
+                "[kv_restore_divergence] a checkpoint shared %d tokens (past the "
+                "%d-token prefix restored) then diverged at index %d: "
+                "key_tok=%s query_tok=%s nearest_offset=%d query_len=%d",
+                divergence_index,
+                restored_offset,
+                divergence_index,
+                key_tok,
+                q_tok,
+                nearest_offset,
+                len(query),
+            )
+        except Exception:  # pragma: no cover — diagnostics never break lookup
+            return
+
     def lookup(
         self, query_tokens: list[int] | tuple[int, ...]
     ) -> LoadedCheckpoint | None:
@@ -2368,6 +2410,7 @@ class DiskCheckpointIndex:
                         len(query),
                         n_entries,
                     )
+                    self._log_partial_divergence(query, 0)
                     return None
                 ref = self._by_key.get(key)
 
@@ -2467,6 +2510,11 @@ class DiskCheckpointIndex:
                 )
                 self._soft_evict(key)
                 continue
+            if offset < len(query):
+                # Restored a proper prefix, not the whole prompt. If a
+                # checkpoint shared MORE tokens than this but wasn't a clean
+                # prefix, that's the round-trip-drift signature — log where.
+                self._log_partial_divergence(query, offset)
             return loaded
 
         # Candidate set exhausted without a verified hit (only reachable when
