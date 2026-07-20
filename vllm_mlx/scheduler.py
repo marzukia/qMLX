@@ -1205,6 +1205,8 @@ def _install_mtp_vendored(
             except Exception:  # noqa: BLE001
                 pass
         _clear_gb_cache()
+        import gc
+        gc.collect()
 
         # Clear gb.prompt_cache references to prevent memory accumulation.
         # The persistent GenerationBatch holds references to old KV caches
@@ -1315,6 +1317,8 @@ def _install_mtp_vendored(
                     except Exception:  # noqa: BLE001
                         pass
             _clear_gb_cache()
+            import gc
+            gc.collect()
 
         def _mark_disabled(u: int) -> None:
             """Mark uid ``u`` as disabled (for pre-MTP soft-fall-
@@ -1774,6 +1778,8 @@ def _install_mtp_vendored(
                         except Exception:  # noqa: BLE001
                             pass
                 _clear_gb_cache()
+                import gc
+                gc.collect()
                 raise RuntimeError(
                     f"[MTP-vendored] uid={uid} generator raised mid-"
                     f"stream ({type(e).__name__}: {e}); cannot fall "

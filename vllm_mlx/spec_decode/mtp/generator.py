@@ -57,8 +57,8 @@ patch_arrays_cache_rollback_state()
 
 logger = logging.getLogger(__name__)
 
-# Match upstream PR #990 cache-clear cadence verbatim (``_CACHE_CLEAR_INTERVAL = 256``).
-_CACHE_CLEAR_INTERVAL = 256
+# Match upstream PR #990 cache-clear cadence verbatim (``_CACHE_CLEAR_INTERVAL = 32``).
+_CACHE_CLEAR_INTERVAL = 32
 
 
 # ---------------------------------------------------------------------------
