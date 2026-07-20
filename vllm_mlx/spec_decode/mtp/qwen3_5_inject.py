@@ -208,11 +208,257 @@ def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
     return None
 
 
+def _fix_mtp_norm_double_shift(model: Any) -> None:
+    """Fix norm weights that were incorrectly double-shifted by mlx-lm.
+
+    stock mlx-lm's ``TextModel.sanitize`` adds +1.0 to ALL norm weights
+    when MTP keys are present (``has_mtp_weights=True``). But models like
+    oQ4-mtp have norms already in MLX convention (mean > 0.5). The
+    double-shift corrupts normalization (mean goes from ~2 to ~3),
+    producing garbage output.
+
+    This function checks each norm weight and removes the extra +1.0
+    if the weight is already in MLX convention (mean > 0.5 after the
+    shift, meaning the original mean was > -0.5 which is always true
+    for RMSNorm weights).
+
+    The fix is safe: RMSNorm weights in MLX convention have mean ~= 1-3.
+    If they were incorrectly shifted, subtracting 1.0 restores them.
+    If they were correctly shifted (raw-HF, mean was ~0), subtracting
+    1.0 would make them negative — which we guard against.
+    """
+    import mlx.core as mx
+
+    _NORM_SUFFIXES = (
+        "input_layernorm",
+        "post_attention_layernorm",
+        "model.norm",
+        "q_norm",
+        "k_norm",
+    )
+
+    fixed = 0
+    for name, mod in model.named_modules():
+        if not hasattr(mod, "weight") or mod.weight is None:
+            continue
+        if mod.weight.ndim != 1:
+            continue
+        if not any(name.endswith(s) for s in _NORM_SUFFIXES):
+            continue
+        mean_val = float(mx.mean(mod.weight.astype(mx.float32)).item())
+        # RMSNorm weights in MLX convention: mean ~= 1.0
+        # RMSNorm weights in raw-HF convention: mean ~= 0.0
+        # stock sanitize adds +1.0 when MTP keys present:
+        #   MLX convention + 1.0 = mean ~2.0 (incorrect, double-shift)
+        #   raw-HF + 1.0 = mean ~1.0 (correct)
+        # Threshold: mean > 1.5 indicates double-shift.
+        if mean_val > 1.5:
+            mod.weight = mod.weight - 1.0
+            fixed += 1
+
+    if fixed > 0:
+        logger.info(
+            "[mtp.inject] Fixed %d double-shifted norm weights "
+            "(subtracted 1.0 from norms with mean > 1.5)",
+            fixed,
+        )
+
+
+def _load_mtp_weights_from_repo(model_repo: str) -> dict[str, Any] | None:
+    """Try to load MTP weights from a model's own HF repo safetensors."""
+    import glob as _glob
+    import os
+
+    import mlx.core as mx
+    from huggingface_hub import snapshot_download
+
+    try:
+        local = snapshot_download(
+            model_repo, allow_patterns=["*.safetensors"]
+        )
+    except Exception as exc:
+        logger.warning(
+            "[mtp.inject] Could not download model repo %r: %s",
+            model_repo, exc,
+        )
+        return None
+
+    mtp_weights: dict[str, Any] = {}
+    for sf_path in sorted(_glob.glob(os.path.join(local, "*.safetensors"))):
+        raw = mx.load(sf_path)
+        for k, v in raw.items():
+            # Match keys like ``language_model.mtp.layers.0.*``
+            # or ``mtp.layers.0.*`` or ``model.mtp.*``
+            if ".mtp." in k or k.startswith("mtp."):
+                # Strip ``language_model.`` prefix if present
+                clean = k.removeprefix("language_model.")
+                # Strip ``mtp.`` prefix if present (some converters)
+                clean = clean.removeprefix("mtp.")
+                mtp_weights[clean] = v
+
+    if not mtp_weights:
+        return None
+    return mtp_weights
+
+
+def _infer_mtp_config(mtp_weights: dict[str, Any]) -> dict[str, Any]:
+    """Infer MTP head architecture from weight shapes.
+
+    Models like oQ4-mtp may have MTP heads with different dimensions
+    than the backbone. When the model's config.json lacks an
+    ``mtp_config`` section, we infer the MTP head's architecture from
+    the actual weight tensor shapes.
+
+    Returns a dict of overrides to merge into the backbone's args.
+    """
+    overrides: dict[str, Any] = {}
+
+    # head_dim: from k_norm.weight shape (one value per head)
+    k_norm = mtp_weights.get("layers.0.self_attn.k_norm.weight")
+    if k_norm is not None:
+        overrides["head_dim"] = int(k_norm.shape[0])
+
+    head_dim = overrides.get("head_dim")
+
+    # num_attention_heads: infer from o_proj (which always takes
+    # num_attention_heads * head_dim as input, regardless of Q gating).
+    # q_proj may have a *2 factor for gated attention, making it
+    # unreliable for inferring num_heads.
+    o_proj = mtp_weights.get("layers.0.self_attn.o_proj.weight")
+    o_scales = mtp_weights.get("layers.0.self_attn.o_proj.scales")
+    if (o_proj is not None and o_scales is not None
+            and head_dim is not None and head_dim > 0
+            and len(o_proj.shape) >= 2 and len(o_scales.shape) >= 2):
+        o_k_packed = o_proj.shape[-1]
+        o_n_groups = o_scales.shape[-1]
+        for o_gs in [64, 128, 32]:
+            o_k = o_n_groups * o_gs
+            if o_k > 0 and (o_k_packed * 32) % o_k == 0:
+                o_bits = (o_k_packed * 32) // o_k
+                if o_bits in [2, 3, 4, 5, 6, 8]:
+                    overrides["num_attention_heads"] = o_k // head_dim
+                    break
+
+    # num_key_value_heads: from k_proj weight shape
+    k_proj = mtp_weights.get("layers.0.self_attn.k_proj.weight")
+    if k_proj is not None and head_dim is not None and head_dim > 0:
+        overrides["num_key_value_heads"] = int(k_proj.shape[0]) // head_dim
+
+    # intermediate_size: from shared_expert gate_proj or dense MLP gate_proj
+    shared_gate = mtp_weights.get("layers.0.mlp.shared_expert.gate_proj.weight")
+    if shared_gate is not None:
+        overrides["intermediate_size"] = int(shared_gate.shape[0])
+    else:
+        gate = mtp_weights.get("layers.0.mlp.gate_proj.weight")
+        if gate is not None:
+            overrides["intermediate_size"] = int(gate.shape[0])
+
+    # num_experts: from switch_mlp gate_proj weight shape
+    switch_gate = mtp_weights.get("layers.0.mlp.switch_mlp.gate_proj.weight")
+    if switch_gate is not None and len(switch_gate.shape) >= 3:
+        overrides["num_experts"] = int(switch_gate.shape[0])
+
+    # Detect gated vs standard attention: check if q_proj has the *2
+    # factor vs the (now-correct) num_attention_heads from o_proj.
+    q_proj = mtp_weights.get("layers.0.self_attn.q_proj.weight")
+    if q_proj is not None and head_dim is not None and head_dim > 0:
+        q_out = int(q_proj.shape[0])
+        num_heads = overrides.get("num_attention_heads", 32)
+        expected_gated = num_heads * head_dim * 2
+        overrides["_use_gated_attention"] = (q_out == expected_gated)
+
+    if overrides:
+        logger.info(
+            "[mtp.inject] Inferred MTP config from weight shapes: %s",
+            overrides,
+        )
+    return overrides
+
+
+def _infer_mtp_quantization(
+    mtp_weights: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Infer quantization params from the first quantized MTP weight.
+
+    Reads bits and group_size from the first weight tensor that has
+    associated ``.scales`` and ``.biases`` tensors. Returns None if
+    no quantized weights are found (model is bf16/fp16).
+    """
+    # Find the first weight that has scales + biases
+    scale_keys = [k for k in mtp_weights if k.endswith(".scales")]
+    for scale_key in sorted(scale_keys):
+        base = scale_key.removesuffix(".scales")
+        weight_key = base + ".weight"
+        biases_key = base + ".biases"
+        if weight_key in mtp_weights and biases_key in mtp_weights:
+            w = mtp_weights[weight_key]
+            s = mtp_weights[scale_key]
+            if len(w.shape) >= 2 and len(s.shape) >= 2:
+                k_packed = w.shape[1] if len(w.shape) == 2 else w.shape[-1]
+                n_groups = s.shape[-1] if len(s.shape) >= 2 else s.shape[0]
+                for gs in [64, 128, 32]:
+                    k = n_groups * gs
+                    if k > 0 and (k_packed * 32) % k == 0:
+                        bits = (k_packed * 32) // k
+                        if bits in [2, 3, 4, 5, 6, 8]:
+                            return {"bits": bits, "group_size": gs}
+                return {"bits": 4, "group_size": 64}
+    return None
+
+
+def _build_per_layer_quant_map(
+    mtp_weights: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Build a per-layer quantization map from MTP weight shapes.
+
+    Returns a dict mapping module path (e.g. ``layers.0.self_attn.q_proj``)
+    to its quantization config (``bits``, ``group_size``). Layers without
+    scales/biases are omitted (they remain bf16/fp16).
+    """
+    quant_map: dict[str, dict[str, Any]] = {}
+    scale_keys = [k for k in mtp_weights if k.endswith(".scales")]
+
+    for scale_key in sorted(scale_keys):
+        base = scale_key.removesuffix(".scales")
+        weight_key = base + ".weight"
+        biases_key = base + ".biases"
+        if weight_key not in mtp_weights or biases_key not in mtp_weights:
+            continue
+
+        w = mtp_weights[weight_key]
+        s = mtp_weights[scale_key]
+        if len(w.shape) < 2 or len(s.shape) < 2:
+            continue
+
+        k_packed = w.shape[1] if len(w.shape) == 2 else w.shape[-1]
+        n_groups = s.shape[-1] if len(s.shape) >= 2 else s.shape[0]
+
+        bits = None
+        group_size = None
+        for gs in [64, 128, 32]:
+            k = n_groups * gs
+            if k > 0 and (k_packed * 32) % k == 0:
+                candidate_bits = (k_packed * 32) // k
+                if candidate_bits in [2, 3, 4, 5, 6, 8]:
+                    bits = candidate_bits
+                    group_size = gs
+                    break
+
+        if bits is not None and group_size is not None:
+            # Map weight key to module path:
+            # ``layers.0.self_attn.q_proj.weight`` -> ``layers.0.self_attn.q_proj``
+            module_path = base
+            quant_map[module_path] = {"bits": bits, "group_size": group_size}
+
+    return quant_map
+
+
 def inject_mtp_support(
     model: Any,
     mtp_sidecar: str | Path | None = None,
     *,
     allow_random_init: bool = False,
+    model_repo: str | None = None,
 ) -> bool:
     """Inject MTP support into a loaded Qwen3.5 / Qwen3.6 model.
 
@@ -235,6 +481,13 @@ def inject_mtp_support(
             ``False`` from this function and the model is left
             unmodified. The bench, server boot, and the qmlx
             spec_decode pipeline MUST pass a sidecar.
+        model_repo: Optional HF repo id (e.g.
+            ``mlx-community/Qwen3.5-122B-A10B-oQ4-mtp``). When
+            ``mtp_sidecar`` is ``None`` and ``model_repo`` is
+            provided, the inject code tries to load MTP weights from
+            the model's own safetensors (for models like oQ4-mtp
+            where MTP weights are embedded in the main checkpoint
+            but stripped by ``mlx_lm.load()``).
 
     Returns:
         ``True`` when the patch landed and the model now exposes
@@ -283,6 +536,14 @@ def inject_mtp_support(
         )
         return False
 
+    # --- Step 0: Fix norm weight double-shift for MTP models ---
+    # stock mlx-lm's sanitize adds +1.0 to ALL norm weights when
+    # MTP keys are present (has_mtp_weights=True). But models like
+    # oQ4-mtp have norms already in MLX convention (mean > 0.5).
+    # The double-shift corrupts normalization. Fix by checking each
+    # norm weight individually and removing the extra +1.0 if needed.
+    _fix_mtp_norm_double_shift(inner)
+
     args = inner.args
 
     # 1. Resolve num_mtp_layers. Prefer the dataclass attr (which
@@ -311,10 +572,55 @@ def inject_mtp_support(
         )
         return False
 
+    # --- Step 3 (early): Load MTP weights + infer config if auto-detecting ---
+    # When model_repo is provided, load weights BEFORE building the MTP
+    # module so we can infer the MTP head's actual dimensions from the
+    # weight shapes. Models like oQ4-mtp may have MTP heads with
+    # different architecture parameters than the backbone.
+    mtp_weights: dict[str, Any] | None = None
+    weights_source: str = ""
+    _skip_quantize = False
+
+    if mtp_sidecar is not None:
+        weights_file = _resolve_sidecar_file(mtp_sidecar)
+        if weights_file is None:
+            logger.warning(
+                "[mtp.inject] sidecar %r could not be resolved; skipping.",
+                mtp_sidecar,
+            )
+            return False
+        raw = mx.load(str(weights_file))
+        mtp_weights = {
+            (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
+            for k, v in raw.items()
+        }
+        weights_source = str(weights_file)
+    elif model_repo is not None:
+        mtp_weights = _load_mtp_weights_from_repo(model_repo)
+        if mtp_weights is not None:
+            weights_source = model_repo
+            _skip_quantize = True  # already quantized by model publisher
+            logger.info(
+                "[mtp.inject] Auto-detected %d MTP weight tensors from %r",
+                len(mtp_weights), model_repo,
+            )
+            # Infer MTP head dimensions from weight shapes and apply
+            # as overrides on the backbone args.
+            mtp_overrides = _infer_mtp_config(mtp_weights)
+            if mtp_overrides:
+                for key, val in mtp_overrides.items():
+                    try:
+                        object.__setattr__(args, key, val)
+                    except (TypeError, AttributeError):
+                        logger.debug(
+                            "[mtp.inject] Could not override args.%s=%r", key, val
+                        )
+
     # --- Step 1: Build the MTP module from the vendored head ---
     from .head import build_mtp_module
 
-    mtp = build_mtp_module(args, num_mtp_layers)
+    _use_gated = getattr(args, "_use_gated_attention", True)
+    mtp = build_mtp_module(args, num_mtp_layers, use_gated_attention=_use_gated)
     logger.info(
         "[mtp.inject] Built MTP module (%d layer(s), hidden_size=%d).",
         num_mtp_layers,
@@ -322,9 +628,37 @@ def inject_mtp_support(
     )
 
     # --- Step 2: Quantize MTP to match the base model's quantization ---
-    quant_info = _detect_base_quantization(inner)
-    if quant_info is not None:
-        nn.quantize(
+    # For auto-detect (model_repo), use per-layer quantization based on
+    # which weights have scales/biases. For sidecar, use uniform
+    # quantization from the backbone.
+    if _skip_quantize and mtp_weights is not None:
+        # Per-layer quantization: only quantize layers whose weights
+        # have associated scales/biases tensors.
+        _mtp_quant_map = _build_per_layer_quant_map(mtp_weights)
+        if _mtp_quant_map:
+            def _mtp_class_predicate(path, module):
+                if path in _mtp_quant_map:
+                    return _mtp_quant_map[path]
+                # Layer has no quantized weights in the model's
+                # safetensors — leave as bf16/fp16.
+                return False
+
+            # Use backbone defaults for the top-level call
+            default_info = _detect_base_quantization(inner) or {"bits": 4, "group_size": 64}
+            nn.quantize(
+                mtp,
+                group_size=default_info["group_size"],
+                bits=default_info["bits"],
+                class_predicate=_mtp_class_predicate,
+            )
+            logger.info(
+                "[mtp.inject] Per-layer quantized MTP (%d overrides)",
+                len(_mtp_quant_map),
+            )
+    else:
+        quant_info = _detect_base_quantization(inner)
+        if quant_info is not None:
+            nn.quantize(
             mtp,
             group_size=quant_info["group_size"],
             bits=quant_info["bits"],
@@ -335,36 +669,9 @@ def inject_mtp_support(
             quant_info["group_size"],
         )
 
-    # --- Step 3: Load MTP weights from sidecar safetensors ---
-    if mtp_sidecar is not None:
-        weights_file = _resolve_sidecar_file(mtp_sidecar)
-        if weights_file is None:
-            logger.warning(
-                "[mtp.inject] sidecar %r could not be resolved to a "
-                "safetensors file; skipping MTP injection. "
-                "Pass either a repo id (mlx-community/Qwen3.5-9B-MTP-4bit), "
-                "a directory containing model.safetensors / "
-                "model-mtp.safetensors, or the file path directly.",
-                mtp_sidecar,
-            )
-            return False
-        raw = mx.load(str(weights_file))
-        # Some sidecars (Qwen3-Next ``add_mtp_weights.py`` output) prefix
-        # every key with ``mtp.``; others (mlx-community/Qwen3.5-9B-MTP-4bit)
-        # store at top-level. Strip the prefix if present so both shapes
-        # land on the MTP module's parameter tree.
-        mtp_weights = {
-            (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
-            for k, v in raw.items()
-        }
-        # Pre-load coverage check: codex flagged on PR #954 that
-        # ``strict=False`` lets the load silently succeed even when
-        # sidecar tensors are missing or misspelled — leaving part of
-        # the MTP head random-init while inject_mtp_support still
-        # returns True. Compute the expected parameter key set off
-        # ``mtp.parameters()`` (post-quantize, so ``weight`` /
-        # ``scales`` / ``biases`` for QuantizedLinear layers) and
-        # refuse the inject if any required tensor is missing.
+    # --- Step 3: Load MTP weights into the module ---
+    if mtp_weights is not None:
+        # Pre-load coverage check
         from mlx.utils import tree_flatten
 
         expected_keys = {k for k, _ in tree_flatten(mtp.parameters())}
@@ -372,20 +679,14 @@ def inject_mtp_support(
         missing = expected_keys - loaded_keys
         if missing:
             logger.warning(
-                "[mtp.inject] sidecar %s is missing %d required MTP "
+                "[mtp.inject] %s is missing %d required MTP "
                 "tensor(s); refusing to ship a partially-random-init head. "
-                "Missing keys (first 8): %s. "
-                "Either grab a correctly-converted sidecar (e.g. "
-                "mlx-community/Qwen3.5-9B-MTP-4bit) or regenerate via "
-                "the add_mtp_weights.py converter.",
-                weights_file.name,
+                "Missing keys (first 8): %s.",
+                weights_source,
                 len(missing),
                 sorted(missing)[:8],
             )
             return False
-        # ``strict=False`` still — we deliberately tolerate EXTRA
-        # keys (metadata blobs some converters bundle), but the
-        # coverage check above proves no required key is missing.
         mtp.load_weights(list(mtp_weights.items()), strict=False)
         mx.eval(mtp.parameters())
         extra = loaded_keys - expected_keys
@@ -393,20 +694,15 @@ def inject_mtp_support(
             "[mtp.inject] Loaded %d/%d expected MTP weight tensors from %s%s",
             len(expected_keys),
             len(expected_keys),
-            weights_file.name,
-            f" (+{len(extra)} extra sidecar key(s) ignored)" if extra else "",
+            weights_source,
+            f" (+{len(extra)} extra key(s) ignored)" if extra else "",
         )
     else:
-        # No sidecar.
+        # No sidecar and no auto-detected weights.
         if not allow_random_init:
-            # Codex round-5 BLOCKING fix: default is fail-closed. A
-            # missing sidecar in production silently enabled a draft
-            # model with random init weights (~0% accept rate) —
-            # invisible regression that LOOKS like spec-decode is
-            # running but emits zero speedup. Refuse the inject.
             logger.warning(
                 "[mtp.inject] inject_mtp_support called without "
-                "mtp_sidecar and allow_random_init=False; refusing to "
+                "mtp_sidecar or model_repo; refusing to "
                 "ship a random-init MTP head. Pass "
                 "mtp_sidecar='mlx-community/Qwen3.5-9B-MTP-4bit' (or "
                 "equivalent) for production use, or set "
@@ -519,8 +815,18 @@ def inject_mtp_support(
             hidden_states,
             next_token_ids,
             mtp_cache,
+            *,
+            return_hidden: bool = False,
         ):
-            """Run the MTP head and project through the shared lm_head."""
+            """Run the MTP head and project through the shared lm_head.
+
+            When ``return_hidden=True``, returns ``(logits, mtp_hidden)``
+            where ``mtp_hidden`` is the MTP module's pre-lm_head output
+            at the last predicted position. Used by the generator's
+            drafter-hidden cascade path so successive chain iterations
+            see the drafter's own representation instead of the frozen
+            backbone hidden.
+            """
             mtp_out = self.mtp(
                 hidden_states,
                 next_token_ids,
@@ -528,8 +834,12 @@ def inject_mtp_support(
                 mtp_cache,
             )
             if self.args.tie_word_embeddings:
-                return self.model.embed_tokens.as_linear(mtp_out)
-            return self.lm_head(mtp_out)
+                logits = self.model.embed_tokens.as_linear(mtp_out)
+            else:
+                logits = self.lm_head(mtp_out)
+            if return_hidden:
+                return logits, mtp_out[:, -1:, :]
+            return logits
 
         def make_mtp_cache(self):
             """Return fresh ``KVCache`` entries — one per MTP layer.

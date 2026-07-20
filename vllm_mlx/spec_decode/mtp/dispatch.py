@@ -75,6 +75,7 @@ def dispatch_mtp_inject(
     *,
     mtp_sidecar: str | Path | None = None,
     allow_random_init: bool = False,
+    model_repo: str | None = None,
 ) -> bool:
     """Route an inject call to the family-specific implementation.
 
@@ -83,6 +84,8 @@ def dispatch_mtp_inject(
         model_type: The ``config.json::model_type`` string.
         mtp_sidecar: Optional sidecar reference — forwarded verbatim.
         allow_random_init: Test-only escape hatch — forwarded verbatim.
+        model_repo: Optional HF repo id for auto-detecting embedded
+            MTP weights — forwarded verbatim.
 
     Returns:
         ``True`` when the family inject succeeded and the model now
@@ -141,6 +144,7 @@ def dispatch_mtp_inject(
                 model,
                 mtp_sidecar=mtp_sidecar,
                 allow_random_init=allow_random_init,
+                model_repo=model_repo,
             )
         )
     except Exception as exc:
