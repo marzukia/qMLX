@@ -273,13 +273,12 @@ def _load_mtp_weights_from_repo(model_repo: str) -> dict[str, Any] | None:
     from huggingface_hub import snapshot_download
 
     try:
-        local = snapshot_download(
-            model_repo, allow_patterns=["*.safetensors"]
-        )
+        local = snapshot_download(model_repo, allow_patterns=["*.safetensors"])
     except Exception as exc:
         logger.warning(
             "[mtp.inject] Could not download model repo %r: %s",
-            model_repo, exc,
+            model_repo,
+            exc,
         )
         return None
 
@@ -326,9 +325,14 @@ def _infer_mtp_config(mtp_weights: dict[str, Any]) -> dict[str, Any]:
     # unreliable for inferring num_heads.
     o_proj = mtp_weights.get("layers.0.self_attn.o_proj.weight")
     o_scales = mtp_weights.get("layers.0.self_attn.o_proj.scales")
-    if (o_proj is not None and o_scales is not None
-            and head_dim is not None and head_dim > 0
-            and len(o_proj.shape) >= 2 and len(o_scales.shape) >= 2):
+    if (
+        o_proj is not None
+        and o_scales is not None
+        and head_dim is not None
+        and head_dim > 0
+        and len(o_proj.shape) >= 2
+        and len(o_scales.shape) >= 2
+    ):
         o_k_packed = o_proj.shape[-1]
         o_n_groups = o_scales.shape[-1]
         for o_gs in [64, 128, 32]:
@@ -365,7 +369,7 @@ def _infer_mtp_config(mtp_weights: dict[str, Any]) -> dict[str, Any]:
         q_out = int(q_proj.shape[0])
         num_heads = overrides.get("num_attention_heads", 32)
         expected_gated = num_heads * head_dim * 2
-        overrides["_use_gated_attention"] = (q_out == expected_gated)
+        overrides["_use_gated_attention"] = q_out == expected_gated
 
     if overrides:
         logger.info(
@@ -602,7 +606,8 @@ def inject_mtp_support(
             _skip_quantize = True  # already quantized by model publisher
             logger.info(
                 "[mtp.inject] Auto-detected %d MTP weight tensors from %r",
-                len(mtp_weights), model_repo,
+                len(mtp_weights),
+                model_repo,
             )
             # Infer MTP head dimensions from weight shapes and apply
             # as overrides on the backbone args.
@@ -636,6 +641,7 @@ def inject_mtp_support(
         # have associated scales/biases tensors.
         _mtp_quant_map = _build_per_layer_quant_map(mtp_weights)
         if _mtp_quant_map:
+
             def _mtp_class_predicate(path, module):
                 if path in _mtp_quant_map:
                     return _mtp_quant_map[path]
@@ -644,7 +650,10 @@ def inject_mtp_support(
                 return False
 
             # Use backbone defaults for the top-level call
-            default_info = _detect_base_quantization(inner) or {"bits": 4, "group_size": 64}
+            default_info = _detect_base_quantization(inner) or {
+                "bits": 4,
+                "group_size": 64,
+            }
             nn.quantize(
                 mtp,
                 group_size=default_info["group_size"],
@@ -659,10 +668,10 @@ def inject_mtp_support(
         quant_info = _detect_base_quantization(inner)
         if quant_info is not None:
             nn.quantize(
-            mtp,
-            group_size=quant_info["group_size"],
-            bits=quant_info["bits"],
-        )
+                mtp,
+                group_size=quant_info["group_size"],
+                bits=quant_info["bits"],
+            )
         logger.info(
             "[mtp.inject] Quantized MTP: %d-bit, group_size=%d",
             quant_info["bits"],
