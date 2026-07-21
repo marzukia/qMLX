@@ -3103,16 +3103,9 @@ class Scheduler:
             logger.debug("[prompt_cache_save] extract_cache failed: %s", exc)
             return
 
-        # Free extracted cache states after disk persist
-        for uid_val, payload in extracted.items():
-            if isinstance(payload, tuple) and len(payload) == 2:
-                cache, _tokens = payload
-                if cache is not None:
-                    for c in cache:
-                        if hasattr(c, "keys"):
-                            c.keys = None
-                        if hasattr(c, "values"):
-                            c.values = None
+        # Note: extracted cache states are NOT cleared here because
+        # the same cache objects are still in use by the engine.
+        # Clearing them would break disk checkpointing.
 
         for uid, payload in extracted.items():
             # Promoted sequences (stage == 2) return (cache, tokens). Any
