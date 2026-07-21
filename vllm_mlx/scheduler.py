@@ -44,6 +44,8 @@ from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .honest_metrics import HonestMetrics  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
+from .pflash_v2 import install_pflash_v2  # noqa: E402
+from .prefill_profiler import install_prefill_profiling  # noqa: E402
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
 from .utils.decode import IncrementalDecoder
@@ -274,7 +276,7 @@ class SchedulerConfig:
     # a 10% safety margin below the cap, wide enough that one large
     # prefill on a half-empty cache will not trigger a thrash loop.
     # See D-METAL-PFX in 0.8TODO for the regression repro.
-    metal_pressure_evict_fraction: float = 0.9
+    metal_pressure_evict_fraction: float = 1.0
 
     # D-METAL-CAP (codex round 3 BLOCKING #1): conservative per-token
     # KV-cache reservation, in bytes per (prompt+output) token. When
@@ -1202,6 +1204,23 @@ def _install_mtp_vendored(
                 gen.close()
             except Exception:  # noqa: BLE001
                 pass
+        _clear_gb_cache()
+        import gc
+        gc.collect()
+
+        # Clear gb.prompt_cache references to prevent memory accumulation.
+        # The persistent GenerationBatch holds references to old KV caches
+        # that grow with each request. Clearing after generator close
+        # releases these references so the garbage collector can free them.
+        try:
+            if gb is not None and hasattr(gb, "prompt_cache"):
+                for c in gb.prompt_cache:
+                    if hasattr(c, "state"):
+                        c.state = None
+                    if hasattr(c, "rollback_state"):
+                        c.rollback_state = None
+        except Exception:  # noqa: BLE001
+            pass
 
     def _is_greedy_for_uid(uid: int) -> bool:
         """Return True when the request behind ``uid`` sampled at temp=0.
@@ -1297,6 +1316,9 @@ def _install_mtp_vendored(
                         _gen.close()
                     except Exception:  # noqa: BLE001
                         pass
+            _clear_gb_cache()
+            import gc
+            gc.collect()
 
         def _mark_disabled(u: int) -> None:
             """Mark uid ``u`` as disabled (for pre-MTP soft-fall-
@@ -1306,6 +1328,18 @@ def _install_mtp_vendored(
             if uid_to_request_id is not None:
                 _term_req_id = uid_to_request_id.get(u)
             _disabled_uids[u] = _term_req_id
+
+        def _clear_gb_cache():
+            """Clear gb.prompt_cache to prevent memory leak."""
+            try:
+                if gb is not None and hasattr(gb, "prompt_cache"):
+                    for c in gb.prompt_cache:
+                        if hasattr(c, "state"):
+                            c.state = None
+                        if hasattr(c, "rollback_state"):
+                            c.rollback_state = None
+            except Exception:
+                pass
 
         def _sync_next_tokens_after_emit(
             gb_ref: Any,
@@ -1442,31 +1476,10 @@ def _install_mtp_vendored(
                 _stats["ft_disabled"] += 1
                 return _orig_step()
 
-        if not _is_greedy_for_uid(uid):
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_non_greedy"] += 1
-            # Codex round-L BLOCKING #3: prior round-H revision raised
-            # ``RuntimeError`` here when sampling switched to non-
-            # greedy after MTP had already emitted. That killed the
-            # request on a legitimate runtime sampling-param change.
-            #
-            # Round-L fix: hand off to ``_orig_step`` regardless of
-            # state. The MTP generator is closed and the uid is
-            # marked disabled so subsequent steps skip MTP entirely.
-            # Same bounded stream-artifact tradeoff as the B>1 handoff
-            # above; see :func:`_log_mtp_mid_stream_handoff_once` for
-            # the operator-facing WARN contract.
-            if uid in _state:
-                _stats["ft_mid_stream_handoff"] += 1
-                _log_mtp_mid_stream_handoff_once(
-                    uid,
-                    "non_greedy",
-                    "sampling switched to temperature > 0 mid-stream",
-                )
-                _record_terminal_disable(uid)
-            else:
-                _mark_disabled(uid)
-            return _orig_step()
+        # Non-greedy requests now supported: sampling params are passed
+        # through to mtp_generate_step instead of hardcoding temp=0.0.
+        # The generator preserves the lossless marginal via its
+        # residual-distribution sample on reject for any temperature.
 
         _lp = getattr(gb, "logits_processors", None)
         if _lp and any(p for p in _lp if p):
@@ -1559,6 +1572,10 @@ def _install_mtp_vendored(
             # ``_num_tokens[i] >= self.max_tokens[i]``.
             gen_max = int(gb.max_tokens[0]) if gb.max_tokens else 4096
 
+            # Look up the request for sampling params (non-greedy MTP support).
+            _req_id = uid_to_request_id.get(uid) if uid_to_request_id is not None else None
+            req = requests.get(_req_id) if requests is not None and _req_id else None
+
             # Codex round-A blocker #2: construct the generator BEFORE
             # mutating ``gb.tokens[0]``. Prior revision appended the
             # first token first, then constructed the generator; on
@@ -1584,12 +1601,22 @@ def _install_mtp_vendored(
             # permanently disabled so we don't retry construction on
             # every subsequent step.
             try:
+                # Read sampling params from the request for non-greedy support.
+                _mtp_sp = getattr(req, "sampling_params", None) if req is not None else None
+                _mtp_temp = getattr(_mtp_sp, "temperature", 0.0) or 0.0
+                _mtp_top_p = getattr(_mtp_sp, "top_p", 0.0) or 0.0
+                _mtp_top_k = getattr(_mtp_sp, "top_k", 0) or 0
+                _mtp_min_p = getattr(_mtp_sp, "min_p", 0.0) or 0.0
+
                 gen = mtp_generate_step(
                     prompt=first_tok_arr.astype(mx.uint32),
                     model=mtp_model,
                     max_tokens=gen_max,
                     prompt_cache=gb.prompt_cache,
-                    temp=0.0,
+                    temp=_mtp_temp,
+                    top_p=_mtp_top_p,
+                    top_k=_mtp_top_k,
+                    min_p=_mtp_min_p,
                     # 0.9.13 PR-B: EV depth controller.
                     model_id=controller_key or f"mtp-model-{id(mtp_model)}",
                     max_k=max_k,
@@ -1750,6 +1777,9 @@ def _install_mtp_vendored(
                             _gen.close()
                         except Exception:  # noqa: BLE001
                             pass
+                _clear_gb_cache()
+                import gc
+                gc.collect()
                 raise RuntimeError(
                     f"[MTP-vendored] uid={uid} generator raised mid-"
                     f"stream ({type(e).__name__}: {e}); cannot fall "
@@ -2435,6 +2465,9 @@ class Scheduler:
                     f"Prefix cache enabled with max_entries={self.config.prefix_cache_size}"
                 )
 
+        # Mid-prefill checkpoint tracking (for new BatchGenerator API)
+        self._mid_prefill_save_interval: int = 0
+
         # Thread-safe set for deferred aborts (main thread → executor thread)
         # CPython GIL guarantees set.add() and `x in set` are atomic.
         self._pending_abort_ids: set[str] = set()
@@ -2855,12 +2888,19 @@ class Scheduler:
                 chunked_budget = 999_999
             mid_prefill_cb = None
             save_interval = self.config.mid_prefill_save_interval
-            if (
-                save_interval > 0
-                and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
-            ):
-                mid_prefill_cb = self._make_mid_prefill_save_callback(save_interval)
-                logger.info(f"[mid_prefill_cache] enabled, interval={save_interval}")
+            if save_interval > 0:
+                from .runtime import disk_kv_checkpoint as _dkc
+
+                if (
+                    _dkc.mid_prefill_checkpoints_enabled()
+                    and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0)
+                    > 0
+                ):
+                    mid_prefill_cb = self._make_mid_prefill_save_callback(save_interval)
+                    logger.info(
+                        f"[mid_prefill_cache] enabled, interval={save_interval} "
+                        f"(QMLX_MID_PREFILL_CHECKPOINT_TOKENS)"
+                    )
             prompt_cache_cb = None
             if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0:
                 prompt_cache_cb = self._make_prompt_cache_save_callback()
@@ -2882,6 +2922,23 @@ class Scheduler:
             # The per-message boundary save is wired via insert_segments
             # + end_of_segment — see _snapshot_boundary_segments
             # (issue #427).
+
+            # Mid-prefill checkpoint support on new API: track prefill
+            # progress per-request and trigger saves at configured intervals.
+            save_interval = self.config.mid_prefill_save_interval
+            from .runtime import disk_kv_checkpoint as _dkc
+
+            if (
+                save_interval > 0
+                and _dkc.mid_prefill_checkpoints_enabled()
+                and (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
+            ):
+                self._mid_prefill_save_interval = save_interval
+                logger.info(
+                    f"[mid_prefill_cache] enabled on new API, interval={save_interval} "
+                    f"(QMLX_MID_PREFILL_CHECKPOINT_TOKENS)"
+                )
+
             if chunked_budget > 0:
                 logger.info(
                     "[chunked_prefill] mlx-lm 0.31+ removed the legacy "
@@ -2892,6 +2949,22 @@ class Scheduler:
                     chunked_budget,
                     self.config.prefill_step_size,
                 )
+
+        # Install prefill profiler when enabled (gated behind env var).
+        if os.environ.get("QMLX_PREFILL_PROFILER_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            install_prefill_profiling(bg)
+
+        # Install PFlash v2 pattern compression when enabled.
+        if os.environ.get("QMLX_PFLASH_V2_ENABLED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            install_pflash_v2(bg.model)
 
         # Server-side wiring for ``--speculative-config '{"method":"mtp"}'``.
         # This installs the vendored PR #990 ``mtp_generate_step`` hot
@@ -3029,6 +3102,10 @@ class Scheduler:
         except Exception as exc:
             logger.debug("[prompt_cache_save] extract_cache failed: %s", exc)
             return
+
+        # Note: extracted cache states are NOT cleared here because
+        # the same cache objects are still in use by the engine.
+        # Clearing them would break disk checkpointing.
 
         for uid, payload in extracted.items():
             # Promoted sequences (stage == 2) return (cache, tokens). Any
@@ -3184,6 +3261,86 @@ class Scheduler:
                     f"saved {prefix_boundary} tokens at message boundary "
                     f"store_time={_dt:.3f}s"
                 )
+            # Free extracted cache states to prevent memory accumulation
+            del states, reconstructed
+            cache = None
+
+    def _trigger_mid_prefill_checkpoints(self, prompt_responses: list[Any]) -> None:
+        """Trigger mid-prefill checkpoints when we've hit the configured boundary.
+
+        Called after each prefill batch on the new BatchGenerator API (0.31+).
+        Checks if any request has crossed the mid-prefill checkpoint boundary
+        and saves the checkpoint if so.
+        """
+        if self._mid_prefill_save_interval <= 0:
+            return
+
+        from .runtime import disk_kv_checkpoint as _dkc
+
+        if not _dkc.mid_prefill_checkpoints_enabled():
+            return
+
+        for resp in prompt_responses:
+            uid = getattr(resp, "uid", None)
+            if uid is None:
+                continue
+
+            request_id = self.uid_to_request_id.get(uid)
+            if not request_id:
+                continue
+
+            request = self.requests.get(request_id)
+            if not request or not request.prompt_token_ids:
+                continue
+
+            # Skip PFlash-compressed requests
+            if _pflash_compressed(request):
+                continue
+
+            total_prompt = len(request.prompt_token_ids)
+            cached = request.cached_tokens or 0
+
+            # Check if we should save at this point
+            # We save when num_computed_tokens crosses a multiple of save_interval
+            current_computed = getattr(request, "_mid_prefill_processed", 0)
+
+            # Calculate how many tokens were just processed in this prefill batch
+            # For now, we use the prefilled count from the response if available
+            newly_prefilled = getattr(resp, "num_prefilled", 0)
+            if newly_prefilled > 0:
+                current_computed += newly_prefilled
+                request._mid_prefill_processed = current_computed
+
+            # Check if we've hit a checkpoint boundary
+            last_save = getattr(request, "_mid_prefill_last_save", 0)
+
+            if current_computed - last_save >= self._mid_prefill_save_interval:
+                # Save checkpoint at this boundary
+                try:
+                    # Extract current cache state
+                    if hasattr(resp, "cache") and resp.cache:
+                        extracted = self._extract_cache_states(resp.cache)
+                        if extracted:
+                            reconstructed = self._reconstruct_cache_from_states(
+                                extracted
+                            )
+                            if reconstructed:
+                                prefix_tokens = list(
+                                    request.prompt_token_ids[:current_computed]
+                                )
+                                self._disk_persist_boundary(
+                                    prefix_tokens, reconstructed
+                                )
+                                request._mid_prefill_last_save = current_computed
+                                logger.info(
+                                    f"[mid_prefill_cache] request={request_id[:12]} "
+                                    f"saved {current_computed}/{total_prompt} tokens "
+                                    f"({current_computed * 100 // total_prompt}%)"
+                                )
+                except Exception as e:
+                    logger.warning(
+                        f"[mid_prefill_cache] failed to save checkpoint for {request_id}: {e}"
+                    )
 
     def _make_mid_prefill_save_callback(self, save_interval: int):
         """Create a callback for saving intermediate KV cache during chunked prefill.
@@ -6107,6 +6264,12 @@ class Scheduler:
                     # older versions return a flat list of responses
                     if isinstance(raw_next, tuple):
                         prompt_responses, responses = raw_next
+
+                        # Mid-prefill checkpoint trigger: check if we've hit
+                        # the configured boundary during prefill.
+                        if self._mid_prefill_save_interval > 0:
+                            self._trigger_mid_prefill_checkpoints(prompt_responses)
+
                         self._snapshot_promoted_prompts(prompt_responses)
                         # issue #427: per-message boundary snapshot for
                         # multi-turn hybrid workloads (segment finished
@@ -6439,6 +6602,27 @@ class Scheduler:
             stats["paged_cache"] = self.block_aware_cache.get_stats()
         elif self.prefix_cache is not None:
             stats["prefix_cache"] = self.prefix_cache.get_stats()
+
+        # Phase 0b: cold-prefill frequency dashboard
+        try:
+            from .prefill_frequency_dashboard import get_dashboard
+
+            stats["prefill_frequency_dashboard"] = get_dashboard().snapshot()
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+        # Prefill profiler metrics (QMLX_PREFILL_PROFILER_ENABLED)
+        try:
+            from .prefill_profiler import get_profiler
+
+            profiler = get_profiler()
+            if profiler.enabled:
+                stats["prefill_profiler"] = {
+                    "_phase_totals": dict(profiler._phase_totals)
+                }
+        except Exception:  # pragma: no cover — defensive
+            pass
+
         return stats
 
     def get_cache_stats(self) -> dict[str, Any] | None:
