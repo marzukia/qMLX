@@ -351,3 +351,88 @@ async def clear_all_caches():
         }
     except ImportError:
         return {"error": "Cache clear not available (mlx_vlm not loaded)"}
+
+
+@probe_router.get("/debug/mx_arrays")
+async def debug_mx_arrays():
+    """Diagnostic gc scan of live ``mx.array`` objects, grouped by shape.
+
+    Off unless ``QMLX_DEBUG_GC_SCAN=1`` (the full-heap walk takes a few
+    seconds; only hit this at idle). Built to verify the MTP per-turn
+    memory-bloat fix: reports counts and resident bytes for the two
+    signature shapes that ratchet when speculative-decode state leaks —
+    the GatedDeltaNet SSM recurrent state ``(1, 64, 128, 128)`` and the
+    bf16 attention KV ``(1, 2, N, 256)`` — plus the top shapes by total
+    bytes.
+    """
+    import os as _os
+
+    if _os.environ.get("QMLX_DEBUG_GC_SCAN") not in ("1", "true", "True"):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    import mlx.core as mx
+
+    seen: dict[int, object] = {}
+
+    def _note(obj: object) -> None:
+        if type(obj) is mx.array:
+            seen[id(obj)] = obj
+
+    # Exact-type checks only: subclass mappings (e.g. transformers'
+    # lazy auto-model mappings) run import machinery on iteration and
+    # blow up the scan. A plain dict/list/tuple/mx.array covers every
+    # container mlx-lm caches live in.
+    for o in gc.get_objects():
+        try:
+            to = type(o)
+            if to is mx.array:
+                seen[id(o)] = o
+            elif to is list or to is tuple:
+                for it in o:
+                    _note(it)
+            elif to is dict:
+                for it in o.values():
+                    _note(it)
+        except Exception:  # noqa: BLE001 — diagnostic walk is best-effort
+            continue
+
+    by_shape: dict[str, dict[str, float]] = {}
+    ssm_count = 0
+    ssm_bytes = 0
+    kv_bf16_count = 0
+    kv_bf16_bytes = 0
+    for a in seen.values():
+        try:
+            shape = tuple(a.shape)
+            nbytes = int(a.nbytes)
+            dt = str(a.dtype)
+        except Exception:  # noqa: BLE001 — array may be mid-teardown
+            continue
+        key = f"{shape}:{dt}"
+        rec = by_shape.setdefault(key, {"count": 0, "bytes": 0})
+        rec["count"] += 1
+        rec["bytes"] += nbytes
+        if shape == (1, 64, 128, 128):
+            ssm_count += 1
+            ssm_bytes += nbytes
+        if (
+            len(shape) == 4
+            and shape[0] == 1
+            and shape[1] == 2
+            and shape[3] == 256
+            and "bfloat16" in dt
+        ):
+            kv_bf16_count += 1
+            kv_bf16_bytes += nbytes
+
+    top = sorted(by_shape.items(), key=lambda kv: -kv[1]["bytes"])[:15]
+    return {
+        "total_arrays": len(seen),
+        "metal_active_bytes": int(mx.metal.get_active_memory()),
+        "ssm_state_1x64x128x128": {"count": ssm_count, "bytes": ssm_bytes},
+        "kv_bf16_1x2xNx256": {"count": kv_bf16_count, "bytes": kv_bf16_bytes},
+        "top_shapes_by_bytes": [
+            {"shape_dtype": k, "count": int(v["count"]), "bytes": int(v["bytes"])}
+            for k, v in top
+        ],
+    }
