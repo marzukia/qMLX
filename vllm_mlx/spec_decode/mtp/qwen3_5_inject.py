@@ -540,14 +540,6 @@ def inject_mtp_support(
         )
         return False
 
-    # --- Step 0: Fix norm weight double-shift for MTP models ---
-    # stock mlx-lm's sanitize adds +1.0 to ALL norm weights when
-    # MTP keys are present (has_mtp_weights=True). But models like
-    # oQ4-mtp have norms already in MLX convention (mean > 0.5).
-    # The double-shift corrupts normalization. Fix by checking each
-    # norm weight individually and removing the extra +1.0 if needed.
-    _fix_mtp_norm_double_shift(inner)
-
     args = inner.args
 
     # 1. Resolve num_mtp_layers. Prefer the dataclass attr (which
@@ -575,6 +567,15 @@ def inject_mtp_support(
             "[mtp.inject] config has no mtp_num_hidden_layers; skipping MTP injection."
         )
         return False
+
+    # --- Step 0: Fix norm weight double-shift for MTP models ---
+    # stock mlx-lm's sanitize adds +1.0 to ALL norm weights when MTP
+    # keys are present (has_mtp_weights=True). Models like oQ4-mtp have
+    # norms already in MLX convention (mean > 0.5); the double-shift
+    # corrupts normalization. Run this ONLY after confirming the model is
+    # a real MTP checkpoint (num_mtp_layers >= 1) so a rejected/non-MTP
+    # model is never mutated.
+    _fix_mtp_norm_double_shift(inner)
 
     # --- Step 3 (early): Load MTP weights + infer config if auto-detecting ---
     # When model_repo is provided, load weights BEFORE building the MTP
@@ -672,11 +673,20 @@ def inject_mtp_support(
                 group_size=quant_info["group_size"],
                 bits=quant_info["bits"],
             )
-        logger.info(
-            "[mtp.inject] Quantized MTP: %d-bit, group_size=%d",
-            quant_info["bits"],
-            quant_info["group_size"],
-        )
+            logger.info(
+                "[mtp.inject] Quantized MTP: %d-bit, group_size=%d",
+                quant_info["bits"],
+                quant_info["group_size"],
+            )
+        else:
+            # FP base model — _detect_base_quantization returns None and the
+            # MTP head stays in floating point. Do NOT dereference quant_info
+            # here (it is None): logging its keys was an unconditional
+            # NoneType subscript crash on every unquantised model.
+            logger.info(
+                "[mtp.inject] Base model is unquantised (FP); "
+                "MTP head left in floating point."
+            )
 
     # --- Step 3: Load MTP weights into the module ---
     if mtp_weights is not None:
