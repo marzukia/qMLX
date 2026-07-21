@@ -396,7 +396,6 @@ def mtp_generate_step(
             )
             logits = logits[:, -n_predict:, :]
             quantize_cache_fn(model_cache)
-            mx.clear_cache()  # P1: free quantization temporaries
             toks: list = []
             lps: list = []
             accept_lps: list = []
@@ -456,7 +455,6 @@ def mtp_generate_step(
             else:
                 mtp_logits = model.mtp_forward(hidden_last, next_ids, mtp_cache)
             quantize_cache_fn(mtp_cache)
-            mx.clear_cache()  # P1: free quantization temporaries
             mtp_logits = mtp_logits[:, -1, :].squeeze(0)
             if logits_processors:
                 tokens_for_proc = (
@@ -673,7 +671,6 @@ def mtp_generate_step(
 
             hidden_at_main = hidden[:, -1:, :]
             del hidden  # P1: free full hidden tensor
-            mx.clear_cache()
             if next_k >= 1:
                 # Chain-of-K: generate ``next_k`` drafts cascaded via
                 # MTP. next_k==1 is the plain single-draft path.
@@ -872,7 +869,6 @@ def mtp_generate_step(
                 # caches.
                 n_to_drop = k_len - accepted_count
                 _rollback_draft(n_to_drop)
-                mx.clear_cache()  # P2: free trimmed KV buffers
                 accept_counter.record_reject()
                 if logits_processors and prev_tokens is not None:
                     # Discard the ``n_to_drop`` rejected positions
