@@ -6233,20 +6233,56 @@ class Scheduler:
                         hasattr(request, "_extracted_cache")
                         and request._extracted_cache is not None
                     ):
-                        try:
-                            full_token_sequence = list(request.prompt_token_ids) + list(
-                                request.output_token_ids
-                            )
-                            self.prefix_cache.store_cache(
-                                full_token_sequence,
-                                request._extracted_cache,
-                            )
+                        # Hybrid (non-trimmable) entries are full resident
+                        # cache sets — 36 GatedDeltaNet SSM states + bf16
+                        # attention KV, hundreds of MB to GB each at long
+                        # context — that can only ever hit by exact/shorter
+                        # prefix via a deepcopy. When the disk-checkpoint
+                        # tier is on it persists the SAME entry (quantized)
+                        # at completion and serves those hits via restore,
+                        # so keeping a second bf16 copy resident just
+                        # ratchets idle memory one cache set per finished
+                        # turn. Skip the in-memory store for that
+                        # combination; trimmable (pure-attention) entries
+                        # and disk-tier-off deployments keep today's
+                        # behavior.
+                        _skip_mem_store = False
+                        if (
+                            getattr(self.config, "kv_disk_checkpoint_interval", 0)
+                            or 0
+                        ) > 0:
+                            try:
+                                from .memory_cache import _cache_has_non_trimmable
+
+                                _skip_mem_store = _cache_has_non_trimmable(
+                                    request._extracted_cache
+                                )
+                            except Exception:  # noqa: BLE001 — best-effort
+                                _skip_mem_store = False
+                        if _skip_mem_store:
                             logger.debug(
-                                f"Stored cache for request {request_id} "
-                                f"({len(full_token_sequence)} tokens: {len(request.prompt_token_ids)} prompt + {len(request.output_token_ids)} output)"
+                                "[prefix_cache] skip in-memory store for %s: "
+                                "non-trimmable hybrid cache, disk checkpoint "
+                                "tier owns it",
+                                request_id[:12],
                             )
-                        except Exception as e:
-                            logger.debug(f"Failed to store cache for {request_id}: {e}")
+                        else:
+                            try:
+                                full_token_sequence = list(
+                                    request.prompt_token_ids
+                                ) + list(request.output_token_ids)
+                                self.prefix_cache.store_cache(
+                                    full_token_sequence,
+                                    request._extracted_cache,
+                                )
+                                logger.debug(
+                                    f"Stored cache for request {request_id} "
+                                    f"({len(full_token_sequence)} tokens: {len(request.prompt_token_ids)} prompt + {len(request.output_token_ids)} output)"
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    f"Failed to store cache for {request_id}: {e}"
+                                )
 
             # Evaluate stored cache tensors incrementally (per-layer) to prevent
             # a deferred batch evaluation spike when all lazy ops resolve at once.
