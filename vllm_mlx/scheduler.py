@@ -975,6 +975,56 @@ def _install_dense_sampler_fastpath(batch_gen: "BatchGenerator") -> None:
     logger.info("[dense_sampler_fastpath] installed on BatchGenerator")
 
 
+def _release_kv_cache_fields(caches: Any, skip_ids: set[int] | None = None) -> int:
+    """Free the real storage of a list of mlx-lm cache objects.
+
+    ``cache.state = None`` is a silent no-op on mlx-lm ``KVCache``: the
+    ``state`` setter unpacks ``self.keys, self.values = v`` and raises
+    ``TypeError`` on ``None``, which every historical caller swallowed
+    with a bare ``except``. So the prior "cleanup" freed nothing on the
+    attention layers. This helper nulls the REAL per-type fields:
+
+    - ``KVCache`` / ``QuantizedKVCache``: ``keys`` / ``values`` arrays
+      dropped, ``offset`` reset to 0;
+    - ``ArraysCache`` (GatedDeltaNet SSM recurrent state): every slot of
+      the ``.cache`` list nulled;
+    - any cache carrying an MTP ``rollback_state`` tape: tape dropped
+      (each tape entry pins a full per-layer SSM snapshot set).
+
+    ``skip_ids`` is an identity set of cache objects that must NOT be
+    touched (caches still owned by the live ``GenerationBatch``).
+    Returns the number of caches whose storage was released.
+    """
+    if not caches:
+        return 0
+    released = 0
+    for c in caches:
+        if c is None or (skip_ids and id(c) in skip_ids):
+            continue
+        touched = False
+        try:
+            if getattr(c, "rollback_state", None) is not None:
+                c.rollback_state = None
+                touched = True
+            inner = getattr(c, "cache", None)
+            if isinstance(inner, list) and inner:
+                for i in range(len(inner)):
+                    inner[i] = None
+                touched = True
+            k = getattr(c, "keys", None)
+            if k is not None and not callable(k):
+                c.keys = None
+                c.values = None
+                if hasattr(c, "offset"):
+                    c.offset = 0
+                touched = True
+        except Exception:  # noqa: BLE001 — release is best-effort
+            continue
+        if touched:
+            released += 1
+    return released
+
+
 def _install_mtp_vendored(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -1195,32 +1245,120 @@ def _install_mtp_vendored(
         #
         # State (the per-uid MTP generator + queue) is cleaned here as
         # usual — that's per-generator lifecycle, not per-request.
+        _cleanup_uid_storage(uid, release_storage=True)
+
+    def _gen_cache_lists(gen: Any) -> tuple[Any, Any]:
+        """Fetch ``(model_cache, mtp_cache)`` from a suspended
+        ``mtp_generate_step`` generator's frame.
+
+        A suspended generator pins BOTH lists in its frame locals: the
+        backbone caches (12 attention ``KVCache`` + 36 GatedDeltaNet
+        ``ArraysCache`` with their SSM states and rollback tapes) and
+        the MTP head's own ``KVCache`` list, which grows to the full
+        context length. ``gen.close()`` alone drops the frame's list
+        refs but frees nothing if any other object still references the
+        cache OBJECTS — so the caller nulls the arrays inside them via
+        :func:`_release_kv_cache_fields` while it still can reach them.
+        Returns ``(None, None)`` when the frame is already gone
+        (generator exhausted or closed).
+        """
+        frame = getattr(gen, "gi_frame", None)
+        if frame is None:
+            return None, None
+        try:
+            loc = frame.f_locals
+            return loc.get("model_cache"), loc.get("mtp_cache")
+        except Exception:  # noqa: BLE001 — introspection is best-effort
+            return None, None
+
+    def _cleanup_uid_storage(uid: int, release_storage: bool) -> None:
+        """Close uid's MTP generator and free the cache storage it pins.
+
+        ``release_storage=True``: the request is DONE (finished, aborted,
+        or its uid was reused). Free the attention KV, the SSM recurrent
+        state, the rollback tapes, and the MTP-head KV that the
+        suspended generator frame pins. Cache objects still present in
+        the live ``gb.prompt_cache`` are identity-skipped so a
+        mid-flight cleanup can never corrupt an active request.
+
+        ``release_storage=False``: the request CONTINUES on plain decode
+        (mid-stream handoff). The backbone caches are still in use by
+        ``_orig_step``, so only the generator-owned MTP-head KV and the
+        rollback tapes (pure snapshots, never read by plain decode) are
+        freed.
+        """
         state = _state.pop(uid, None)
         if state is None:
             return
         gen = state.get("gen")
+        n_released = 0
         if gen is not None:
+            model_cache, mtp_cache = _gen_cache_lists(gen)
             try:
                 gen.close()
             except Exception:  # noqa: BLE001
                 pass
-        _clear_gb_cache()
+            try:
+                live_ids = {
+                    id(c) for c in (getattr(gb, "prompt_cache", None) or [])
+                }
+                # MTP head cache: generator-owned (make_mtp_cache), unused
+                # by plain decode — safe to free on both paths.
+                n_released += _release_kv_cache_fields(
+                    mtp_cache, skip_ids=live_ids
+                )
+                if release_storage:
+                    n_released += _release_kv_cache_fields(
+                        model_cache, skip_ids=live_ids
+                    )
+                elif model_cache:
+                    for c in model_cache:
+                        if getattr(c, "rollback_state", None) is not None:
+                            try:
+                                c.rollback_state = None
+                                n_released += 1
+                            except Exception:  # noqa: BLE001
+                                pass
+            except Exception:  # noqa: BLE001 — release is best-effort
+                pass
+        state.clear()
         import gc
-        gc.collect()
 
-        # Clear gb.prompt_cache references to prevent memory accumulation.
-        # The persistent GenerationBatch holds references to old KV caches
-        # that grow with each request. Clearing after generator close
-        # releases these references so the garbage collector can free them.
-        try:
-            if gb is not None and hasattr(gb, "prompt_cache"):
-                for c in gb.prompt_cache:
-                    if hasattr(c, "state"):
-                        c.state = None
-                    if hasattr(c, "rollback_state"):
-                        c.rollback_state = None
-        except Exception:  # noqa: BLE001
-            pass
+        gc.collect()
+        mx.clear_cache()
+        if n_released:
+            logger.debug(
+                "[MTP-vendored] uid=%s cleanup released storage of %d caches "
+                "(release_storage=%s)",
+                uid,
+                n_released,
+                release_storage,
+            )
+
+    def _purge_stale_states(active_uid: int | None = None) -> None:
+        """Free MTP state for every uid no longer in the live batch.
+
+        THE per-turn MTP memory-bloat fix. mlx-lm allocates a fresh uid
+        per request and never reuses it under normal serving, so the
+        uid-reuse path in ``_mtp_step`` never fired and ``_state``
+        accumulated one suspended generator PER REQUEST for the process
+        lifetime. Each leaked generator pins that turn's entire cache
+        set in its frame: the (possibly disk-restored, dequantized bf16)
+        attention KV, one full GatedDeltaNet SSM state set (~151 MB),
+        the K-position rollback tape, and the MTP-head KV over the full
+        context. On a growing multi-turn conversation this ratchets
+        active Metal memory by hundreds of MB per turn until OOM.
+
+        Called from ``_mtp_step`` (with the current uid held out) and
+        from ``Scheduler._cleanup_finished`` via the
+        ``_mtp_purge_stale`` hook on the BatchGenerator, so storage is
+        returned at request completion rather than at next admission.
+        """
+        live_uids = set(getattr(gb, "uids", None) or [])
+        for u in list(_state):
+            if u == active_uid or u in live_uids:
+                continue
+            _cleanup_uid_storage(u, release_storage=True)
 
     def _is_greedy_for_uid(uid: int) -> bool:
         """Return True when the request behind ``uid`` sampled at temp=0.
@@ -1303,22 +1441,19 @@ def _install_mtp_vendored(
         def _record_terminal_disable(u: int) -> None:
             """Record a terminal disable marker for uid ``u`` and
             drop any per-generator state. Used on the "MTP already
-            emitted, fallthrough is unsafe" path."""
+            emitted, fallthrough is unsafe" path.
+
+            ``release_storage=False``: the request CONTINUES on plain
+            decode after this handoff, so the backbone caches must stay
+            intact — only the generator-owned MTP-head KV and the
+            rollback tapes are freed here. The rest is reclaimed by
+            ``_purge_stale_states`` once the request leaves the batch.
+            """
             _term_req_id = None
             if uid_to_request_id is not None:
                 _term_req_id = uid_to_request_id.get(u)
             _disabled_uids[u] = _term_req_id
-            _state_entry = _state.pop(u, None)
-            if _state_entry is not None:
-                _gen = _state_entry.get("gen")
-                if _gen is not None:
-                    try:
-                        _gen.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-            _clear_gb_cache()
-            import gc
-            gc.collect()
+            _cleanup_uid_storage(u, release_storage=False)
 
         def _mark_disabled(u: int) -> None:
             """Mark uid ``u`` as disabled (for pre-MTP soft-fall-
@@ -1328,18 +1463,6 @@ def _install_mtp_vendored(
             if uid_to_request_id is not None:
                 _term_req_id = uid_to_request_id.get(u)
             _disabled_uids[u] = _term_req_id
-
-        def _clear_gb_cache():
-            """Clear gb.prompt_cache to prevent memory leak."""
-            try:
-                if gb is not None and hasattr(gb, "prompt_cache"):
-                    for c in gb.prompt_cache:
-                        if hasattr(c, "state"):
-                            c.state = None
-                        if hasattr(c, "rollback_state"):
-                            c.rollback_state = None
-            except Exception:
-                pass
 
         def _sync_next_tokens_after_emit(
             gb_ref: Any,
@@ -1437,6 +1560,15 @@ def _install_mtp_vendored(
             return _orig_step()
 
         uid = gb.uids[0]
+
+        # Per-turn bloat fix: reclaim any generator state left behind by
+        # requests that already left the batch. Under normal serving
+        # mlx-lm never reuses uids, so without this sweep ``_state``
+        # retains one suspended generator (pinning that turn's full
+        # cache set) per completed request, forever. O(len(_state)),
+        # no-op when nothing is stale.
+        if _state and (len(_state) > 1 or uid not in _state):
+            _purge_stale_states(uid)
 
         # Codex round-D blocker #2 + round-E blocker #1: honour the
         # permanent-skip map BEFORE re-entering FIRST-call
@@ -1715,9 +1847,10 @@ def _install_mtp_vendored(
                 if uid_to_request_id is not None:
                     _terminal_req_id = uid_to_request_id.get(uid)
                 _disabled_uids[uid] = _terminal_req_id
-                # Generator's own state can go — nothing to close
-                # here (StopIteration means it already tore down).
-                _state.pop(uid, None)
+                # Generator's own state can go — StopIteration means the
+                # frame already tore down; the helper just drops the
+                # entry and collects.
+                _cleanup_uid_storage(uid, release_storage=True)
                 # Codex round-D blocker #3: falling back to
                 # ``_orig_step()`` mid-stream is UNSAFE — see the
                 # comment on the ``Exception`` branch below.
@@ -1767,19 +1900,12 @@ def _install_mtp_vendored(
                 if uid_to_request_id is not None:
                     _terminal_req_id = uid_to_request_id.get(uid)
                 _disabled_uids[uid] = _terminal_req_id
-                # Close the (broken) generator; don't touch
-                # _disabled_uids from inside _cleanup_uid.
-                _state_entry = _state.pop(uid, None)
-                if _state_entry is not None:
-                    _gen = _state_entry.get("gen")
-                    if _gen is not None:
-                        try:
-                            _gen.close()
-                        except Exception:  # noqa: BLE001
-                            pass
-                _clear_gb_cache()
-                import gc
-                gc.collect()
+                # Close the (broken) generator and free the storage its
+                # frame pins; don't touch _disabled_uids from inside the
+                # cleanup helper. The request terminates on the raise
+                # below, so freeing everything except the caches still
+                # referenced by the live gb list is safe.
+                _cleanup_uid_storage(uid, release_storage=True)
                 raise RuntimeError(
                     f"[MTP-vendored] uid={uid} generator raised mid-"
                     f"stream ({type(e).__name__}: {e}); cannot fall "
@@ -1812,6 +1938,11 @@ def _install_mtp_vendored(
     # _step takes over.
     gb._step = _mtp_step
     batch_gen._mtp_vendored_stats = _stats
+    # Completion hook: lets Scheduler._cleanup_finished free a finished
+    # request's speculative state (suspended generator frame, MTP-head
+    # KV, SSM rollback tapes, retained restored KV) at completion time
+    # instead of waiting for the next request's first step.
+    batch_gen._mtp_purge_stale = _purge_stale_states
 
     logger.info(
         "[MTP-vendored] installed on GenerationBatch._step "
@@ -6138,6 +6269,21 @@ class Scheduler:
 
             # Track as finished
             self.finished_req_ids.add(request_id)
+
+        # MTP spec decode: free the finished requests' speculative state
+        # (suspended generator frames pinning attention KV, SSM state
+        # sets, rollback tapes, and MTP-head KV) now rather than on the
+        # next request's first step. See _purge_stale_states in
+        # _install_mtp_vendored.
+        if finished_ids:
+            _mtp_purge = getattr(
+                getattr(self, "batch_generator", None), "_mtp_purge_stale", None
+            )
+            if _mtp_purge is not None:
+                try:
+                    _mtp_purge()
+                except Exception as _purge_err:  # noqa: BLE001 — best-effort
+                    logger.debug("[MTP-vendored] completion purge failed: %r", _purge_err)
 
         # Free Metal command buffers after cleanup (prevents end-of-generation spike)
         if finished_ids:
