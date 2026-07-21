@@ -2587,13 +2587,31 @@ class Scheduler:
                     f"max_blocks={self.config.max_cache_blocks}"
                 )
             else:
-                # Use legacy entry-count based prefix cache
+                # Use legacy entry-count based prefix cache.
+                #
+                # Enforce the operator's ``--cache-memory-mb`` as a
+                # resident-byte cap. Without it this cache is bounded
+                # only by ENTRY COUNT: on hybrid models (GatedDeltaNet
+                # SSM state + attention KV) every finished request
+                # stores a multi-hundred-MB non-shareable entry at
+                # completion, so 100 entries is effectively unbounded
+                # and idle Metal memory ratchets per turn until OOM.
+                # ``cache_memory_mb`` was previously consumed only by
+                # MemoryAwarePrefixCache, which this serving path never
+                # instantiates — the flag was accepted and ignored.
+                _pc_max_bytes: int | None = None
+                _cmb = getattr(self.config, "cache_memory_mb", None)
+                if _cmb:
+                    _pc_max_bytes = int(_cmb) * 1024 * 1024
                 self.prefix_cache = PrefixCacheManager(
                     model=model,
                     max_entries=self.config.prefix_cache_size,
+                    max_bytes=_pc_max_bytes,
                 )
                 logger.info(
-                    f"Prefix cache enabled with max_entries={self.config.prefix_cache_size}"
+                    "Prefix cache enabled with max_entries=%s max_bytes=%s",
+                    self.config.prefix_cache_size,
+                    _pc_max_bytes if _pc_max_bytes is not None else "unbounded",
                 )
 
         # Mid-prefill checkpoint tracking (for new BatchGenerator API)
