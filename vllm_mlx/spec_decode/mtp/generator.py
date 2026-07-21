@@ -642,304 +642,330 @@ def mtp_generate_step(
             return
         _controller.record(k_used, round_wall_ms, accepts)
 
-    while ntoks < max_tokens:
-        round_start_perf = time.perf_counter()
-        if pending_drafts is None:
-            # -------------------------------------------------------
-            # Round K=0 (either bootstrap or a park). Plain backbone
-            # forward emits ONE committed token.
-            # -------------------------------------------------------
-            toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
-                y, prev_tokens, n_predict=1
-            )
-            mx.eval(toks)
-            main_tok, main_lp = toks[0], lps[0]
-            round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
-            _record_round(0, round_wall_ms, [])
-
-            ntoks += 1
-            yield main_tok.item(), main_lp, False
-            if ntoks >= max_tokens:
-                return
-
-            # Decide K for the NEXT round.
-            next_k = _controller.pick_k() if _controller is not None else 1
-
-            hidden_at_main = hidden[:, -1:, :]
-            del hidden  # P1: free full hidden tensor
-            mx.clear_cache()
-            if next_k >= 1:
-                # Chain-of-K: generate ``next_k`` drafts cascaded via
-                # MTP. next_k==1 is the plain single-draft path.
-                d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
-                    hidden_at_main, main_tok, prev_tokens, next_k
+    try:
+        while ntoks < max_tokens:
+            round_start_perf = time.perf_counter()
+            if pending_drafts is None:
+                # -------------------------------------------------------
+                # Round K=0 (either bootstrap or a park). Plain backbone
+                # forward emits ONE committed token.
+                # -------------------------------------------------------
+                toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
+                    y, prev_tokens, n_predict=1
                 )
-                pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-            else:
-                # Parking again: no draft. Next round enters this
-                # branch with ``pending_drafts is None`` and pays no
-                # drafter cost — the whole point of park.
-                pending_drafts = None
-            y = mx.array([main_tok.item()], mx.uint32)
-        else:
-            # -------------------------------------------------------
-            # Verify path with K = len(pending_drafts) drafts.
-            #
-            # 0.9.13 PR-C: single-sync verify. Ollama's
-            # ``speculate.go:428-439`` pre-samples the residual at
-            # EVERY draft position and the bonus at position K, then
-            # batches them into ONE ``mx.eval`` alongside the accept
-            # mask. The prior implementation issued two host syncs
-            # (verify tokens first, then residual on the reject path);
-            # merging them cuts one host round-trip per verify round
-            # and — for K≥2 — replaces a per-position Python accept
-            # loop with a single vectorized comparison.
-            #
-            # K=1: single verify + bonus (byte-equal to pre-PR-C at
-            # greedy temp=0 because residual == verify-argmax there).
-            # K>=2: batched (K+1)-position backbone forward, sequential
-            # accept-reject per Ollama's ``speculate.go::accept``. The
-            # SSM path is clamped at loop-start so K>=2 only reaches
-            # this branch on pure-attention targets (KVCache.trim() is
-            # the only rollback needed).
-            # -------------------------------------------------------
-            k_len = len(pending_drafts)
-            draft_toks_arr = [rec[0] for rec in pending_drafts]
-            draft_lps_arr = [rec[1] for rec in pending_drafts]
-            draft_alps_arr = [rec[2] for rec in pending_drafts]
-            first_xtc_draw = pending_drafts[0][3]
+                mx.eval(toks)
+                main_tok, main_lp = toks[0], lps[0]
+                round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
+                _record_round(0, round_wall_ms, [])
 
-            # Assemble [y, d_1, ..., d_K] for the batched target forward.
-            # Stacking on device (rather than materializing each draft
-            # via ``.item()``) keeps the whole graph lazy up to the
-            # single ``mx.eval`` below.
-            drafts_arr = (
-                mx.stack([d.reshape(-1) for d in draft_toks_arr])
-                .reshape(-1)
-                .astype(mx.uint32)
-            )
-            y_with_drafts = mx.concatenate([y, drafts_arr])
+                ntoks += 1
+                yield main_tok.item(), main_lp, False
+                if ntoks >= max_tokens:
+                    return
 
-            toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
-                y_with_drafts,
-                prev_tokens,
-                n_predict=k_len + 1,
-                # n_confirmed = k_len only matters on SSM targets (which
-                # are clamped to k_len=1 above). Passing k_len keeps the
-                # semantics uniform: "the last k_len positions are
-                # drafts, snapshot before them".
-                n_confirmed=k_len,
-                xtc_draw=first_xtc_draw,
-            )
+                # Decide K for the NEXT round.
+                next_k = _controller.pick_k() if _controller is not None else 1
 
-            # One shared uniform for all positions' probabilistic
-            # accept tests. Ollama uses a per-position Bernoulli draw;
-            # at greedy temp=0 the draw is ignored (accept iff argmax
-            # match), so this only matters for temp>0 where the same
-            # ``u`` biases all positions the same way — closer to
-            # Ollama's per-position draw than reusing the sampler
-            # chain's XTC cell would be.
-            u = mx.random.uniform()
-            drafts_i32 = drafts_arr.astype(mx.int32)
-
-            # --------------------------------------------------------
-            # Pre-compute accept-mask, residual-at-every-position, and
-            # bonus-at-position-K on device. Single ``mx.eval`` below
-            # materializes all four at once. Ollama's speculate.go:428-439.
-            # --------------------------------------------------------
-            if _is_greedy:
-                # ``toks[i]`` IS target's argmax at position i. Accept
-                # iff it matches the draft; residual == verify == toks[i]
-                # (residual distribution at greedy is a point mass on
-                # target's argmax, which coincides with target argmax).
-                accept_mask_arr = toks[:k_len].astype(mx.int32) == drafts_i32
-                residual_toks_arr = toks[:k_len]
-                bonus_tok_arr = toks[k_len]
-            else:
-                # Vectorized per-position log-accept over the K draft
-                # positions with a shared draw ``u``.
-                v_alps = accept_lps[:k_len]  # (K, V)
-                d_alps_stack = mx.stack(draft_alps_arr)  # (K, V)
-                idx = drafts_i32.reshape(-1, 1)  # (K, 1)
-                v_at = mx.take_along_axis(v_alps, idx, axis=1).squeeze(-1)
-                d_at = mx.take_along_axis(d_alps_stack, idx, axis=1).squeeze(-1)
-                log_accept = v_at - d_at  # (K,)
-                accept_mask_arr = (log_accept >= 0) | (u < mx.exp(log_accept))
-
-                # Residual distribution at every position — sampled
-                # up-front so a reject at position i doesn't cost a
-                # second eval. Formula matches the prior per-reject code:
-                # ``max(p_target - p_draft, 0)``, falling back to
-                # ``p_target`` if the max clamp zeroed everything.
-                p_target = mx.exp(v_alps)  # (K, V)
-                p_draft = mx.exp(d_alps_stack)  # (K, V)
-                residual = mx.maximum(p_target - p_draft, 0.0)  # (K, V)
-                z = residual.sum(axis=-1, keepdims=True)  # (K, 1)
-                dist = mx.where(z > 0, residual, p_target)  # (K, V)
-                residual_toks_arr = mx.random.categorical(mx.log(dist))
-                # Bonus already sampled per-position inside _step_backbone
-                # for temp>0 (categorical over target distro at position K).
-                bonus_tok_arr = toks[k_len]
-
-            # ------- SINGLE SYNC -------
-            mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u)
-            mx.clear_cache()  # P1: free verify temporaries immediately
-
-            # ------- Host-side read (all values already resident) -------
-            accept_flags = accept_mask_arr.tolist()
-            residual_ids = residual_toks_arr.tolist()
-            bonus_id = int(bonus_tok_arr.item())
-            draft_ids = drafts_arr.tolist()
-
-            # Bump attempts by K (one per draft position considered).
-            for _ in range(k_len):
-                accept_counter.record_attempt()
-
-            # Sequential accept-reject walk (host-only; no MLX ops).
-            accepts: list[bool] = []
-            accepted_count = 0
-            for i in range(k_len):
-                ok = bool(accept_flags[i])
-                accepts.append(ok)
-                if ok:
-                    accepted_count += 1
+                hidden_at_main = hidden[:, -1:, :]
+                del hidden  # P1: free full hidden tensor
+                mx.clear_cache()
+                if next_k >= 1:
+                    # Chain-of-K: generate ``next_k`` drafts cascaded via
+                    # MTP. next_k==1 is the plain single-draft path.
+                    d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
+                        hidden_at_main, main_tok, prev_tokens, next_k
+                    )
+                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
                 else:
-                    break
+                    # Parking again: no draft. Next round enters this
+                    # branch with ``pending_drafts is None`` and pays no
+                    # drafter cost — the whole point of park.
+                    pending_drafts = None
+                y = mx.array([main_tok.item()], mx.uint32)
+            else:
+                # -------------------------------------------------------
+                # Verify path with K = len(pending_drafts) drafts.
+                #
+                # 0.9.13 PR-C: single-sync verify. Ollama's
+                # ``speculate.go:428-439`` pre-samples the residual at
+                # EVERY draft position and the bonus at position K, then
+                # batches them into ONE ``mx.eval`` alongside the accept
+                # mask. The prior implementation issued two host syncs
+                # (verify tokens first, then residual on the reject path);
+                # merging them cuts one host round-trip per verify round
+                # and — for K≥2 — replaces a per-position Python accept
+                # loop with a single vectorized comparison.
+                #
+                # K=1: single verify + bonus (byte-equal to pre-PR-C at
+                # greedy temp=0 because residual == verify-argmax there).
+                # K>=2: batched (K+1)-position backbone forward, sequential
+                # accept-reject per Ollama's ``speculate.go::accept``. The
+                # SSM path is clamped at loop-start so K>=2 only reaches
+                # this branch on pure-attention targets (KVCache.trim() is
+                # the only rollback needed).
+                # -------------------------------------------------------
+                k_len = len(pending_drafts)
+                draft_toks_arr = [rec[0] for rec in pending_drafts]
+                draft_lps_arr = [rec[1] for rec in pending_drafts]
+                draft_alps_arr = [rec[2] for rec in pending_drafts]
+                first_xtc_draw = pending_drafts[0][3]
 
-            # -------- 0.9.13 PR-C: EOS holdout --------
-            # When an accepted draft is a stop token, positions past it
-            # would never be reached in real decode. Ollama's
-            # ``speculate.go:456-472`` sets ``observed = i + 1`` and
-            # ``keep = i`` at the EOS, so the acceptance-rate EWMA
-            # never sees the (nonexistent) positions past the natural
-            # terminator. We use the same idea: truncate ``accepts``
-            # to the EOS index+1 for the record call; cap
-            # ``accepted_count`` so we stop emitting at (and including)
-            # EOS instead of continuing to a bonus or residual.
-            eos_cut = False
-            accepts_for_record = accepts
-            if stop_tokens:
-                for j in range(accepted_count):
-                    if int(draft_ids[j]) in stop_tokens:
-                        eos_cut = True
-                        accepts_for_record = accepts[: j + 1]
-                        accepted_count = j + 1
+                # Assemble [y, d_1, ..., d_K] for the batched target forward.
+                # Stacking on device (rather than materializing each draft
+                # via ``.item()``) keeps the whole graph lazy up to the
+                # single ``mx.eval`` below.
+                drafts_arr = (
+                    mx.stack([d.reshape(-1) for d in draft_toks_arr])
+                    .reshape(-1)
+                    .astype(mx.uint32)
+                )
+                y_with_drafts = mx.concatenate([y, drafts_arr])
+
+                toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
+                    y_with_drafts,
+                    prev_tokens,
+                    n_predict=k_len + 1,
+                    # n_confirmed = k_len only matters on SSM targets (which
+                    # are clamped to k_len=1 above). Passing k_len keeps the
+                    # semantics uniform: "the last k_len positions are
+                    # drafts, snapshot before them".
+                    n_confirmed=k_len,
+                    xtc_draw=first_xtc_draw,
+                )
+
+                # One shared uniform for all positions' probabilistic
+                # accept tests. Ollama uses a per-position Bernoulli draw;
+                # at greedy temp=0 the draw is ignored (accept iff argmax
+                # match), so this only matters for temp>0 where the same
+                # ``u`` biases all positions the same way — closer to
+                # Ollama's per-position draw than reusing the sampler
+                # chain's XTC cell would be.
+                u = mx.random.uniform()
+                drafts_i32 = drafts_arr.astype(mx.int32)
+
+                # --------------------------------------------------------
+                # Pre-compute accept-mask, residual-at-every-position, and
+                # bonus-at-position-K on device. Single ``mx.eval`` below
+                # materializes all four at once. Ollama's speculate.go:428-439.
+                # --------------------------------------------------------
+                if _is_greedy:
+                    # ``toks[i]`` IS target's argmax at position i. Accept
+                    # iff it matches the draft; residual == verify == toks[i]
+                    # (residual distribution at greedy is a point mass on
+                    # target's argmax, which coincides with target argmax).
+                    accept_mask_arr = toks[:k_len].astype(mx.int32) == drafts_i32
+                    residual_toks_arr = toks[:k_len]
+                    bonus_tok_arr = toks[k_len]
+                else:
+                    # Vectorized per-position log-accept over the K draft
+                    # positions with a shared draw ``u``.
+                    v_alps = accept_lps[:k_len]  # (K, V)
+                    d_alps_stack = mx.stack(draft_alps_arr)  # (K, V)
+                    idx = drafts_i32.reshape(-1, 1)  # (K, 1)
+                    v_at = mx.take_along_axis(v_alps, idx, axis=1).squeeze(-1)
+                    d_at = mx.take_along_axis(d_alps_stack, idx, axis=1).squeeze(-1)
+                    log_accept = v_at - d_at  # (K,)
+                    accept_mask_arr = (log_accept >= 0) | (u < mx.exp(log_accept))
+
+                    # Residual distribution at every position — sampled
+                    # up-front so a reject at position i doesn't cost a
+                    # second eval. Formula matches the prior per-reject code:
+                    # ``max(p_target - p_draft, 0)``, falling back to
+                    # ``p_target`` if the max clamp zeroed everything.
+                    p_target = mx.exp(v_alps)  # (K, V)
+                    p_draft = mx.exp(d_alps_stack)  # (K, V)
+                    residual = mx.maximum(p_target - p_draft, 0.0)  # (K, V)
+                    z = residual.sum(axis=-1, keepdims=True)  # (K, 1)
+                    dist = mx.where(z > 0, residual, p_target)  # (K, V)
+                    residual_toks_arr = mx.random.categorical(mx.log(dist))
+                    # Bonus already sampled per-position inside _step_backbone
+                    # for temp>0 (categorical over target distro at position K).
+                    bonus_tok_arr = toks[k_len]
+
+                # ------- SINGLE SYNC -------
+                mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u)
+                mx.clear_cache()  # P1: free verify temporaries immediately
+
+                # ------- Host-side read (all values already resident) -------
+                accept_flags = accept_mask_arr.tolist()
+                residual_ids = residual_toks_arr.tolist()
+                bonus_id = int(bonus_tok_arr.item())
+                draft_ids = drafts_arr.tolist()
+
+                # Bump attempts by K (one per draft position considered).
+                for _ in range(k_len):
+                    accept_counter.record_attempt()
+
+                # Sequential accept-reject walk (host-only; no MLX ops).
+                accepts: list[bool] = []
+                accepted_count = 0
+                for i in range(k_len):
+                    ok = bool(accept_flags[i])
+                    accepts.append(ok)
+                    if ok:
+                        accepted_count += 1
+                    else:
                         break
 
-            round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
-            _record_round(k_len, round_wall_ms, accepts_for_record)
+                # -------- 0.9.13 PR-C: EOS holdout --------
+                # When an accepted draft is a stop token, positions past it
+                # would never be reached in real decode. Ollama's
+                # ``speculate.go:456-472`` sets ``observed = i + 1`` and
+                # ``keep = i`` at the EOS, so the acceptance-rate EWMA
+                # never sees the (nonexistent) positions past the natural
+                # terminator. We use the same idea: truncate ``accepts``
+                # to the EOS index+1 for the record call; cap
+                # ``accepted_count`` so we stop emitting at (and including)
+                # EOS instead of continuing to a bonus or residual.
+                eos_cut = False
+                accepts_for_record = accepts
+                if stop_tokens:
+                    for j in range(accepted_count):
+                        if int(draft_ids[j]) in stop_tokens:
+                            eos_cut = True
+                            accepts_for_record = accepts[: j + 1]
+                            accepted_count = j + 1
+                            break
 
-            # Emit the accepted drafts (capped at EOS position when set).
-            for i in range(accepted_count):
-                accept_counter.record_accept(tokens_saved=1)
-                ntoks += 1
-                yield int(draft_ids[i]), draft_lps_arr[i], True
-                if ntoks >= max_tokens:
+                round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
+                _record_round(k_len, round_wall_ms, accepts_for_record)
+
+                # Emit the accepted drafts (capped at EOS position when set).
+                for i in range(accepted_count):
+                    accept_counter.record_accept(tokens_saved=1)
+                    ntoks += 1
+                    yield int(draft_ids[i]), draft_lps_arr[i], True
+                    if ntoks >= max_tokens:
+                        return
+
+                if eos_cut:
+                    # Emitted EOS via an accepted draft. Caller will detect
+                    # the stop token and terminate; skip bonus / residual /
+                    # drafter-chain setup entirely. The cache is left with
+                    # the un-emitted drafts past EOS still committed to it,
+                    # but the request terminates here so the cache is
+                    # discarded by the scheduler at request boundary.
                     return
 
-            if eos_cut:
-                # Emitted EOS via an accepted draft. Caller will detect
-                # the stop token and terminate; skip bonus / residual /
-                # drafter-chain setup entirely. The cache is left with
-                # the un-emitted drafts past EOS still committed to it,
-                # but the request terminates here so the cache is
-                # discarded by the scheduler at request boundary.
-                return
-
-            if accepted_count == k_len:
-                # All K drafts accepted → emit the bonus token
-                # (target's prediction one past the last draft).
-                _clear_rollback()
-                ntoks += 1
-                yield bonus_id, lps[k_len], False
-                if ntoks >= max_tokens:
-                    return
-                last_committed_tok_id = bonus_id
-                last_committed_hidden = hidden[:, k_len : k_len + 1, :]
-                y = mx.array([bonus_id], mx.uint32)
-            else:
-                # Reject at position ``accepted_count``. Emit target's
-                # pre-sampled residual there (byte-equal to the prior
-                # ``verify_pred.item()`` on greedy since residual ==
-                # target argmax at temp=0), and drop the remaining
-                # (k_len - accepted_count) unaccepted drafts from the
-                # caches.
-                n_to_drop = k_len - accepted_count
-                _rollback_draft(n_to_drop)
-                mx.clear_cache()  # P2: free trimmed KV buffers
-                accept_counter.record_reject()
-                if logits_processors and prev_tokens is not None:
-                    # Discard the ``n_to_drop`` rejected positions
-                    # from prev_tokens (they were appended by
-                    # _step_backbone during the batched verify).
-                    prev_tokens = prev_tokens[:-n_to_drop]
-
-                # Also trim mtp_cache by the same n_to_drop — those
-                # positions were appended by _step_mtp_chain and
-                # correspond to the rejected drafts. The MTP KV
-                # cache is per-layer KVCache (see qwen3_5_inject
-                # make_mtp_cache / gemma4_inject) — always trimmable.
-                for mc in mtp_cache:
-                    if mc.is_trimmable():
-                        mc.trim(n_to_drop)
-
-                verify_tok_id = int(residual_ids[accepted_count])
-
-                ntoks += 1
-                yield verify_tok_id, lps[accepted_count], False
-                if ntoks >= max_tokens:
-                    return
-                last_committed_tok_id = verify_tok_id
-                # hidden at position ``accepted_count`` is the state
-                # AFTER the last accepted draft (or after y when
-                # accepted_count=0) — this is what MTP conditions on
-                # for the next draft chain.
-                last_committed_hidden = hidden[
-                    :, accepted_count : accepted_count + 1, :
-                ]
-                y = mx.array([verify_tok_id], mx.uint32)
-
-            # Decide K for the next round BEFORE generating the
-            # next chain (a park decision skips drafter cost).
-            next_k = _controller.pick_k() if _controller is not None else 1
-            if next_k >= 1:
-                # Chain-carry: on all-accept the mtp_cache must
-                # advance by one extra position for the just-accepted
-                # LAST draft so the head's attention sees it before
-                # predicting the next round's first draft. The old
-                # K=1 code did this via ``cache_commit`` on the
-                # single _step_mtp call, which batched
-                # ``(align_h=hidden_at_last_accepted_pre, align_tok=
-                # accepted_draft, next_id=bonus_tok)`` into one
-                # mtp_forward with 2 positions. We replicate here
-                # only when this round was all-accept — on partial
-                # accept the reject path already trims mtp_cache to
-                # ``accepted_count`` positions and the residual
-                # doesn't need a carry (its own hidden is what the
-                # first chain call conditions on).
                 if accepted_count == k_len:
-                    # Position of last accepted draft is at index
-                    # ``accepted_count - 1`` in the k+1-length hidden.
-                    # For k_len=1 all-accept, this is hidden[:, 0:1].
-                    align_h = hidden[:, accepted_count - 1 : accepted_count, :]
-                    align_tok = draft_toks_arr[accepted_count - 1]
-                    cache_commit = (align_h, align_tok)
+                    # All K drafts accepted → emit the bonus token
+                    # (target's prediction one past the last draft).
+                    _clear_rollback()
+                    ntoks += 1
+                    yield bonus_id, lps[k_len], False
+                    if ntoks >= max_tokens:
+                        return
+                    last_committed_tok_id = bonus_id
+                    last_committed_hidden = hidden[:, k_len : k_len + 1, :]
+                    y = mx.array([bonus_id], mx.uint32)
                 else:
-                    cache_commit = None
-                last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
-                d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
-                    last_committed_hidden,
-                    last_committed_tok,
-                    prev_tokens,
-                    next_k,
-                    cache_commit=cache_commit,
-                )
-                pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
-            else:
-                pending_drafts = None
+                    # Reject at position ``accepted_count``. Emit target's
+                    # pre-sampled residual there (byte-equal to the prior
+                    # ``verify_pred.item()`` on greedy since residual ==
+                    # target argmax at temp=0), and drop the remaining
+                    # (k_len - accepted_count) unaccepted drafts from the
+                    # caches.
+                    n_to_drop = k_len - accepted_count
+                    _rollback_draft(n_to_drop)
+                    mx.clear_cache()  # P2: free trimmed KV buffers
+                    accept_counter.record_reject()
+                    if logits_processors and prev_tokens is not None:
+                        # Discard the ``n_to_drop`` rejected positions
+                        # from prev_tokens (they were appended by
+                        # _step_backbone during the batched verify).
+                        prev_tokens = prev_tokens[:-n_to_drop]
 
-        block = ntoks // _CACHE_CLEAR_INTERVAL
-        if block > last_cache_block:
-            mx.clear_cache()
-            last_cache_block = block
+                    # Also trim mtp_cache by the same n_to_drop — those
+                    # positions were appended by _step_mtp_chain and
+                    # correspond to the rejected drafts. The MTP KV
+                    # cache is per-layer KVCache (see qwen3_5_inject
+                    # make_mtp_cache / gemma4_inject) — always trimmable.
+                    for mc in mtp_cache:
+                        if mc.is_trimmable():
+                            mc.trim(n_to_drop)
+
+                    verify_tok_id = int(residual_ids[accepted_count])
+
+                    ntoks += 1
+                    yield verify_tok_id, lps[accepted_count], False
+                    if ntoks >= max_tokens:
+                        return
+                    last_committed_tok_id = verify_tok_id
+                    # hidden at position ``accepted_count`` is the state
+                    # AFTER the last accepted draft (or after y when
+                    # accepted_count=0) — this is what MTP conditions on
+                    # for the next draft chain.
+                    last_committed_hidden = hidden[
+                        :, accepted_count : accepted_count + 1, :
+                    ]
+                    y = mx.array([verify_tok_id], mx.uint32)
+
+                # Decide K for the next round BEFORE generating the
+                # next chain (a park decision skips drafter cost).
+                next_k = _controller.pick_k() if _controller is not None else 1
+                if next_k >= 1:
+                    # Chain-carry: on all-accept the mtp_cache must
+                    # advance by one extra position for the just-accepted
+                    # LAST draft so the head's attention sees it before
+                    # predicting the next round's first draft. The old
+                    # K=1 code did this via ``cache_commit`` on the
+                    # single _step_mtp call, which batched
+                    # ``(align_h=hidden_at_last_accepted_pre, align_tok=
+                    # accepted_draft, next_id=bonus_tok)`` into one
+                    # mtp_forward with 2 positions. We replicate here
+                    # only when this round was all-accept — on partial
+                    # accept the reject path already trims mtp_cache to
+                    # ``accepted_count`` positions and the residual
+                    # doesn't need a carry (its own hidden is what the
+                    # first chain call conditions on).
+                    if accepted_count == k_len:
+                        # Position of last accepted draft is at index
+                        # ``accepted_count - 1`` in the k+1-length hidden.
+                        # For k_len=1 all-accept, this is hidden[:, 0:1].
+                        align_h = hidden[:, accepted_count - 1 : accepted_count, :]
+                        align_tok = draft_toks_arr[accepted_count - 1]
+                        cache_commit = (align_h, align_tok)
+                    else:
+                        cache_commit = None
+                    last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
+                    d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
+                        last_committed_hidden,
+                        last_committed_tok,
+                        prev_tokens,
+                        next_k,
+                        cache_commit=cache_commit,
+                    )
+                    pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+                else:
+                    pending_drafts = None
+
+            block = ntoks // _CACHE_CLEAR_INTERVAL
+            if block > last_cache_block:
+                mx.clear_cache()
+                last_cache_block = block
+    finally:
+        # GeneratorExit safety net (defense in depth for the scheduler
+        # _state leak reaper). When this generator is closed (e.g. the
+        # scheduler reaps a completed request's stale _state entry) the
+        # frame may still be pinned by a lingering reference. Clearing
+        # the cache payloads and dropping our own references here frees
+        # the ~48 layer caches (KV + SSM ArraysCache) immediately rather
+        # than waiting for the frame to be collected.
+        try:
+            for _c in model_cache:
+                if hasattr(_c, "rollback_state"):
+                    _c.rollback_state = None
+                if hasattr(_c, "state"):
+                    _c.state = None
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            for _c in mtp_cache:
+                if hasattr(_c, "state"):
+                    _c.state = None
+        except Exception:  # noqa: BLE001
+            pass
+        model_cache = None
+        mtp_cache = None
+        pending_drafts = None
 

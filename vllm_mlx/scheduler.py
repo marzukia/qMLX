@@ -1269,6 +1269,58 @@ def _install_mtp_vendored(
         and MVP caveats.
         """
 
+        # --- Leak reap: release per-request generator state for uids
+        # that are no longer live in the persistent batch. mlx-lm 0.31.3
+        # allocates uids monotonically and never reuses them, so the
+        # reuse-gated cleanup in the disable path never fires for a
+        # normally-completed request. Each finished turn's suspended
+        # ``mtp_generate_step`` generator keeps a strong ref to every
+        # layer cache (KV + SSM ArraysCache), so an uncleaned ``_state``
+        # entry pins that turn's whole conversation cache forever.
+        #
+        # We deliberately do NOT route this through ``_cleanup_uid``:
+        # that helper also runs ``_clear_gb_cache()``, which nulls the
+        # state on ``gb.prompt_cache``, but ``gb.prompt_cache`` is the
+        # LIVE request's freshly-primed prefill (the generator is
+        # constructed with ``prompt_cache=gb.prompt_cache``), and under
+        # monotonic uids the stale entry belongs to an already-completed
+        # request, not the live one. Clearing the live cache would drop
+        # the current request's prompt context. Closing the stale
+        # generator is what actually frees the leaked memory: its
+        # ``GeneratorExit`` unwinds the pinned frame, and the try/finally
+        # added to ``mtp_generate_step`` clears that generator's OWN
+        # ``model_cache`` / ``mtp_cache`` payloads. The live request's
+        # ``gb.prompt_cache`` is untouched.
+        #
+        # Scope: only the single-live-uid fast path. When the batch is
+        # B>1 (or empty), the existing gate below already reaps EVERY
+        # ``_state`` entry via ``_record_terminal_disable`` (closing each
+        # stale generator) and logs the operator-visible mid-stream
+        # handoff. Reaping here in that case would race that path and
+        # rob it of the state it reports on. Under this server's
+        # ``--max-num-seqs=1`` the steady state is exactly B==1, which is
+        # the case the reuse-gated cleanup misses, so scoping the reap to
+        # B==1 covers the real leak without disturbing the B>1 contract.
+        _live_uids = set(gb.uids) if gb is not None and gb.uids else set()
+        if len(_live_uids) == 1:
+            _stale_uids = [u for u in _state if u not in _live_uids]
+            if _stale_uids:
+                import gc as _gc
+                for _stale_uid in _stale_uids:
+                    _st = _state.pop(_stale_uid, None)
+                    if _st is not None:
+                        _g = _st.get("gen")
+                        if _g is not None:
+                            try:
+                                _g.close()
+                            except Exception:  # noqa: BLE001
+                                pass
+                _gc.collect()
+            for _stale_uid in [u for u in _disabled_uids if u not in _live_uids]:
+                del _disabled_uids[_stale_uid]
+            for _hk in [k for k in _handoff_logged if k[0] not in _live_uids]:
+                _handoff_logged.discard(_hk)
+
         # --- Gate matrix ---
         # Batch=1 only. mlx-lm's ``PromptProcessingBatch.generate``
         # constructs a fresh ``GenerationBatch`` with size 1 per request
