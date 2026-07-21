@@ -3103,6 +3103,17 @@ class Scheduler:
             logger.debug("[prompt_cache_save] extract_cache failed: %s", exc)
             return
 
+        # Free extracted cache states after disk persist
+        for uid_val, payload in extracted.items():
+            if isinstance(payload, tuple) and len(payload) == 2:
+                cache, _tokens = payload
+                if cache is not None:
+                    for c in cache:
+                        if hasattr(c, "state"):
+                            c.state = None
+                        if hasattr(c, "meta_state"):
+                            c.meta_state = None
+
         for uid, payload in extracted.items():
             # Promoted sequences (stage == 2) return (cache, tokens). Any
             # other shape means the uid was already removed before the
@@ -3257,6 +3268,9 @@ class Scheduler:
                     f"saved {prefix_boundary} tokens at message boundary "
                     f"store_time={_dt:.3f}s"
                 )
+            # Free extracted cache states to prevent memory accumulation
+            del states, reconstructed
+            cache = None
 
     def _trigger_mid_prefill_checkpoints(self, prompt_responses: list[Any]) -> None:
         """Trigger mid-prefill checkpoints when we've hit the configured boundary.
