@@ -53,9 +53,9 @@ logger = logging.getLogger(__name__)
 # are identical) but conceptually racy. The lock keeps the install
 # atomic.
 _install_lock = threading.Lock()
-_patched = False
-_gated_delta_patched = False
-_orig_gated_delta_call = None
+_PATCHED = False
+_GATED_DELTA_PATCHED = False
+_ORIG_GATED_DELTA_CALL = None
 
 
 def patch_arrays_cache_rollback_state() -> bool:
@@ -71,10 +71,10 @@ def patch_arrays_cache_rollback_state() -> bool:
             we let the import error propagate rather than silently
             falling back.
     """
-    global _patched
+    global _PATCHED
 
     with _install_lock:
-        if _patched:
+        if _PATCHED:
             return False
 
         # Defer the import so a static analyzer can't trip on the
@@ -89,7 +89,7 @@ def patch_arrays_cache_rollback_state() -> bool:
         # that ships the slot wins over our patch — we don't want to
         # shadow an upstream rename or type change.
         if "rollback_state" in ArraysCache.__dict__:
-            _patched = True
+            _PATCHED = True
             logger.debug(
                 "[mtp.cache_patch] ArraysCache.rollback_state already present "
                 "(upstream version or prior patch); skipping install."
@@ -103,7 +103,7 @@ def patch_arrays_cache_rollback_state() -> bool:
         # shape — there is no ``__init__`` that would otherwise
         # initialize the slot).
         ArraysCache.rollback_state = None  # type: ignore[attr-defined]
-        _patched = True
+        _PATCHED = True
         logger.info(
             "[mtp.cache_patch] Installed rollback_state slot on "
             "ArraysCache (vendored from mlx-lm PR #990)."
@@ -112,21 +112,17 @@ def patch_arrays_cache_rollback_state() -> bool:
 
 
 def patch_gated_delta_net_for_mtp() -> bool:
-    """Wrap ``GatedDeltaNet.__call__`` with a chunk-split version that
-    snapshots SSM/conv state at a confirmed boundary.
+    """Wrap ``GatedDeltaNet.__call__`` with TAPE-based chunk-split for K>=2 rollback.
 
-    PR #990 adds an ``n_confirmed`` parameter to ``GatedDeltaNet`` so
-    that during the MTP verify forward (which processes
-    ``[main_tok, draft_tok]`` as a 2-token batch with
-    ``n_confirmed=1``) the layer splits its
-    :func:`mlx_lm.models.gated_delta.gated_delta_update` call into two
-    chunks and writes ``(conv_state_at_boundary, ssm_state_at_boundary)``
-    to ``cache.rollback_state``. On draft rejection the
-    :func:`vllm_mlx.spec_decode.mtp.generator._rollback_draft` path
-    restores those snapshots so the linear-attention state matches
-    "after main_tok, before draft_tok" — the position the next
-    generator iteration's input ``[verify_tok_id, new_draft]`` expects
-    to attend from.
+    TAPE ROLLBACK (PR-C+): Instead of storing a single snapshot tuple at
+    the confirmed boundary, we now record a TAPE of snapshots — one per
+    position from 1 to n_confirmed. This unlocks K>=2 on SSM-hybrid
+    targets by allowing rollback to ANY position in the draft chain.
+
+    TAPE FORMAT: ``rollback_state`` is a list of tuples:
+    ``[(conv_snap_1, ssm_snap_1), (conv_snap_2, ssm_snap_2), ...]``
+    where index i corresponds to the state AFTER processing i+1 tokens.
+    Rolling back to position N means restoring ``rollback_state[N-1]``.
 
     Without this patch the verify forward advances the SSM by 2 steps
     and there is no way to roll back to position 1 on rejection — the
@@ -152,10 +148,10 @@ def patch_gated_delta_net_for_mtp() -> bool:
     Returns ``True`` when the patch was applied (or already in place),
     ``False`` if mlx-lm cannot be imported.
     """
-    global _gated_delta_patched, _orig_gated_delta_call
+    global _GATED_DELTA_PATCHED, _ORIG_GATED_DELTA_CALL
 
     with _install_lock:
-        if _gated_delta_patched:
+        if _GATED_DELTA_PATCHED:
             return True
 
         try:
@@ -177,64 +173,29 @@ def patch_gated_delta_net_for_mtp() -> bool:
         if "n_confirmed_for_mtp" not in ArraysCache.__dict__:
             ArraysCache.n_confirmed_for_mtp = 0  # type: ignore[attr-defined]
 
-        _orig_gated_delta_call = GatedDeltaNet.__call__
+        _ORIG_GATED_DELTA_CALL = GatedDeltaNet.__call__
 
         def _patched_call(self, inputs, mask=None, cache=None):
             B, S, _ = inputs.shape
             n_conf = 0
             if cache is not None:
                 n_conf = int(getattr(cache, "n_confirmed_for_mtp", 0) or 0)
-                # NOTE on per-layer scope: ``cache`` here is the
-                # PER-LAYER ArraysCache for this single GatedDeltaNet
-                # instance only. mlx-lm's prompt-cache machinery
-                # builds one cache entry per backbone layer; each
-                # ArraysCache instance has its own ``rollback_state``
-                # slot. Any write below (clear or set) affects ONLY
-                # this layer's cache. The consumer side
-                # (generator.py::_rollback_draft) walks every cache
-                # and restores each instance's own snapshot
-                # independently.
 
             # Fast path — no MTP boundary signaled, or chunk has 1
             # token, or boundary is outside the range, or NO cache at
             # all. Defer to the original implementation (byte-equal
-            # behavior). rollback_state is NOT touched on this path
-            # (see round-7 ordering fix below).
-            #
-            # Codex round-5 BLOCKING defensive fix: ``cache is None``
-            # is explicitly in the guard. Today it's logically
-            # unreachable (we only set n_conf > 0 when cache is not
-            # None) — but if a future refactor changes that
-            # invariant, the chunk-split below would crash on
-            # ``cache[0]``. Guarding here makes the contract
-            # self-documenting.
+            # behavior). rollback_state is NOT touched on this path.
             if cache is None or n_conf <= 0 or n_conf >= S or S < 2:
-                return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
+                return _ORIG_GATED_DELTA_CALL(self, inputs, mask=mask, cache=cache)
 
             # --- Chunk-split path (n_confirmed in (0, S)) ---
             if self.sharding_group is not None:
                 # The verify cycle only runs single-device; bail back
-                # to the unsplit path under tensor parallel (which the
-                # MTP generator doesn't drive anyway). rollback_state
-                # is NOT cleared on this path — see round-7 ordering
-                # fix: clearing only happens immediately before the
-                # chunk-split path writes a fresh snapshot.
-                return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
+                # to the unsplit path under tensor parallel.
+                return _ORIG_GATED_DELTA_CALL(self, inputs, mask=mask, cache=cache)
 
-            # ROUND-7 ordering fix: codex flagged that an earlier
-            # unconditional clear at function entry would wipe a
-            # previous chunk-split's snapshot if the next call
-            # bailed to fast-path or TP fallback (no replacement
-            # written). The clean fix is to clear ONLY immediately
-            # before the chunk-split path writes a new snapshot —
-            # making the lifecycle a single atomic write per
-            # chunk-split call. Round-3's stale-snapshot concern is
-            # still addressed because: (a) chunk-split always
-            # overwrites with a fresh snapshot, and (b) fast/TP
-            # paths leaving rollback_state intact is benign — the
-            # consumer (``_rollback_draft``) is only called after a
-            # chunk-split verify that produced drafts to reject,
-            # never after a fast-path call.
+            # Clear rollback_state before chunk-split (see round-7
+            # ordering fix in the original patch).
             cache.rollback_state = None
 
             # Steps 1-3: projections + conv prefix — identical to the
@@ -256,10 +217,7 @@ def patch_gated_delta_net_for_mtp() -> bool:
                 qkv = mx.where(mask[..., None], qkv, 0)
             conv_input = mx.concatenate([conv_state, qkv], axis=1)
             n_keep = self.conv_kernel_size - 1
-            # Conv state AT BOUNDARY (after processing n_conf tokens):
-            # the last n_keep entries of conv_input[:, : n_conf + n_keep].
-            # Equivalently conv_input[:, n_conf : n_conf + n_keep].
-            conv_snap = mx.contiguous(conv_input[:, n_conf : n_conf + n_keep, :])
+
             # Conv state AT END (after processing all S tokens):
             # last n_keep entries of conv_input.
             conv_post = mx.contiguous(conv_input[:, -n_keep:, :])
@@ -281,62 +239,96 @@ def patch_gated_delta_net_for_mtp() -> bool:
             q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
             k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
 
-            # Chunk 1: [0:n_conf]
-            q1 = q[:, :n_conf]
-            k1 = k[:, :n_conf]
-            v1 = v[:, :n_conf]
-            a1 = a[:, :n_conf]
-            b1 = b[:, :n_conf]
-            mask1 = mask[:, :n_conf] if mask is not None else None
-            out1, state_at_boundary = gated_delta_update(
-                q1,
-                k1,
-                v1,
-                a1,
-                b1,
-                self.A_log,
-                self.dt_bias,
-                state,
-                mask1,
-                use_kernel=not self.training,
+            # TAPE ROLLBACK: Build snapshots at EVERY position from 1
+            # to n_confirmed. This allows rolling back to ANY position
+            # in the draft chain, not just position 1.
+            tape = []
+            out1_list = []
+            current_state = state
+
+            for idx in range(n_conf):
+                q_pos = q[:, idx : idx + 1]
+                k_pos = k[:, idx : idx + 1]
+                v_pos = v[:, idx : idx + 1]
+                a_pos = a[:, idx : idx + 1]
+                b_pos = b[:, idx : idx + 1]
+                mask_pos = mask[:, idx : idx + 1] if mask is not None else None
+
+                # Conv state at this position: last n_keep entries of
+                # conv_input[:, : idx+1 + n_keep].
+                conv_snap_pos = mx.contiguous(
+                    conv_input[:, idx + 1 : idx + 1 + n_keep, :]
+                )
+
+                out_pos, current_state = gated_delta_update(
+                    q_pos,
+                    k_pos,
+                    v_pos,
+                    a_pos,
+                    b_pos,
+                    self.A_log,
+                    self.dt_bias,
+                    current_state,
+                    mask_pos,
+                    use_kernel=not self.training,
+                )
+                out1_list.append(out_pos)
+
+                # Record tape entry for this position
+                tape.append((conv_snap_pos, current_state))
+
+                # Also record via tape_rollback module if available
+                try:
+                    from .tape_rollback import get_tape_recorder
+                    recorder = get_tape_recorder()
+                    if recorder.is_recording:
+                        # Find layer index from cache
+                        # This is a best-effort lookup; layer_idx is needed for tape
+                        recorder.record_entry(
+                            layer_idx=0,  # Will be set by caller
+                            conv_state=conv_snap_pos,
+                            ssm_state=current_state
+                        )
+                except (ImportError, RuntimeError):
+                    pass  # tape_rollback not initialized or not recording
+
+            out1 = mx.concatenate(out1_list, axis=1) if out1_list else mx.zeros(
+                (B, 0, self.num_v_heads, self.head_v_dim), dtype=inputs.dtype
             )
 
-            # Snapshot conv state at boundary + ssm state at boundary.
-            # _rollback_draft restores (cache[0], cache[1]) from this.
-            cache.rollback_state = (conv_snap, state_at_boundary)
+            state_at_boundary = tape[-1][1] if tape else state
 
-            # Chunk 2: [n_conf:S]
-            q2 = q[:, n_conf:]
-            k2 = k[:, n_conf:]
-            v2 = v[:, n_conf:]
-            a2 = a[:, n_conf:]
-            b2 = b[:, n_conf:]
-            mask2 = mask[:, n_conf:] if mask is not None else None
-            out2, state_final = gated_delta_update(
-                q2,
-                k2,
-                v2,
-                a2,
-                b2,
-                self.A_log,
-                self.dt_bias,
-                state_at_boundary,
-                mask2,
-                use_kernel=not self.training,
-            )
+            # Chunk 2: [n_conf:S] — process remaining tokens in batch
+            if n_conf < S:
+                q2 = q[:, n_conf:]
+                k2 = k[:, n_conf:]
+                v2 = v[:, n_conf:]
+                a2 = a[:, n_conf:]
+                b2 = b[:, n_conf:]
+                mask2 = mask[:, n_conf:] if mask is not None else None
+                out2, state_final = gated_delta_update(
+                    q2,
+                    k2,
+                    v2,
+                    a2,
+                    b2,
+                    self.A_log,
+                    self.dt_bias,
+                    state_at_boundary,
+                    mask2,
+                    use_kernel=not self.training,
+                )
+            else:
+                out2 = mx.zeros((B, 0, self.num_v_heads, self.head_v_dim), dtype=inputs.dtype)
+                state_final = state_at_boundary
+
+            # TAPE FORMAT: list of (conv_snap, ssm_snap) tuples, one per
+            # position from 1 to n_conf. Rolling back to position N means
+            # restoring tape[N-1].
+            cache.rollback_state = tape
 
             out = mx.concatenate([out1, out2], axis=1)
             cache[1] = state_final
-            # Advance the cache position by the FULL chunk length S —
-            # this exactly mirrors the upstream
-            # ``GatedDeltaNet.__call__`` (mlx_lm/models/qwen3_5.py
-            # line 196-198 in 0.31.3), which always calls
-            # ``cache.advance(S)`` when cache is non-None at end of
-            # forward. Our chunk-split path consumes the same S
-            # tokens, just in two sub-calls to gated_delta_update;
-            # the net advance is identical to the upstream single-
-            # call path. No double-advance: there is no other
-            # ``advance`` along this code path.
             cache.advance(S)
 
             out = self.norm(out, z)
@@ -344,17 +336,17 @@ def patch_gated_delta_net_for_mtp() -> bool:
             return out
 
         GatedDeltaNet.__call__ = _patched_call  # type: ignore[assignment]
-        _gated_delta_patched = True
+        _GATED_DELTA_PATCHED = True
         logger.info(
-            "[mtp.cache_patch] Installed GatedDeltaNet chunk-split for MTP "
-            "rollback (snapshot at cache.n_confirmed_for_mtp boundary)."
+            "[mtp.cache_patch] Installed GatedDeltaNet TAPE rollback "
+            "(snapshots at all positions 1..n_confirmed for K>=2 support)."
         )
         return True
 
 
 def _is_patched_for_tests() -> bool:
     """Test-only — inspect the install flag."""
-    return _patched
+    return _PATCHED
 
 
 def _unpatch_for_tests() -> None:
@@ -363,7 +355,7 @@ def _unpatch_for_tests() -> None:
     Allows tests to verify the install side-effect by toggling the
     install state. Never called from production.
     """
-    global _patched, _gated_delta_patched, _orig_gated_delta_call
+    global _PATCHED, _GATED_DELTA_PATCHED, _ORIG_GATED_DELTA_CALL
 
     with _install_lock:
         try:
@@ -375,13 +367,13 @@ def _unpatch_for_tests() -> None:
                 delattr(ArraysCache, "n_confirmed_for_mtp")
         except ImportError:
             pass
-        if _gated_delta_patched and _orig_gated_delta_call is not None:
+        if _GATED_DELTA_PATCHED and _ORIG_GATED_DELTA_CALL is not None:
             try:
                 from mlx_lm.models.qwen3_5 import GatedDeltaNet
 
-                GatedDeltaNet.__call__ = _orig_gated_delta_call  # type: ignore[assignment]
+                GatedDeltaNet.__call__ = _ORIG_GATED_DELTA_CALL  # type: ignore[assignment]
             except ImportError:
                 pass
-        _patched = False
-        _gated_delta_patched = False
-        _orig_gated_delta_call = None
+        _PATCHED = False
+        _GATED_DELTA_PATCHED = False
+        _ORIG_GATED_DELTA_CALL = None
