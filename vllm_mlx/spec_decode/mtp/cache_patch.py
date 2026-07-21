@@ -280,6 +280,7 @@ def patch_gated_delta_net_for_mtp() -> bool:
                 # Also record via tape_rollback module if available
                 try:
                     from .tape_rollback import get_tape_recorder
+
                     recorder = get_tape_recorder()
                     if recorder.is_recording:
                         # Find layer index from cache
@@ -287,13 +288,17 @@ def patch_gated_delta_net_for_mtp() -> bool:
                         recorder.record_entry(
                             layer_idx=0,  # Will be set by caller
                             conv_state=conv_snap_pos,
-                            ssm_state=current_state
+                            ssm_state=current_state,
                         )
                 except (ImportError, RuntimeError):
                     pass  # tape_rollback not initialized or not recording
 
-            out1 = mx.concatenate(out1_list, axis=1) if out1_list else mx.zeros(
-                (B, 0, self.num_v_heads, self.head_v_dim), dtype=inputs.dtype
+            out1 = (
+                mx.concatenate(out1_list, axis=1)
+                if out1_list
+                else mx.zeros(
+                    (B, 0, self.num_v_heads, self.head_v_dim), dtype=inputs.dtype
+                )
             )
 
             state_at_boundary = tape[-1][1] if tape else state
@@ -319,7 +324,9 @@ def patch_gated_delta_net_for_mtp() -> bool:
                     use_kernel=not self.training,
                 )
             else:
-                out2 = mx.zeros((B, 0, self.num_v_heads, self.head_v_dim), dtype=inputs.dtype)
+                out2 = mx.zeros(
+                    (B, 0, self.num_v_heads, self.head_v_dim), dtype=inputs.dtype
+                )
                 state_final = state_at_boundary
 
             # TAPE FORMAT: list of (conv_snap, ssm_snap) tuples, one per
