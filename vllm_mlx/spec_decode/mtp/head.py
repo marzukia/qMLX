@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 def build_mtp_module(
     args: Any,
     num_layers: int,
+    *,
+    use_gated_attention: bool = True,
 ):
     """Construct a fresh ``MTPModule`` matching the upstream PR #990 schema.
 
@@ -76,15 +78,102 @@ def build_mtp_module(
     # Pull upstream building blocks from the installed mlx-lm. These
     # are PR #990's PUBLIC dependencies — none of them are modified by
     # the PR, so reusing them across versions is safe.
-    from mlx_lm.models.base import create_attention_mask
+    from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
     from mlx_lm.models.qwen3_5 import (
         MLP,
         Attention,
         SparseMoeBlock,
     )
+    from mlx_lm.models.qwen3_next import initialize_rope
 
     if num_layers < 1:
         raise ValueError(f"build_mtp_module requires num_layers >= 1; got {num_layers}")
+
+    class _MTPAttention(nn.Module):
+        """Standard multi-head attention for MTP heads (no Q gating).
+
+        The backbone's ``Qwen3NextAttention`` uses gated Q projection
+        (``q_proj`` outputs ``2 * num_heads * head_dim``, split into
+        Q + gate, output multiplied by ``sigmoid(gate)``). Some MTP
+        heads — notably oQ4-mtp conversions — use standard attention
+        without the gate factor. This class implements that simpler
+        variant: ``q_proj`` outputs ``num_heads * head_dim``, no gate
+        split, no ``sigmoid(gate)`` gating.
+
+        All other behavior (RoPE, q_norm, k_norm, GQA, KVCache)
+        matches ``Qwen3NextAttention`` exactly.
+        """
+
+        def __init__(self, args):
+            super().__init__()
+            self.num_attention_heads = args.num_attention_heads
+            self.num_key_value_heads = args.num_key_value_heads
+            self.head_dim = args.head_dim
+            self.scale = self.head_dim**-0.5
+
+            self.q_proj = nn.Linear(
+                args.hidden_size,
+                self.num_attention_heads * self.head_dim,
+                bias=getattr(args, "attention_bias", False),
+            )
+            self.k_proj = nn.Linear(
+                args.hidden_size,
+                self.num_key_value_heads * self.head_dim,
+                bias=getattr(args, "attention_bias", False),
+            )
+            self.v_proj = nn.Linear(
+                args.hidden_size,
+                self.num_key_value_heads * self.head_dim,
+                bias=getattr(args, "attention_bias", False),
+            )
+            self.o_proj = nn.Linear(
+                self.num_attention_heads * self.head_dim,
+                args.hidden_size,
+                bias=getattr(args, "attention_bias", False),
+            )
+
+            self.q_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
+            self.k_norm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
+
+            self.rope = initialize_rope(
+                int(self.head_dim * args.partial_rotary_factor),
+                base=args.rope_theta,
+                traditional=False,
+                scaling_config=args.rope_scaling,
+                max_position_embeddings=args.max_position_embeddings,
+            )
+
+        def __call__(self, x, mask=None, cache=None):
+            B, L, _ = x.shape
+
+            queries = self.q_proj(x)
+            keys = self.k_proj(x)
+            values = self.v_proj(x)
+
+            queries = self.q_norm(
+                queries.reshape(B, L, self.num_attention_heads, -1)
+            ).transpose(0, 2, 1, 3)
+            keys = self.k_norm(
+                keys.reshape(B, L, self.num_key_value_heads, -1)
+            ).transpose(0, 2, 1, 3)
+            values = values.reshape(B, L, self.num_key_value_heads, -1).transpose(
+                0, 2, 1, 3
+            )
+
+            if cache is not None:
+                queries = self.rope(queries, offset=cache.offset)
+                keys = self.rope(keys, offset=cache.offset)
+                keys, values = cache.update_and_fetch(keys, values)
+            else:
+                queries = self.rope(queries)
+                keys = self.rope(keys)
+
+            output = scaled_dot_product_attention(
+                queries, keys, values, cache=cache, scale=self.scale, mask=mask
+            )
+            output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
+
+            return self.o_proj(output)
 
     class _MTPDecoderLayer(nn.Module):
         """Full-attention-only transformer layer for the MTP head.
@@ -97,7 +186,12 @@ def build_mtp_module(
 
         def __init__(self, layer_args):
             super().__init__()
-            self.self_attn = Attention(layer_args)
+            # Use gated attention (Qwen3NextAttention with Q*2 + sigmoid
+            # gate) when the backbone uses it. Use standard attention
+            # (no gate factor) for MTP heads that don't have the *2
+            # in q_proj (e.g. oQ4-mtp conversions).
+            _attn_cls = Attention if use_gated_attention else _MTPAttention
+            self.self_attn = _attn_cls(layer_args)
             self.input_layernorm = nn.RMSNorm(
                 layer_args.hidden_size, eps=layer_args.rms_norm_eps
             )
