@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>REAP Models — Complete Reference</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a26;
+    --border: #2a2a3a;
+    --text: #e8e8f0;
+    --text-dim: #8888a0;
+    --accent: #6366f1;
+    --accent2: #818cf8;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --cyan: #22d3ee;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 0 20px;
+  }
+  .container { max-width: 1000px; margin: 0 auto; padding: 40px 0 80px; }
+  header {
+    text-align: center;
+    padding: 60px 0 40px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 48px;
+  }
+  header h1 {
+    font-size: 3rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -1px;
+  }
+  header .subtitle {
+    font-size: 1.1rem;
+    color: var(--text-dim);
+    margin-top: 12px;
+    max-width: 700px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  header .meta {
+    margin-top: 20px;
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  header .meta span {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    background: var(--surface);
+    padding: 6px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+  }
+  h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 48px 0 20px;
+    color: var(--accent2);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2::before {
+    content: '';
+    width: 4px;
+    height: 22px;
+    background: var(--accent);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  h3 { font-size: 1.15rem; font-weight: 600; margin: 28px 0 12px; }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  .card-title { font-size: 1.15rem; font-weight: 700; margin-bottom: 4px; }
+  .card-title a { color: var(--accent2); text-decoration: none; }
+  .card-title a:hover { text-decoration: underline; }
+  .card-sub { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 16px; }
+  .badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    vertical-align: middle;
+  }
+  .badge-official { background: rgba(99,102,241,0.2); color: var(--accent2); }
+  .badge-community { background: rgba(34,211,238,0.15); color: var(--cyan); }
+  .badge-fp8 { background: rgba(251,191,36,0.15); color: var(--amber); }
+  .badge-bf16 { background: rgba(52,211,153,0.15); color: var(--green); }
+  .badge-fits { background: rgba(52,211,153,0.25); color: var(--green); font-weight: 700; }
+  .callout {
+    background: rgba(99,102,241,0.08);
+    border: 1px solid rgba(99,102,241,0.2);
+    border-radius: 12px;
+    padding: 18px 22px;
+    margin: 20px 0;
+    font-size: 0.9rem;
+  }
+  .callout strong { color: var(--accent2); }
+  .callout.green { background: rgba(52,211,153,0.08); border-color: rgba(52,211,153,0.2); }
+  .callout.green strong { color: var(--green); }
+  .callout.amber { background: rgba(251,191,36,0.08); border-color: rgba(251,191,36,0.2); }
+  .callout.amber strong { color: var(--amber); }
+  .callout.red { background: rgba(248,113,113,0.08); border-color: rgba(248,113,113,0.2); }
+  .callout.red strong { color: var(--red); }
+  .kv-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .kv-grid .kv { background: var(--surface2); padding: 10px 14px; }
+  .kv-grid .kv-label { font-size: 0.65rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .kv-grid .kv-value { font-size: 1rem; font-weight: 700; margin-top: 2px; }
+  .kv-grid .kv-value.green { color: var(--green); }
+  .kv-grid .kv-value.amber { color: var(--amber); }
+  .kv-grid .kv-value.red { color: var(--red); }
+  .bench-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .bench-grid .bench { background: var(--surface2); padding: 10px 14px; text-align: center; }
+  .bench-grid .bench-label { font-size: 0.6rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .bench-grid .bench-value { font-size: 1.15rem; font-weight: 700; margin-top: 2px; }
+  .bench-grid .bench-value.best { color: var(--green); }
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  table.sz {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  table.sz th {
+    background: var(--surface2);
+    padding: 10px 12px;
+    text-align: right;
+    font-weight: 600;
+    color: var(--text-dim);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.sz th:first-child { text-align: left; }
+  table.sz td {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(42,42,58,0.4);
+    text-align: right;
+    white-space: nowrap;
+  }
+  table.sz td:first-child { text-align: left; font-weight: 600; }
+  table.sz tr:last-child td { border-bottom: none; }
+  table.sz tr:hover { background: rgba(99,102,241,0.04); }
+  table.sz .fits { color: var(--green); font-weight: 700; }
+  table.sz .tight { color: var(--amber); font-weight: 600; }
+  table.sz .no { color: var(--red); opacity: 0.7; }
+  table.sz .best-row { background: rgba(52,211,153,0.06); }
+  table.sz .best-row td:first-child::after { content: ' ★'; color: var(--green); }
+  code {
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    color: var(--cyan);
+  }
+  footer {
+    text-align: center;
+    padding: 40px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 48px;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+  }
+  footer a { color: var(--accent2); text-decoration: none; }
+  @media (max-width: 700px) {
+    header h1 { font-size: 2rem; }
+    .kv-grid, .bench-grid { grid-template-columns: 1fr; }
+    table.sz { font-size: 0.75rem; }
+    table.sz th, table.sz td { padding: 6px 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>REAP Models</h1>
+  <p class="subtitle">Router-weighted Expert Activation Pruning. All known models, every quant level, sizes in RAM.</p>
+  <div class="meta">
+    <span>ICLR 2026</span>
+    <span>arxiv:2510.13999</span>
+    <span>30+ models</span>
+    <span>25B – 508B</span>
+  </div>
+</header>
+
+<h2>What is REAP?</h2>
+<div class="card">
+  <p><strong>REAP</strong> removes redundant MoE experts by scoring on router gate-values and activation norms. One-shot, no fine-tuning. Drop-in with vanilla vLLM.</p>
+  <div class="callout green">
+    <strong>Key result:</strong> 50% pruning retains 97.6% coding ability, 96.7% SWE-bench. Pruning beats merging on all generative tasks.
+  </div>
+</div>
+
+<h2>96 GB RAM — What Fits?</h2>
+<div class="callout amber">
+  <strong>marzuki-helium: 96 GB RAM.</strong> After OS + KV cache (~8 GB budget), ~88 GB for weights. Stars (★) mark the best quality quant that fits each model.
+</div>
+
+<div class="card">
+  <div class="card-title">Every REAP model — size at every quant level</div>
+  <div class="card-sub">Green = fits in 96 GB. Amber = tight. Red = does not fit. ★ = best quality that fits.</div>
+  <div class="table-wrap">
+    <table class="sz">
+      <thead>
+        <tr>
+          <th>Model</th>
+          <th>Params</th>
+          <th>BF16</th>
+          <th>FP8/Q8</th>
+          <th>Q6_K</th>
+          <th>Q5_K_M</th>
+          <th>Q4_K_M</th>
+          <th>IQ4_XS</th>
+          <th>Q3_K_M</th>
+          <th>IQ3_XXS</th>
+          <th>Q2_K</th>
+          <th>IQ2_XXS</th>
+          <th>IQ1_M</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>DS-V3.2-REAP-508B (~25%)</td>
+          <td>508B</td>
+          <td class="no">1016</td>
+          <td class="no">508</td>
+          <td class="no">381</td>
+          <td class="no">318</td>
+          <td class="no">254</td>
+          <td class="no">222</td>
+          <td class="no">191</td>
+          <td class="no">159</td>
+          <td class="no">127</td>
+          <td class="no">95</td>
+          <td class="tight">71</td>
+        </tr>
+        <tr>
+          <td>GLM-5.2-REAP-504B</td>
+          <td>504B</td>
+          <td class="no">1008</td>
+          <td class="no">504</td>
+          <td class="no">378</td>
+          <td class="no">315</td>
+          <td class="no">252</td>
+          <td class="no">221</td>
+          <td class="no">189</td>
+          <td class="no">158</td>
+          <td class="no">126</td>
+          <td class="no">95</td>
+          <td class="tight">71</td>
+        </tr>
+        <tr>
+          <td>Qwen3-Coder-REAP-363B (25%)</td>
+          <td>363B</td>
+          <td class="no">726</td>
+          <td class="no">363</td>
+          <td class="no">272</td>
+          <td class="no">227</td>
+          <td class="no">182</td>
+          <td class="no">159</td>
+          <td class="no">136</td>
+          <td class="no">114</td>
+          <td class="no">91</td>
+          <td class="tight">68</td>
+          <td class="fits">51</td>
+        </tr>
+        <tr>
+          <td>DS-V3.2-REAP-345B (~50%)</td>
+          <td>345B</td>
+          <td class="no">690</td>
+          <td class="no">345</td>
+          <td class="no">259</td>
+          <td class="no">216</td>
+          <td class="no">173</td>
+          <td class="no">151</td>
+          <td class="no">130</td>
+          <td class="no">108</td>
+          <td class="no">86</td>
+          <td class="tight">65</td>
+          <td class="fits">48</td>
+        </tr>
+        <tr>
+          <td>GLM-4.6/4.7-REAP-268B</td>
+          <td>268B</td>
+          <td class="no">536</td>
+          <td class="no">268</td>
+          <td class="no">201</td>
+          <td class="no">168</td>
+          <td class="no">134</td>
+          <td class="no">117</td>
+          <td class="no">101</td>
+          <td class="no">84</td>
+          <td class="no">67</td>
+          <td class="fits">50</td>
+          <td class="fits">38</td>
+        </tr>
+        <tr>
+          <td>GLM-4.6/4.7-REAP-252B</td>
+          <td>252B</td>
+          <td class="no">504</td>
+          <td class="no">252</td>
+          <td class="no">189</td>
+          <td class="no">158</td>
+          <td class="no">126</td>
+          <td class="no">110</td>
+          <td class="no">95</td>
+          <td class="no">79</td>
+          <td class="no">63</td>
+          <td class="tight">47</td>
+          <td class="fits">35</td>
+        </tr>
+        <tr>
+          <td>Qwen3-Coder-REAP-246B (50%)</td>
+          <td>246B</td>
+          <td class="no">492</td>
+          <td class="no">246</td>
+          <td class="no">185</td>
+          <td class="no">154</td>
+          <td class="no">123</td>
+          <td class="no">108</td>
+          <td class="no">92</td>
+          <td class="no">77</td>
+          <td class="no">62</td>
+          <td class="tight">46</td>
+          <td class="fits">35</td>
+        </tr>
+        <tr>
+          <td>Qwen3.5-REAP-262B (35%)</td>
+          <td>262B</td>
+          <td class="no">524</td>
+          <td class="no">262</td>
+          <td class="no">197</td>
+          <td class="no">164</td>
+          <td class="no">131</td>
+          <td class="no">115</td>
+          <td class="no">98</td>
+          <td class="no">82</td>
+          <td class="no">66</td>
+          <td class="tight">49</td>
+          <td class="fits">37</td>
+        </tr>
+        <tr>
+          <td>GLM-4.6/4.7-REAP-218B</td>
+          <td>218B</td>
+          <td class="no">436</td>
+          <td class="no">218</td>
+          <td class="no">164</td>
+          <td class="no">136</td>
+          <td class="no">109</td>
+          <td class="no">95</td>
+          <td class="no">82</td>
+          <td class="no">68</td>
+          <td class="no">55</td>
+          <td class="fits">41</td>
+          <td class="fits">31</td>
+        </tr>
+        <tr>
+          <td>Qwen3.5-REAP-212B (~47%)</td>
+          <td>212B</td>
+          <td class="no">424</td>
+          <td class="no">212</td>
+          <td class="no">159</td>
+          <td class="no">133</td>
+          <td class="no">106</td>
+          <td class="no">93</td>
+          <td class="no">80</td>
+          <td class="no">66</td>
+          <td class="no">53</td>
+          <td class="fits">40</td>
+          <td class="fits">30</td>
+        </tr>
+        <tr>
+          <td>MiniMax-M2-REAP-172B (25%)</td>
+          <td>172B</td>
+          <td class="no">344</td>
+          <td class="no">172</td>
+          <td class="no">129</td>
+          <td class="no">108</td>
+          <td class="no">86</td>
+          <td class="no">75</td>
+          <td class="no">65</td>
+          <td class="no">54</td>
+          <td class="tight">43</td>
+          <td class="fits">32</td>
+          <td class="fits">24</td>
+        </tr>
+        <tr>
+          <td>MiniMax-M2.7-REAP-172B</td>
+          <td>172B</td>
+          <td class="no">344</td>
+          <td class="no">172</td>
+          <td class="no">129</td>
+          <td class="no">108</td>
+          <td class="no">86</td>
+          <td class="no">75</td>
+          <td class="no">65</td>
+          <td class="no">54</td>
+          <td class="tight">43</td>
+          <td class="fits">32</td>
+          <td class="fits">24</td>
+        </tr>
+        <tr>
+          <td>MiniMax-M2-REAP-162B (30%)</td>
+          <td>162B</td>
+          <td class="no">324</td>
+          <td class="no">162</td>
+          <td class="no">122</td>
+          <td class="no">101</td>
+          <td class="no">81</td>
+          <td class="no">71</td>
+          <td class="no">61</td>
+          <td class="no">51</td>
+          <td class="tight">41</td>
+          <td class="fits">30</td>
+          <td class="fits">23</td>
+        </tr>
+        <tr>
+          <td>Step-3.5-Flash-149B (~24%)</td>
+          <td>149B</td>
+          <td class="no">298</td>
+          <td class="no">149</td>
+          <td class="no">112</td>
+          <td class="no">93</td>
+          <td class="no">75</td>
+          <td class="no">65</td>
+          <td class="no">56</td>
+          <td class="no">47</td>
+          <td class="tight">37</td>
+          <td class="fits">28</td>
+          <td class="fits">21</td>
+        </tr>
+        <tr>
+          <td>MiniMax-M2-REAP-139B (40%)</td>
+          <td>139B</td>
+          <td class="no">278</td>
+          <td class="no">139</td>
+          <td class="no">104</td>
+          <td class="no">87</td>
+          <td class="no">70</td>
+          <td class="no">61</td>
+          <td class="no">52</td>
+          <td class="no">43</td>
+          <td class="tight">35</td>
+          <td class="fits">26</td>
+          <td class="fits">20</td>
+        </tr>
+        <tr>
+          <td>Step-3.5-Flash-121B (~38%)</td>
+          <td>121B</td>
+          <td class="no">242</td>
+          <td class="no">121</td>
+          <td class="no">91</td>
+          <td class="no">76</td>
+          <td class="tight">61</td>
+          <td class="tight">53</td>
+          <td class="fits">45</td>
+          <td class="fits">38</td>
+          <td class="fits">30</td>
+          <td class="fits">23</td>
+          <td class="fits">17</td>
+        </tr>
+        <tr class="best-row">
+          <td>Qwen3.5-122B-REAP-20 (20%)</td>
+          <td>99B</td>
+          <td class="no">198</td>
+          <td class="no">99</td>
+          <td class="fits">74</td>
+          <td class="fits">62</td>
+          <td class="fits">50</td>
+          <td class="fits">43</td>
+          <td class="fits">37</td>
+          <td class="fits">31</td>
+          <td class="fits">25</td>
+          <td class="fits">19</td>
+          <td class="fits">14</td>
+        </tr>
+        <tr class="best-row">
+          <td>Qwen3.5-122B-REAP-30 (30%)</td>
+          <td>88B</td>
+          <td class="no">176</td>
+          <td class="tight">88</td>
+          <td class="fits">66</td>
+          <td class="fits">55</td>
+          <td class="fits">44</td>
+          <td class="fits">39</td>
+          <td class="fits">33</td>
+          <td class="fits">28</td>
+          <td class="fits">22</td>
+          <td class="fits">17</td>
+          <td class="fits">12</td>
+        </tr>
+        <tr class="best-row">
+          <td>GLM-4.5-Air-REAP-82B</td>
+          <td>82B</td>
+          <td class="no">164</td>
+          <td class="tight">82</td>
+          <td class="fits">62</td>
+          <td class="fits">51</td>
+          <td class="fits">41</td>
+          <td class="fits">36</td>
+          <td class="fits">31</td>
+          <td class="fits">26</td>
+          <td class="fits">21</td>
+          <td class="fits">15</td>
+          <td class="fits">12</td>
+        </tr>
+        <tr>
+          <td>Qwen3-Coder-57B (30%)</td>
+          <td>57B</td>
+          <td class="no">114</td>
+          <td class="fits">57</td>
+          <td class="fits">43</td>
+          <td class="fits">36</td>
+          <td class="fits">29</td>
+          <td class="fits">25</td>
+          <td class="fits">21</td>
+          <td class="fits">18</td>
+          <td class="fits">14</td>
+          <td class="fits">11</td>
+          <td class="fits">8</td>
+        </tr>
+        <tr>
+          <td>Kimi-Linear-REAP-35B</td>
+          <td>35B</td>
+          <td class="tight">70</td>
+          <td class="fits">35</td>
+          <td class="fits">26</td>
+          <td class="fits">22</td>
+          <td class="fits">18</td>
+          <td class="fits">15</td>
+          <td class="fits">13</td>
+          <td class="fits">11</td>
+          <td class="fits">9</td>
+          <td class="fits">7</td>
+          <td class="fits">5</td>
+        </tr>
+        <tr>
+          <td>Qwen3.5-28B (20%)</td>
+          <td>28B</td>
+          <td class="fits">56</td>
+          <td class="fits">28</td>
+          <td class="fits">21</td>
+          <td class="fits">18</td>
+          <td class="fits">14</td>
+          <td class="fits">12</td>
+          <td class="fits">11</td>
+          <td class="fits">9</td>
+          <td class="fits">7</td>
+          <td class="fits">5</td>
+          <td class="fits">4</td>
+        </tr>
+        <tr>
+          <td>GLM-4.7-Flash-23B</td>
+          <td>23B</td>
+          <td class="fits">46</td>
+          <td class="fits">23</td>
+          <td class="fits">17</td>
+          <td class="fits">14</td>
+          <td class="fits">12</td>
+          <td class="fits">10</td>
+          <td class="fits">9</td>
+          <td class="fits">7</td>
+          <td class="fits">6</td>
+          <td class="fits">4</td>
+          <td class="fits">3</td>
+        </tr>
+        <tr>
+          <td>Qwen3-Coder-REAP-25B (20%)</td>
+          <td>25B</td>
+          <td class="tight">50</td>
+          <td class="fits">25</td>
+          <td class="fits">19</td>
+          <td class="fits">16</td>
+          <td class="fits">13</td>
+          <td class="fits">11</td>
+          <td class="fits">9</td>
+          <td class="fits">8</td>
+          <td class="fits">6</td>
+          <td class="fits">5</td>
+          <td class="fits">4</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="color:var(--text-dim);font-size:0.8rem">Sizes in GB. Approximate: BF16 = 2 B/param, FP8/Q8 = 1, Q6_K = 0.75, Q5_K_M = 0.625, Q4_K_M = 0.5, IQ4_XS = 0.4375, Q3_K_M = 0.375, IQ3_XXS = 0.3125, Q2_K = 0.25, IQ2_XXS = 0.1875, IQ1_M = 0.140625 B/param.</p>
+</div>
+
+<div class="callout green">
+  <strong>Best picks for 96 GB RAM (by quality):</strong><br><br>
+  <strong>1. Qwen3.5-122B-REAP-20 (99B) at Q6_K = 74 GB</strong> — your current model pruned 20%. Best quality, 22 GB headroom.<br>
+  <strong>2. Qwen3.5-122B-REAP-30 (88B) at Q6_K = 66 GB</strong> — 30% pruned. 22 GB for KV cache, ~1.8M context.<br>
+  <strong>3. GLM-4.5-Air-REAP-82B at Q8_0 = 82 GB</strong> — different architecture, 12B active. 6 GB for KV cache.<br>
+  <strong>4. Step-3.5-Flash-REAP-121B at Q4_K_M = 61 GB</strong> — 27 GB for KV cache, ~1.1M context.<br>
+  <strong>5. Qwen3-Coder-57B at Q8_0 = 57 GB</strong> — 31 GB for KV cache, ~250k context.
+</div>
+
+<!-- MAX KV CACHE SECTION -->
+<h2>Max KV Cache &amp; Context on 96 GB</h2>
+<div class="callout amber">
+  <strong>How this works:</strong> 96 GB total minus model weights minus 8 GB OS = RAM available for KV cache. Max context = available RAM / per-token KV cost. Per-token KV cost depends on attention layers, KV heads, and head dimension.<br><br>
+  <strong>Per-token KV cost (FP16):</strong> <code>attn_layers × kv_heads × head_dim × 2 bytes</code>
+</div>
+
+<div class="card">
+  <div class="card-title">Qwen3.5-122B family (REAP-20, REAP-30)</div>
+  <div class="card-sub">12 full attention layers, 2 KV heads, head_dim=256. KV per token = 12 KB. DeltaNet layers have fixed recurrent state (no KV cache).</div>
+  <div class="table-wrap">
+    <table class="sz">
+      <thead>
+        <tr><th>Model</th><th>Quant</th><th>Weights</th><th>Avail for KV</th><th>Max KV (GB)</th><th>Max Context</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>REAP-20 (99B)</td><td>Q6_K</td><td>74 GB</td><td>14 GB</td><td class="fits">14 GB</td><td class="fits">~1.2M tokens</td></tr>
+        <tr><td>REAP-20 (99B)</td><td>Q5_K_M</td><td>62 GB</td><td>26 GB</td><td class="fits">26 GB</td><td class="fits">~2.2M tokens</td></tr>
+        <tr><td>REAP-20 (99B)</td><td>Q4_K_M</td><td>50 GB</td><td>38 GB</td><td class="fits">38 GB</td><td class="fits">~3.2M tokens</td></tr>
+        <tr><td>REAP-30 (88B)</td><td>Q8_0</td><td>88 GB</td><td>0 GB</td><td class="no">0 GB</td><td class="no">No room</td></tr>
+        <tr><td>REAP-30 (88B)</td><td>Q6_K</td><td>66 GB</td><td>22 GB</td><td class="fits">22 GB</td><td class="fits">~1.8M tokens</td></tr>
+        <tr><td>REAP-30 (88B)</td><td>Q5_K_M</td><td>55 GB</td><td>33 GB</td><td class="fits">33 GB</td><td class="fits">~2.8M tokens</td></tr>
+        <tr><td>REAP-30 (88B)</td><td>Q4_K_M</td><td>44 GB</td><td>44 GB</td><td class="fits">44 GB</td><td class="fits">~3.7M tokens</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout green">
+    <strong>Best combo:</strong> REAP-30 at Q6_K = 66 GB weights + 22 GB KV cache = 88 GB total. Fits comfortably with ~1.8M token context window. Your current qMLX handles 262k natively, so this is more than enough.
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Qwen3-Coder family (REAP-363B, REAP-246B)</div>
+  <div class="card-sub">62 full attention layers, 8 KV heads, head_dim=128. KV per token = 124 KB. All layers use standard attention (no DeltaNet).</div>
+  <div class="table-wrap">
+    <table class="sz">
+      <thead>
+        <tr><th>Model</th><th>Quant</th><th>Weights</th><th>Avail for KV</th><th>Max KV (GB)</th><th>Max Context</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>REAP-363B</td><td>IQ1_M</td><td>51 GB</td><td>37 GB</td><td class="tight">37 GB</td><td class="tight">~305k tokens</td></tr>
+        <tr><td>REAP-246B</td><td>IQ1_M</td><td>35 GB</td><td>53 GB</td><td class="fits">53 GB</td><td class="fits">~439k tokens</td></tr>
+        <tr><td>REAP-246B</td><td>IQ2_XXS</td><td>46 GB</td><td>42 GB</td><td class="tight">42 GB</td><td class="tight">~347k tokens</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout red">
+    <strong>Warning:</strong> These only fit at IQ1_M (extremely degraded quality). 305k-439k context is usable but the model quality will be very poor. Not recommended for coding.
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">MiniMax-M2 family (REAP-172B, 162B, 139B)</div>
+  <div class="card-sub">62 full attention layers, 48 KV heads, head_dim=128. KV per token = 742 KB. Huge KV cache due to many KV heads.</div>
+  <div class="table-wrap">
+    <table class="sz">
+      <thead>
+        <tr><th>Model</th><th>Quant</th><th>Weights</th><th>Avail for KV</th><th>Max KV (GB)</th><th>Max Context</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>REAP-172B</td><td>IQ2_XXS</td><td>32 GB</td><td>56 GB</td><td class="tight">56 GB</td><td class="tight">~77k tokens</td></tr>
+        <tr><td>REAP-162B</td><td>IQ2_XXS</td><td>30 GB</td><td>58 GB</td><td class="tight">58 GB</td><td class="tight">~80k tokens</td></tr>
+        <tr><td>REAP-139B</td><td>IQ2_XXS</td><td>26 GB</td><td>62 GB</td><td class="tight">62 GB</td><td class="tight">~86k tokens</td></tr>
+        <tr><td>REAP-139B</td><td>IQ1_M</td><td>20 GB</td><td>68 GB</td><td class="tight">68 GB</td><td class="tight">~94k tokens</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout red">
+    <strong>Problem:</strong> MiniMax-M2 has 48 KV heads per layer (vs 2 for Qwen3.5). Even at IQ2_XXS you only get ~86k context. The KV cache eats most of your RAM. At IQ1_M quality is terrible AND you only get 94k context.
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Step-3.5-Flash-121B</div>
+  <div class="card-sub">3:1 SWA/full attention. ~12 full attention layers + 36 sliding window layers. Est. 8 KV heads, head_dim=128. KV per token ≈ 25 KB (full attn only, SWA windowed).</div>
+  <div class="table-wrap">
+    <table class="sz">
+      <thead>
+        <tr><th>Model</th><th>Quant</th><th>Weights</th><th>Avail for KV</th><th>Max KV (GB)</th><th>Max Context</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>REAP-121B</td><td>Q4_K_M</td><td>61 GB</td><td>27 GB</td><td class="fits">27 GB</td><td class="fits">~1.1M tokens</td></tr>
+        <tr><td>REAP-121B</td><td>IQ4_XS</td><td>53 GB</td><td>35 GB</td><td class="fits">35 GB</td><td class="fits">~1.4M tokens</td></tr>
+        <tr><td>REAP-121B</td><td>Q3_K_M</td><td>45 GB</td><td>43 GB</td><td class="fits">43 GB</td><td class="fits">~1.8M tokens</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <strong>Note:</strong> SWA layers use a fixed window (e.g. 4096 tokens), so their KV cache is capped. Only full attention layers grow linearly. Actual max context depends on SWA window size. Estimate assumes SWA window = 4096.
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">GLM-4.5-Air-REAP-82B</div>
+  <div class="card-sub">Est. 40 layers, 32 KV heads, head_dim=128. KV per token ≈ 320 KB.</div>
+  <div class="table-wrap">
+    <table class="sz">
+      <thead>
+        <tr><th>Model</th><th>Quant</th><th>Weights</th><th>Avail for KV</th><th>Max KV (GB)</th><th>Max Context</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>82B</td><td>Q8_0</td><td>82 GB</td><td>6 GB</td><td class="tight">6 GB</td><td class="tight">~19k tokens</td></tr>
+        <tr><td>82B</td><td>Q6_K</td><td>62 GB</td><td>26 GB</td><td class="fits">26 GB</td><td class="fits">~83k tokens</td></tr>
+        <tr><td>82B</td><td>Q5_K_M</td><td>51 GB</td><td>37 GB</td><td class="fits">37 GB</td><td class="fits">~118k tokens</td></tr>
+        <tr><td>82B</td><td>Q4_K_M</td><td>41 GB</td><td>47 GB</td><td class="fits">47 GB</td><td class="fits">~150k tokens</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <strong>Note:</strong> GLM-4.5 has more KV heads than Qwen3.5 (32 vs 2), so KV cache is ~26x larger per token. Q8_0 barely fits (19k context is useless). Q6_K gives 83k — usable but limited.
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Smaller models</div>
+  <div class="card-sub">These fit comfortably with generous KV cache.</div>
+  <div class="table-wrap">
+    <table class="sz">
+      <thead>
+        <tr><th>Model</th><th>Quant</th><th>Weights</th><th>Avail for KV</th><th>Max Context</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Qwen3-Coder-57B (30%)</td><td>Q8_0</td><td>57 GB</td><td>31 GB</td><td class="fits">~250k tokens</td></tr>
+        <tr><td>Qwen3-Coder-57B (30%)</td><td>BF16</td><td>114 GB</td><td class="no">—</td><td class="no">Does not fit</td></tr>
+        <tr><td>Qwen3-Coder-25B</td><td>BF16</td><td>50 GB</td><td>38 GB</td><td class="fits">~310k tokens</td></tr>
+        <tr><td>Qwen3.5-28B (20%)</td><td>BF16</td><td>56 GB</td><td>32 GB</td><td class="fits">~2.6M tokens (12 KB/tok)</td></tr>
+        <tr><td>GLM-4.7-Flash-23B</td><td>BF16</td><td>46 GB</td><td>42 GB</td><td class="fits">~670k tokens (64 KB/tok)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="callout green">
+  <strong>TL;DR for 96 GB RAM:</strong><br><br>
+  <strong>Qwen3.5-122B-REAP-30 at Q6_K</strong> wins. 66 GB weights + 22 GB KV = 88 GB. ~1.8M context. Same hybrid architecture as your current model. DeltaNet layers = tiny KV cache per token (12 KB).<br><br>
+  <strong>Qwen3-Coder-REAP-246B</strong> is 10x worse on KV (124 KB/token) because all 62 layers use full attention. Even at IQ1_M you only get 439k context.<br><br>
+  <strong>MiniMax-M2-REAP-139B</strong> is 60x worse (742 KB/token) due to 48 KV heads. Only ~86k context at IQ2_XXS.
+</div>
+
+<!-- CEREBRAS CODING BENCHMARKS -->
+<h2>Qwen3-Coder-REAP — Coding Benchmarks</h2>
+
+<div class="card">
+  <div class="card-title">REAP-363B (25% pruned from 480B)</div>
+  <div class="card-sub">120/160 experts. 35B active. <span class="badge badge-official">Cerebras</span> <span class="badge badge-fp8">FP8</span></div>
+  <div class="bench-grid">
+    <div class="bench"><div class="bench-label">HumanEval</div><div class="bench-value best">95.7</div></div>
+    <div class="bench"><div class="bench-label">MBPP</div><div class="bench-value">91.7</div></div>
+    <div class="bench"><div class="bench-label">SWE-bench</div><div class="bench-value best">54.0</div></div>
+    <div class="bench"><div class="bench-label">LiveCodeBench</div><div class="bench-value">41.6</div></div>
+    <div class="bench"><div class="bench-label">BFCL-v3</div><div class="bench-value best">69.8</div></div>
+    <div class="bench"><div class="bench-label">TerminalBench</div><div class="bench-value best">30.5</div></div>
+  </div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">HumanEval vs base</div><div class="kv-value green">100.6% (95.1→95.7)</div></div>
+    <div class="kv"><div class="kv-label">SWE-bench vs base</div><div class="kv-value green">100.0% (54.0→54.0)</div></div>
+  </div>
+  <a href="https://huggingface.co/cerebras/Qwen3-Coder-REAP-363B-A35B-FP8" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">REAP-246B (50% pruned from 480B)</div>
+  <div class="card-sub">80/160 experts. 35B active. <span class="badge badge-official">Cerebras</span> <span class="badge badge-fp8">FP8</span></div>
+  <div class="bench-grid">
+    <div class="bench"><div class="bench-label">HumanEval</div><div class="bench-value">93.9</div></div>
+    <div class="bench"><div class="bench-label">MBPP</div><div class="bench-value">91.0</div></div>
+    <div class="bench"><div class="bench-label">SWE-bench</div><div class="bench-value">52.2</div></div>
+    <div class="bench"><div class="bench-label">LiveCodeBench</div><div class="bench-value">41.5</div></div>
+    <div class="bench"><div class="bench-label">BFCL-v3</div><div class="bench-value">67.4</div></div>
+    <div class="bench"><div class="bench-label">TerminalBench</div><div class="bench-value">30.0</div></div>
+  </div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">HumanEval retention</div><div class="kv-value green">98.7%</div></div>
+    <div class="kv"><div class="kv-label">SWE-bench retention</div><div class="kv-value green">96.7%</div></div>
+  </div>
+  <a href="https://huggingface.co/cerebras/Qwen3-Coder-REAP-246B-A35B-FP8" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<!-- MINIMAX BENCHMARKS -->
+<h2>MiniMax-M2-REAP — Coding &amp; Reasoning</h2>
+
+<div class="card">
+  <div class="card-title">REAP-172B (25% pruned from 230B)</div>
+  <div class="card-sub">192/256 experts. 10B active. <span class="badge badge-official">Cerebras</span></div>
+  <div class="bench-grid">
+    <div class="bench"><div class="bench-label">HumanEval</div><div class="bench-value best">93.9</div></div>
+    <div class="bench"><div class="bench-label">MBPP</div><div class="bench-value best">88.1</div></div>
+    <div class="bench"><div class="bench-label">AIME25</div><div class="bench-value best">83.3</div></div>
+    <div class="bench"><div class="bench-label">MATH-500</div><div class="bench-value">89.4</div></div>
+    <div class="bench"><div class="bench-label">BFCL-v3</div><div class="bench-value">61.5</div></div>
+    <div class="bench"><div class="bench-label">τ²-bench</div><div class="bench-value">57.6</div></div>
+  </div>
+  <div class="callout green">Improves on base: MBPP+ 74.9 (vs 73.0), AIME25 83.3 (vs 76.7).</div>
+  <a href="https://huggingface.co/cerebras/MiniMax-M2-REAP-172B-A10B" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">REAP-162B (30% pruned)</div>
+  <div class="card-sub">180/256 experts. <span class="badge badge-official">Cerebras</span></div>
+  <div class="bench-grid">
+    <div class="bench"><div class="bench-label">HumanEval</div><div class="bench-value">93.3</div></div>
+    <div class="bench"><div class="bench-label">MBPP</div><div class="bench-value">86.5</div></div>
+    <div class="bench"><div class="bench-label">AIME25</div><div class="bench-value">73.3</div></div>
+    <div class="bench"><div class="bench-label">MATH-500</div><div class="bench-value">89.4</div></div>
+    <div class="bench"><div class="bench-label">BFCL-v3</div><div class="bench-value">59.9</div></div>
+    <div class="bench"><div class="bench-label">τ²-bench</div><div class="bench-value best">59.1</div></div>
+  </div>
+  <a href="https://huggingface.co/cerebras/MiniMax-M2-REAP-162B-A10B" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">REAP-139B (40% pruned)</div>
+  <div class="card-sub">154/256 experts. <span class="badge badge-official">Cerebras</span></div>
+  <div class="bench-grid">
+    <div class="bench"><div class="bench-label">HumanEval</div><div class="bench-value">91.5</div></div>
+    <div class="bench"><div class="bench-label">MBPP</div><div class="bench-value">85.2</div></div>
+    <div class="bench"><div class="bench-label">AIME25</div><div class="bench-value">73.3</div></div>
+    <div class="bench"><div class="bench-label">MATH-500</div><div class="bench-value best">93.8</div></div>
+    <div class="bench"><div class="bench-label">BFCL-v3</div><div class="bench-value">57.9</div></div>
+    <div class="bench"><div class="bench-label">τ²-bench</div><div class="bench-value">55.3</div></div>
+  </div>
+  <a href="https://huggingface.co/cerebras/MiniMax-M2-REAP-139B-A10B" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<!-- ALL CEREBRAS -->
+<h2>All Cerebras REAP Models</h2>
+
+<div class="card">
+  <div class="card-title">Qwen3-Coder</div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">REAP-363B</div><div class="kv-value">25% pruned, 363B, <span class="badge badge-fp8">FP8</span> <span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/Qwen3-Coder-REAP-363B-A35B-FP8" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">REAP-246B</div><div class="kv-value">50% pruned, 246B, <span class="badge badge-fp8">FP8</span> <span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/Qwen3-Coder-REAP-246B-A35B-FP8" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">REAP-25B</div><div class="kv-value">20% pruned, 25B, <span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/Qwen3-Coder-REAP-25B-A3B" style="color:var(--accent2)">HF</a></div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">DeepSeek-V3.2</div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">REAP-508B</div><div class="kv-value">~25% pruned, 508B, 37B active</div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/DeepSeek-V3.2-REAP-508B-A37B" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">REAP-345B</div><div class="kv-value">~50% pruned, 345B, 37B active</div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/DeepSeek-V3.2-REAP-345B-A37B" style="color:var(--accent2)">HF</a></div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">GLM-4.5 / 4.6 / 4.7</div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">GLM-4.5-Air-82B</div><div class="kv-value">82B, 12B active, <span class="badge badge-fp8">FP8</span> <span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/GLM-4.5-Air-REAP-82B-A12B" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">GLM-4.6-268B</div><div class="kv-value">268B, 32B active</div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/GLM-4.6-REAP-268B-A32B-FP8" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">GLM-4.6-252B</div><div class="kv-value">252B, 32B active</div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/GLM-4.6-REAP-252B-A32B-FP8" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">GLM-4.6-218B</div><div class="kv-value">218B, 32B active</div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/GLM-4.6-REAP-218B-A32B-FP8" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">GLM-4.7-268B</div><div class="kv-value">268B, 32B active</div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/GLM-4.7-REAP-268B-A32B-FP8" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">GLM-4.7-218B</div><div class="kv-value">218B, 32B active</div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/GLM-4.7-REAP-218B-A32B-FP8" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">GLM-4.7-Flash-23B</div><div class="kv-value">23B, 3B active, <span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/GLM-4.7-Flash-REAP-23B-A3B" style="color:var(--accent2)">HF</a></div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">MiniMax</div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">M2-172B / 162B / 139B</div><div class="kv-value"><span class="badge badge-fp8">FP8</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/collections/cerebras/cerebras-reap" style="color:var(--accent2)">Collection</a></div></div>
+    <div class="kv"><div class="kv-label">M2.1-172B / 139B</div><div class="kv-value"><span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/collections/cerebras/cerebras-reap" style="color:var(--accent2)">Collection</a></div></div>
+    <div class="kv"><div class="kv-label">M2.5-172B / 139B</div><div class="kv-value"><span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/collections/cerebras/cerebras-reap" style="color:var(--accent2)">Collection</a></div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">Kimi &amp; Step</div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">Kimi-Linear-35B</div><div class="kv-value">35B, 3B active, <span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/Kimi-Linear-REAP-35B-A3B-Instruct" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">Step-3.5-Flash-149B</div><div class="kv-value">149B, 11B active, <span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/Step-3.5-Flash-REAP-149B-A11B" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">Step-3.5-Flash-121B</div><div class="kv-value">121B, 11B active, <span class="badge badge-bf16">BF16</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/cerebras/Step-3.5-Flash-REAP-121B-A11B" style="color:var(--accent2)">HF</a></div></div>
+  </div>
+</div>
+
+<!-- COMMUNITY -->
+<h2>Community REAP Models</h2>
+
+<div class="card">
+  <div class="card-title">Qwen3.5-REAP-262B-A17B</div>
+  <div class="card-sub">35% pruned from Qwen3.5-397B. VLM preserved. 512→333 experts. <span class="badge badge-community">OpenMOSE</span></div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">Params</div><div class="kv-value">262B</div></div>
+    <div class="kv"><div class="kv-label">Active</div><div class="kv-value">17B</div></div>
+    <div class="kv"><div class="kv-label">BF16</div><div class="kv-value">524 GB</div></div>
+    <div class="kv"><div class="kv-label">IQ1_M</div><div class="kv-value green">37 GB</div></div>
+  </div>
+  <a href="https://huggingface.co/OpenMOSE/Qwen3.5-REAP-262B-A17B" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">Qwen3.5-REAP-212B-A17B</div>
+  <div class="card-sub">~47% pruned from Qwen3.5-397B. Abliterated. <span class="badge badge-community">RobinsonLabs</span></div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">Params</div><div class="kv-value">212B</div></div>
+    <div class="kv"><div class="kv-label">Active</div><div class="kv-value">17B</div></div>
+    <div class="kv"><div class="kv-label">BF16</div><div class="kv-value">424 GB</div></div>
+    <div class="kv"><div class="kv-label">IQ1_M</div><div class="kv-value green">30 GB</div></div>
+  </div>
+  <a href="https://huggingface.co/RobinsonLabs/Qwen3.5-REAP-212B-A17B-abliterated-GGUF" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">Qwen3.5-122B-REAP-20 (99B) <span class="badge badge-fits">Best for 96GB</span></div>
+  <div class="card-sub">20% pruned from your 122B. <span class="badge badge-community">0xSero</span></div>
+  <div class="bench-grid">
+    <div class="bench"><div class="bench-label">Params</div><div class="bench-value">99B</div></div>
+    <div class="bench"><div class="bench-label">Active</div><div class="bench-value">10B</div></div>
+    <div class="bench"><div class="bench-label">Q6_K</div><div class="bench-value green">74 GB</div></div>
+  </div>
+  <a href="https://huggingface.co/0xSero/Qwen3.5-99B" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">Qwen3.5-122B-REAP-30 (88B)</div>
+  <div class="card-sub">30% pruned from 122B. GGUF quants available. <span class="badge badge-community">mradermacher</span></div>
+  <div class="bench-grid">
+    <div class="bench"><div class="bench-label">Params</div><div class="bench-value">88B</div></div>
+    <div class="bench"><div class="bench-label">Active</div><div class="bench-value">10B</div></div>
+    <div class="bench"><div class="bench-label">Q8_0</div><div class="bench-value green">88 GB</div></div>
+  </div>
+  <a href="https://huggingface.co/mradermacher/Qwen3.5-122B-A10B-REAP-30-i1-GGUF" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">GLM-5.2-REAP-504B</div>
+  <div class="card-sub">GGUF quants. 12.6k downloads. <span class="badge badge-community">0xSero</span></div>
+  <a href="https://huggingface.co/0xSero/GLM-5.2-REAP-504B-GGUF" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">GLM-5.2-REAP50 Q3_K_M</div>
+  <div class="card-sub">50% pruned. 86k downloads. <span class="badge badge-community">pipenetwork</span></div>
+  <a href="https://huggingface.co/pipenetwork/GLM-5.2-REAP50-Q3_K_M-GGUF" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">MiniMax-M2.7-REAP-172B NVFP4</div>
+  <div class="card-sub">NVFP4 for GB10. 98.8k downloads. <span class="badge badge-community">scottgl</span></div>
+  <a href="https://huggingface.co/scottgl/MiniMax-M2.7-REAP-172B-A10B-NVFP4-GB10" style="color:var(--accent2)">HuggingFace</a>
+</div>
+
+<div class="card">
+  <div class="card-title">Other community REAPs</div>
+  <div class="kv-grid">
+    <div class="kv"><div class="kv-label">Qwen3.5-397B REAP-28</div><div class="kv-value">NVFP4, <span class="badge badge-community">rene98c</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/rene98c/Qwen3.5-397B-A17B-REAP-28-NVFP4" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">Qwen3.6-35B REAP-50%</div><div class="kv-value"><span class="badge badge-community">RangerX</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/RangerX/Qwen3.6-35B-REAP-Pruned-ratio-0.5" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">Qwen3-Coder-57B</div><div class="kv-value">30% from 80B, <span class="badge badge-community">0xSero</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/0xSero/Qwen3-Coder-57B" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">Qwen3.5-28B</div><div class="kv-value">20% from 35B, <span class="badge badge-community">0xSero</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/0xSero/Qwen3.5-28B" style="color:var(--accent2)">HF</a></div></div>
+    <div class="kv"><div class="kv-label">Step-3.5-Flash-121B</div><div class="kv-value"><span class="badge badge-community">mradermacher</span></div></div>
+    <div class="kv"><div class="kv-label"></div><div class="kv-value"><a href="https://huggingface.co/mradermacher/Step-3.5-Flash-REAP-121B-A11B-i1-GGUF" style="color:var(--accent2)">HF</a></div></div>
+  </div>
+</div>
+
+<h2>Deployment</h2>
+<div class="card">
+  <p>All Cerebras REAP models work with <strong>vanilla vLLM</strong>. No patches.</p>
+  <div style="background:var(--bg);padding:16px 20px;border-radius:8px;font-family:monospace;font-size:0.82rem;overflow-x:auto;margin-top:16px;line-height:1.8">
+    <span style="color:var(--text-dim)"># Qwen3-Coder-REAP</span><br>
+    vllm serve cerebras/Qwen3-Coder-REAP-363B-A35B-FP8 \<br>
+    &nbsp;&nbsp;--tensor-parallel-size 8 \<br>
+    &nbsp;&nbsp;--tool-call-parser qwen3_coder \<br>
+    &nbsp;&nbsp;--enable-auto-tool-choice --enable-expert-parallel<br><br>
+    <span style="color:var(--text-dim)"># MiniMax-M2-REAP</span><br>
+    vllm serve cerebras/MiniMax-M2-REAP-162B-A10B \<br>
+    &nbsp;&nbsp;--tensor-parallel-size 8 \<br>
+    &nbsp;&nbsp;--tool-call-parser minimax_m2 \<br>
+    &nbsp;&nbsp;--reasoning-parser minimax_m2_append_think \<br>
+    &nbsp;&nbsp;--trust-remote-code
+  </div>
+</div>
+
+<footer>
+  <p>Data from <a href="https://huggingface.co/collections/cerebras/cerebras-reap">Cerebras REAP</a>, <a href="https://arxiv.org/abs/2510.13999">arXiv:2510.13999</a>, and community contributors.</p>
+  <p style="margin-top:8px">July 2026. Sizes approximate. B/param: BF16=2, FP8/Q8=1, Q6_K=0.75, Q5_K_M=0.625, Q4_K_M=0.5, IQ4_XS=0.4375, Q3_K_M=0.375, IQ3_XXS=0.3125, Q2_K=0.25, IQ2_XXS=0.1875, IQ1_M=0.140625.</p>
+</footer>
+
+</div>
+</body>
+</html>
