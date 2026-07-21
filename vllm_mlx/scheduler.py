@@ -3109,10 +3109,10 @@ class Scheduler:
                 cache, _tokens = payload
                 if cache is not None:
                     for c in cache:
-                        if hasattr(c, "state"):
-                            c.state = None
-                        if hasattr(c, "meta_state"):
-                            c.meta_state = None
+                        if hasattr(c, "keys"):
+                            c.keys = None
+                        if hasattr(c, "values"):
+                            c.values = None
 
         for uid, payload in extracted.items():
             # Promoted sequences (stage == 2) return (cache, tokens). Any
