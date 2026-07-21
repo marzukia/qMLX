@@ -281,6 +281,62 @@ def should_write_keyframe(parent_chain_depth: int) -> bool:
     return (int(parent_chain_depth) + 1) >= delta_keyframe_interval()
 
 
+# ---------------------------------------------------------------------------
+# Mid-prefill checkpoint feature flag + tunables (all env, default OFF)
+# ---------------------------------------------------------------------------
+#
+# The mid-prefill checkpoint path saves intermediate KV checkpoints during
+# initial prompt processing (prefill phase), enabling resume from a configurable
+# boundary (default 8192 tokens) if the prefill is interrupted. This is separate
+# from the generation-phase checkpoints (which write at 256-token boundaries).
+#
+# Gate: QMLX_MID_PREFILL_ENABLED (default OFF) — ships safely disabled.
+# Interval: QMLX_MID_PREFILL_CHECKPOINT_TOKENS (default 8192).
+_MID_PREFILL_ENABLED_ENV = "QMLX_MID_PREFILL_ENABLED"
+_MID_PREFILL_INTERVAL_ENV = "QMLX_MID_PREFILL_CHECKPOINT_TOKENS"
+_MID_PREFILL_INTERVAL_DEFAULT = 8192
+
+
+def mid_prefill_checkpoints_enabled() -> bool:
+    """Return True when mid-prefill checkpointing is switched on (env, default OFF).
+
+    When enabled, the scheduler triggers write_checkpoint() during the initial
+    prompt prefill at intervals of QMLX_MID_PREFILL_CHECKPOINT_TOKENS tokens.
+    This allows interrupted prefills (e.g., client disconnect at 20k tokens)
+    to resume from the last checkpoint (e.g., 8192) instead of starting over.
+    """
+    raw = os.environ.get(_MID_PREFILL_ENABLED_ENV)
+    if raw is None:
+        return False
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def mid_prefill_checkpoint_interval() -> int:
+    """Token boundary for mid-prefill checkpoints (env, default 8192).
+
+    During prefill, after processing this many tokens, trigger write_checkpoint()
+    once. The checkpoint uses the existing path/format: same .safetensors body,
+    .json sidecar, and .tokens.bin verification blob. On the next cold prefill
+    matching the same prefix, the restore finds this checkpoint and resumes from
+    that offset.
+
+    Returns:
+        Positive integer token count. Invalid values fall back to 8192.
+    """
+    raw = os.environ.get(_MID_PREFILL_INTERVAL_ENV)
+    if raw is None:
+        return _MID_PREFILL_INTERVAL_DEFAULT
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            f"[disk_kv_checkpoint] invalid {_MID_PREFILL_INTERVAL_ENV}={raw!r}; "
+            f"falling back to default {_MID_PREFILL_INTERVAL_DEFAULT}"
+        )
+        return _MID_PREFILL_INTERVAL_DEFAULT
+    return n if n >= 256 else _MID_PREFILL_INTERVAL_DEFAULT
+
+
 # Cache classes whose on-disk state is an appendable, token-indexed attention
 # KV (sliceable on axis 2 into deltas). Everything else — GatedDeltaNet
 # ``ArraysCache``, Mamba, rotating/sliding window — carries a fixed-size or
@@ -2317,13 +2373,12 @@ class DiskCheckpointIndex:
 
             if ref is None:
                 # Index inconsistency: the radix knows the key but the side
-                # map doesn't. Quarantine (in-memory only: no ref, so no
-                # disk paths) and fall back to a shorter prefix.
+                # map doesn't. Soft-evict so a later rescan can re-add it.
                 logger.info(
                     "[kv_restore_lookup] MISS reason=key_not_in_map matched_len=%d",
                     len(key),
                 )
-                self._quarantine(key, None, len(key), "key_not_in_map")
+                self._soft_evict(key)
                 continue
 
             offset = ref.token_offset
@@ -2333,14 +2388,14 @@ class DiskCheckpointIndex:
                     offset,
                     len(key),
                 )
-                self._quarantine(key, ref, offset, "offset_len_disagree")
+                self._soft_evict(key)
                 continue
             if list(key) != query[:offset]:
                 logger.info(
                     "[kv_restore_lookup] MISS reason=prefix_bytes_differ offset=%d",
                     offset,
                 )
-                self._quarantine(key, ref, offset, "prefix_bytes_differ")
+                self._soft_evict(key)
                 continue
 
             # --- phase 2: disk verify + materialise (index lock dropped) ---
@@ -2403,14 +2458,14 @@ class DiskCheckpointIndex:
                     offset,
                     loaded.token_offset,
                 )
-                self._quarantine(key, ref, offset, "loaded_offset_disagree")
+                self._soft_evict(key)
                 continue
             if not _cache_offset_matches(loaded.cache, offset):
                 logger.info(
                     "[kv_restore_lookup] MISS reason=cache_offset_mismatch offset=%d",
                     offset,
                 )
-                self._quarantine(key, ref, offset, "cache_offset_mismatch")
+                self._soft_evict(key)
                 continue
             return loaded
 

@@ -23,6 +23,7 @@ Run with::
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -32,6 +33,8 @@ mx = pytest.importorskip("mlx.core")
 from mlx_lm.models.cache import KVCache, QuantizedKVCache  # noqa: E402
 
 from vllm_mlx.runtime import disk_kv_checkpoint as _dkc  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1094,3 +1097,191 @@ def test_hard_mismatch_renames_aside_and_is_not_re_added_by_rescan(root: str):
     idx.clear()
     idx.build_from_root(root)
     assert tuple(query) not in idx._by_key
+
+
+# ---------------------------------------------------------------------------
+# Mid-prefill checkpoint feature flags
+# ---------------------------------------------------------------------------
+
+
+def test_mid_prefill_checkpoints_disabled_by_default():
+    """Mid-prefill checkpoints must be OFF by default (safe rollout)."""
+    # Clear any env var from previous tests
+    import os
+
+    if "QMLX_MID_PREFILL_ENABLED" in os.environ:
+        del os.environ["QMLX_MID_PREFILL_ENABLED"]
+
+    assert not _dkc.mid_prefill_checkpoints_enabled()
+
+
+def test_mid_prefill_checkpoints_enabled_via_env(monkeypatch):
+    """QMLX_MID_PREFILL_ENABLED=1 enables mid-prefill checkpoints."""
+    monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "1")
+    assert _dkc.mid_prefill_checkpoints_enabled()
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "true")
+    assert _dkc.mid_prefill_checkpoints_enabled()
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "yes")
+    assert _dkc.mid_prefill_checkpoints_enabled()
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "on")
+    assert _dkc.mid_prefill_checkpoints_enabled()
+
+
+def test_mid_prefill_checkpoints_disabled_via_env(monkeypatch):
+    """QMLX_MID_PREFILL_ENABLED=0 disables mid-prefill checkpoints."""
+    monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "0")
+    assert not _dkc.mid_prefill_checkpoints_enabled()
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "false")
+    assert not _dkc.mid_prefill_checkpoints_enabled()
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "no")
+    assert not _dkc.mid_prefill_checkpoints_enabled()
+
+
+def test_mid_prefill_checkpoint_interval_default():
+    """Default mid-prefill checkpoint interval is 8192 tokens."""
+    import os
+
+    if "QMLX_MID_PREFILL_CHECKPOINT_TOKENS" in os.environ:
+        del os.environ["QMLX_MID_PREFILL_CHECKPOINT_TOKENS"]
+
+    assert _dkc.mid_prefill_checkpoint_interval() == 8192
+
+
+def test_mid_prefill_checkpoint_interval_custom(monkeypatch):
+    """QMLX_MID_PREFILL_CHECKPOINT_TOKENS overrides the default interval."""
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "4096")
+    assert _dkc.mid_prefill_checkpoint_interval() == 4096
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "16384")
+    assert _dkc.mid_prefill_checkpoint_interval() == 16384
+
+
+def test_mid_prefill_checkpoint_interval_invalid_falls_back(monkeypatch):
+    """Invalid QMLX_MID_PREFILL_CHECKPOINT_TOKENS values fall back to 8192."""
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "invalid")
+    assert _dkc.mid_prefill_checkpoint_interval() == 8192
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "0")
+    assert _dkc.mid_prefill_checkpoint_interval() == 8192
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "-100")
+    assert _dkc.mid_prefill_checkpoint_interval() == 8192
+
+
+def test_mid_prefill_checkpoint_interval_minimum_256(monkeypatch):
+    """Values below 256 tokens fall back to 8192 (minimum safe boundary)."""
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "128")
+    assert _dkc.mid_prefill_checkpoint_interval() == 8192
+
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "255")
+    assert _dkc.mid_prefill_checkpoint_interval() == 8192
+
+    # 256 is the minimum valid value
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "256")
+    assert _dkc.mid_prefill_checkpoint_interval() == 256
+
+
+# ---------------------------------------------------------------------------
+# Mid-prefill checkpoint integration scenario
+# ---------------------------------------------------------------------------
+
+
+def test_mid_prefill_checkpoint_scenario_32k_interrupt_20k_restore_at_8k(
+    root: str, monkeypatch
+):
+    """Test scenario: interrupt a prefill, resend, assert restore hits.
+
+    Uses a small interval (512 tokens) to keep synthetic caches fast.
+    Validates the core use case:
+    1. Enable mid-prefill checkpoints with 512 token boundary
+    2. Simulate processing 2k tokens with checkpoints at 512, 1024, 1536
+    3. Simulate interruption at 1200 tokens (after 512 and 1024 written)
+    4. Simulate resume: lookup should find checkpoint at offset 1024
+    """
+
+    # Enable mid-prefill checkpoints with small interval for fast test
+    monkeypatch.setenv("QMLX_MID_PREFILL_ENABLED", "1")
+    monkeypatch.setenv("QMLX_MID_PREFILL_CHECKPOINT_TOKENS", "512")
+
+    assert _dkc.mid_prefill_checkpoints_enabled()
+    assert _dkc.mid_prefill_checkpoint_interval() == 512
+
+    # Simulate a 2k token prompt (small for speed)
+    total_tokens = 2048
+    mid_prefill_interval = _dkc.mid_prefill_checkpoint_interval()
+
+    # Calculate expected checkpoint boundaries during prefill
+    expected_boundaries = []
+    current = mid_prefill_interval
+    while current < total_tokens:
+        expected_boundaries.append(current)
+        current += mid_prefill_interval
+
+    # Checkpoints should be at: 512, 1024, 1536 (not 2048 — that's end of prefill)
+    assert expected_boundaries == [512, 1024, 1536]
+
+    # Simulate writing checkpoints at each boundary
+    req_hash = _dkc.request_hash("test-mid-prefill-32k", "test-model")
+
+    # Write checkpoints at each boundary (simulate mid-prefill saves)
+    written_checkpoints = []
+    for offset in expected_boundaries:
+        if offset > 1200:  # Simulate interruption at 1200 tokens
+            break
+
+        # Create a checkpoint with cache size matching the offset
+        tokens = list(range(offset))  # Synthetic token IDs
+        cache = _seed_kv_cache(offset)
+
+        path = _dkc.write_checkpoint(
+            cache,
+            root=root,
+            req_hash=req_hash,
+            token_offset=offset,
+            kv_dtype="bf16",
+            model_name="test-model",
+            extra_metadata={
+                "tokens_key": tokens,
+                "save_uuid": f"test-{offset}",
+            },
+        )
+
+        if path:
+            written_checkpoints.append(offset)
+
+    # Verify checkpoints were written at 512 (and possibly further)
+    assert 512 in written_checkpoints, "Checkpoint at 512 must be written"
+
+    # Build content index to make checkpoints discoverable
+    idx = _dkc.get_content_index()
+    idx.clear()
+    _n_indexed = _dkc.build_content_index(root)
+
+    # Simulate interruption: we processed 1200 tokens but got cut off
+    interrupted_at = 1200
+
+    # Now simulate a NEW request with the same prefix coming in
+    # The longest prefix match should be at offset 1024
+    new_request_tokens = list(range(total_tokens))  # Full 2k prompt
+
+    # Lookup should find the checkpoint at 1024
+    result = idx.lookup(new_request_tokens)
+
+    # The checkpoint at 1024 should be found as the longest verified prefix
+    assert result is not None, "Should find checkpoint at offset 1024"
+    assert result.token_offset == 1024, "Restored checkpoint must be at offset 1024"
+
+    # Verify the restored checkpoint contains the correct tokens
+    assert len(result.metadata.get("tokens_key", [])) == 1024
+
+    logger.info(
+        f"[test] Mid-prefill checkpoint scenario: "
+        f"wrote {len(written_checkpoints)} checkpoints, "
+        f"interrupted at {interrupted_at}, "
+        f"restored at offset {result.token_offset}"
+    )

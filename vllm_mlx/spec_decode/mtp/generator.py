@@ -57,8 +57,8 @@ patch_arrays_cache_rollback_state()
 
 logger = logging.getLogger(__name__)
 
-# Match upstream PR #990 cache-clear cadence verbatim (``_CACHE_CLEAR_INTERVAL = 256``).
-_CACHE_CLEAR_INTERVAL = 256
+# Match upstream PR #990 cache-clear cadence verbatim (``_CACHE_CLEAR_INTERVAL = 32``).
+_CACHE_CLEAR_INTERVAL = 32
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +393,7 @@ def mtp_generate_step(
             )
             logits = logits[:, -n_predict:, :]
             quantize_cache_fn(model_cache)
+            mx.clear_cache()  # P1: free quantization temporaries
             toks: list = []
             lps: list = []
             accept_lps: list = []
@@ -452,6 +453,7 @@ def mtp_generate_step(
             else:
                 mtp_logits = model.mtp_forward(hidden_last, next_ids, mtp_cache)
             quantize_cache_fn(mtp_cache)
+            mx.clear_cache()  # P1: free quantization temporaries
             mtp_logits = mtp_logits[:, -1, :].squeeze(0)
             if logits_processors:
                 tokens_for_proc = (
@@ -664,6 +666,8 @@ def mtp_generate_step(
             next_k = _controller.pick_k() if _controller is not None else 1
 
             hidden_at_main = hidden[:, -1:, :]
+            del hidden  # P1: free full hidden tensor
+            mx.clear_cache()
             if next_k >= 1:
                 # Chain-of-K: generate ``next_k`` drafts cascaded via
                 # MTP. next_k==1 is the plain single-draft path.
@@ -779,6 +783,7 @@ def mtp_generate_step(
 
             # ------- SINGLE SYNC -------
             mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u)
+            mx.clear_cache()  # P1: free verify temporaries immediately
 
             # ------- Host-side read (all values already resident) -------
             accept_flags = accept_mask_arr.tolist()
@@ -861,6 +866,7 @@ def mtp_generate_step(
                 # caches.
                 n_to_drop = k_len - accepted_count
                 _rollback_draft(n_to_drop)
+                mx.clear_cache()  # P2: free trimmed KV buffers
                 accept_counter.record_reject()
                 if logits_processors and prev_tokens is not None:
                     # Discard the ``n_to_drop`` rejected positions

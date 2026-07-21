@@ -187,6 +187,7 @@ def _run_dispatch_mtp_inject(
         model,
         model_type,
         mtp_sidecar=mtp_sidecar,
+        model_repo=model_name,
     )
     if ok:
         logger.info(
