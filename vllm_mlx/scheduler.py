@@ -1301,14 +1301,10 @@ def _install_mtp_vendored(
             except Exception:  # noqa: BLE001
                 pass
             try:
-                live_ids = {
-                    id(c) for c in (getattr(gb, "prompt_cache", None) or [])
-                }
+                live_ids = {id(c) for c in (getattr(gb, "prompt_cache", None) or [])}
                 # MTP head cache: generator-owned (make_mtp_cache), unused
                 # by plain decode — safe to free on both paths.
-                n_released += _release_kv_cache_fields(
-                    mtp_cache, skip_ids=live_ids
-                )
+                n_released += _release_kv_cache_fields(mtp_cache, skip_ids=live_ids)
                 if release_storage:
                     n_released += _release_kv_cache_fields(
                         model_cache, skip_ids=live_ids
@@ -1721,7 +1717,9 @@ def _install_mtp_vendored(
             gen_max = int(gb.max_tokens[0]) if gb.max_tokens else 4096
 
             # Look up the request for sampling params (non-greedy MTP support).
-            _req_id = uid_to_request_id.get(uid) if uid_to_request_id is not None else None
+            _req_id = (
+                uid_to_request_id.get(uid) if uid_to_request_id is not None else None
+            )
             req = requests.get(_req_id) if requests is not None and _req_id else None
 
             # Codex round-A blocker #2: construct the generator BEFORE
@@ -1750,7 +1748,9 @@ def _install_mtp_vendored(
             # every subsequent step.
             try:
                 # Read sampling params from the request for non-greedy support.
-                _mtp_sp = getattr(req, "sampling_params", None) if req is not None else None
+                _mtp_sp = (
+                    getattr(req, "sampling_params", None) if req is not None else None
+                )
                 _mtp_temp = getattr(_mtp_sp, "temperature", 0.0) or 0.0
                 _mtp_top_p = getattr(_mtp_sp, "top_p", 0.0) or 0.0
                 _mtp_top_k = getattr(_mtp_sp, "top_k", 0) or 0
@@ -6264,8 +6264,7 @@ class Scheduler:
                         # behavior.
                         _skip_mem_store = False
                         if (
-                            getattr(self.config, "kv_disk_checkpoint_interval", 0)
-                            or 0
+                            getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
                         ) > 0:
                             try:
                                 from .memory_cache import _cache_has_non_trimmable
@@ -6353,7 +6352,9 @@ class Scheduler:
                 try:
                     _mtp_purge()
                 except Exception as _purge_err:  # noqa: BLE001 — best-effort
-                    logger.debug("[MTP-vendored] completion purge failed: %r", _purge_err)
+                    logger.debug(
+                        "[MTP-vendored] completion purge failed: %r", _purge_err
+                    )
 
         # Free Metal command buffers after cleanup (prevents end-of-generation spike)
         if finished_ids:
