@@ -439,7 +439,9 @@ async def debug_mx_arrays():
 
 
 @probe_router.get("/debug/mx_referrers")
-async def debug_mx_referrers(shape: str = "1,64,128,128", depth: int = 8, limit: int = 4):
+async def debug_mx_referrers(
+    shape: str = "1,64,128,128", depth: int = 8, limit: int = 4
+):
     """Walk gc referrer chains for arrays of ``shape`` to find retainers.
 
     Same gate as ``/debug/mx_arrays``. Instance ``__dict__``s are
@@ -471,7 +473,9 @@ async def debug_mx_referrers(shape: str = "1,64,128,128", depth: int = 8, limit:
         t = type(obj)
         if isinstance(obj, _types.FrameType):
             co = obj.f_code
-            return f"frame:{co.co_name}@{co.co_filename.rsplit('/', 1)[-1]}:{obj.f_lineno}"
+            return (
+                f"frame:{co.co_name}@{co.co_filename.rsplit('/', 1)[-1]}:{obj.f_lineno}"
+            )
         name = f"{t.__module__}.{t.__name__}"
         try:
             if t is dict:
@@ -484,9 +488,16 @@ async def debug_mx_referrers(shape: str = "1,64,128,128", depth: int = 8, limit:
             return name
 
     _skip_types = (
-        "list_iterator", "tuple_iterator", "dict_itemiterator",
-        "dict_valueiterator", "dict_keyiterator", "generator",
-        "coroutine", "method", "builtin_function_or_method", "cell",
+        "list_iterator",
+        "tuple_iterator",
+        "dict_itemiterator",
+        "dict_valueiterator",
+        "dict_keyiterator",
+        "generator",
+        "coroutine",
+        "method",
+        "builtin_function_or_method",
+        "cell",
     )
 
     chains = []
