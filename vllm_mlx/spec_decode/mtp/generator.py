@@ -349,36 +349,33 @@ def mtp_generate_step(
     def _rollback_draft(n_to_drop: int = 1):
         """Restore caches by dropping the last ``n_to_drop`` draft tokens.
 
-        SSM layers (ArraysCache): restore the conv/ssm snapshot saved
-        by GatedDeltaNet at the confirmed boundary. The snapshot is
-        taken at a SINGLE offset (``n_confirmed`` positions from end),
-        so ``n_to_drop`` MUST match that offset — chain-of-K with
-        partial accept is not representable in the current one-snapshot
-        model. The generator prevents this by clamping ``max_k`` to 1
-        when any SSM cache is present (see ``_has_ssm_cache`` at
-        decode-loop start); callers that reach this path with
-        ``n_to_drop > 1`` on an SSM cache trip an assertion because a
-        silent partial-rollback would corrupt the SSM state and break
-        the lossless contract.
+        TAPE ROLLBACK (PR-C+): SSM layers now use a TAPE of snapshots
+        (one per position in the draft chain). Rolling back to position
+        N means restoring ``rollback_state[N-1]``, which contains the
+        (conv_state, ssm_state) AFTER processing N tokens.
+
+        This unlocks K>=2 on SSM-hybrid targets by allowing arbitrary
+        position rollback, not just position 1.
 
         Attention layers (KVCache): trim the last ``n_to_drop`` draft
         entries.
         """
         for c in model_cache:
             if hasattr(c, "rollback_state") and c.rollback_state is not None:
-                # SSM path: single-snapshot rollback, only n_to_drop==1
-                # is representable in the current on-disk snapshot slot.
-                # The controller-side clamp keeps chain-of-K away from
-                # this branch; assert here as a defense in depth in case
-                # a caller wires K>=2 without adjusting the SSM cache.
-                if n_to_drop != 1:
+                # SSM path: TAPE-based rollback. rollback_state is a list
+                # of (conv_snap, ssm_snap) tuples, one per position from
+                # 1 to n_confirmed. Rolling back to position N means
+                # restoring tape[N-1].
+                tape = c.rollback_state
+                if n_to_drop < 1 or n_to_drop > len(tape):
                     raise AssertionError(
                         f"_rollback_draft(n_to_drop={n_to_drop}) on SSM "
-                        "cache: only single-token rollback is supported. "
-                        "Chain-of-K on SSM-hybrid targets is not wired "
-                        "yet — the generator should have clamped max_k=1."
+                        f"tape: invalid position (tape has {len(tape)} entries)."
                     )
-                conv_snap, ssm_snap = c.rollback_state
+                # Restore state at position (len(tape) - n_to_drop + 1)
+                # This rolls back n_to_drop tokens from the end
+                tape_idx = len(tape) - n_to_drop
+                conv_snap, ssm_snap = tape[tape_idx]
                 c[0] = conv_snap
                 c[1] = ssm_snap
                 c.rollback_state = None
@@ -614,22 +611,19 @@ def mtp_generate_step(
     # available without importing the two cache classes here.
     _has_ssm_cache = any(hasattr(c, "rollback_state") for c in model_cache)
     if not disable_auto_k:
-        # Chain-of-K on SSM targets not implemented; clamp to K=1 with
-        # a startup log (once per generator instance is cheap enough
-        # given ``mtp_generate_step`` is called per-request).
-        _max_k_hw = 1 if _has_ssm_cache else max(0, max_k)
-        if _has_ssm_cache and max_k > 1:
-            logger.info(
-                "[MTP-chain-of-K] SSM cache detected in model_cache — "
-                "clamping max_k from %d to 1 (chain-of-K on SSM-hybrid "
-                "targets needs per-position snapshots not yet wired). "
-                "Set --mtp-max-k=1 to silence this log.",
-                max_k,
-            )
-        max_k_effective = _max_k_hw
+        # TAPE ROLLBACK (PR-C+): SSM-hybrid targets now support K>=2
+        # via per-position snapshots in the rollback_state tape.
+        # No clamping needed — the tape allows rolling back to ANY
+        # position in the draft chain.
+        max_k_effective = max(0, max_k)
         _controller: DepthController | None = get_or_create_controller(
             model_id or "__default__", max_k=max_k_effective
         )
+        if _has_ssm_cache and max_k >= 2:
+            logger.info(
+                "[MTP-chain-of-K] SSM cache detected — TAPE rollback "
+                "enabled for K>=2 (per-position snapshots in rollback_state)."
+            )
     else:
         # ``disable_auto_k`` keeps the pre-0.9.13 fixed-K=1 A/B-bench
         # behavior — no controller, no chain-of-K, verbatim chain-of-1.

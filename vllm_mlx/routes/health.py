@@ -351,3 +351,200 @@ async def clear_all_caches():
         }
     except ImportError:
         return {"error": "Cache clear not available (mlx_vlm not loaded)"}
+
+
+@probe_router.get("/debug/mx_arrays")
+async def debug_mx_arrays():
+    """Diagnostic gc scan of live ``mx.array`` objects, grouped by shape.
+
+    Off unless ``QMLX_DEBUG_GC_SCAN=1`` (the full-heap walk takes a few
+    seconds; only hit this at idle). Built to verify the MTP per-turn
+    memory-bloat fix: reports counts and resident bytes for the two
+    signature shapes that ratchet when speculative-decode state leaks —
+    the GatedDeltaNet SSM recurrent state ``(1, 64, 128, 128)`` and the
+    bf16 attention KV ``(1, 2, N, 256)`` — plus the top shapes by total
+    bytes.
+    """
+    import os as _os
+
+    if _os.environ.get("QMLX_DEBUG_GC_SCAN") not in ("1", "true", "True"):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    import mlx.core as mx
+
+    seen: dict[int, object] = {}
+
+    def _note(obj: object) -> None:
+        if type(obj) is mx.array:
+            seen[id(obj)] = obj
+
+    # Exact-type checks only: subclass mappings (e.g. transformers'
+    # lazy auto-model mappings) run import machinery on iteration and
+    # blow up the scan. A plain dict/list/tuple/mx.array covers every
+    # container mlx-lm caches live in.
+    for o in gc.get_objects():
+        try:
+            to = type(o)
+            if to is mx.array:
+                seen[id(o)] = o
+            elif to is list or to is tuple:
+                for it in o:
+                    _note(it)
+            elif to is dict:
+                for it in o.values():
+                    _note(it)
+        except Exception:  # noqa: BLE001 — diagnostic walk is best-effort
+            continue
+
+    by_shape: dict[str, dict[str, float]] = {}
+    ssm_count = 0
+    ssm_bytes = 0
+    kv_bf16_count = 0
+    kv_bf16_bytes = 0
+    for a in seen.values():
+        try:
+            shape = tuple(a.shape)
+            nbytes = int(a.nbytes)
+            dt = str(a.dtype)
+        except Exception:  # noqa: BLE001 — array may be mid-teardown
+            continue
+        key = f"{shape}:{dt}"
+        rec = by_shape.setdefault(key, {"count": 0, "bytes": 0})
+        rec["count"] += 1
+        rec["bytes"] += nbytes
+        if shape == (1, 64, 128, 128):
+            ssm_count += 1
+            ssm_bytes += nbytes
+        if (
+            len(shape) == 4
+            and shape[0] == 1
+            and shape[1] == 2
+            and shape[3] == 256
+            and "bfloat16" in dt
+        ):
+            kv_bf16_count += 1
+            kv_bf16_bytes += nbytes
+
+    top = sorted(by_shape.items(), key=lambda kv: -kv[1]["bytes"])[:15]
+    return {
+        "total_arrays": len(seen),
+        "metal_active_bytes": int(mx.metal.get_active_memory()),
+        "ssm_state_1x64x128x128": {"count": ssm_count, "bytes": ssm_bytes},
+        "kv_bf16_1x2xNx256": {"count": kv_bf16_count, "bytes": kv_bf16_bytes},
+        "top_shapes_by_bytes": [
+            {"shape_dtype": k, "count": int(v["count"]), "bytes": int(v["bytes"])}
+            for k, v in top
+        ],
+    }
+
+
+@probe_router.get("/debug/mx_referrers")
+async def debug_mx_referrers(shape: str = "1,64,128,128", depth: int = 8, limit: int = 4):
+    """Walk gc referrer chains for arrays of ``shape`` to find retainers.
+
+    Same gate as ``/debug/mx_arrays``. Instance ``__dict__``s are
+    resolved to their owning object; iterator types and this module's
+    own frames are skipped; foreign frames are reported with their code
+    location (a suspended generator frame is a common retainer).
+    """
+    import os as _os
+
+    if _os.environ.get("QMLX_DEBUG_GC_SCAN") not in ("1", "true", "True"):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    import types as _types
+
+    import mlx.core as mx
+
+    want = tuple(int(x) for x in shape.split(","))
+    targets = []
+    for o in gc.get_objects():
+        try:
+            if type(o) is mx.array and tuple(o.shape) == want:
+                targets.append(o)
+        except Exception:  # noqa: BLE001
+            continue
+
+    _here = __file__
+
+    def _describe(obj: object) -> str:
+        t = type(obj)
+        if isinstance(obj, _types.FrameType):
+            co = obj.f_code
+            return f"frame:{co.co_name}@{co.co_filename.rsplit('/', 1)[-1]}:{obj.f_lineno}"
+        name = f"{t.__module__}.{t.__name__}"
+        try:
+            if t is dict:
+                ks = [str(k)[:24] for k in list(obj.keys())[:8]]
+                return f"dict keys={ks}"
+            if t in (list, tuple):
+                return f"{t.__name__} len={len(obj)}"
+            return f"{name} repr={repr(obj)[:70]}"
+        except Exception:  # noqa: BLE001
+            return name
+
+    _skip_types = (
+        "list_iterator", "tuple_iterator", "dict_itemiterator",
+        "dict_valueiterator", "dict_keyiterator", "generator",
+        "coroutine", "method", "builtin_function_or_method", "cell",
+    )
+
+    chains = []
+    for arr in targets[-limit:]:
+        chain: list = []
+        cur: object = arr
+        seen_ids = {id(arr), id(targets), id(chains)}
+        for _hop in range(depth):
+            gc.collect()
+            refs = []
+            for r in gc.get_referrers(cur):
+                if id(r) in seen_ids or id(r) == id(chain) or id(r) == id(refs):
+                    continue
+                if isinstance(r, _types.FrameType):
+                    if r.f_code.co_filename == _here:
+                        continue
+                    refs.append(r)
+                    continue
+                if type(r).__name__ in _skip_types:
+                    continue
+                refs.append(r)
+            if not refs:
+                chain.append("(no further referrers)")
+                break
+            # Resolve instance __dict__ to owner; prefer non-container.
+            pick = None
+            for r in refs:
+                if type(r) is dict:
+                    owner = None
+                    for rr in gc.get_referrers(r):
+                        if getattr(rr, "__dict__", None) is r:
+                            owner = rr
+                            break
+                    if owner is not None and id(owner) not in seen_ids:
+                        pick = owner
+                        break
+            if pick is None:
+                for r in refs:
+                    if isinstance(r, _types.FrameType):
+                        pick = r
+                        break
+            if pick is None:
+                for r in refs:
+                    if type(r) not in (list, tuple, dict):
+                        pick = r
+                        break
+            if pick is None:
+                pick = refs[0]
+            others = [_describe(r)[:60] for r in refs[:5] if r is not pick]
+            chain.append({"picked": _describe(pick), "siblings": others})
+            if isinstance(pick, _types.FrameType):
+                break
+            seen_ids.add(id(pick))
+            cur = pick
+        chains.append(chain)
+
+    return {
+        "shape": list(want),
+        "n_matching_arrays": len(targets),
+        "chains": chains,
+    }
