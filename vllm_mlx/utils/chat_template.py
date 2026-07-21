@@ -895,10 +895,32 @@ def _looks_like_hy3(model_name: str) -> bool:
 _GEN_THINK_SCAFFOLD = "<think>\n\n</think>\n\n"
 
 
-def _strip_think_scaffold(prompt: str) -> str:
-    if isinstance(prompt, str):
-        return prompt.replace(_GEN_THINK_SCAFFOLD, "")
-    return prompt
+def _strip_think_scaffold(prompt: str, preserve_trailing: bool = False) -> str:
+    """Remove empty ``<think>\n\n</think>\n\n`` scaffolds from a rendered prompt.
+
+    By default EVERY occurrence is removed. The mid-history cache-key
+    normalisation from #30/#31 depends on that: a checkpoint render (scaffold
+    present) and a later restore render (scaffold absent) must normalise to the
+    same bytes or the KV prefix diverges.
+
+    When ``preserve_trailing`` is True and the prompt ends with the exact empty
+    scaffold, that FINAL occurrence is kept while all earlier (mid-history) ones
+    are still stripped. The trailing scaffold is the generation-tail primer the
+    Qwen3.5 template emits for ``add_generation_prompt=True`` +
+    ``enable_thinking=False``. It signals "thinking is already done, emit the
+    answer / tool_call now". The blind global strip (#30/#31) deleted it too,
+    leaving the prompt bare at ``<|im_start|>assistant\n``; a Qwen3.5 thinking
+    model then opened its OWN ``<think>`` and never closed it, running to
+    max_tokens (~23 min). Preserving only the terminal primer fixes the runaway
+    while leaving the mid-history normalisation byte-identical to the global
+    strip.
+    """
+    if not isinstance(prompt, str):
+        return prompt
+    if preserve_trailing and prompt.endswith(_GEN_THINK_SCAFFOLD):
+        head = prompt[: -len(_GEN_THINK_SCAFFOLD)]
+        return head.replace(_GEN_THINK_SCAFFOLD, "") + _GEN_THINK_SCAFFOLD
+    return prompt.replace(_GEN_THINK_SCAFFOLD, "")
 
 
 def apply_chat_template(
@@ -1003,6 +1025,13 @@ def apply_chat_template(
     if enable_thinking is None:
         enable_thinking = "coder" not in model_name.lower()
 
+    # Preserve the generation-tail empty-think primer (see
+    # ``_strip_think_scaffold``) only when this render is an
+    # ``add_generation_prompt=True`` (always, below) + ``enable_thinking=False``
+    # generation prompt. Mid-history empty scaffolds are still stripped so the
+    # #30/#31 cache-key normalisation is unchanged.
+    preserve_trailing = enable_thinking is False
+
     template_kwargs: dict = {
         "tokenize": False,
         "add_generation_prompt": True,
@@ -1036,7 +1065,8 @@ def apply_chat_template(
 
     try:
         return _strip_think_scaffold(
-            template_applicator.apply_chat_template(messages, **template_kwargs)
+            template_applicator.apply_chat_template(messages, **template_kwargs),
+            preserve_trailing=preserve_trailing,
         )
     except TypeError as e:
         # Step 1: retry without enable_thinking (many templates don't support it).
@@ -1050,7 +1080,8 @@ def apply_chat_template(
         template_kwargs.pop("enable_thinking", None)
         try:
             return _strip_think_scaffold(
-                template_applicator.apply_chat_template(messages, **template_kwargs)
+                template_applicator.apply_chat_template(messages, **template_kwargs),
+                preserve_trailing=preserve_trailing,
             )
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
@@ -1113,5 +1144,6 @@ def apply_chat_template(
                 )
 
         return _strip_think_scaffold(
-            template_applicator.apply_chat_template(messages, **template_kwargs)
+            template_applicator.apply_chat_template(messages, **template_kwargs),
+            preserve_trailing=preserve_trailing,
         )

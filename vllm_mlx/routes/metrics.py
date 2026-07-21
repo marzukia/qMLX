@@ -999,6 +999,96 @@ def _render_histogram(
     return out
 
 
+def _render_prefill_frequency_dashboard(stats: dict[str, Any]) -> list[str]:
+    """Render the prefill frequency dashboard metrics.
+
+    Reads the ``prefill_frequency_dashboard`` snapshot from scheduler stats.
+    Exposes:
+    - qmlx_prefill_total{kind="cold|extend|exact"} — monotonic counters
+    - qmlx_kv_restore_total{result="hit|miss"} — monotonic counters
+    - qmlx_cold_prefill_ratio — rolling-window gauge
+    """
+    try:
+        dashboard = stats.get("prefill_frequency_dashboard")
+        if not isinstance(dashboard, dict):
+            dashboard = {}
+    except Exception:
+        dashboard = {}
+
+    out: list[str] = []
+
+    # Prefill kind counters
+    out.append("# HELP qmlx_prefill_total Admitted requests by prefill kind.")
+    out.append("# TYPE qmlx_prefill_total counter")
+    for kind in ("cold", "extend", "exact"):
+        raw = int(_coerce_number(dashboard.get(f"total_{kind}")))
+        out.append(f'qmlx_prefill_total{{kind="{kind}"}} {raw}')
+
+    # KV restore result counters
+    out.append("# HELP qmlx_kv_restore_total Disk KV restore attempts by result.")
+    out.append("# TYPE qmlx_kv_restore_total counter")
+    for result in ("hit", "miss"):
+        raw = int(_coerce_number(dashboard.get(f"total_kv_restore_{result}")))
+        out.append(f'qmlx_kv_restore_total{{result="{result}"}} {raw}')
+
+    # Cold prefill ratio gauge
+    out.append(
+        "# HELP qmlx_cold_prefill_ratio Rolling-window cold-prefill ratio "
+        "(cold / total_prefill)."
+    )
+    out.append("# TYPE qmlx_cold_prefill_ratio gauge")
+    cold_ratio = float(_coerce_number(dashboard.get("cold_prefill_ratio"), 0.0))
+    out.append(f"qmlx_cold_prefill_ratio {round(cold_ratio, 4)}")
+
+    return out
+
+
+def _render_prefill_profiler_metrics(stats: dict[str, Any]) -> list[str]:
+    """Render the prefill profiler metrics (QMLX_PREFILL_PROFILER_ENABLED).
+
+    Reads the ``prefill_profiler`` snapshot from scheduler stats when the
+    profiler is enabled. Exposes:
+    - qmlx_prefill_phase_seconds{phase="ffn|attention|deltanet",seq_bucket="..."}
+      — cumulative timing counters for each prefill phase
+    """
+    import os
+
+    # Gate: only emit if profiler is enabled
+    if os.environ.get("QMLX_PREFILL_PROFILER_ENABLED", "").lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return []
+
+    try:
+        profiler_data = stats.get("prefill_profiler")
+        if not isinstance(profiler_data, dict):
+            profiler_data = {}
+    except Exception:
+        return []
+
+    out: list[str] = []
+
+    out.append(
+        "# HELP qmlx_prefill_phase_seconds Cumulative prefill phase timing "
+        "when QMLX_PREFILL_PROFILER_ENABLED."
+    )
+    out.append("# TYPE qmlx_prefill_phase_seconds counter")
+
+    phase_totals = profiler_data.get("_phase_totals", {})
+    if not isinstance(phase_totals, dict):
+        phase_totals = {}
+
+    for phase, total_time in phase_totals.items():
+        out.append(
+            f'qmlx_prefill_phase_seconds{{phase="{phase}",seq_bucket="default"}} '
+            f"{total_time}"
+        )
+
+    return out
+
+
 def _render_honest_metrics(stats: dict[str, Any]) -> list[str]:
     """Render the issue #10 / #2 honest reuse + latency series.
 
@@ -1581,7 +1671,12 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
-    # ---- R15-P1 disk-backed KV checkpoints (task #296) -----------------
+    # ---- Prefill Frequency Dashboard (dashboard snapshot) ---------------
+    # Expose dashboard snapshot as Prometheus metrics: prefill totals,
+    # KV restore results, and cold ratio gauge.
+    lines.extend(_render_prefill_frequency_dashboard(stats))
+
+    # ---- R15-P1 disk-backed KV checkpoints (task #296) ---------------
     # Counters are process-monotonic by construction (the module-level
     # stats dataclass is only reset via the test-only hook), so the
     # sticky accumulator is unnecessary. ``bytes`` is a gauge because it
@@ -1657,6 +1752,57 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
+    # ---- Delta-checkpoint observability (design §7) -------------------
+    lines.extend(
+        _fmt_metric(
+            "qmlx_kv_checkpoint_delta_bytes_saved_total",
+            "counter",
+            (
+                "Cumulative bytes saved by writing delta checkpoints instead "
+                "of full ones (the attention rows before the parent offset a "
+                "delta omits). 0 until the delta path is enabled."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("delta_bytes_saved"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "qmlx_kv_checkpoint_chain_length",
+            "gauge",
+            (
+                "Depth (base + deltas) of the most recently assembled delta "
+                "chain on the restore path. Gauge, reflects the last chain "
+                "walked rather than a cumulative total."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("chain_length"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "qmlx_kv_checkpoint_restore_link_count_total",
+            "counter",
+            (
+                "Cumulative delta-chain links walked across every chain "
+                "restore (sum of assembled chain depths); divided by the "
+                "assembly count it gives the mean chain depth."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("restore_link_count"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "qmlx_kv_checkpoint_orphan_events_total",
+            "counter",
+            (
+                "Cumulative chain-load failures caused by a missing or evicted "
+                "link (broken chain or eviction race), each logged at warning "
+                "as 'chain broken' / 'orphaned delta'. Expected near 0; a "
+                "spike means eviction is orphaning live chains."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("orphan_events"))),
+        )
+    )
+
     # ---- R15-P4 disk-KV restore-reject reasons (issue #10) -------------
     # ``disk_kv_checkpoint.get_stats()`` already tracks a per-reason tally
     # of restores that were looked up but refused a validation guard and
@@ -1705,6 +1851,12 @@ def _render_prometheus(cfg: Any) -> str:
 
     # ---- Issues #10 / #2 honest reuse + latency series -----------------
     lines.extend(_render_honest_metrics(stats))
+
+    # ---- Phase 0b: cold-prefill frequency dashboard --------------------
+    lines.extend(_render_prefill_frequency_dashboard(stats))
+
+    # ---- Prefill profiler metrics (QMLX_PREFILL_PROFILER_ENABLED) -----
+    lines.extend(_render_prefill_profiler_metrics(stats))
 
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"

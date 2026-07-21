@@ -1083,8 +1083,8 @@ def test_finalize_never_synthesizes_truncated_commentary(router, encoding):
     text = (
         "<|channel|>commentary "
         "to=functions.get_weather <|constrain|>json<|message|>"
-        '{"city":"NYC"}'  # NO <|call|>
-    )
+        '{"city":"NYC"}'
+    )  # NO <|call|>
     tokens = _encode(encoding, text)
     router.reset()
     routed_during_stream = []

@@ -35,6 +35,7 @@ class CacheEntry:
 
     prompt_cache: list[Any]  # The cached KV state
     count: int  # Reference count for sharing
+    nbytes: int = 0  # Resident bytes of prompt_cache at store time
 
 
 @dataclass
@@ -91,17 +92,36 @@ class PrefixCacheManager:
         cache_manager.store_cache(full_tokens, prompt_cache)
     """
 
-    def __init__(self, model: Any, max_entries: int = 100):
+    def __init__(
+        self,
+        model: Any,
+        max_entries: int = 100,
+        max_bytes: int | None = None,
+    ):
         """
         Initialize the prefix cache manager.
 
         Args:
             model: The MLX model (used for cache key identification)
             max_entries: Maximum number of cached entries before LRU eviction
+            max_bytes: Optional cap on the total resident bytes of stored
+                cache entries; LRU entries are evicted until the total is
+                back under the cap. Without it the cache is bounded only
+                by ENTRY COUNT — on models whose entries are hundreds of
+                MB each (hybrid GatedDeltaNet SSM state + bf16 attention
+                KV at long context), 100 entries is effectively unbounded
+                and every finished request ratchets resident memory until
+                the process OOMs. Wired from ``--cache-memory-mb``.
         """
         self.model = model
         self.model_key = id(model)
         self.max_size = max_entries
+        self.max_bytes = max_bytes
+        self._total_bytes = 0
+        # Per-entry resident bytes, keyed like ``_lru``. Kept separately
+        # from CacheEntry so ``_delete_cache`` can account without
+        # re-walking the trie.
+        self._entry_bytes: dict[tuple, int] = {}
 
         # Trie-based cache: nested dicts with token keys
         # Structure: {model_key: {token1: {token2: {..., "cache": CacheEntry}}}}
@@ -252,7 +272,10 @@ class PrefixCacheManager:
         if "cache" in current:
             current["cache"].count += 1
         else:
-            current["cache"] = CacheEntry(prompt_cache, 1)
+            entry_nbytes = self._cache_nbytes(prompt_cache)
+            current["cache"] = CacheEntry(prompt_cache, 1, entry_nbytes)
+            self._entry_bytes[key] = entry_nbytes
+            self._total_bytes += entry_nbytes
 
         # Only track in LRU if not pinned (move_to_end is O(1) for OrderedDict)
         if key not in self._pinned:
@@ -261,9 +284,34 @@ class PrefixCacheManager:
             else:
                 self._lru[key] = None
 
-        # Evict if over capacity (count pinned entries toward total)
-        while len(self._lru) + len(self._pinned) > self.max_size and len(self._lru) > 0:
+        # Evict while over capacity: entry-count cap (pinned entries count
+        # toward the total) OR the resident-byte cap when configured.
+        while len(self._lru) > 0 and (
+            len(self._lru) + len(self._pinned) > self.max_size
+            or (self.max_bytes is not None and self._total_bytes > self.max_bytes)
+        ):
             self._evict_lru()
+
+    @staticmethod
+    def _cache_nbytes(prompt_cache: list[Any]) -> int:
+        """Resident bytes of a cache list (best-effort, never raises)."""
+        total = 0
+        for c in prompt_cache or []:
+            try:
+                n = getattr(c, "nbytes", None)
+                if n is not None:
+                    total += int(n)
+                    continue
+            except Exception:  # noqa: BLE001 — nbytes can raise on empty caches
+                pass
+            try:
+                inner = getattr(c, "cache", None)
+                if isinstance(inner, list):
+                    for a in inner:
+                        total += int(getattr(a, "nbytes", 0) or 0)
+            except Exception:  # noqa: BLE001
+                continue
+        return total
 
     def _get_cache_entry(self, tokens: list[int]) -> CacheEntry | None:
         """Get cache entry for given tokens."""
@@ -299,6 +347,12 @@ class PrefixCacheManager:
 
     def _delete_cache(self, model_key: Any, tokens: list[int]) -> None:
         """Delete cache entry and clean up empty trie branches."""
+        # Byte accounting: release this entry's contribution to the
+        # resident-byte total (see max_bytes in __init__).
+        nb = self._entry_bytes.pop((model_key, tuple(tokens)), 0)
+        if nb:
+            self._total_bytes = max(0, self._total_bytes - nb)
+
         if model_key not in self._cache:
             return
 
@@ -341,7 +395,11 @@ class PrefixCacheManager:
 
     def get_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
-        return self.stats.to_dict()
+        stats = self.stats.to_dict()
+        stats["entries"] = len(self._lru) + len(self._pinned)
+        stats["total_bytes"] = self._total_bytes
+        stats["max_bytes"] = self.max_bytes
+        return stats
 
     def reset_stats(self) -> None:
         """Reset statistics."""
@@ -352,6 +410,8 @@ class PrefixCacheManager:
         self._cache.clear()
         self._lru.clear()
         self._pinned.clear()
+        self._entry_bytes.clear()
+        self._total_bytes = 0
         self.reset_stats()
 
     def pin_prefix(self, tokens: list[int]) -> bool:
