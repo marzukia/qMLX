@@ -276,7 +276,7 @@ class SchedulerConfig:
     # a 10% safety margin below the cap, wide enough that one large
     # prefill on a half-empty cache will not trigger a thrash loop.
     # See D-METAL-PFX in 0.8TODO for the regression repro.
-    metal_pressure_evict_fraction: float = 0.9
+    metal_pressure_evict_fraction: float = 0.85
 
     # D-METAL-CAP (codex round 3 BLOCKING #1): conservative per-token
     # KV-cache reservation, in bytes per (prompt+output) token. When
