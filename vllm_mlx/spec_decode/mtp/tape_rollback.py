@@ -83,13 +83,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TapeEntry:
     """A single position's SSM state snapshot."""
+
     conv_state: mx.array  # [B, kernel_size-1, conv_dim]
-    ssm_state: mx.array   # [B, ssm_state_dim] or tuple of arrays
+    ssm_state: mx.array  # [B, ssm_state_dim] or tuple of arrays
 
 
 @dataclass
 class LayerTape:
     """Tape for a single SSM layer."""
+
     entries: list[TapeEntry]
     layer_idx: int
 
@@ -109,6 +111,7 @@ class LayerTape:
 @dataclass
 class TapeBuffer:
     """Container for all layer tapes during a draft forward."""
+
     tapes: dict[int, LayerTape]  # layer_idx -> LayerTape
     n_confirmed: int  # Number of positions recorded
     total_bytes: int = 0  # KB-scale memory footprint
@@ -125,10 +128,9 @@ class TapeBuffer:
         else:
             self.total_bytes += ssm_state.nbytes
 
-        self.tapes[layer_idx].entries.append(TapeEntry(
-            conv_state=conv_state,
-            ssm_state=ssm_state
-        ))
+        self.tapes[layer_idx].entries.append(
+            TapeEntry(conv_state=conv_state, ssm_state=ssm_state)
+        )
 
     def rollback_to(self, cache: list, target_pos: int):
         """Restore cache state to `target_pos` (1-indexed)."""
@@ -182,7 +184,7 @@ class TapeRecorder:
 
         # Pre-allocate tape entries for each SSM layer
         for i, c in enumerate(cache):
-            if hasattr(c, 'rollback_state'):
+            if hasattr(c, "rollback_state"):
                 # This is an SSM layer (ArraysCache)
                 c.rollback_state = []  # Will be populated during forward
 
@@ -266,14 +268,16 @@ def verify_tape_correctness(
     """
     # Create a fresh cache for reference computation
     import copy
+
     ref_cache = copy.deepcopy(cache)
 
     # Rollback original cache via tape
     tape_copy = TapeBuffer(
-        tapes={i: LayerTape(list(t.entries), t.layer_idx)
-               for i, t in tape.tapes.items()},
+        tapes={
+            i: LayerTape(list(t.entries), t.layer_idx) for i, t in tape.tapes.items()
+        },
         n_confirmed=tape.n_confirmed,
-        total_bytes=tape.total_bytes
+        total_bytes=tape.total_bytes,
     )
     tape_copy.rollback_to(cache, target_pos)
 
@@ -282,7 +286,7 @@ def verify_tape_correctness(
 
     # Compare states
     for i, (c, r) in enumerate(zip(cache, ref_cache)):
-        if not hasattr(c, 'rollback_state') and not hasattr(r, 'rollback_state'):
+        if not hasattr(c, "rollback_state") and not hasattr(r, "rollback_state"):
             continue
 
         # Compare conv state
@@ -335,7 +339,7 @@ def estimate_tape_bytes(n_layers: int, n_positions: int, batch_size: int = 1) ->
     # Approximate per-layer SSM state size for Qwen3.5
     # Based on GatedDeltaNet state dimensions
     conv_state_bytes = batch_size * 3 * 1152 * 2  # kernel=3, conv_dim=1152, bf16
-    ssm_state_bytes = batch_size * 2 * 1152 * 2   # (sin, cos), dim=1152, bf16
+    ssm_state_bytes = batch_size * 2 * 1152 * 2  # (sin, cos), dim=1152, bf16
     per_position_bytes = conv_state_bytes + ssm_state_bytes
 
     total_bytes = n_layers * n_positions * per_position_bytes

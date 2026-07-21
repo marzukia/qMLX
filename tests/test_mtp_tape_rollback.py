@@ -63,7 +63,7 @@ class TestTapeRecorder:
     def test_record_entry(self):
         """Test recording tape entries."""
         recorder = TapeRecorder()
-        cache = [type('Obj', (), {'rollback_state': []})()]
+        cache = [type("Obj", (), {"rollback_state": []})()]
         recorder.start(cache, n_confirmed=2)
 
         # Record an entry
@@ -86,12 +86,18 @@ class TestTapeRecorder:
 
         # Create mock cache with SSM layers
         cache = [
-            type('Obj', (), {
-                'rollback_state': [],
-                '__getitem__': lambda self, i: setattr(self, f'_val{i}', None) or getattr(self, f'_val{i}'),
-                '__setitem__': lambda self, i, v: setattr(self, f'_val{i}', v),
-                'is_trimmable': lambda: False,
-            })()
+            type(
+                "Obj",
+                (),
+                {
+                    "rollback_state": [],
+                    "__getitem__": lambda self, i: (
+                        setattr(self, f"_val{i}", None) or getattr(self, f"_val{i}")
+                    ),
+                    "__setitem__": lambda self, i, v: setattr(self, f"_val{i}", v),
+                    "is_trimmable": lambda: False,
+                },
+            )()
             for _ in range(2)
         ]
 
@@ -99,9 +105,11 @@ class TestTapeRecorder:
 
         # Record tape entries for 3 positions
         for pos in range(3):
-            conv_state = mx.array([[pos, pos+1, pos+2]])
-            ssm_state = mx.array([[pos*10, pos*10+1, pos*10+2]])
-            recorder.record_entry(layer_idx=0, conv_state=conv_state, ssm_state=ssm_state)
+            conv_state = mx.array([[pos, pos + 1, pos + 2]])
+            ssm_state = mx.array([[pos * 10, pos * 10 + 1, pos * 10 + 2]])
+            recorder.record_entry(
+                layer_idx=0, conv_state=conv_state, ssm_state=ssm_state
+            )
 
         # Rollback to position 2
         recorder.rollback(cache, to_position=2)
@@ -174,11 +182,17 @@ class TestTapeBuffer:
 
         # Create mock cache
         cache = [
-            type('Obj', (), {
-                'rollback_state': [[100, 200]],
-                '__getitem__': lambda self, i: setattr(self, f'_val{i}', None) or getattr(self, f'_val{i}'),
-                '__setitem__': lambda self, i, v: setattr(self, f'_val{i}', v),
-            })()
+            type(
+                "Obj",
+                (),
+                {
+                    "rollback_state": [[100, 200]],
+                    "__getitem__": lambda self, i: (
+                        setattr(self, f"_val{i}", None) or getattr(self, f"_val{i}")
+                    ),
+                    "__setitem__": lambda self, i, v: setattr(self, f"_val{i}", v),
+                },
+            )()
         ]
 
         # Rollback to position 2
@@ -199,30 +213,46 @@ class TestTapeCorrectness:
 
         # Create a simple tape
         entries = [
-            TapeEntry(conv_state=mx.array([[1.0, 2.0]]), ssm_state=mx.array([[3.0, 4.0]])),
-            TapeEntry(conv_state=mx.array([[5.0, 6.0]]), ssm_state=mx.array([[7.0, 8.0]])),
+            TapeEntry(
+                conv_state=mx.array([[1.0, 2.0]]), ssm_state=mx.array([[3.0, 4.0]])
+            ),
+            TapeEntry(
+                conv_state=mx.array([[5.0, 6.0]]), ssm_state=mx.array([[7.0, 8.0]])
+            ),
         ]
         tapes = {0: LayerTape(entries=entries, layer_idx=0)}
         tape = TapeBuffer(tapes=tapes, n_confirmed=2)
 
         # Create mock cache
         cache = [
-            type('Obj', (), {
-                'rollback_state': [[99, 99]],
-                '__getitem__': lambda self, i: setattr(self, f'_val{i}', None) or getattr(self, f'_val{i}'),
-                '__setitem__': lambda self, i, v: setattr(self, f'_val{i}', v),
-            })()
+            type(
+                "Obj",
+                (),
+                {
+                    "rollback_state": [[99, 99]],
+                    "__getitem__": lambda self, i: (
+                        setattr(self, f"_val{i}", None) or getattr(self, f"_val{i}")
+                    ),
+                    "__setitem__": lambda self, i, v: setattr(self, f"_val{i}", v),
+                },
+            )()
         ]
 
         # Simple verify function that returns the tape state
         def verify_fn(c, pos):
             # Return a cache with the tape state at position pos
             result = [
-                type('Obj', (), {
-                    'rollback_state': [[99, 99]],
-                    '__getitem__': lambda self, i: setattr(self, f'_val{i}', None) or getattr(self, f'_val{i}'),
-                    '__setitem__': lambda self, i, v: setattr(self, f'_val{i}', v),
-                })()
+                type(
+                    "Obj",
+                    (),
+                    {
+                        "rollback_state": [[99, 99]],
+                        "__getitem__": lambda self, i: (
+                            setattr(self, f"_val{i}", None) or getattr(self, f"_val{i}")
+                        ),
+                        "__setitem__": lambda self, i, v: setattr(self, f"_val{i}", v),
+                    },
+                )()
             ]
             conv, ssm = entries[pos - 1].conv_state, entries[pos - 1].ssm_state
             result[0][0] = conv

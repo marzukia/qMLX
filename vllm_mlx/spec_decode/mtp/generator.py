@@ -942,4 +942,3 @@ def mtp_generate_step(
         if block > last_cache_block:
             mx.clear_cache()
             last_cache_block = block
-
