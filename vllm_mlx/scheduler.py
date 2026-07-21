@@ -1271,7 +1271,9 @@ def _install_mtp_vendored(
         except Exception:  # noqa: BLE001 — introspection is best-effort
             return None, None
 
-    def _cleanup_uid_storage(uid: int, release_storage: bool) -> None:
+    def _cleanup_uid_storage(
+        uid: int, release_storage: bool, reclaim: bool = True
+    ) -> None:
         """Close uid's MTP generator and free the cache storage it pins.
 
         ``release_storage=True``: the request is DONE (finished, aborted,
@@ -1322,10 +1324,15 @@ def _install_mtp_vendored(
             except Exception:  # noqa: BLE001 — release is best-effort
                 pass
         state.clear()
-        import gc
+        if reclaim:
+            # Single-uid callers reclaim immediately. The bulk
+            # _purge_stale_states loop passes reclaim=False and runs one
+            # gc.collect()+mx.clear_cache() after the whole loop instead of
+            # once per stale uid.
+            import gc
 
-        gc.collect()
-        mx.clear_cache()
+            gc.collect()
+            mx.clear_cache()
         if n_released:
             logger.debug(
                 "[MTP-vendored] uid=%s cleanup released storage of %d caches "
@@ -1355,10 +1362,19 @@ def _install_mtp_vendored(
         returned at request completion rather than at next admission.
         """
         live_uids = set(getattr(gb, "uids", None) or [])
+        purged = 0
         for u in list(_state):
             if u == active_uid or u in live_uids:
                 continue
-            _cleanup_uid_storage(u, release_storage=True)
+            _cleanup_uid_storage(u, release_storage=True, reclaim=False)
+            purged += 1
+        if purged:
+            # Reclaim ONCE after purging all stale uids rather than once per
+            # uid inside the loop.
+            import gc
+
+            gc.collect()
+            mx.clear_cache()
 
     def _is_greedy_for_uid(uid: int) -> bool:
         """Return True when the request behind ``uid`` sampled at temp=0.

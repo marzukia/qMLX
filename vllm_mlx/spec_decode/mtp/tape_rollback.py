@@ -37,10 +37,17 @@ Where:
 
 ### Memory savings
 
-| Approach | Size per layer | K=3 total (122B) |
-|----------|---------------|------------------|
-| Full snapshot | ~50 MB | ~50 MB |
-| Tape (KB-scale) | ~10 KB | ~10 KB |
+NOTE: the tape stores a full state snapshot per recorded position, so
+its footprint is MB-scale, not the "KB-scale" earlier revisions claimed.
+Per SSM layer per position the recurrent fp32 state alone is ~4 MB; a
+single position across the 36 linear-attention layers is ~151 MB (the
+figure scheduler.py cites). See ``estimate_tape_bytes`` for the exact
+per-layer arithmetic.
+
+| Approach                 | Per layer / position | K=3, 36 layers |
+|--------------------------|----------------------|----------------|
+| Full snapshot (all pos.) | ~4 MB                | ~453 MB        |
+| Tape (per accepted pos.) | ~4 MB                | ~453 MB        |
 
 ### Bit-exact guarantee
 
@@ -323,24 +330,35 @@ def verify_tape_correctness(
 def estimate_tape_bytes(n_layers: int, n_positions: int, batch_size: int = 1) -> int:
     """Estimate tape memory footprint in bytes.
 
-    For Qwen3.5-122B:
-    - SSM layers: ~75% of 122 layers ≈ 91 layers
-    - Conv state: kernel_size=4, conv_dim=next_power_of_2(head_dim)
-    - SSM state: varies by layer type
+    The tape stores a FULL GatedDeltaNet state snapshot per confirmed
+    position per SSM layer — not a "tiny delta". For Qwen3.5-122B this is
+    MB-scale per layer, not KB-scale. The dominant term is the recurrent
+    SSM state, held in fp32 for accumulation precision:
+
+        num_v_heads(64) * key_head_dim(128) * value_head_dim(128) * 4 B
+        = 4,194,304 B per layer per position.
+
+    Across the model's 36 linear-attention layers that is 150,994,944 B
+    (~151 MB) for a single position — the figure scheduler.py cites for
+    one full SSM state set. The short-conv state is a comparatively small
+    bf16 add-on over the mixed q/k/v projection channels.
 
     Args:
-        n_layers: Number of SSM layers
-        n_positions: Number of positions to record
+        n_layers: Number of SSM (linear-attention) layers
+        n_positions: Number of positions recorded (K)
         batch_size: Batch size
 
     Returns:
-        Estimated tape size in bytes
+        Estimated tape size in bytes (MB-scale for realistic K/layers)
     """
-    # Approximate per-layer SSM state size for Qwen3.5
-    # Based on GatedDeltaNet state dimensions
-    conv_state_bytes = batch_size * 3 * 1152 * 2  # kernel=3, conv_dim=1152, bf16
-    ssm_state_bytes = batch_size * 2 * 1152 * 2  # (sin, cos), dim=1152, bf16
-    per_position_bytes = conv_state_bytes + ssm_state_bytes
+    # Real Qwen3.5-122B GatedDeltaNet dims (see config: linear_num_value_heads=64,
+    # linear_key_head_dim=linear_value_head_dim=128, linear_num_key_heads=16,
+    # linear_conv_kernel_dim=4).
+    ssm_state_bytes = batch_size * 64 * 128 * 128 * 4  # fp32 recurrent state
+    # Short conv over concatenated q/k/v channels, (kernel-1)=3 taps, bf16.
+    conv_dim = (16 * 128) + (16 * 128) + (64 * 128)  # q + k + v channels
+    conv_state_bytes = batch_size * conv_dim * 3 * 2
+    per_position_bytes = ssm_state_bytes + conv_state_bytes
 
     total_bytes = n_layers * n_positions * per_position_bytes
     return total_bytes

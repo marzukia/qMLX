@@ -91,9 +91,7 @@ class TestTapeRecorder:
                 (),
                 {
                     "rollback_state": [],
-                    "__getitem__": lambda self, i: (
-                        setattr(self, f"_val{i}", None) or getattr(self, f"_val{i}")
-                    ),
+                    "__getitem__": lambda self, i: getattr(self, f"_val{i}", None),
                     "__setitem__": lambda self, i, v: setattr(self, f"_val{i}", v),
                     "is_trimmable": lambda: False,
                 },
@@ -187,9 +185,7 @@ class TestTapeBuffer:
                 (),
                 {
                     "rollback_state": [[100, 200]],
-                    "__getitem__": lambda self, i: (
-                        setattr(self, f"_val{i}", None) or getattr(self, f"_val{i}")
-                    ),
+                    "__getitem__": lambda self, i: getattr(self, f"_val{i}", None),
                     "__setitem__": lambda self, i, v: setattr(self, f"_val{i}", v),
                 },
             )()
@@ -318,13 +314,23 @@ def test_estimate_tape_bytes():
     """Test tape size estimation."""
     from vllm_mlx.spec_decode.mtp.tape_rollback import estimate_tape_bytes
 
-    # Estimate for Qwen3.5-122B with K=3
-    size = estimate_tape_bytes(n_layers=91, n_positions=3, batch_size=1)
+    # Estimate for Qwen3.5-122B with K=3. The model has 36 linear-attention
+    # (SSM) layers, not 91 — the earlier "~75% of 122 layers" figure assumed
+    # a 122-layer stack; the real config is 48 layers, 36 of them linear.
+    size = estimate_tape_bytes(n_layers=36, n_positions=3, batch_size=1)
 
-    # Should be KB-scale, not MB-scale
-    assert size < 1024 * 1024  # Less than 1 MB
-    assert size > 1024  # More than 1 KB
+    # The tape stores a FULL fp32 SSM recurrent-state snapshot per confirmed
+    # position per SSM layer. One single-position state set across 36 layers
+    # is ~151 MB (see scheduler.py). K=3 is therefore hundreds of MB — the
+    # "KB-scale" claim in early revisions was fiction.
+    per_position_one_layer = 64 * 128 * 128 * 4 + ((16 * 128) * 2 + 64 * 128) * 3 * 2
+    assert size == 36 * 3 * per_position_one_layer
+    assert size > 100 * 1024 * 1024  # comfortably MB-scale (> 100 MB)
+    assert size < 1024 * 1024 * 1024  # but under 1 GB for K=3
 
-    # Expected: ~91 layers * 3 positions * ~7.5 KB/position ≈ 2 MB
-    # But with tape compression, should be much smaller
-    print(f"Estimated tape size: {size / 1024:.1f} KB")
+    # Sanity: a single recorded position across all SSM layers matches the
+    # ~151 MB figure scheduler.py documents for one full SSM state set.
+    one_pos = estimate_tape_bytes(n_layers=36, n_positions=1, batch_size=1)
+    assert 140 * 1024 * 1024 < one_pos < 165 * 1024 * 1024
+
+    print(f"Estimated tape size (K=3, 36 layers): {size / (1024 * 1024):.1f} MB")
