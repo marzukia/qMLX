@@ -272,15 +272,20 @@ def _load_mtp_weights_from_repo(model_repo: str) -> dict[str, Any] | None:
     import mlx.core as mx
     from huggingface_hub import snapshot_download
 
-    try:
-        local = snapshot_download(model_repo, allow_patterns=["*.safetensors"])
-    except Exception as exc:
-        logger.warning(
-            "[mtp.inject] Could not download model repo %r: %s",
-            model_repo,
-            exc,
-        )
-        return None
+    # Check if model_repo is a local directory
+    import os as _os
+    if _os.path.isdir(model_repo):
+        local = model_repo
+    else:
+        try:
+            local = snapshot_download(model_repo, allow_patterns=["*.safetensors"])
+        except Exception as exc:
+            logger.warning(
+                "[mtp.inject] Could not download model repo %r: %s",
+                model_repo,
+                exc,
+            )
+            return None
 
     mtp_weights: dict[str, Any] = {}
     for sf_path in sorted(_glob.glob(os.path.join(local, "*.safetensors"))):
