@@ -689,14 +689,20 @@ def _gather_kv_cache_dtype_inputs(model_name: str) -> tuple[dict | None, dict | 
         import json as _json
         import os as _os
 
-        from huggingface_hub import try_to_load_from_cache as _cache_lookup
-
         hf_path = (alias_meta or {}).get("hf_path") or model_name
         if hf_path:
-            cached = _cache_lookup(repo_id=hf_path, filename="config.json")
-            if cached and _os.path.exists(cached):
-                with open(cached) as fh:
-                    hf_cfg = _json.load(fh)
+            # Check if it is a local directory
+            if _os.path.isdir(hf_path):
+                local_config = _os.path.join(hf_path, "config.json")
+                if _os.path.exists(local_config):
+                    with open(local_config) as fh:
+                        hf_cfg = _json.load(fh)
+            else:
+                from huggingface_hub import try_to_load_from_cache as _cache_lookup
+                cached = _cache_lookup(repo_id=hf_path, filename="config.json")
+                if cached and _os.path.exists(cached):
+                    with open(cached) as fh:
+                        hf_cfg = _json.load(fh)
     except Exception:
         hf_cfg = None
 
