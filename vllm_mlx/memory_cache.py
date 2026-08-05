@@ -1039,6 +1039,44 @@ def _trim_to_offset(cache: list[Any]) -> list[Any]:
     return trimmed
 
 
+def _slice_kv_to_length(cache: list[Any], length: int) -> list[Any]:
+    """Slice trimmable attention KV layers down to their first ``length`` rows.
+
+    Used to persist a checkpoint at a SHORTER boundary than the cache's live
+    offset, e.g. keying a completion checkpoint on the round-trip-stable PROMPT
+    prefix while the live cache also holds the just-generated output (whose
+    token IDs don't survive a client re-tokenize, so they must not be part of
+    the checkpoint key). A standard ``KVCache`` is causal-append, so
+    ``keys[:, :, :length, :]`` is exactly the KV of the first ``length`` tokens.
+    Recurrent / non-trimmable layers are passed through UNCHANGED: a recurrent
+    state cannot be sliced to a prefix (issues #1025/#1058), so a caller must
+    only shorten a cache that has no such layer.
+    """
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    out: list[Any] = []
+    eval_targets = []
+    for layer in cache:
+        if (
+            isinstance(layer, KVCache)
+            and layer.keys is not None
+            and isinstance(layer.offset, int)
+            and layer.offset > length
+        ):
+            tc = KVCache()
+            tc.keys = layer.keys[:, :, :length, :]
+            tc.values = layer.values[:, :, :length, :]
+            tc.offset = length
+            eval_targets.extend([tc.keys, tc.values])
+            out.append(tc)
+        else:
+            out.append(layer)
+    if eval_targets:
+        mx.eval(*eval_targets)
+    return out
+
+
 def _quantize_cache(cache: list[Any], bits: int = 8, group_size: int = 64) -> list[Any]:
     """Quantize KVCache layers to reduce memory. Non-KVCache layers are kept as-is."""
     from mlx_lm.models.cache import KVCache
