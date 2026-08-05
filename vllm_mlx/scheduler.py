@@ -5587,9 +5587,7 @@ class Scheduler:
                 _dkc.model_requires_full_checkpoint(mname)
             ):
                 try:
-                    parent = _dkc.get_content_index().longest_strict_prefix(
-                        key_tokens
-                    )
+                    parent = _dkc.get_content_index().longest_strict_prefix(key_tokens)
                     if parent is not None:
                         pside = _dkc.read_sidecar(
                             root, parent.req_hash, parent.token_offset

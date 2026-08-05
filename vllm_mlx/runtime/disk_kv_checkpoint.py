@@ -2305,9 +2305,7 @@ class DiskCheckpointIndex:
                 # Nothing matched further than what we restored: no drift.
                 return
             key_tok = (
-                best_key[divergence_index]
-                if divergence_index < len(best_key)
-                else None
+                best_key[divergence_index] if divergence_index < len(best_key) else None
             )
             q_tok = query[divergence_index] if divergence_index < len(query) else None
             logger.info(
