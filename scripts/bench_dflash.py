@@ -446,8 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Bench DFlash: %s", args.model)
     if os.environ.get("QMLX_DFLASH_BYPASS_MOE_GATE") == "1":
         logger.warning(
-            "  QMLX_DFLASH_BYPASS_MOE_GATE=1 — eligibility MoE gate "
-            "bypassed (PoC mode)"
+            "  QMLX_DFLASH_BYPASS_MOE_GATE=1 — eligibility MoE gate bypassed (PoC mode)"
         )
 
     logger.info("--- baseline (autoregressive) ---")

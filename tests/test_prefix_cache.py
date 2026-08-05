@@ -17,6 +17,17 @@ from vllm_mlx.prefix_cache import (
 )
 
 
+class _FakeCacheLayer:
+    """A cache-list element exposing a known ``.nbytes`` for byte-cap tests.
+
+    ``PrefixCacheManager._cache_nbytes`` sums ``.nbytes`` over the cache
+    list, so this is all the byte accounting needs to see.
+    """
+
+    def __init__(self, nbytes: int):
+        self.nbytes = nbytes
+
+
 class TestPrefixCacheStats:
     """Tests for PrefixCacheStats class."""
 
@@ -702,3 +713,71 @@ if __name__ == "__main__":
             print("=" * 70)
 
     asyncio.run(run_cache_test())
+
+
+class TestPrefixCacheByteCap:
+    """Regression tests for the resident-byte cap (``max_bytes``).
+
+    Guards the PR #47 fix that made ``--cache-memory-mb`` an actual byte
+    cap on the in-memory prefix cache. Before the fix the cache was bounded
+    only by entry count, so on hybrid GatedDeltaNet models (hundreds of MB
+    per entry) 100 entries was effectively unbounded and every finished
+    request ratcheted resident memory until OOM.
+    """
+
+    @pytest.fixture
+    def mock_model(self):
+        return MagicMock()
+
+    def test_byte_cap_evicts_at_threshold(self, mock_model):
+        """Eviction fires once total resident bytes crosses ``max_bytes``."""
+        mgr = PrefixCacheManager(mock_model, max_entries=100, max_bytes=250)
+
+        mgr.store_cache([1], [_FakeCacheLayer(100)])
+        mgr.store_cache([2], [_FakeCacheLayer(100)])
+        # Under the cap: nothing evicted yet.
+        assert mgr._total_bytes == 200
+        assert mgr.stats.evictions == 0
+
+        # Third entry pushes the total to 300 > 250 -> evict LRU back under cap.
+        mgr.store_cache([3], [_FakeCacheLayer(100)])
+        assert mgr.stats.evictions == 1
+        assert mgr.fetch_cache([1])[0] is None  # oldest evicted
+        assert mgr.fetch_cache([2])[0] is not None
+        assert mgr.fetch_cache([3])[0] is not None
+        # _total_bytes equals the sum of the surviving entries (2 * 100).
+        assert mgr._total_bytes == 200
+        assert mgr._total_bytes == sum(mgr._entry_bytes.values())
+
+    def test_byte_cap_multiple_evictions_keep_accounting_exact(self, mock_model):
+        """Across repeated evictions ``_total_bytes`` stays equal to the sum of
+        the surviving ``_entry_bytes`` (``_delete_cache`` accounting is exact).
+        """
+        mgr = PrefixCacheManager(mock_model, max_entries=100, max_bytes=250)
+        for t in range(6):
+            mgr.store_cache([t], [_FakeCacheLayer(100)])
+
+        # Cap 250 with 100-byte entries -> at most 2 survive.
+        assert mgr._total_bytes == 200
+        assert mgr._total_bytes == sum(mgr._entry_bytes.values())
+        assert mgr.stats.evictions == 4
+
+        survivors = [t for t in range(6) if mgr.fetch_cache([t])[0] is not None]
+        assert survivors == [4, 5]  # the two most-recently stored
+
+    def test_byte_cap_does_not_evict_pinned(self, mock_model):
+        """A pinned entry survives even when it holds the cache over the cap."""
+        mgr = PrefixCacheManager(mock_model, max_entries=100, max_bytes=150)
+
+        mgr.store_cache([1], [_FakeCacheLayer(100)])
+        assert mgr.pin_prefix([1]) is True
+
+        # Second entry: total 200 > 150. The only LRU-evictable entry is the
+        # unpinned [2]; pinned [1] must NOT be evicted even though it is older.
+        mgr.store_cache([2], [_FakeCacheLayer(100)])
+        assert mgr.stats.evictions == 1
+        assert mgr.fetch_cache([1])[0] is not None  # pinned survivor
+        assert mgr.fetch_cache([2])[0] is None  # unpinned evicted
+        # Only the pinned entry's bytes remain resident.
+        assert mgr._total_bytes == 100
+        assert mgr._total_bytes == sum(mgr._entry_bytes.values())
