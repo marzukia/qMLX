@@ -126,10 +126,9 @@ def test_merge_writes_vision_shard_and_config(merge_mod, tmp_path):
     idx = json.loads((mlx / "model.safetensors.index.json").read_text())
     assert idx["weight_map"][VISION_KEY] == "model-vision.safetensors"
     assert idx["weight_map"]["lm_head.weight"] == "model-00001.safetensors"
-    expected_total = (
-        (mlx / "model-00001.safetensors").stat().st_size
-        + (mlx / "model-vision.safetensors").stat().st_size
-    )
+    expected_total = (mlx / "model-00001.safetensors").stat().st_size + (
+        mlx / "model-vision.safetensors"
+    ).stat().st_size
     assert idx["metadata"]["total_size"] == expected_total
     # The text shard is untouched.
     assert np.array_equal(
@@ -174,7 +173,9 @@ def test_no_vision_tensors_in_hf_base(merge_mod, tmp_path):
     mlx = _make_mlx_snapshot(tmp_path / "mlx")
     hf = tmp_path / "hf"
     hf.mkdir()
-    _write_shard(hf / "base.safetensors", {"lm.weight": np.ones((2, 2), dtype=np.float16)})
+    _write_shard(
+        hf / "base.safetensors", {"lm.weight": np.ones((2, 2), dtype=np.float16)}
+    )
     (hf / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
 
     rep = merge_mod.merge(mlx, hf)

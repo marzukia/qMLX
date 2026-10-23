@@ -2517,7 +2517,9 @@ class DiskCheckpointIndex:
                     self._soft_evict(key, media_key or "")
                 else:
                     # HARD: bytes genuinely wrong / incompatible. Quarantine.
-                    self._quarantine(key, ref, offset, "tokens_blob_verify_fail", media_key or "")
+                    self._quarantine(
+                        key, ref, offset, "tokens_blob_verify_fail", media_key or ""
+                    )
                 continue
             # A delta leaf must be assembled up its base_hash chain; a full base
             # loads directly. The chain assembler is gated on the delta feature
@@ -2665,9 +2667,7 @@ class DiskCheckpointIndex:
         """Snapshot of index size for /metrics folding."""
         with self._lock:
             return {
-                "content_index_entries": sum(
-                    len(b) for b in self._by_key.values()
-                ),
+                "content_index_entries": sum(len(b) for b in self._by_key.values()),
                 "content_index_nodes": 0,
             }
 
