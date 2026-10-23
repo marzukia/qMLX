@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from functools import partial
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -95,8 +96,16 @@ class QMLXTUI(App):
 
     def on_mount(self) -> None:
         log = self.query_one(Log)
+        label = self.query_one(Label)
         log.write(f"model: {self.model} · endpoint: {self.base_url}/v1")
-        self.run_worker(self._status_loop(), group="tui", exclusive=False)
+        # Pass the loop UN-CALLED and run it in a worker THREAD — calling
+        # ``self._status_loop()`` here ran the blocking while-True loop in
+        # place on the app thread, so on_mount never returned and the app
+        # froze at startup (t258). ``run_worker`` in textual 0.89 takes no
+        # *args, so the widget reference is bound via ``partial``.
+        self.run_worker(
+            partial(self._status_loop, label), group="tui", exclusive=False, thread=True
+        )
         self.query_one(Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -104,14 +113,38 @@ class QMLXTUI(App):
         if not text:
             return
         event.input.value = ""
-        self.run_worker(self._send(text), group="tui", exclusive=False)
+        # Same contract as on_mount: pass the worker UN-CALLED with
+        # thread=True. ``self._send(text)`` used to run the blocking HTTP
+        # stream inline on the app thread and feed ``run_worker`` its
+        # ``None`` result, which raised a WorkerError and exited the app
+        # after the first message (default exit_on_error=True). Widgets are
+        # captured on the app thread; ``run_worker`` takes no *args, so the
+        # turn args are bound via ``partial``.
+        self.run_worker(
+            partial(self._send, text, self.query_one(Log)),
+            group="tui",
+            exclusive=False,
+            thread=True,
+        )
 
-    def _send(self, message: str) -> None:
+    def _write(self, log: Log, msg: str) -> None:
+        """Append one line to the conversation log, from any thread.
+
+        Worker threads must not touch widgets directly — the write is
+        serialized onto the app thread via ``call_from_thread``.
+        """
+        self.call_from_thread(log.write, msg)
+
+    def _send(self, message: str, log: Log) -> None:
+        """Run one chat turn (streamed) in a worker thread.
+
+        ``log`` is captured on the app thread before the worker starts;
+        all writes go through ``_write`` → ``call_from_thread``.
+        """
         import requests
 
-        log = self.query_one(Log)
         self.history.append({"role": "user", "content": message})
-        log.write(f"🐆 {message}", markup=False)
+        self._write(log, f"🐆 {message}")
         reply = ""
         try:
             with requests.post(
@@ -139,18 +172,18 @@ class QMLXTUI(App):
                         chunk = json.loads(payload)
                     except ValueError:
                         continue
-                    delta = (
-                        (chunk.get("choices") or [{}])[0].get("delta") or {}
-                    ).get("content")
+                    delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get(
+                        "content"
+                    )
                     if delta:
                         reply += delta
-                        log.write(delta, markup=False)
+                        self._write(log, delta)
         except Exception as e:  # noqa: BLE001 — surface, don't crash the app
-            log.write(f"\n[error] {e}\n", markup=False)
+            self._write(log, f"\n[error] {e}\n")
             return
         if reply:
             self.history.append({"role": "assistant", "content": reply})
-        log.write("\n", markup=False)
+        self._write(log, "\n")
 
     def _poll_status(self) -> dict | None:
         import requests
@@ -162,10 +195,17 @@ class QMLXTUI(App):
         except Exception:
             return None
 
-    def _status_loop(self):
-        while True:
-            label = self.query_one(Label)
-            label.update(_status_line(self._poll_status()))
+    def _status_loop(self, label: Label) -> None:
+        """Poll /v1/status every ~1.5s — runs in a worker thread.
+
+        The thread only sleeps and does HTTP; the widget update is
+        serialized onto the app thread via ``call_from_thread``.
+        """
+        while self.is_running:
+            try:
+                self.call_from_thread(label.update, _status_line(self._poll_status()))
+            except Exception:  # noqa: BLE001 — app gone: stop the loop quietly
+                return
             time.sleep(1.5)
 
 
