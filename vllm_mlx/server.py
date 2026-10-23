@@ -115,7 +115,6 @@ from .api.utils import (
     clean_output_text,  # noqa: F401
     extract_json_from_response,  # noqa: F401
     extract_multimodal_content,  # noqa: F401
-    is_mllm_model,  # noqa: F401
     sanitize_output,  # noqa: F401
     strip_special_tokens,  # noqa: F401
     strip_thinking_tags,  # noqa: F401
@@ -1687,13 +1686,6 @@ Examples:
         default=True,
         help="Enable continuous batching (default: on).",
     )
-    # PFlash long-prompt prefill compression (#287). Off by default. The
-    # unified ``qmlx serve`` CLI exposes the same surface; we mirror
-    # it here so the standalone ``python -m vllm_mlx.server`` path is
-    # not a silent gap (SOP §10).
-    from .cli import _add_pflash_args as _add_pflash_args_to_server_parser
-
-    _add_pflash_args_to_server_parser(parser)
     # Deprecated flags — accepted silently to avoid breaking user scripts
     import argparse as _ap
 
@@ -1999,24 +1991,7 @@ Examples:
     # was silently dropped — same bug class as #400. The unified qmlx
     # CLI builds a richer SchedulerConfig in cli.py; the standalone path only
     # exposes a small subset of flags, so we plumb just those.
-    from .pflash import config_from_args as _server_pflash_config_from_args
-    from .pflash import resolve_pflash_mode_default as _server_pflash_resolve_default
-    from .pflash import validate_model_support as _server_pflash_validate
     from .scheduler import SchedulerConfig
-
-    # Per-alias PFlash default (#287): verified Qwen3.5 / Qwen3.6 aliases
-    # switch to ``always`` when the user passes no ``--pflash`` flag; all
-    # other aliases keep the conservative ``off``. Explicit overrides win.
-    args.pflash = _server_pflash_resolve_default(args, model_name=args.model)
-    try:
-        server_pflash_config = _server_pflash_config_from_args(args)
-        _server_pflash_validate(
-            server_pflash_config,
-            model_name=args.model,
-            is_mllm=getattr(args, "mllm", False) or is_mllm_model(args.model),
-        )
-    except ValueError as e:
-        parser.error(str(e))
 
     # TurboQuant resolution (#969): mirror ``qmlx serve`` so the
     # standalone entry actually honors ``--kv-cache-turboquant``. The
@@ -2038,7 +2013,6 @@ Examples:
 
     scheduler_config = SchedulerConfig(
         prefill_step_size=args.prefill_step_size,
-        pflash_config=server_pflash_config,
         **_server_turboquant_scheduler_kwargs(args),
     )
 

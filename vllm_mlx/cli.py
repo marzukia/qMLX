@@ -1126,84 +1126,6 @@ def _ensure_model_downloaded(model_name: str) -> None:
         print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 
 
-def _add_pflash_args(parser) -> None:
-    """Attach PFlash long-prompt-compression CLI flags to an argparse parser.
-
-    Used by both ``serve`` and ``bench`` so the flag surface stays in
-    sync. The default for ``--pflash`` is intentionally ``None``
-    (sentinel for "user passed nothing") so the per-alias resolver in
-    ``pflash.resolve_pflash_mode_default`` can switch the engine to
-    ``always`` for ``pflash_tier="verified"`` aliases (Qwen3.5 /
-    Qwen3.6 family per #287) without breaking the explicit-override
-    contract: passing ``--pflash off`` still wins.
-    """
-    parser.add_argument(
-        "--pflash",
-        choices=["off", "auto", "always"],
-        default=None,
-        help="Enable PFlash long-prompt prefill compression "
-        "(off, auto, always). Default: 'always' for verified aliases "
-        "(Qwen3.5 / Qwen3.6 family per #287), 'off' for everything else.",
-    )
-    parser.add_argument(
-        "--pflash-threshold",
-        type=int,
-        default=32_768,
-        help="Minimum prompt tokens before --pflash auto compresses (default: 32768).",
-    )
-    parser.add_argument(
-        "--pflash-keep-ratio",
-        type=float,
-        default=0.20,
-        help="Fraction of prompt tokens to keep when compressing "
-        "(default: 0.20 — matches the bench-validated profile in PR #649: "
-        "TTFT 3.87x-8.5x, needle recall 5/5 across tested cells).",
-    )
-    parser.add_argument(
-        "--pflash-min-keep-tokens",
-        type=int,
-        default=2_048,
-        help="Minimum tokens to keep when compressing (default: 2048).",
-    )
-    parser.add_argument(
-        "--pflash-sink-tokens",
-        type=int,
-        default=256,
-        help="Leading prompt tokens always kept by PFlash (default: 256).",
-    )
-    parser.add_argument(
-        "--pflash-tail-tokens",
-        type=int,
-        default=2_048,
-        help="Trailing prompt tokens always kept by PFlash (default: 2048).",
-    )
-    parser.add_argument(
-        "--pflash-block-size",
-        type=int,
-        default=128,
-        help="Middle-token scoring block size (default: 128).",
-    )
-    parser.add_argument(
-        "--pflash-query-window",
-        type=int,
-        default=512,
-        help="Trailing query window used to score middle blocks (default: 512).",
-    )
-    parser.add_argument(
-        "--pflash-stride-blocks",
-        type=int,
-        default=8,
-        help="Keep every Nth middle block as an anchor during scoring "
-        "(0 disables anchors, default: 8).",
-    )
-    parser.add_argument(
-        "--pflash-include-tools",
-        action="store_true",
-        help="Allow PFlash compression on prompts with tool definitions. "
-        "By default tool prompts are skipped for tool-call reliability.",
-    )
-
-
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -1695,7 +1617,7 @@ def serve_command(args):
     # DFlash depends on the optional ``mlx-vlm`` bridge that ships in
     # the ``[dflash]`` extra. Pre-0.9.3 the missing-runtime error only
     # surfaced ~50 lines into serve_command, AFTER:
-    #   - alias profile resolved (logged twice via pflash)
+    #   - alias profile resolved (logged twice)
     #   - tool/reasoning parsers auto-configured
     #   - CORS allow-origin warning printed
     # so the operator saw five INFO lines and a banner before the
@@ -1790,35 +1712,6 @@ def serve_command(args):
         print(
             "Error: --gpu-memory-utilization must be between 0.0 (exclusive) and 1.0 (inclusive)"
         )
-        sys.exit(1)
-
-    # Validate PFlash config and reject unsupported model combinations
-    # at startup. Done here (not lazily in the scheduler) so a typo in
-    # --pflash-keep-ratio doesn't surface as a model-load failure
-    # after a multi-minute weight download. See #287.
-    #
-    # ``resolve_pflash_mode_default`` runs before ``config_from_args``
-    # so the per-alias default (``"always"`` for verified Qwen3.5 /
-    # Qwen3.6 aliases, ``"off"`` everywhere else) is materialized into
-    # ``args.pflash``. The resolved value then flows through the same
-    # validation path the user-explicit case takes.
-    from .api.utils import is_mllm_model
-    from .pflash import (
-        config_from_args,
-        resolve_pflash_mode_default,
-        validate_model_support,
-    )
-
-    args.pflash = resolve_pflash_mode_default(args, model_name=args.model)
-    try:
-        pflash_config = config_from_args(args)
-        validate_model_support(
-            pflash_config,
-            model_name=args.model,
-            is_mllm=getattr(args, "mllm", False) or is_mllm_model(args.model),
-        )
-    except ValueError as e:
-        print(f"Error: {e}")
         sys.exit(1)
 
     # Auto-detect parser config from model name when not explicitly set.
@@ -2521,8 +2414,6 @@ def serve_command(args):
             getattr(args, "enable_disk_kv_restore", True)
             and not getattr(args, "disable_disk_kv_restore", False)
         ),
-        # PFlash long-prompt compression (#287)
-        pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
         # SchedulerConfig so the admission gate enforces the same cap
         # that ``mx.set_memory_limit`` only treats as a guideline. The
@@ -6124,9 +6015,6 @@ Examples:
             "disable."
         ),
     )
-    # PFlash long-prompt prefill compression (#287). Off by default; see
-    # vllm_mlx/pflash.py for the design and the prefix-cache bypass.
-    _add_pflash_args(serve_parser)
     # Models command. ``ls`` is registered as a top-level alias that
     # defaults to ``models --cached`` (the locally-cached view) — two
     # muscle-memory entry points, one underlying impl.

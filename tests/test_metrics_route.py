@@ -554,8 +554,7 @@ def test_metrics_output_parses_cleanly_when_engine_missing(metrics_client):
     The fallback emits build_info plus the H-06 response_format
     counters (which live in process-local module state, not on the
     engine) so dashboards never flip to "no data" between restarts.
-    Strict-mode counters always present even at zero — same pattern as
-    PFlash counters in the loaded-engine path.
+    Strict-mode counters always present even at zero.
     """
     from prometheus_client.parser import text_string_to_metric_families
 

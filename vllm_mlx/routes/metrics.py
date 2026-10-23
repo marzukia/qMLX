@@ -1539,43 +1539,6 @@ def _render_prometheus(cfg: Any) -> str:
             )
         )
 
-    # ---- PFlash observability (M-02 reframe) ---------------------------
-    # When PFlash compression engages, the prompt skips the prefix-cache
-    # fetch + store paths entirely (the compressed sequence is a
-    # positional fiction — see ``compress_request_tokens`` in
-    # scheduler.py). Without these two counters, /metrics looks frozen
-    # at ``hits=0/misses=1`` on verified-tier aliases where PFlash is
-    # always-on, and operators conclude the prefix cache is broken.
-    # ``bypass_total`` counts requests that took the PFlash bypass;
-    # ``compressed_tokens_total`` is cumulative tokens dropped by the
-    # compressor (logical minus kept) and is the headline number for
-    # capacity planning.
-    #
-    # These come straight from the scheduler counters which only ever
-    # increment, so the sticky accumulator is not required.
-    lines.extend(
-        _fmt_metric(
-            "qmlx_pflash_bypass_total",
-            "counter",
-            (
-                "Requests where PFlash compression engaged and the "
-                "prefix-cache fetch/store was bypassed."
-            ),
-            int(_coerce_number(stats.get("pflash_bypass_count"))),
-        )
-    )
-    lines.extend(
-        _fmt_metric(
-            "qmlx_pflash_compressed_tokens_total",
-            "counter",
-            (
-                "Cumulative prompt tokens dropped by PFlash compression "
-                "(logical minus kept) across all requests."
-            ),
-            int(_coerce_number(stats.get("pflash_compressed_tokens_dropped"))),
-        )
-    )
-
     # ---- Cancellation observability (M-01) -----------------------------
     # ``qmlx_requests_processed_total`` deliberately excludes aborted
     # requests, so when fifty clients disconnect mid-stream the operator-
@@ -1588,8 +1551,8 @@ def _render_prometheus(cfg: Any) -> str:
     # subset triggered by the disconnect_guard force-abort path so the
     # gap (total - via_disconnect) surfaces explicit-cancel + timeout
     # traffic for capacity planning. Both default to zero on engines
-    # that never reach M-01 (mirrors the PFlash counters' flat-line
-    # treatment) so dashboards never flip to "no data" after a deploy.
+    # that never reach M-01 so dashboards never flip to "no data"
+    # after a deploy.
     lines.extend(
         _fmt_metric(
             "qmlx_requests_cancelled_total",

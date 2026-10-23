@@ -14,7 +14,6 @@ The scheduler follows vLLM's design with:
 import logging
 import os
 import threading
-import time
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -43,8 +42,6 @@ from ._sampler_fast_path import (  # noqa: E402
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .honest_metrics import HonestMetrics  # noqa: E402
 from .paged_cache import PagedCacheManager
-from .pflash import PFlashConfig, compress_request_tokens
-from .pflash_v2 import install_pflash_v2  # noqa: E402
 from .prefill_profiler import install_prefill_profiling  # noqa: E402
 from .prefix_cache import BlockAwarePrefixCache, PrefixCacheManager
 from .request import Request, RequestOutput, RequestStatus, SamplingParams
@@ -52,18 +49,6 @@ from .utils.decode import IncrementalDecoder
 from .utils.mamba_cache import ensure_mamba_support
 
 logger = logging.getLogger(__name__)
-
-
-def _pflash_compressed(request: Request) -> bool:
-    """Whether PFlash replaced this request's prompt with a compressed
-    subsequence. Used to gate every prefix-cache store/fetch site so the
-    compressed token sequence — which is positionally non-faithful to
-    the original prompt — never enters the shared trie.
-    """
-    return bool(
-        request.pflash_metadata is not None
-        and request.pflash_metadata.get("compressed", False)
-    )
 
 
 # Enable MambaCache batching support for models like Nemotron
@@ -223,7 +208,7 @@ class SchedulerConfig:
 
     # (0.9.13 PR-A ``mtp_sidecar`` / ``mtp_model_type`` fields
     # intentionally live at the END of this dataclass — see the
-    # tail comment below ``pflash_config``. Codex round-F BLOCKING
+    # tail comment on ``mtp_sidecar`` below. Codex round-F BLOCKING
     # #1 flagged that adding them in the middle shifted every
     # subsequent positional argument.)
 
@@ -294,11 +279,6 @@ class SchedulerConfig:
     # tip: ``num_layers × 2 × hidden_dim × dtype_bytes`` is the
     # per-token KV size for an attention-only model.
     metal_cap_kv_bytes_per_token: int = 0
-
-    # PFlash long-prompt prefill compression (#287). Disabled by default;
-    # see vllm_mlx/pflash.py for the design notes and the prefix-cache
-    # bypass on compressed requests.
-    pflash_config: PFlashConfig = field(default_factory=PFlashConfig)
 
     # External MTP sidecar path for the Gemma 4 assistant-drafter route
     # (``--speculative-config '{"method":"mtp","model":"<path>"}'``).
@@ -414,12 +394,6 @@ class SchedulerConfig:
                 f"spec_decode={self.spec_decode!r}; pass only one "
                 "speculative decoding method."
             )
-
-        # PFlashConfig is dataclass(frozen=True), so .validate() returns
-        # a new instance; reassign so the SchedulerConfig holds the
-        # validated copy. Done in __post_init__ to keep callers from
-        # threading .validate() through every construction site.
-        self.pflash_config = self.pflash_config.validate()
 
 
 class BackpressureError(Exception):
@@ -2685,17 +2659,6 @@ class Scheduler:
         self.num_requests_processed = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
-        # PFlash observability (M-02 reframe). When PFlash compresses a
-        # prompt the request bypasses the prefix-cache fetch + store
-        # paths entirely (positional-fiction safety; see comment block
-        # near ``compress_request_tokens``). That bypass is correct but
-        # silences ``qmlx_prefix_cache_*`` on PFlash-always tiers
-        # (e.g. verified-tier aliases), making /metrics look frozen at
-        # ``hits=0/misses=1``. These two counters let operators see
-        # PFlash is doing meaningful work even when the cache series
-        # stays flat. Observability only — bypass semantics unchanged.
-        self.pflash_bypass_count = 0
-        self.pflash_compressed_tokens_dropped = 0
         # Honest per-request reuse / latency accounting (issues #10, #2).
         # Splits the amortized ``prompt_tokens_total`` into offered vs
         # computed vs reused-by-source, tracks prefill kind + prefix-cache
@@ -3129,13 +3092,6 @@ class Scheduler:
         ):
             install_prefill_profiling(bg)
 
-        # Install PFlash v2 pattern compression when enabled.
-        if os.environ.get("QMLX_PFLASH_V2_ENABLED", "").lower() in (
-            "1",
-            "true",
-            "yes",
-        ):
-            install_pflash_v2(bg.model)
 
         # Server-side wiring for ``--speculative-config '{"method":"mtp"}'``.
         # This installs the vendored PR #990 ``mtp_generate_step`` hot
@@ -3224,12 +3180,6 @@ class Scheduler:
             request = self.requests.get(request_id)
             if not request or not request.prompt_token_ids:
                 return
-            # PFlash bypass: see scheduler.add_request — compressed
-            # prompt_token_ids are not positionally faithful so storing
-            # KV under this key would poison the trie.
-            if _pflash_compressed(request):
-                return
-
             prompt_tokens = list(request.prompt_token_ids)
             _t0 = _time.monotonic()
             self._disk_persist_boundary(prompt_tokens, extracted_cache)
@@ -3390,13 +3340,6 @@ class Scheduler:
             request = self.requests.get(request_id) if request_id else None
             if not request:
                 continue
-            # PFlash bypass: defensive guard. add_request also zeros
-            # prefix_boundary for compressed requests so the next
-            # condition would short-circuit anyway, but a future change
-            # touching prefix_boundary must not silently start poisoning
-            # the trie.
-            if _pflash_compressed(request):
-                continue
             prefix_boundary = getattr(request, "prefix_boundary", 0)
             if prefix_boundary <= 0:
                 continue
@@ -3464,10 +3407,6 @@ class Scheduler:
             if not request or not request.prompt_token_ids:
                 continue
 
-            # Skip PFlash-compressed requests
-            if _pflash_compressed(request):
-                continue
-
             total_prompt = len(request.prompt_token_ids)
             cached = request.cached_tokens or 0
 
@@ -3530,10 +3469,6 @@ class Scheduler:
                 return
             request = self.requests.get(request_id)
             if not request or not request.prompt_token_ids:
-                return
-            # PFlash bypass: see scheduler.add_request for the
-            # positional-fiction rationale.
-            if _pflash_compressed(request):
                 return
 
             total_cached = (request.cached_tokens or 0) + processed_tokens
@@ -4524,81 +4459,14 @@ class Scheduler:
                 request.prompt_token_ids = list(request.prompt)
             request.num_prompt_tokens = len(request.prompt_token_ids)
 
-        # Logical-vs-model prompt-length split (#287). num_prompt_tokens
-        # is what gets reported to clients / usage tracking; PFlash may
-        # shorten prompt_token_ids before prefill, so model_prompt_tokens
-        # tracks the post-transform length used by the scheduler.
+        # num_prompt_tokens is what gets reported to clients / usage
+        # tracking; model_prompt_tokens tracks the actual token length
+        # used by the scheduler.
         if request.prompt_token_ids is not None and request.model_prompt_tokens == 0:
             request.model_prompt_tokens = len(request.prompt_token_ids)
 
-        # PFlash long-prompt compression — must run before any cache
-        # lookup. When compression engages, prompt_token_ids is replaced
-        # by the kept-token subsequence and the prefix cache is bypassed
-        # entirely (both fetch and store, see below) because the
-        # compressed token sequence is a positional fiction: position i
-        # in compressed land does NOT correspond to position i in the
-        # original prompt, so reusing KV computed for the uncompressed
-        # prefix would inject position-shifted state into a later
-        # uncompressed request that shares the same sink prefix.
-        pflash_compressed = False
-        if self.config.pflash_config.mode != "off" and request.prompt_token_ids:
-            original_tokens = list(request.prompt_token_ids)
-            original_prefix_boundary = request.prefix_boundary
-            scoring_start = time.monotonic()
-            compressed_tokens, metadata = compress_request_tokens(
-                original_tokens,
-                self.config.pflash_config,
-                has_tools=request.has_tools,
-                requires_prompt_integrity=request.requires_prompt_integrity,
-            )
-            metadata["scoring_seconds"] = time.monotonic() - scoring_start
-            metadata["logical_prompt_tokens"] = len(original_tokens)
-            metadata["model_prompt_tokens"] = len(compressed_tokens)
-            metadata["prefix_boundary_original"] = original_prefix_boundary
-            metadata["prefix_boundary_disabled"] = False
-            request.pflash_metadata = metadata
-            if metadata["compressed"]:
-                pflash_compressed = True
-                # M-02: count every prompt that took the PFlash bypass
-                # so /metrics surfaces the work that prefix-cache
-                # counters can't (the compressed sequence skips both
-                # fetch and store — see the explanation block above).
-                # ``tokens_dropped`` = logical prompt length minus kept
-                # length, i.e. the saving operators want for capacity
-                # planning.
-                self.pflash_bypass_count += 1
-                self.pflash_compressed_tokens_dropped += max(
-                    0, len(original_tokens) - len(compressed_tokens)
-                )
-                request.original_prompt_token_ids = original_tokens
-                request.prompt_token_ids = compressed_tokens
-                request.model_prompt_tokens = len(compressed_tokens)
-                # prefix_boundary indexes into the ORIGINAL prompt; the
-                # compressed sequence is non-prefix so a boundary save
-                # would point at meaningless tokens. Force-disable.
-                if original_prefix_boundary > 0:
-                    request.prefix_boundary = 0
-                    metadata["prefix_boundary_disabled"] = True
-                logger.info(
-                    f"[pflash] request={request.request_id[:12]} "
-                    f"compressed {metadata['original_tokens']} -> "
-                    f"{metadata['kept_tokens']} tokens "
-                    f"ratio={metadata['compression_ratio']:.3f} "
-                    f"scoring_ms={metadata['scoring_seconds'] * 1000.0:.2f}"
-                )
-            else:
-                logger.debug(
-                    f"[pflash] request={request.request_id[:12]} skipped "
-                    f"reason={metadata['reason']} tokens={metadata['original_tokens']}"
-                )
-
-        # Check prefix cache for cached KV state. Compressed requests
-        # MUST skip the lookup — see PFlash comment above for the
-        # positional-fiction explanation.
-        if pflash_compressed:
-            request.cache_hit_type = "miss"
-            request.remaining_tokens = request.prompt_token_ids
-        elif self.block_aware_cache is not None:
+        # Check prefix cache for cached KV state.
+        if self.block_aware_cache is not None:
             # Use paged cache
             block_table, remaining = self.block_aware_cache.fetch_cache(
                 request.request_id,
@@ -4654,10 +4522,8 @@ class Scheduler:
         # hit/miss decision and BEFORE the request is committed to tracking
         # and scheduling, so a restored cache is attached to the Request the
         # same way a memory hit would be. Off-by-default and reject-on-doubt;
-        # see ``_maybe_disk_restore``. ``pflash_compressed`` guards the
-        # positional-fiction case (a compressed prompt has no real prefix to
-        # restore).
-        self._maybe_disk_restore(request, pflash_compressed=pflash_compressed)
+        # see ``_maybe_disk_restore``.
+        self._maybe_disk_restore(request)
 
         # Add to tracking. D-M01-2X (0.8.2 dogfood, codex r10
         # BLOCKING follow-up): the cancellation dedupe ledgers
@@ -4671,7 +4537,7 @@ class Scheduler:
         # earlier in this method. An earlier clear (e.g. right
         # after the admission gate) would erase the prior
         # lifetime's dedupe even if tokenization / cache lookup /
-        # PFlash compression subsequently raised, opening a
+        # compression subsequently raised, opening a
         # double-count window for the OLD lifetime should a late
         # ``abort_request`` arrive between the failed admit and
         # the next successful one. By gating the clear on the
@@ -5653,7 +5519,7 @@ class Scheduler:
         except Exception as _e:  # pragma: no cover — boundary write is best-effort
             logger.debug("[disk_persist] boundary write failed: %s", _e)
 
-    def _maybe_disk_restore(self, request: Request, *, pflash_compressed: bool) -> None:
+    def _maybe_disk_restore(self, request: Request) -> None:
         """Restore a request's KV prefix from a disk checkpoint on a miss.
 
         R15-P3 (task #303) — the restore half of disk KV checkpointing.
@@ -5672,8 +5538,6 @@ class Scheduler:
         - feature enabled;
         - the prefix-cache chain reported a MISS and left no ``prompt_cache``
           (never override a real memory hit);
-        - the prompt is not PFlash-compressed (a compressed sequence is a
-          positional fiction with no restorable prefix — see ``add_request``);
         - ``prompt_token_ids`` is populated.
 
         Validation contract on the looked-up checkpoint (all must hold):
@@ -5713,8 +5577,6 @@ class Scheduler:
         _restore_installed = False
         try:
             if not getattr(self.config, "kv_disk_restore_enabled", False):
-                return
-            if pflash_compressed:
                 return
             if request.cache_hit_type != "miss" or request.prompt_cache is not None:
                 return
@@ -6124,7 +5986,7 @@ class Scheduler:
 
         # Total tokens already in the cache — prompt + every output token
         # we have already appended. ``num_tokens`` is the canonical sum
-        # on the Request dataclass and accounts for PFlash's bypass shape.
+        # on the Request dataclass.
         num_tokens = request.num_tokens
 
         state = getattr(request, "_kv_checkpoint_state", None)
@@ -6210,18 +6072,12 @@ class Scheduler:
         for request_id in finished_ids:
             request = self.running.get(request_id)
 
-            # PFlash bypass: compressed requests skip the prefix-cache
-            # store entirely. Their prompt_token_ids holds the
-            # compressed subsequence so a stored entry would be keyed by
-            # positions that do not match any real prompt prefix.
-            pflash_skip_store = request is not None and _pflash_compressed(request)
-
             # Store cache for future reuse
             if (
                 request is not None
                 and request.prompt_token_ids
-                and not pflash_skip_store
             ):
+
                 # Disk checkpoint tier: persist independently of the legacy RAM
                 # caches (block-aware / prefix). SSD-first PR3 (#16) makes disk
                 # its own always-on tier gated on the checkpoint interval, so it
@@ -6509,9 +6365,9 @@ class Scheduler:
                 # Schedule waiting requests
                 scheduled = self._schedule_waiting()
                 output.scheduled_request_ids = [r.request_id for r in scheduled]
-                # Use model_prompt_tokens — when PFlash engages the
-                # prefill workload is the compressed length, not the
-                # logical (client-visible) prompt length.
+                # Use model_prompt_tokens — the actual prefill workload
+                # length (post any prompt transform), not the logical
+                # (client-visible) prompt length.
                 output.num_scheduled_tokens = sum(
                     r.model_prompt_tokens or r.num_prompt_tokens for r in scheduled
                 )
@@ -6797,16 +6653,6 @@ class Scheduler:
             "num_requests_processed": self.num_requests_processed,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
-            # M-02: PFlash observability counters. ``bypass_count`` is
-            # the number of requests where PFlash compression engaged
-            # and the prefix-cache fetch/store was skipped;
-            # ``compressed_tokens_dropped`` is the cumulative number of
-            # prompt tokens removed by the compressor (logical minus
-            # kept). Both default to zero on engines without PFlash so
-            # /metrics renders a flat-line 0 instead of an absent
-            # series.
-            "pflash_bypass_count": self.pflash_bypass_count,
-            "pflash_compressed_tokens_dropped": self.pflash_compressed_tokens_dropped,
             # M-01: cancellation observability. ``num_requests_cancelled``
             # is the total count of public-API aborts the scheduler
             # accepted (one increment per unique request_id transitioning

@@ -1012,7 +1012,7 @@ def test_minor4_partial_rejected_for_full_only_model(root: str, monkeypatch):
     )
 
     before = _dkc.get_stats()["restore_rejects"].get("full_checkpoint_mismatch", 0)
-    Scheduler._maybe_disk_restore(stub, request, pflash_compressed=False)
+    Scheduler._maybe_disk_restore(stub, request)
 
     after = _dkc.get_stats()["restore_rejects"].get("full_checkpoint_mismatch", 0)
     assert after == before + 1, "guard (d) did not reject the partial checkpoint"
