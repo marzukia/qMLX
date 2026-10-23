@@ -945,6 +945,7 @@ def _install_chunked_prefill(
     batch_gen._next = _chunked_next
     batch_gen._generation_step = _generation_step
     batch_gen.remove = _patched_remove
+    batch_gen._prefill_vision_kwargs = _prefill_vision_kwargs  # t286 MINOR-1: closure must land on batch_gen (scheduler.py:812 call site)
 
     logger.info(f"[chunked_prefill] installed with budget={budget} tokens per step")
 
@@ -5517,7 +5518,12 @@ class Scheduler:
         return outputs, finished_ids
 
     def _disk_persist_boundary(
-        self, tokens, cache, *, stable_prefix_len: int | None = None, media_key: str = ""
+        self,
+        tokens,
+        cache,
+        *,
+        stable_prefix_len: int | None = None,
+        media_key: str = "",
     ) -> None:
         """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
