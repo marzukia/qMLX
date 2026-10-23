@@ -3622,9 +3622,11 @@ def _tui_hint_or_exit() -> None:
 
 def tui_command(args):
     """Textual chat TUI — ``qmlx tui [model]`` (issue #51, phase 4)."""
-    from vllm_mlx import tui as _tui
-
+    # Hint check MUST precede the import — vllm_mlx.tui imports textual at
+    # module top level, so a bare install must see the friendly hint (exit 1)
+    # instead of an ImportError traceback (AC9).
     _tui_hint_or_exit()
+    from vllm_mlx import tui as _tui
     # ``main()`` pre-resolves ``args.model`` (alias → HF path) exactly like
     # chat; the TUI requests use the alias the user typed so it matches
     # the served name when a server was spawned for this model.
@@ -4570,9 +4572,10 @@ def chat_command(args):
     # spawn + ready-wait); a spawned server (if any) stays in _active_procs
     # so _cleanup reaps it when the TUI exits.
     if getattr(args, "tui", False):
-        from vllm_mlx import tui as _tui
-
+        # Hint check MUST precede the import — vllm_mlx.tui imports textual
+        # at module top level (AC9: bare install → hint + exit 1, no traceback).
         _tui_hint_or_exit()
+        from vllm_mlx import tui as _tui
         args.model = served_name  # TUI requests use the served name
         _tui.run(args)
         _cleanup()
