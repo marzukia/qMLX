@@ -425,8 +425,12 @@ def test_b_broken_chain_falls_back_to_base_prefix(root: str):
     assert loaded.token_offset == 128
     _assert_attention_bit_identical(_slice_full_to(canon, 128), loaded.cache)
     # The broken leaf was dropped from the index (fallback loop advanced).
+    # Issue #56: the index is nested (token tuple -> media bucket -> ref);
+    # the whitebox offset sweep walks both levels.
     assert 384 not in {
-        r.token_offset for r in _dkc.get_content_index()._by_key.values()
+        ref.token_offset
+        for bucket in _dkc.get_content_index()._by_key.values()
+        for ref in bucket.values()
     }
 
 
