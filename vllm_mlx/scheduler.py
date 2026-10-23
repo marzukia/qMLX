@@ -796,7 +796,8 @@ def _install_chunked_prefill(
                     # When the request already has cached tokens (cache hit),
                     # adjust the boundary relative to the remaining tokens.
                     _first_chunk = budget
-                    if _needs_boundary_split and len(batch_prompts) == 1:                        _uid0 = uids[0]
+                    if _needs_boundary_split and len(batch_prompts) == 1:
+                        _uid0 = uids[0]
                         _rid0 = uid_to_request_id.get(_uid0)
                         _req0 = requests.get(_rid0) if _rid0 else None
                         _pb = getattr(_req0, "prefix_boundary", 0) if _req0 else 0
@@ -6139,6 +6140,14 @@ class Scheduler:
                             full_token_sequence,
                             request._extracted_cache,
                             stable_prefix_len=len(request.prompt_token_ids),
+                            # Issue #56: completion checkpoints of image
+                            # prompts must land in the request's media
+                            # bucket, else a multi-turn image conversation
+                            # (restore looks up (prompt_ids, media_key))
+                            # never reuses them and two different images
+                            # with identical tokens collide in the text
+                            # bucket.
+                            media_key=getattr(request, "media_key", "") or "",
                         )
                         _store_dt = _time.monotonic() - _store_t0
 
