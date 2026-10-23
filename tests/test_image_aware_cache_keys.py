@@ -63,7 +63,9 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return str(root)
 
 
-def _write_matchable(root: str, req_id: str, tokens: list[int], media_key: str = "") -> str:
+def _write_matchable(
+    root: str, req_id: str, tokens: list[int], media_key: str = ""
+) -> str:
     """Write a boundary-style checkpoint (tokens blob + sidecar) and index it."""
     n = len(tokens)
     cache = _seed_kv_cache(num_tokens=n)
@@ -259,9 +261,7 @@ def test_disk_persist_boundary_media_key_changes_hash_and_sidecar(root: str):
         b"test-model" + raw + b"\x00" + mk_b.encode()
     ).hexdigest()[:16]
     assert os.path.exists(
-        os.path.join(
-            root, media_hash_b, f"checkpoint-{len(tokens)}.safetensors"
-        )
+        os.path.join(root, media_hash_b, f"checkpoint-{len(tokens)}.safetensors")
     )
 
 

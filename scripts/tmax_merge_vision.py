@@ -226,11 +226,11 @@ def merge(
     idx = mlx_dir / "model.safetensors.index.json"
     report["index_changed"] = False
     if idx.exists() and report.get("shard"):
-        report["index_changed"] = _update_index(idx, mlx_dir, list(vision), VISION_SHARD_NAME)
+        report["index_changed"] = _update_index(
+            idx, mlx_dir, list(vision), VISION_SHARD_NAME
+        )
 
-    report.setdefault(
-        "status", "merged" if need_shard_write else "already-merged"
-    )
+    report.setdefault("status", "merged" if need_shard_write else "already-merged")
     return report
 
 
@@ -251,7 +251,9 @@ def main(argv=None):
     )
     args = p.parse_args(argv)
     prefixes = args.prefix or list(DEFAULT_VISION_PREFIXES)
-    rep = merge(Path(args.mlx_snapshot_dir), Path(args.hf_base_dir), prefixes, args.force)
+    rep = merge(
+        Path(args.mlx_snapshot_dir), Path(args.hf_base_dir), prefixes, args.force
+    )
     print(json.dumps(rep, indent=2))
     return 0 if rep.get("hf_vision_keys") else 1
 
