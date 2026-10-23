@@ -188,14 +188,38 @@ def mtp_generate_step(
     # 0.9.13 PR-B (Ollama-style EV depth controller). ``model_id`` keys
     # the process-global controller registry so cost + acceptance state
     # persists across requests for the same model+drafter combination.
-    # ``max_k`` bounds the depth the controller may pick; the current
-    # generator body only implements K∈{0,1} (park + chain-of-1), so
-    # picks above 1 are clamped and logged. ``disable_auto_k=True``
-    # keeps the pre-PR-B chain-of-1 behavior unchanged — useful for
-    # A/B benching the controller against a fixed K=1 baseline.
+    # ``max_k`` bounds the depth the controller may pick. The generator
+    # body is K-general (chain-of-K draft + batched ``(K+1)``-position
+    # verify + sequential accept walk), so picks up to ``max_k`` run at
+    # full depth — K>=2 on SSM-hybrid targets rolls back via the
+    # per-position tape (``cache_patch.patch_gated_delta_net_for_mtp``).
+    # ``disable_auto_k=True`` keeps the pre-PR-B fixed chain-of-1
+    # behavior unchanged — useful for A/B benching the controller
+    # against a fixed K=1 baseline.
     model_id: str | None = None,
     max_k: int = 1,
     disable_auto_k: bool = False,
+    # Issue #53 seeded-temp contract: per-request PRNG seed. When
+    # ``seed`` is not ``None`` and ``temp > 0``, every PRNG draw inside
+    # this generator (draft sampling, verify sampling, the shared
+    # accept uniform, the residual distribution, the XTC draw) is pulled
+    # from a per-request ``mx.random.key`` stream derived from ``seed``
+    # instead of the process-global ``mx.random.state``. Two runs with
+    # the same ``(seed, temp, top_p, top_k, min_p, xtc_*, max_k,
+    # fixed_k, model, prompt)`` produce identical token streams, and
+    # key-based draws never touch global state, so interleaved seeded
+    # requests in one process cannot cross-contaminate each other.
+    # Greedy (``temp == 0``) performs no draws; the seed is accepted (so
+    # the OpenAI ``seed`` parameter always reaches the MTP path) but is
+    # a no-op there.
+    seed: int | None = None,
+    # Issue #53 d=3 gate-harness knob: pin the draft depth for every
+    # round, bypassing the EV depth controller entirely. ``0`` parks
+    # every round (plain backbone decode — the K=0 baseline); ``>= 1``
+    # drafts a chain of that length every round. Must lie in
+    # ``[0, max_k]``. ``None`` (default) keeps controller behavior
+    # unchanged.
+    fixed_k: int | None = None,
     # 0.9.13 PR-C EOS holdout. When an accepted draft is a stop token
     # (Gemma 4 ``<end_of_turn>``, tokenizer ``eos_token_id``, or any
     # id in the request's assembled stop set), positions past that
@@ -213,9 +237,9 @@ def mtp_generate_step(
     Vendored verbatim from mlx-lm PR #990
     ``mlx_lm/generate.py::mtp_generate_step``. Each iteration runs one
     backbone forward pass (over the current token plus its pending
-    draft) and one MTP forward pass (to propose the next draft). Up
-    to two tokens are emitted per backbone step: one always-accepted
-    backbone token and one conditionally-accepted draft token.
+    drafts) and one MTP forward pass (to propose the next draft). Up
+    to K+1 tokens are emitted per backbone step (K accepted drafts plus
+    the bonus), one always-accepted backbone token otherwise.
 
     Requirements on ``model``:
 
@@ -295,6 +319,28 @@ def mtp_generate_step(
 
     _is_greedy = temp == 0
 
+    # Issue #53 seeded-temp contract: build the per-request key stream
+    # BEFORE the decode loop so every draw below (draft / verify
+    # sampling, the shared accept uniform, residual, XTC) pulls from
+    # it when a seed was passed. ``mx.random.key`` requires a uint32,
+    # so fold the public seed the same way ``_seeded_sampler`` does
+    # (``seed & 0xFFFFFFFF``) — same seed ⇒ same key ⇒ same draw
+    # sequence, for any integer in the OpenAI-documented range.
+    if seed is not None:
+        _base_key = mx.random.key(int(seed) & 0xFFFFFFFF)
+        _key_buf: list = []
+
+        def _next_key() -> mx.array:
+            # Lazy split: 64 subkeys at a time keeps one split per 64
+            # draws (a split costs a host round-trip; the draws are the
+            # hot path). The stream is a pure function of the seed, so
+            # it is identical across runs.
+            if not _key_buf:
+                _key_buf.extend(list(mx.random.split(_base_key, 64)))
+            return _key_buf.pop(0)
+    else:
+        _next_key = None
+
     _filter_chain, _xtc_cell = (
         _make_sampler_chain(
             top_p,
@@ -329,14 +375,25 @@ def mtp_generate_step(
             masked = logprobs
             for f in _filter_chain:
                 masked = f(masked)
-            token = categorical_sampling(masked, temp)
+            if _next_key is not None:
+                # Seeded path: same math as ``categorical_sampling``
+                # (``logits / temp``) but drawn from the per-request key
+                # stream instead of the global PRNG state.
+                token = mx.random.categorical(masked * (1.0 / temp), key=_next_key())
+            else:
+                token = categorical_sampling(masked, temp)
             scaled = masked / temp
             lp_accept = scaled - mx.logsumexp(scaled, axis=-1, keepdims=True)
         elif _is_greedy:
             token = mx.argmax(logprobs, axis=-1)
             lp_accept = logprobs
         else:
-            token = categorical_sampling(logprobs, temp)
+            if _next_key is not None:
+                token = mx.random.categorical(
+                    logprobs * (1.0 / temp), key=_next_key()
+                )
+            else:
+                token = categorical_sampling(logprobs, temp)
             scaled = logprobs / temp
             lp_accept = scaled - mx.logsumexp(scaled, axis=-1, keepdims=True)
         return token, logprobs, lp_accept
@@ -463,7 +520,12 @@ def mtp_generate_step(
                 )
             else:
                 tokens_for_proc = prev
-            xtc_draw = mx.random.uniform() if _xtc_cell is not None else None
+            if _xtc_cell is None:
+                xtc_draw = None
+            elif _next_key is not None:
+                xtc_draw = mx.random.uniform(key=_next_key())
+            else:
+                xtc_draw = mx.random.uniform()
             draft_tok, draft_lp, draft_accept_lp = _process_and_sample(
                 tokens_for_proc, mtp_logits, xtc_draw
             )
@@ -599,24 +661,39 @@ def mtp_generate_step(
     # 0.9.13 PR-B Fix 3: K≥2 chain-of-K lifted. The verify path now
     # accepts K sequential drafts with a single ``(K+1)``-position
     # backbone forward, per Ollama's ``speculate.go::accept`` batching.
-    # The SSM-hybrid (ArraysCache) rollback is not compatible with the
-    # per-position snapshot Ollama uses, so any model whose cache list
-    # contains an SSM slot is clamped to K=1 at loop-start below —
-    # chain-of-K on SSM targets needs the ``PrepareSnapshots([offsets])``
-    # per-position machinery, which is a separate work item.
+    # SSM-hybrid (ArraysCache) targets were initially clamped to K=1
+    # (Ollama's single-snapshot rollback cannot address intermediate
+    # positions); PR-C+ TAPE ROLLBACK replaced that clamp with
+    # per-position snapshots in ``rollback_state`` (see
+    # ``cache_patch.patch_gated_delta_net_for_mtp``), so K up to
+    # ``max_k`` now runs at full depth on SSM targets too.
     # ------------------------------------------------------------------
     # SSM detection: patched ArraysCache carries a ``rollback_state``
     # class attribute (see ``cache_patch.py``); KVCache does not. This
     # is the cheapest, most stable class-level signal for the SSM path
     # available without importing the two cache classes here.
     _has_ssm_cache = any(hasattr(c, "rollback_state") for c in model_cache)
-    if not disable_auto_k:
+    if fixed_k is not None:
+        # Issue #53: gate-harness depth pin. Validate up front so a
+        # harness typo (``fixed_k=3, max_k=1``) fails at construction
+        # instead of silently clamping mid-stream.
+        if not 0 <= fixed_k <= max_k:
+            raise ValueError(f"fixed_k={fixed_k} must lie in [0, max_k={max_k}]")
+        # No controller state — the depth is constant for the request.
+        max_k_effective = max_k
+        _controller: DepthController | None = None
+        if _has_ssm_cache and fixed_k >= 2:
+            logger.info(
+                "[MTP-chain-of-K] SSM cache detected — TAPE rollback "
+                "enabled for K>=2 (per-position snapshots in rollback_state)."
+            )
+    elif not disable_auto_k:
         # TAPE ROLLBACK (PR-C+): SSM-hybrid targets now support K>=2
         # via per-position snapshots in the rollback_state tape.
         # No clamping needed — the tape allows rolling back to ANY
         # position in the draft chain.
         max_k_effective = max(0, max_k)
-        _controller: DepthController | None = get_or_create_controller(
+        _controller = get_or_create_controller(
             model_id or "__default__", max_k=max_k_effective
         )
         if _has_ssm_cache and max_k >= 2:
@@ -630,11 +707,19 @@ def mtp_generate_step(
         max_k_effective = 1
         _controller = None
 
+    def _pick_k() -> int:
+        """Depth for the upcoming round (fixed pin > controller > 1)."""
+        if fixed_k is not None:
+            return fixed_k
+        if _controller is not None:
+            return _controller.pick_k()
+        return 1
+
     # next_k: the K the controller wants for the UPCOMING round. Determines
     # whether we generate a draft at end of the current round. Bootstrap
     # value is the controller's initial pick_k (0 if fresh, else the
     # scheduled depth from the previous request).
-    next_k = _controller.pick_k() if _controller is not None else 1
+    next_k = _pick_k()
 
     def _record_round(k_used: int, round_wall_ms: float, accepts: list[bool]) -> None:
         """Fold a round outcome into the controller (if enabled)."""
@@ -663,7 +748,7 @@ def mtp_generate_step(
                 return
 
             # Decide K for the NEXT round.
-            next_k = _controller.pick_k() if _controller is not None else 1
+            next_k = _pick_k()
 
             hidden_at_main = hidden[:, -1:, :]
             del hidden  # P1: free full hidden tensor
@@ -698,10 +783,10 @@ def mtp_generate_step(
             # K=1: single verify + bonus (byte-equal to pre-PR-C at
             # greedy temp=0 because residual == verify-argmax there).
             # K>=2: batched (K+1)-position backbone forward, sequential
-            # accept-reject per Ollama's ``speculate.go::accept``. The
-            # SSM path is clamped at loop-start so K>=2 only reaches
-            # this branch on pure-attention targets (KVCache.trim() is
-            # the only rollback needed).
+            # accept-reject per Ollama's ``speculate.go::accept``.
+            # SSM targets roll back via the per-position tape
+            # (``rollback_state``); pure-attention targets use
+            # ``KVCache.trim()``.
             # -------------------------------------------------------
             k_len = len(pending_drafts)
             draft_toks_arr = [rec[0] for rec in pending_drafts]
@@ -732,6 +817,28 @@ def mtp_generate_step(
                 xtc_draw=first_xtc_draw,
             )
 
+            # Issue #53 d=3 gate invariant: on SSM targets the verify
+            # forward's chunk-split must have recorded a per-position
+            # tape of exactly ``k_len`` entries in EVERY SSM layer
+            # before the accept walk below. ``_rollback_draft`` indexes
+            # ``tape[len - n_to_drop]`` on rejection, so a mis-recorded
+            # tape (wrong n_confirmed boundary, fast-path firing by
+            # mistake, a layer skipping the split) would restore the
+            # WRONG state silently. Fail fast on the shape mismatch
+            # instead of corrupting the stream.
+            if _has_ssm_cache:
+                for _ci, _c in enumerate(model_cache):
+                    if not hasattr(_c, "rollback_state"):
+                        continue
+                    _tape = _c.rollback_state
+                    if _tape is None or len(_tape) != k_len:
+                        raise AssertionError(
+                            f"[MTP-d3] SSM tape invariant violated before "
+                            f"accept walk: layer {_ci} tape="
+                            f"{'None' if _tape is None else str(len(_tape))} "
+                            f"entries, expected {k_len} (k_len={k_len})."
+                        )
+
             # One shared uniform for all positions' probabilistic
             # accept tests. Ollama uses a per-position Bernoulli draw;
             # at greedy temp=0 the draw is ignored (accept iff argmax
@@ -739,7 +846,10 @@ def mtp_generate_step(
             # ``u`` biases all positions the same way — closer to
             # Ollama's per-position draw than reusing the sampler
             # chain's XTC cell would be.
-            u = mx.random.uniform()
+            if _next_key is not None:
+                u = mx.random.uniform(key=_next_key())
+            else:
+                u = mx.random.uniform()
             drafts_i32 = drafts_arr.astype(mx.int32)
 
             # --------------------------------------------------------
@@ -776,7 +886,11 @@ def mtp_generate_step(
                 residual = mx.maximum(p_target - p_draft, 0.0)  # (K, V)
                 z = residual.sum(axis=-1, keepdims=True)  # (K, 1)
                 dist = mx.where(z > 0, residual, p_target)  # (K, V)
-                residual_toks_arr = mx.random.categorical(mx.log(dist))
+                residual_toks_arr = (
+                    mx.random.categorical(mx.log(dist), key=_next_key())
+                    if _next_key is not None
+                    else mx.random.categorical(mx.log(dist))
+                )
                 # Bonus already sampled per-position inside _step_backbone
                 # for temp>0 (categorical over target distro at position K).
                 bonus_tok_arr = toks[k_len]
@@ -901,7 +1015,7 @@ def mtp_generate_step(
 
             # Decide K for the next round BEFORE generating the
             # next chain (a park decision skips drafter cost).
-            next_k = _controller.pick_k() if _controller is not None else 1
+            next_k = _pick_k()
             if next_k >= 1:
                 # Chain-carry: on all-accept the mtp_cache must
                 # advance by one extra position for the just-accepted
