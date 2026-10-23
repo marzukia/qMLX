@@ -906,6 +906,7 @@ def _install_chunked_prefill(
     batch_gen._next = _chunked_next
     batch_gen._generation_step = _generation_step
     batch_gen.remove = _patched_remove
+    batch_gen._prefill_vision_kwargs = _prefill_vision_kwargs  # t286 MINOR-1: closure must land on batch_gen (scheduler.py:812 call site)
 
     logger.info(f"[chunked_prefill] installed with budget={budget} tokens per step")
 
@@ -3113,7 +3114,6 @@ class Scheduler:
             "yes",
         ):
             install_prefill_profiling(bg)
-
 
         # Server-side wiring for ``--speculative-config '{"method":"mtp"}'``.
         # This installs the vendored PR #990 ``mtp_generate_step`` hot
@@ -5376,7 +5376,12 @@ class Scheduler:
         return outputs, finished_ids
 
     def _disk_persist_boundary(
-        self, tokens, cache, *, stable_prefix_len: int | None = None, media_key: str = ""
+        self,
+        tokens,
+        cache,
+        *,
+        stable_prefix_len: int | None = None,
+        media_key: str = "",
     ) -> None:
         """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
@@ -6115,11 +6120,7 @@ class Scheduler:
             request = self.running.get(request_id)
 
             # Store cache for future reuse
-            if (
-                request is not None
-                and request.prompt_token_ids
-            ):
-
+            if request is not None and request.prompt_token_ids:
                 # Disk checkpoint tier: persist independently of the legacy RAM
                 # caches (block-aware / prefix). SSD-first PR3 (#16) makes disk
                 # its own always-on tier gated on the checkpoint interval, so it
