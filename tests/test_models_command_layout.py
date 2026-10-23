@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from vllm_mlx.cli import models_command
-from vllm_mlx.model_aliases import list_profiles, list_visible_profiles
+from vllm_mlx.model_aliases import list_visible_profiles
 
 
 def _capture(capsys, **arg_overrides):
