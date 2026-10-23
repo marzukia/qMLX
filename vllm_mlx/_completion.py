@@ -2,7 +2,7 @@
 """Shell completion helpers for the qmlx CLI.
 
 Used by ``argcomplete`` to suggest model aliases when the user
-tab-completes on subcommands like ``qmlx chat gemma-4-<TAB>``.
+tab-completes on subcommands like ``qmlx chat qwen3.5-<TAB>``.
 
 Two layers of defense for the completion hot path:
 
@@ -93,7 +93,15 @@ def _load_alias_names() -> list[str]:
         return []
     if not isinstance(data, dict):
         return []
-    names = sorted(k for k in data if _is_safe_alias_name(k))
+    names = sorted(
+        k
+        for k in data
+        # qwen3.*-only picker options (2026-10-23 operator directive):
+        # the shell surface presents the same qwen3-only catalog as
+        # ``qmlx models``. Kept as a local predicate so this module
+        # stays dependency-free (it parses aliases.json itself).
+        if _is_safe_alias_name(k) and k.startswith("qwen3")
+    )
     _CACHE = (stat.st_mtime, stat.st_size, names)
     return names
 

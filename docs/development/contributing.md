@@ -42,8 +42,8 @@ A correctness test asks *"does the model + our code produce the right output?"* 
 |---|---|---|
 | `tests/` unit + integration | correctness | `mlx-community/Qwen3-0.6B-8bit` |
 | `scripts/bench_dflash.py`, `scripts/bench_suffix_decoding_integrated.py`, `harness/runs/` | perf | 4-bit aliases (user reality) |
-| `make check` (`qmlx bench ... --tier check`) | smoke / boot sanity | `mlx-community/Qwen3.5-4B-MLX-4bit` (4-bit, ~30s boot) |
-| `make full` (`qmlx bench ... --tier full`) | mixed | 8-bit for correctness suites, 4-bit for bench suites; separate baselines per precision |
+| `make smoke` (`scripts/dev_test.py smoke`) | smoke / boot sanity | `mlx-community/Qwen3.5-4B-MLX-4bit` (4-bit, ~30s boot) |
+| `make release-check-m3` | mixed | 8-bit for correctness suites, 4-bit for bench suites; separate baselines per precision |
 | `evals/run_all_models.sh` scorecard | scoring + perf column | scoring on 8-bit; perf column on 4-bit |
 
 **Why the split matters in practice.** Quant noise on a 4-bit model produces failures that look like engine bugs but aren't. Reproducible example: `mlx-community/Qwen3.6-27B-4bit` with thinking enabled and a 2-tool composition prompt (`Compute (3+4)*5 using add and multiply`) reliably generates a 4000+ token natural-language ramble without ever emitting a valid `<tool_call><function=...>` XML, hitting the 300s client timeout in PydanticAI's multi-tool test. The 8-bit variant (`unsloth/Qwen3.6-27B-MLX-8bit`) emits both tool calls in 286 tokens. Same engine code in both runs — the only variable is quant noise interacting with the model's strict-format tool-call output under deliberation. If a correctness gate runs 4-bit, the failure looks like an engine regression; running 8-bit attributes it cleanly to where it belongs (the 4-bit quant + multi-tool capability ceiling, not qmlx).
@@ -71,16 +71,16 @@ ruff format --check .
 ### Running Benchmarks
 
 ```bash
-# LLM benchmark — short alias works
-qmlx bench qwen3.5-4b-4bit
+# Engine comparison benchmark (qmlx vs ollama vs llama-cpp)
+python scripts/benchmark_engines.py --engine qmlx
 
-# Or by full HF repo
-qmlx bench mlx-community/Qwen3.5-9B-4bit
+# Or benchmark every locally available alias at once
+bash scripts/bench_all_models.sh
 ```
 
-Run `qmlx bench --help` for the full flag list. For multimodal (image /
-video) benchmarks, use `scripts/` (e.g. `scripts/bench_*` for the dev-only
-benchmarks not shipped with pip).
+Run `python scripts/benchmark_engines.py --help` for the full flag list.
+For multimodal (image / video) benchmarks, use `scripts/` (e.g.
+`scripts/bench_*` for the dev-only benchmarks not shipped with pip).
 
 ## Areas for Contribution
 
@@ -108,7 +108,7 @@ See [Architecture](architecture.md) for details on the codebase structure.
 If you have access to different Apple Silicon chips (M1, M2, M3, M4), benchmark results are valuable:
 
 ```bash
-qmlx bench qwen3.5-4b-4bit | tee results_m4.txt
+python scripts/benchmark_engines.py --engine qmlx | tee results_m4.txt
 ```
 
 ## Questions?

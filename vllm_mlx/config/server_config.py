@@ -61,6 +61,12 @@ class ServerConfig:
     bind_host: str | None = None
     bind_port: int | None = None
     bind_listen_fd: int | None = None
+    # ``qmlx serve --live`` (issue #51): the live status strip on the
+    # terminal shows the endpoint as soon as the port is ready, so the
+    # lifespan's one-shot "Ready: http://…" banner would only fight the
+    # strip's redraw. The CLI sets this True in the live path and the
+    # lifespan skips the banner print.
+    suppress_ready_banner: bool = False
 
     # --- Defaults ---
     default_max_tokens: int = 4096
