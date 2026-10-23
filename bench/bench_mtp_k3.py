@@ -1,231 +1,440 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""K=3 MTP acceptance rate benchmark (tape rollback).
+"""Issue #53 d=3 (K=3) gate harness — byte-exact MTP spec decode through
+tape rollback.
 
-Tests the new TAPE rollback implementation that unlocks K>=2 on SSM-hybrid
-targets. This script measures:
+This is the gating harness for byte-exact d=3 speculative decoding on
+SSM-hybrid targets (Qwen3.5/3.6). It exercises the three contracts the
+issue calls out:
 
-1. Acceptance rates at K=1, K=2, K=3
-2. Position-wise acceptance (pos 1, pos 2, pos 3)
-3. Overall speedup compared to baseline
+* **G1 LOSSLESS-D3** — at ``temp=0``, a K=0 (no drafter) run and a
+  K=3 (chain-of-3 through tape rollback) run must emit
+  byte-identical token streams on the same prompt. Any SSM-state
+  mis-restoration on a rejected draft shows up as a divergence.
+* **G2 SEEDED-TEMP** — the OpenAI ``seed`` parameter must reach
+  ``mtp_generate_step`` and drive every PRNG draw: two K=3 ``temp>0``
+  runs with the same seed produce byte-identical streams, and a
+  different seed produces a different stream.
+* **G3 ACCEPT TABLE** — per-position acceptance (positions 1..3) and
+  decode tok/s at K=1/2/3, derived from the flat generator yield
+  stream (the harness does not instrument the loop). Informational by
+  default; gate with ``--min-accept-rate`` if desired.
 
-Expected results (from oQ4-mtp 122B on host-a):
-- K=1: ~93% acceptance, ~1.6x speedup
-- K=2: ~80% acceptance (pos1: 93%, pos2: 67%)
-- K=3: ~81% acceptance (pos1: 93%, pos2: 96%, pos3: 81%), ~2x+ speedup
+Two modes:
 
-Usage::
+* **real** (default): loads a Qwen3.5 checkpoint + MTP sidecar via
+  ``inject_mtp_support`` and runs the gates on the injected inner
+  ``TextModel``::
 
-    python bench/bench_mtp_k3.py --model mlx-community/Qwen3.5-122B-A10B-oQ4-mtp --max-k 3
+      python bench/bench_mtp_k3.py \\
+          --model mlx-community/Qwen3.5-9B-4bit \\
+          --sidecar mlx-community/Qwen3.5-9B-MTP-4bit
 
-Requires the tape rollback patch in cache_patch.py to be active.
+* **self-test**: runs the gates against the deterministic mock models
+  from ``tests/test_mtp_spec_decode.py`` — no download, validates the
+  harness itself (and the gate machinery) on any machine with mlx::
+
+      python bench/bench_mtp_k3.py --self-test
+
+Exit status is 0 when every gate passes and 1 otherwise, so the
+harness can be wired into a release checklist.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
-from dataclasses import dataclass, field
+from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mlx_lm.load import load
+import mlx.core as mx  # noqa: E402
 
-from vllm_mlx.spec_decode.mtp.detect import detect_mtp_support
-from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter  # noqa: E402
+from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (  # noqa: E402
+    reset_controllers,
+)
+from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step  # noqa: E402
+
+_DEFAULT_PROMPT = (
+    "Write a Python function that implements an LRU cache with a max size. "
+    "Include type hints, docstrings, and handle edge cases. "
+    "Also write comprehensive unit tests for it.\n\n"
+    "```python\n"
+)
+
+# (name, model, prompt_ids, max_tokens, temp, seed) run spec
+_RUN = tuple
 
 
-@dataclass
-class PositionStats:
-    """Acceptance stats for a specific draft position."""
+def run_stream(
+    model,
+    prompt_ids: mx.array,
+    max_tokens: int,
+    k: int,
+    temp: float,
+    seed: int | None = None,
+    top_p: float | None = None,
+) -> tuple[list[int], list[bool], float]:
+    """One ``mtp_generate_step`` run at fixed depth ``k``.
 
-    attempts: int = 0
-    accepted: int = 0
+    Returns ``(token_ids, from_draft_flags, wall_seconds)``. Each run
+    gets a fresh accept counter and a cleared controller registry so
+    runs never inherit acceptance-history state from a previous run.
+    """
+    counter = MTPAcceptCounter()
+    reset_controllers()
+    start = time.perf_counter()
+    toks: list[int] = []
+    flags: list[bool] = []
+    kwargs: dict = dict(
+        max_tokens=max_tokens,
+        temp=temp,
+        accept_counter=counter,
+        max_k=k if k > 0 else 3,
+        fixed_k=k,
+        seed=seed,
+    )
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    for tok, _lp, from_draft in mtp_generate_step(prompt_ids, model, **kwargs):
+        toks.append(int(tok))
+        flags.append(bool(from_draft))
+        if len(toks) >= max_tokens:
+            break
+    wall = time.perf_counter() - start
+    return toks, flags, wall
 
-    @property
-    def rate(self) -> float:
-        return self.accepted / self.attempts if self.attempts > 0 else 0.0
+
+def parse_rounds(flags: list[bool], k: int) -> dict[int, tuple[int, int]]:
+    """Derive per-position accept stats from the flat yield stream.
+
+    Round structure of the generator's yield stream: a K=0 round emits
+    one ``from_draft=False``; a verify round emits ``accepted_count``
+    consecutive ``from_draft=True`` entries followed by exactly one
+    ``from_draft=False`` (bonus on all-accept, residual on reject).
+    A trailing ``True`` run without a closing ``False`` means the run
+    hit ``max_tokens`` mid-round — it still counts as accepts.
+
+    Returns ``{position: (attempts, accepted)}`` for positions
+    ``1..k``: position ``p`` was attempted in every verify round
+    (``k`` drafts each) and accepted iff the round's accept run length
+    reached ``p``.
+    """
+    attempts = {p: 0 for p in range(1, k + 1)}
+    accepted = {p: 0 for p in range(1, k + 1)}
+
+    def count_run(run_len: int) -> None:
+        if run_len <= 0:
+            return
+        for p in range(1, k + 1):
+            attempts[p] += 1
+            if run_len >= p:
+                accepted[p] += 1
+
+    run_len = 0
+    for from_draft in flags:
+        if from_draft:
+            run_len += 1
+        else:
+            count_run(run_len)
+            run_len = 0
+    count_run(run_len)  # stream ended mid-round at max_tokens
+    return {p: (attempts[p], accepted[p]) for p in range(1, k + 1)}
 
 
-@dataclass
-class KRunStats:
-    """Stats for a specific K value."""
-
-    k: int
-    total_attempts: int = 0
-    total_accepted: int = 0
-    position_stats: dict[int, PositionStats] = field(default_factory=dict)
-    total_tokens: int = 0
-    total_time: float = 0.0
-    decode_tok_per_sec: float = 0.0
-
-    @property
-    def accept_rate(self) -> float:
-        return (
-            self.total_accepted / self.total_attempts
-            if self.total_attempts > 0
-            else 0.0
+def gate_g1_lossless_d3(
+    make_model, prompt_ids: mx.array, max_tokens: int
+) -> tuple[bool, str, list[int], list[int]]:
+    """G1: K=0 vs K=3 byte identity at temp=0."""
+    base, _, _ = run_stream(
+        make_model(), prompt_ids, max_tokens, k=0, temp=0.0
+    )
+    spec, _, _ = run_stream(
+        make_model(), prompt_ids, max_tokens, k=3, temp=0.0
+    )
+    ok = base == spec
+    msg = (
+        f"G1 LOSSLESS-D3: {'PASS' if ok else 'FAIL'} — K=0 emitted "
+        f"{len(base)} tokens, K=3 emitted {len(spec)}; "
+        + (
+            "streams byte-identical."
+            if ok
+            else f"first divergence: K0={base} K3={spec}"
         )
-
-    def record_position_accept(self, pos: int, accepted: bool):
-        if pos not in self.position_stats:
-            self.position_stats[pos] = PositionStats()
-        self.position_stats[pos].attempts += 1
-        if accepted:
-            self.position_stats[pos].accepted += 1
+    )
+    return ok, msg, base, spec
 
 
-def run_mtp_benchmark(
-    model_path: str,
-    max_k: int,
-    max_tokens: int = 200,
-    num_prompts: int = 3,
-):
-    """Run MTP benchmark with tape rollback."""
+def gate_g2_seeded_temp(
+    make_model, prompt_ids: mx.array, max_tokens: int, temp: float
+) -> tuple[bool, str]:
+    """G2: seeded temp>0 determinism (same seed ⇒ same stream; a
+    different seed ⇒ different stream)."""
+    a, _, _ = run_stream(
+        make_model(), prompt_ids, max_tokens, k=3, temp=temp, seed=42, top_p=0.9
+    )
+    b, _, _ = run_stream(
+        make_model(), prompt_ids, max_tokens, k=3, temp=temp, seed=42, top_p=0.9
+    )
+    c, _, _ = run_stream(
+        make_model(), prompt_ids, max_tokens, k=3, temp=temp, seed=7, top_p=0.9
+    )
+    reproducible = a == b
+    divergent = c != a
+    ok = reproducible and divergent and len(a) > 0
+    msg = (
+        f"G2 SEEDED-TEMP: {'PASS' if ok else 'FAIL'} — "
+        f"seed=42 reproducible: {reproducible}; "
+        f"seed=7 diverges: {divergent}; stream len: {len(a)}"
+    )
+    if not reproducible:
+        msg += f"\n  seed=42 run1: {a}\n  seed=42 run2: {b}"
+    if not divergent:
+        msg += f"\n  seed=42: {a}\n  seed=7:    {c}"
+    return ok, msg
 
-    print(f"Loading model: {model_path}")
-    print(f"Max K: {max_k}")
-    print(f"Max tokens: {max_tokens}")
-    print()
 
-    # Load model
-    model, tokenizer = load(model_path)
-
-    # Detect MTP support
-    has_mtp = detect_mtp_support(model)
-    if not has_mtp:
-        print("ERROR: MTP support not detected in model")
-        return
-
-    print("MTP support detected ✓")
-    print()
-
-    # Test prompts (short, varied)
-    prompts = [
-        "Write a Python function to calculate fibonacci numbers",
-        "Explain how attention mechanisms work in transformers",
-        "The quick brown fox jumps over the lazy dog",
-    ][:num_prompts]
-
-    # Run for each K value
-    all_stats: dict[int, KRunStats] = {}
-
-    for k in range(1, max_k + 1):
-        print(f"{'=' * 60}")
-        print(f"Testing K={k}")
-        print(f"{'=' * 60}")
-
-        stats = KRunStats(k=k)
-        all_stats[k] = stats
-
-        total_generated = 0
-        start_time = time.perf_counter()
-
-        for prompt_idx, prompt in enumerate(prompts):
-            print(f"\nPrompt {prompt_idx + 1}/{len(prompts)}: {prompt[:50]}...")
-
-            # Generate with MTP
-            tokens_generated = 0
-
-            try:
-                for token_id, logprob, is_draft in mtp_generate_step(
-                    model,
-                    tokenizer,
-                    prompt,
-                    max_tokens=max_tokens // num_prompts,
-                    temp=0.0,
-                    print_progress=False,
-                    # Note: callback tracking needs to be wired through the generator
-                ):
-                    tokens_generated += 1
-
-            except Exception as e:
-                print(f"  Error during generation: {e}")
-                continue
-
-            total_generated += tokens_generated
-
-            print(f"  Generated {tokens_generated} tokens")
-
-        # Calculate final stats
-        total_time = time.perf_counter() - start_time
-        stats.total_tokens = total_generated
-        stats.total_time = total_time
-        stats.decode_tok_per_sec = total_generated / total_time if total_time > 0 else 0
-
-        print(f"\nK={k} Summary:")
-        print(f"  Total tokens: {stats.total_tokens}")
-        print(f"  Total time: {stats.total_time:.2f}s")
-        print(f"  Decode speed: {stats.decode_tok_per_sec:.2f} tok/s")
-        print(f"  Overall accept rate: {stats.accept_rate * 100:.1f}%")
-
-    # Print comparison table
-    print(f"\n{'=' * 60}")
-    print("K=1 vs K=2 vs K=3 Comparison")
-    print(f"{'=' * 60}")
-
-    print(f"\n{'K':<4} {'Speed (tok/s)':<16} {'Accept Rate':<14} {'Speedup':<10}")
-    print("-" * 50)
-
-    base_speed = all_stats[1].decode_tok_per_sec if 1 in all_stats else 1.0
-
-    for k in sorted(all_stats.keys()):
-        stats = all_stats[k]
-        speedup = stats.decode_tok_per_sec / base_speed if base_speed > 0 else 1.0
-        print(
-            f"{k:<4} {stats.decode_tok_per_sec:<16.2f} {stats.accept_rate * 100:<14.1f}% {speedup:<10.2f}x"
+def gate_g3_accept_table(
+    make_model, prompt_ids: mx.array, max_tokens: int, min_accept_rate: float | None
+) -> tuple[bool, str, dict[int, dict]]:
+    """G3: per-position acceptance + tok/s at K=1/2/3 (report table)."""
+    results: dict[int, dict] = {}
+    for k in (1, 2, 3):
+        toks, flags, wall = run_stream(
+            make_model(), prompt_ids, max_tokens, k=k, temp=0.0
         )
-
-    # Save results
-    results = {
-        k: {
-            "k": stats.k,
-            "total_tokens": stats.total_tokens,
-            "total_time": stats.total_time,
-            "decode_tok_per_sec": stats.decode_tok_per_sec,
-            "accept_rate": stats.accept_rate,
-            "total_attempts": stats.total_attempts,
-            "total_accepted": stats.total_accepted,
+        stats = parse_rounds(flags, k)
+        n_tokens = len(toks)
+        results[k] = {
+            "tokens": n_tokens,
+            "tok_per_sec": n_tokens / wall if wall > 0 else 0.0,
+            "wall_seconds": wall,
+            "per_position": {
+                p: {
+                    "attempts": a,
+                    "accepted": c,
+                    "rate": (c / a if a else 0.0),
+                }
+                for p, (a, c) in stats.items()
+            },
         }
-        for k, stats in all_stats.items()
-    }
+    # Overall accept rate across positions per K (attempts-weighted).
+    for k, r in results.items():
+        att = sum(v["attempts"] for v in r["per_position"].values())
+        acc = sum(v["accepted"] for v in r["per_position"].values())
+        r["overall_accept_rate"] = acc / att if att else 0.0
 
-    output_file = f"mtp_k{max_k}_bench_results.json"
-    with open(output_file, "w") as f:
-        json.dump(results, f, indent=2)
+    ok = True
+    if min_accept_rate is not None:
+        for k, r in results.items():
+            if r["overall_accept_rate"] < min_accept_rate:
+                ok = False
+    return ok, "", results
 
-    print(f"\nResults saved to {output_file}")
+
+def render_g3(results: dict[int, dict]) -> str:
+    lines = [
+        "",
+        "G3 ACCEPT TABLE (temp=0, from flat yield stream):",
+        "",
+        "| K | tok/s   | overall accept | pos 1    | pos 2    | pos 3    |",
+        "|---|---------|----------------|----------|----------|----------|",
+    ]
+    for k in sorted(results):
+        r = results[k]
+        pp = r["per_position"]
+        cells = []
+        for p in range(1, k + 1):
+            s = pp.get(p)
+            if s is None or s["attempts"] == 0:
+                cells.append(f"{'—':<8}")
+            else:
+                cells.append(f"{s['rate'] * 100:5.1f}%  ")
+        lines.append(
+            f"| {k} | {r['tok_per_sec']:>7.2f} | "
+            f"{r['overall_accept_rate'] * 100:>14.1f}% | "
+            + " | ".join(cells)
+            + " |"
+        )
+    return "\n".join(lines)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="K=3 MTP acceptance rate benchmark")
+# ----------------------------------------------------------------------
+# Model loading
+# ----------------------------------------------------------------------
+
+
+def load_real_model(model: str, sidecar: str | None, model_repo: str | None):
+    """Load base + inject MTP sidecar; return the injected inner TextModel."""
+    from mlx_lm import load as mlx_load
+
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        inject_mtp_support,
+        validate_mtp_support,
+    )
+
+    print(f"Loading model: {model}")
+    model_obj, tokenizer = mlx_load(model)
+    inject_mtp_support(
+        model_obj,
+        mtp_sidecar=sidecar,
+        model_repo=model_repo or model,
+    )
+    validate_mtp_support(model_obj)
+    inner = model_obj.language_model if hasattr(model_obj, "language_model") else model_obj
+    return inner, tokenizer
+
+
+def load_self_test_model(max_tokens: int):
+    """Deterministic mock model FACTORIES (no download) from the test
+    suite.
+
+    The mock models are stateful (script cursors), so each gate run
+    gets a fresh instance — a factory per run keeps the K=0 and K=3
+    streams comparable.
+    """
+    from tests.test_mtp_spec_decode import (
+        _MockedQwen35Model,
+        _SeededMockModel,
+    )
+
+    # G1 mock: a long backbone script; the MTP script is the backbone
+    # tail, so every chain-of-3 verify all-accepts and the K=3 stream
+    # collapses onto the K=0 stream (byte identity by construction —
+    # the gate still validates the loop, the rollback, and the tape).
+    backbone = list(range(10, 10 + max_tokens + 8))
+    vocab = 512  # keep every scripted id in range (mock default is 32)
+
+    def make_greedy():
+        return _MockedQwen35Model(
+            backbone_outputs=list(backbone),
+            mtp_outputs=list(backbone[1:]),
+            vocab=vocab,
+        )
+
+    # G2 mock: soft (stochastic) logits — same shape as the seeded
+    # contract test in tests/test_mtp_spec_decode.py.
+    backbone_soft = [(0, 0.5)] + [(t, 0.5) for t in range(21, 21 + max_tokens + 8)]
+    mtp_soft = [(t, 0.9) for t in range(31, 31 + max_tokens + 12)]
+
+    def make_seeded():
+        return _SeededMockModel(list(backbone_soft), list(mtp_soft), vocab=vocab)
+
+    return make_greedy, make_seeded, mx.array([1], dtype=mx.uint32)
+
+
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Issue #53 d=3 (K=3) gate harness"
+    )
     parser.add_argument(
         "--model",
-        default="mlx-community/Qwen3.5-122B-A10B-oQ4-mtp",
-        help="Model path or HF repo ID",
+        default="mlx-community/Qwen3.5-9B-4bit",
+        help="Base model alias or path (real mode).",
     )
     parser.add_argument(
-        "--max-k", type=int, default=3, help="Maximum K value to test (1, 2, or 3)"
+        "--sidecar",
+        default="mlx-community/Qwen3.5-9B-MTP-4bit",
+        help="MTP sidecar alias or path (real mode).",
     )
     parser.add_argument(
-        "--max-tokens", type=int, default=200, help="Maximum tokens to generate per run"
+        "--model-repo",
+        default=None,
+        help="HF repo for embedded-MTP auto-detection (oQ4-mtp etc.).",
     )
     parser.add_argument(
-        "--num-prompts", type=int, default=3, help="Number of test prompts"
+        "--self-test",
+        action="store_true",
+        help="Run the gates against deterministic mock models "
+        "(no model download).",
     )
+    parser.add_argument(
+        "--prompt",
+        default=_DEFAULT_PROMPT,
+        help="Prompt text (real mode).",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=128,
+        help="Tokens to generate per run.",
+    )
+    parser.add_argument(
+        "--temp",
+        type=float,
+        default=0.7,
+        help="Temperature for the G2 seeded-temp runs.",
+    )
+    parser.add_argument(
+        "--min-accept-rate",
+        type=float,
+        default=None,
+        help="If set, G3 gates on overall accept rate at every K "
+        "(0.0–1.0). Informational by default.",
+    )
+    args = parser.parse_args(argv)
 
-    args = parser.parse_args()
+    if args.self_test:
+        make_greedy, make_seeded, prompt_ids = load_self_test_model(
+            args.max_tokens
+        )
+        prompt_desc = "mock prompt (1 token)"
+    else:
+        inner, tokenizer = load_real_model(args.model, args.sidecar, args.model_repo)
 
-    run_mtp_benchmark(
-        model_path=args.model,
-        max_k=args.max_k,
-        max_tokens=args.max_tokens,
-        num_prompts=args.num_prompts,
+        def make_greedy():  # noqa: E306
+            return inner
+
+        def make_seeded():  # noqa: E306
+            return inner
+
+        prompt_ids = mx.array(tokenizer.encode(args.prompt), mx.uint32)
+        prompt_desc = f"{len(prompt_ids)} prompt tokens"
+
+    print(f"Prompt: {prompt_desc}")
+    print(f"Max tokens per run: {args.max_tokens}")
+    print()
+
+    failures = 0
+
+    # G1 on the greedy-capable model (mock: _MockedQwen35Model; real:
+    # the injected inner model).
+    ok, msg, _, _ = gate_g1_lossless_d3(make_greedy, prompt_ids, args.max_tokens)
+    print(msg)
+    failures += 0 if ok else 1
+
+    # G2 on the stochastic-capable model (mock: _SeededMockModel;
+    # real: the same injected inner model).
+    ok, msg = gate_g2_seeded_temp(make_seeded, prompt_ids, args.max_tokens, args.temp)
+    print(msg)
+    failures += 0 if ok else 1
+
+    # G3 on the greedy model.
+    ok, _msg, results = gate_g3_accept_table(
+        make_greedy, prompt_ids, args.max_tokens, args.min_accept_rate
     )
+    print(render_g3(results))
+    if args.min_accept_rate is not None and not ok:
+        print(
+            f"G3 ACCEPT TABLE: FAIL — overall accept rate below "
+            f"{args.min_accept_rate:.2f} at one or more K."
+        )
+        failures += 1
+
+    print()
+    if failures == 0:
+        print("ALL d=3 GATES PASSED")
+        return 0
+    print(f"{failures} d=3 GATE(S) FAILED")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
