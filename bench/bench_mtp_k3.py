@@ -504,7 +504,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         prompt_desc = "mock prompt (1 token)"
     else:
-        inner, tokenizer = load_real_model(args.model, args.sidecar, args.model_repo)
+        inner, tokenizer = load_real_model(
+            args.model, args.sidecar or None, args.model_repo
+        )
 
         def make_greedy():  # noqa: E306
             return inner
