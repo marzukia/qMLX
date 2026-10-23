@@ -2,9 +2,9 @@
 """Textual TUI for qMLX (issue #51, phase 4 — optional ``[tui]`` extra).
 
 Opt-in surface: ``qmlx tui [model]`` / ``qmlx chat --tui``. The base
-install has zero TUI dependencies; the CLI calls
-:func:`ensure_tui_available` (one-line install hint + ``exit(1)``)
-before importing the rest of this module (acceptance #51-AC9).
+install has zero TUI dependencies; the CLI runs its textual-import check
+(``vllm_mlx.cli._tui_hint_or_exit`` — one-line install hint + ``exit(1)``)
+BEFORE importing this module, which pulls textual at top level (AC9).
 
 The app is deliberately small: a header, a scrollable conversation log,
 an input box, and a status strip that polls ``/v1/status`` on a worker
@@ -172,8 +172,9 @@ class QMLXTUI(App):
 def run(args) -> None:
     """CLI entry: ``qmlx tui`` / ``qmlx chat --tui``.
 
-    ``textual`` is guaranteed importable here — the CLI calls
-    :func:`ensure_tui_available` before dispatching to this function.
+    ``textual`` is guaranteed importable here — the CLI ran its
+    ``_tui_hint_or_exit`` check (hint + exit 1) before importing this
+    module and dispatching to this function.
     """
     base_url = _resolve_base_url(args)
     model = getattr(args, "model", None) or "qwen3.5-4b-4bit"
