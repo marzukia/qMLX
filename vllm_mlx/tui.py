@@ -27,6 +27,15 @@ from textual.widgets import Footer, Header, Input, Label, Log
 #: extra is missing — pinned by tests (AC9).
 TUI_INSTALL_HINT = "TUI extra not installed — run: pip install 'qmlx-serve[tui]'"
 
+#: Empty-state starter prompts (issue #63.3): the Log used to sit at
+#: ~20 blank rows until the first message. These are example prompts
+#: the operator can copy/type as-is; they are plain text, not sent.
+STARTER_PROMPTS = (
+    "> summarize the latest commit on git log",
+    "> explain how disk KV restore works in vllm_mlx",
+    "> draft release notes for the current version",
+)
+
 
 def tui_available() -> bool:
     """True when the ``textual`` import succeeds in this install."""
@@ -74,6 +83,17 @@ def _status_line(stats: dict | None) -> str:
     return line
 
 
+def _session_banner(model: str, base_url: str) -> str:
+    """Empty-state banner (issue #63.3): session line + starter prompts,
+    so an empty session never shows ~20 blank Log rows."""
+    return (
+        f"-- qMLX session | model: {model} | endpoint: {base_url}/v1\n"
+        "-- starter prompts (type your own):\n"
+        + "\n".join(f"   {p}" for p in STARTER_PROMPTS)
+        + "\n"
+    )
+
+
 class QMLXTUI(App):
     """Chat TUI: streaming completions + a 1.5s-poll /v1/status strip."""
 
@@ -109,7 +129,7 @@ class QMLXTUI(App):
     def on_mount(self) -> None:
         log = self.query_one(Log)
         label = self.query_one(Label)
-        log.write(f"model: {self.model} · endpoint: {self.base_url}/v1")
+        log.write(_session_banner(self.model, self.base_url))
         # Pass the loop UN-CALLED and run it in a worker THREAD — calling
         # ``self._status_loop()`` here ran the blocking while-True loop in
         # place on the app thread, so on_mount never returned and the app

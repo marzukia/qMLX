@@ -101,6 +101,24 @@ def test_submitted_message_round_trips_via_call_from_thread(tui_app):
     asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
 
 
+def test_empty_session_shows_starter_block(tui_app):
+    """An empty session shows a starter block, not ~20 blank rows
+    (issue #63.3): the session line + example prompts land in the Log
+    at mount."""
+
+    async def body() -> None:
+        async with tui_app.run_test() as pilot:
+            await pilot.pause()
+            text = _log_text(tui_app)
+            assert "model: test-model" in text
+            assert "starter prompts" in text
+            for prompt in _tui.STARTER_PROMPTS:
+                assert prompt in text
+            assert tui_app.is_running
+
+    asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
+
+
 def test_single_title_line(tui_app):
     """One title row (issue #63.2): window title == in-app Header text,
     and the Header clock is off — the old layout showed the window
