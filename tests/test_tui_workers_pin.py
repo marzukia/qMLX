@@ -53,7 +53,11 @@ def tui_app(monkeypatch):
     monkeypatch.setattr(
         _tui.QMLXTUI,
         "_poll_status",
-        lambda self: {"model": "test-model", "status": "idle", "num_running": 0},
+        lambda self: {
+            "model": "mlx-community/Qwen3.5-4B-MLX-4bit",
+            "status": "idle",
+            "num_running": 0,
+        },
     )
 
     def _stub_send(self, message: str, log) -> None:
@@ -139,11 +143,33 @@ def test_single_title_line(tui_app):
     asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
 
 
+def test_status_line_uses_alias_not_hf_path():
+    """Strip shape (issue #63.4): the alias the operator launched with,
+    never the full HF repo id from /v1/status, and a lighter layout
+    (no run count / uptime; tok/s only while generating)."""
+    assert _tui._status_line(None, "qwen3.5-4b-4bit") == "qmlx | qwen3.5-4b-4bit | offline"
+    stats = {
+        "model": "mlx-community/Qwen3.5-4B-MLX-4bit",
+        "status": "running",
+        "num_running": 2,
+        "generation_tps": 12.5,
+        "uptime_s": 30.0,
+    }
+    line = _tui._status_line(stats, "qwen3.5-4b-4bit")
+    assert line == "qmlx | qwen3.5-4b-4bit | running | 12.5 tok/s"
+    assert "mlx-community" not in line
+    assert "run 2" not in line
+    assert "up 30s" not in line
+    idle = _tui._status_line({"model": "x", "status": "idle"}, "qwen3.5-4b-4bit")
+    assert idle == "qmlx | qwen3.5-4b-4bit | idle"
+
+
 def test_status_loop_does_not_block_mount(tui_app):
     """The status worker must run in a thread: mount completes (already
     proven by test 1) and the first poll refreshes the strip — the
-    initial "server not reachable" line is replaced by the stubbed
-    status without holding the app thread."""
+    initial "offline" line is replaced by the stubbed status without
+    holding the app thread. The strip shows the launched alias, not
+    the full HF repo id the stubbed /v1/status reports (issue #63.4)."""
 
     async def body() -> None:
         async with tui_app.run_test() as pilot:
@@ -154,7 +180,8 @@ def test_status_loop_does_not_block_mount(tui_app):
                     break
                 await pilot.pause()
             assert "test-model | idle" in str(label.visual)
-            assert "server not reachable" not in str(label.visual)
+            assert "mlx-community" not in str(label.visual)
+            assert "offline" not in str(label.visual)
             assert tui_app.is_running
 
     asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))

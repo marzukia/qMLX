@@ -63,23 +63,21 @@ def _resolve_base_url(args) -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def _status_line(stats: dict | None) -> str:
-    """Plain one-line status from a /v1/status payload (AC6 fields).
+def _status_line(stats: dict | None, alias: str) -> str:
+    """One-line status strip from a /v1/status payload.
 
-    ASCII only (issue #63.1): no emoji/middot glyphs — a terminal font
-    without coverage renders them as tofu boxes.
+    ASCII only (issue #63.1). The model is shown by the ALIAS the
+    operator launched with (issue #63.4), not the full HF repo id that
+    /v1/status reports, and the strip stays light: no run count, no
+    uptime — state plus (only while generating) throughput.
     """
     if stats is None:
-        return "  qmlx | server not reachable"
-    model = stats.get("model") or "-"
+        return f"qmlx | {alias} | offline"
     state = stats.get("status", "idle")
-    line = f"  qmlx | {model} | {state} | run {stats.get('num_running', 0)}"
+    line = f"qmlx | {alias} | {state}"
     tps = stats.get("generation_tps") or 0.0
     if tps > 0:
         line += f" | {tps:.1f} tok/s"
-    up = stats.get("uptime_s")
-    if up is not None:
-        line += f" | up {int(up)}s"
     return line
 
 
@@ -119,7 +117,7 @@ class QMLXTUI(App):
         # non-emoji fonts (issue #63.1). The title comes from App.TITLE.
         yield Header(icon=" ")
         yield Log(auto_scroll=True)
-        yield Label(_status_line(None), id="qmlx-status")
+        yield Label(_status_line(None, self.model), id="qmlx-status")
         yield Input(
             placeholder=f"Message {self.model}...  (Ctrl-Q quits)",
             id="qmlx-input",
@@ -235,7 +233,9 @@ class QMLXTUI(App):
         """
         while self.is_running:
             try:
-                self.call_from_thread(label.update, _status_line(self._poll_status()))
+                self.call_from_thread(
+                    label.update, _status_line(self._poll_status(), self.model)
+                )
             except Exception:  # noqa: BLE001 — app gone: stop the loop quietly
                 return
             time.sleep(1.5)
