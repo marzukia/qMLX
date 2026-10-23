@@ -32,7 +32,7 @@ import pytest
 
 pytest.importorskip("textual")
 
-from textual.widgets import Input, Label, Log  # noqa: E402
+from textual.widgets import Header, Input, Label, Log  # noqa: E402
 
 from vllm_mlx import tui as _tui  # noqa: E402
 
@@ -96,6 +96,26 @@ def test_submitted_message_round_trips_via_call_from_thread(tui_app):
                     break
                 await pilot.pause()
             assert "stub-reply to: hello" in _log_text(tui_app)
+            assert tui_app.is_running
+
+    asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
+
+
+def test_single_title_line(tui_app):
+    """One title row (issue #63.2): window title == in-app Header text,
+    and the Header clock is off — the old layout showed the window
+    title, a second in-app 'QMLXTUI' header row, and a clock."""
+
+    async def body() -> None:
+        async with tui_app.run_test() as pilot:
+            await pilot.pause()
+            assert tui_app.TITLE == "QMLX TUI"
+            header = tui_app.query_one(Header)
+            # textual 0.89: the clock is opt-in (show_clock flag, kept in
+            # ``_show_clock``); the old Header("...") call passed the
+            # title string positionally and switched it on.
+            assert header._show_clock is False  # noqa: SLF001
+            assert header.screen_title == tui_app.TITLE
             assert tui_app.is_running
 
     asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))

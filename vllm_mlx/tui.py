@@ -77,6 +77,12 @@ def _status_line(stats: dict | None) -> str:
 class QMLXTUI(App):
     """Chat TUI: streaming completions + a 1.5s-poll /v1/status strip."""
 
+    #: One title for the whole surface (issue #63.2): the window title,
+    #: the in-app Header and (before #63) the clock were three separate
+    #: title-ish rows. The Header renders ``App.TITLE`` verbatim and
+    #: keeps its clock off, so the operator sees exactly one title row.
+    TITLE = "QMLX TUI"
+
     BINDINGS = [Binding("q", "quit", "Quit", show=False)]
 
     def __init__(self, base_url: str, model: str, *, system: str | None = None):
