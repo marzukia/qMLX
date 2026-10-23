@@ -101,7 +101,14 @@ class QMLXTUI(App):
     #: keeps its clock off, so the operator sees exactly one title row.
     TITLE = "QMLX TUI"
 
-    BINDINGS = [Binding("q", "quit", "Quit", show=False)]
+    BINDINGS = [
+        # Issue #63.5: the quit affordance must be visible — show=True
+        # lists the key in the Footer. The key is ctrl+q, not a bare
+        # 'q': the Input swallows printable characters, so a bare 'q'
+        # only reached the app when the Input was unfocused — in a chat
+        # TUI where the Input is the only focusable widget, never.
+        Binding("ctrl+q", "quit", "Quit", show=True),
+    ]
 
     def __init__(self, base_url: str, model: str, *, system: str | None = None):
         super().__init__()
@@ -118,10 +125,7 @@ class QMLXTUI(App):
         yield Header(icon=" ")
         yield Log(auto_scroll=True)
         yield Label(_status_line(None, self.model), id="qmlx-status")
-        yield Input(
-            placeholder=f"Message {self.model}...  (Ctrl-Q quits)",
-            id="qmlx-input",
-        )
+        yield Input(placeholder=f"Message {self.model}...", id="qmlx-input")
         yield Footer()
 
     def on_mount(self) -> None:

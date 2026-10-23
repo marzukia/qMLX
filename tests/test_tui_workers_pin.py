@@ -32,7 +32,7 @@ import pytest
 
 pytest.importorskip("textual")
 
-from textual.widgets import Header, Input, Label, Log  # noqa: E402
+from textual.widgets import Footer, Header, Input, Label, Log  # noqa: E402
 
 from vllm_mlx import tui as _tui  # noqa: E402
 
@@ -139,6 +139,33 @@ def test_single_title_line(tui_app):
             assert header._show_clock is False  # noqa: SLF001
             assert header.screen_title == tui_app.TITLE
             assert tui_app.is_running
+
+    asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
+
+
+def test_quit_affordance_visible(tui_app):
+    """The quit key must be VISIBLE (issue #63.5): the binding is
+    show=True so the Footer lists it, and ctrl+q (not a bare 'q', which
+    the focused Input swallows) actually quits while typing."""
+
+    async def body() -> None:
+        async with tui_app.run_test() as pilot:
+            await pilot.pause()
+            quit_bindings = [b for b in tui_app.BINDINGS if b.action == "quit"]
+            assert len(quit_bindings) == 1
+            binding = quit_bindings[0]
+            assert binding.show is True
+            assert binding.key == "ctrl+q"
+            from textual.widgets._footer import FooterKey  # noqa: PLC0415
+
+            keys = {
+                fk.key_display: fk.description
+                for fk in tui_app.query_one(Footer).query(FooterKey)
+            }
+            # The Footer renders the ctrl+q binding as "^q".
+            assert keys.get("^q") == "Quit"
+            await pilot.press("ctrl+q")
+        assert not tui_app.is_running
 
     asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
 
