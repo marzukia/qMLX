@@ -21,6 +21,7 @@ from typing import Any
 
 from ..api.tool_calling import convert_tools_for_template
 from ..api.utils import clean_output_text, extract_multimodal_content, is_mllm_model
+from ..media_digest import media_key_for_media
 from ..output_router import Channel, OutputRouter
 from ..utils.chat_template import apply_chat_template as shared_apply_chat_template
 from .base import BaseEngine, GenerationOutput
@@ -1453,6 +1454,10 @@ class BatchedEngine(BaseEngine):
             sampling_params=sampling_params,
             prefix_boundary=prefix_boundary,
             has_tools=has_tools,
+            # Issue #56: image-aware KV keying — the stable media-content
+            # key rides on the Request so disk KV checkpoints mix it into
+            # the prompt-prefix key (a changed image never reuses stale KV).
+            media_key=media_key_for_media(images, videos),
         )
 
         if assistant_text_prefix:
@@ -1641,6 +1646,10 @@ class BatchedEngine(BaseEngine):
             sampling_params=sampling_params,
             prefix_boundary=prefix_boundary,
             has_tools=has_tools,
+            # Issue #56: same media-key forwarding as generate() — the
+            # streaming path must key checkpoints identically or a
+            # streamed turn 1 and a non-streamed turn 2 would diverge.
+            media_key=media_key_for_media(images, videos),
         )
         # C-01 force-abort: publish the scheduler request id (text path)
         # so the route's disconnect_guard can call abort_request directly
