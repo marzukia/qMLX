@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Worker-thread pin for the qMLX TUI (t258 defect, textual 0.89.1).
+
+Diagnosed in t257 §2 / t258 against textual 0.89.1 source:
+
+1. ``on_mount`` called ``run_worker(self._status_loop(), ...)`` — the
+   blocking ``while True`` loop ran *in place* on the app thread before
+   ``run_worker`` was ever reached, so ``on_mount`` never returned and
+   the app froze at startup (Input never focused, keys never processed).
+2. ``on_input_submitted`` called ``run_worker(self._send(text), ...)`` —
+   the blocking HTTP stream ran inline on the app thread, and the
+   ``None`` it returned was fed to ``run_worker``, raising a WorkerError
+   that exited the app after the first message (``exit_on_error=True``).
+
+Pins (hermetic: ``App.run_test()`` with stubbed ``_send`` and
+``_poll_status`` — no real HTTP, no model server):
+- mount completes and the Input is focused (a blocking ``on_mount``
+  hangs ``run_test``'s ready-wait forever, so each test carries a
+  wall-clock guard);
+- a submitted message round-trips back into the log through
+  ``call_from_thread`` and the app stays alive (a WorkerError would
+  have exited it);
+- the status worker updates the strip in a thread without blocking
+  mount.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+pytest.importorskip("textual")
+
+from textual.widgets import Input, Label, Log  # noqa: E402
+
+from vllm_mlx import tui as _tui  # noqa: E402
+
+#: Wall-clock guard: run_test's ready-wait has no timeout of its own, so a
+#: blocking on_mount must fail the test (not hang the suite).
+_TIMEOUT = 20.0
+
+
+def _log_text(app) -> str:
+    """Plain text of the conversation Log (0.89 stores lines as str)."""
+    return "".join(app.query_one(Log).lines)
+
+
+@pytest.fixture
+def tui_app(monkeypatch):
+    """QMLXTUI with all network I/O stubbed (no real HTTP, no server)."""
+    app = _tui.QMLXTUI("http://127.0.0.1:1", model="test-model")
+    monkeypatch.setattr(
+        _tui.QMLXTUI,
+        "_poll_status",
+        lambda self: {"model": "test-model", "status": "idle", "num_running": 0},
+    )
+
+    def _stub_send(self, message: str, log) -> None:
+        # Mirrors the worker contract: the turn runs in a worker thread
+        # and its UI write comes back through call_from_thread.
+        self.call_from_thread(log.write, f"stub-reply to: {message}")
+
+    monkeypatch.setattr(_tui.QMLXTUI, "_send", _stub_send)
+    return app
+
+
+def test_mount_completes_and_input_focused(tui_app):
+    """on_mount must RETURN — a blocking ``self._status_loop()`` call
+    (the t258 freeze) would hang ``run_test``'s ready-wait forever."""
+
+    async def body() -> None:
+        async with tui_app.run_test() as pilot:
+            await pilot.pause()
+            assert tui_app.is_running
+            assert tui_app.focused is tui_app.query_one(Input)
+            # The mount banner proves on_mount ran past the run_worker
+            # call and reached the focus line.
+            assert "model: test-model" in _log_text(tui_app)
+
+    asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
+
+
+def test_submitted_message_round_trips_via_call_from_thread(tui_app):
+    """A submitted message runs its (stubbed) turn in a worker thread;
+    the reply posts back into the Log through ``call_from_thread`` and
+    the app stays alive — a WorkerError would have exited it."""
+
+    async def body() -> None:
+        async with tui_app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("h", "e", "l", "l", "o")
+            await pilot.press("enter")
+            for _ in range(200):
+                if "stub-reply to: hello" in _log_text(tui_app):
+                    break
+                await pilot.pause()
+            assert "stub-reply to: hello" in _log_text(tui_app)
+            assert tui_app.is_running
+
+    asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
+
+
+def test_status_loop_does_not_block_mount(tui_app):
+    """The status worker must run in a thread: mount completes (already
+    proven by test 1) and the first poll refreshes the strip — the
+    initial "server not reachable" line is replaced by the stubbed
+    status without holding the app thread."""
+
+    async def body() -> None:
+        async with tui_app.run_test() as pilot:
+            await pilot.pause()
+            label = tui_app.query_one(Label)
+            for _ in range(400):
+                if "test-model · idle" in str(label.visual):
+                    break
+                await pilot.pause()
+            assert "test-model · idle" in str(label.visual)
+            assert "server not reachable" not in str(label.visual)
+            assert tui_app.is_running
+
+    asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
