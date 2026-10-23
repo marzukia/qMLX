@@ -162,23 +162,58 @@ class QMLXTUI(App):
         )
 
     def _write(self, log: Log, msg: str) -> None:
-        """Append one line to the conversation log, from any thread.
+        """Append text to the conversation log, from any thread.
 
         Worker threads must not touch widgets directly — the write is
         serialized onto the app thread via ``call_from_thread``.
         """
         self.call_from_thread(log.write, msg)
 
+    def _set_last_line(self, log: Log, text: str) -> None:
+        """Replace the last line of the Log in place, from any thread.
+
+        textual 0.89's Log has no public API for editing an existing
+        line (``Log.lines`` returns the backing list but documents that
+        mutating it does not refresh). The streaming indicator
+        (issue #63.6) needs exactly that: the 'generating...' line is
+        replaced by the first streamed token. ``_lines`` is the
+        same list ``Log.lines`` returns, and the mutation is applied
+        on the app thread via ``call_from_thread``.
+        """
+
+        def _apply() -> None:
+            lines = log._lines  # noqa: SLF001 — see docstring
+            if not lines:
+                lines.append(text)
+            else:
+                lines[-1] = text
+            log.refresh_lines(len(lines) - 1)
+
+        self.call_from_thread(_apply)
+
     def _send(self, message: str, log: Log) -> None:
         """Run one chat turn (streamed) in a worker thread.
 
         ``log`` is captured on the app thread before the worker starts;
-        all writes go through ``_write`` → ``call_from_thread``.
+        all writes go through ``_write`` / ``_set_last_line`` →
+        ``call_from_thread``.
+
+        Log shape per turn (issue #63.6 — the indicator lives in the
+        log, not just the status strip):
+
+        - the user line is finalized with a newline (the old code left
+          it unterminated, so the reply appended onto the user's line);
+        - a 'generating...' line is written immediately, so the log
+          shows the turn is in flight even before the first token;
+        - the first token REPLACES the indicator line (later deltas
+          append), so the reply stays one clean line;
+        - the line is finalized when the stream ends or on error.
         """
         import requests
 
         self.history.append({"role": "user", "content": message})
-        self._write(log, f"> {message}")
+        self._write(log, f"> {message}\n")
+        self._set_last_line(log, "generating...")
         reply = ""
         try:
             with requests.post(
@@ -210,11 +245,18 @@ class QMLXTUI(App):
                         "content"
                     )
                     if delta:
+                        if not reply:
+                            # First token: replace the indicator.
+                            self._set_last_line(log, delta)
+                        else:
+                            self._write(log, delta)
                         reply += delta
-                        self._write(log, delta)
         except Exception as e:  # noqa: BLE001 — surface, don't crash the app
-            self._write(log, f"\n[error] {e}\n")
+            self._set_last_line(log, f"[error] {e}")
+            self._write(log, "\n")
             return
+        if not reply:
+            self._set_last_line(log, "(no reply)")
         if reply:
             self.history.append({"role": "assistant", "content": reply})
         self._write(log, "\n")

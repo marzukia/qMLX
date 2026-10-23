@@ -27,6 +27,7 @@ Pins (hermetic: ``App.run_test()`` with stubbed ``_send`` and
 from __future__ import annotations
 
 import asyncio
+import json as _json
 
 import pytest
 
@@ -59,6 +60,10 @@ def tui_app(monkeypatch):
             "num_running": 0,
         },
     )
+    # Capture the REAL _send before the class attribute is replaced, so
+    # tests that exercise the genuine streaming path (fake requests
+    # module) can restore it on the instance.
+    app._real_send = _tui.QMLXTUI._send  # noqa: SLF001
 
     def _stub_send(self, message: str, log) -> None:
         # Mirrors the worker contract: the turn runs in a worker thread
@@ -166,6 +171,66 @@ def test_quit_affordance_visible(tui_app):
             assert keys.get("^q") == "Quit"
             await pilot.press("ctrl+q")
         assert not tui_app.is_running
+
+    asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
+
+
+def test_streaming_indicator_in_log(tui_app, monkeypatch):
+    """While generating, the Log itself shows the turn is in flight
+    (issue #63.6 — before, only the status strip said so): the real
+    ``_send`` writes the user line, a 'generating...' line, then the
+    first streamed token REPLACES the indicator and the reply stays
+    one clean line. The fake ``requests`` module delays its first SSE
+    chunk so the indicator is observable."""
+    import sys as _sys
+    import time as _time
+    import types as _types
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            _time.sleep(0.3)  # time-to-first-token: indicator is visible
+            for token in ("Hel", "lo!"):
+                chunk = {"choices": [{"delta": {"content": token}}]}
+                yield b"data: " + _json.dumps(chunk).encode()
+            yield b"data: [DONE]"
+
+    def _fake_post(*a, **k):
+        return _FakeResp()
+
+    fake_requests = _types.ModuleType("requests")
+    fake_requests.post = _fake_post
+    monkeypatch.setitem(_sys.modules, "requests", fake_requests)
+    # Rebind the captured (unbound) method to this instance.
+    tui_app._send = _types.MethodType(tui_app._real_send, tui_app)  # noqa: SLF001
+
+    async def body() -> None:
+        async with tui_app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("h", "e", "l", "l", "o")
+            await pilot.press("enter")
+            saw_indicator = False
+            for _ in range(400):
+                text = _log_text(tui_app)
+                if "generating..." in text:
+                    saw_indicator = True
+                if "Hello!" in text:
+                    break
+                await pilot.pause()
+            text = _log_text(tui_app)
+            assert saw_indicator  # indicator was visible before first token
+            assert "Hello!" in text
+            assert "generating..." not in text  # replaced by the reply
+            assert "> hello" in text  # user line, on its own line
+            assert tui_app.is_running
 
     asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
 
