@@ -6,12 +6,10 @@ CLI for qmlx (package name: ``vllm_mlx``).
 
 Commands:
     qmlx serve <model> --port 8000    Start OpenAI-compatible server
-    qmlx bench <model>                Run benchmark
     qmlx chat <model>                 Interactive chat REPL
 
 Usage:
     qmlx serve qwen3.5-4b-4bit --port 8000
-    qmlx bench qwen3.5-4b-4bit --num-prompts 10
     qmlx chat qwen3.5-4b-4bit
 """
 
@@ -19,6 +17,7 @@ import argparse
 import os
 import sys
 
+from vllm_mlx import _ui as ui
 from vllm_mlx._completion import alias_completer
 
 # Project-default mirror for ``QMLX_MODEL_MIRROR`` (consumed by
@@ -205,6 +204,24 @@ def _is_ipv6_host(host: str) -> bool:
     return ":" in host
 
 
+def _render_port_collision(port: int, display_host: str, *, model: str) -> None:
+    """Port-in-use error (issue #51): red titled panel on a TTY, the
+    legacy two-line message elsewhere (byte-identical plain output)."""
+    body = [
+        f"[bold red]Port {port} is already in use on {display_host}.[/bold red]",
+        f"Try a different port: qmlx serve {model} --port {port + 1}",
+    ]
+    ui.panel(
+        "Error",
+        body,
+        plain_lines=[
+            f"\n  Error: Port {port} is already in use on {display_host}.",
+            f"  Try a different port: qmlx serve {model} --port {port + 1}",
+        ],
+        style="red",
+    )
+
+
 def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
@@ -269,8 +286,7 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
                 # ``--host ""`` shows up as ``0.0.0.0`` rather than a
                 # confusing bare quote.
                 display_host = probe_host or "0.0.0.0"
-                print(f"\n  Error: Port {port} is already in use on {display_host}.")
-                print(f"  Try a different port: qmlx serve {model} --port {port + 1}")
+                _render_port_collision(port, display_host, model=model)
                 sys.exit(1)
 
 
@@ -410,6 +426,80 @@ def _run_uvicorn(app, args, log_level: str) -> None:
         raise
 
 
+def _run_uvicorn_live(app, args, log_level: str) -> None:
+    """Run the server with a live status strip on the terminal (#51).
+
+    Rich/TTY only — the caller gates on ``ui.rich``. uvicorn runs on a
+    daemon thread while the main thread drives a ``rich.live.Live``
+    strip fed by the in-process stats payload
+    (``get_config().engine.get_stats()`` — zero HTTP round-trips, the
+    same data ``/v1/status`` serves). Access logging is off for this
+    path so the strip stays the only writer on the live region (issue
+    #51 C8); uvicorn's other logs still land on stderr via its logger
+    handlers.
+    """
+    import threading
+
+    import uvicorn
+
+    config = uvicorn.Config(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=log_level,
+        access_log=False,  # C8: the strip is the only stdout writer
+        timeout_keep_alive=30,
+    )
+    server = uvicorn.Server(config)
+    server_thread = threading.Thread(
+        target=server.run, name="qmlx-uvicorn", daemon=True
+    )
+    server_thread.start()
+
+    from vllm_mlx.config import get_config
+
+    def _live_stats() -> dict | None:
+        cfg = get_config()
+        if cfg.engine is None or not cfg.ready:
+            return None
+        try:
+            stats = cfg.engine.get_stats()
+        except Exception:
+            return None
+        if not isinstance(stats, dict):
+            return None
+        bg = stats.get("batch_generator")
+        if not isinstance(bg, dict):
+            bg = {}
+        endpoint = (
+            f"http://{cfg.bind_host}:{cfg.bind_port}/v1"
+            if cfg.bind_host and cfg.bind_port
+            else None
+        )
+        return {
+            "status": "generating" if stats.get("running") else "idle",
+            "model": cfg.model_name,
+            "endpoint": endpoint,
+            "generation_tps": bg.get("generation_tps") or 0.0,
+            "num_running": stats.get("num_running", 0),
+            "num_waiting": stats.get("num_waiting", 0),
+            "metal_active_gb": stats.get("metal_active_memory_gb"),
+            "uptime_s": stats.get("uptime_seconds"),
+        }
+
+    def render() -> str:
+        return ui.render_live_line(_live_stats())
+
+    try:
+        with ui.live(
+            render, interval=0.5, stop_fn=lambda: not server_thread.is_alive()
+        ):
+            pass
+    except KeyboardInterrupt:
+        server.should_exit = True
+    server_thread.join(timeout=10)
+
+
 def _port_is_busy(host: str, port: int) -> bool:
     """Best-effort probe: is ``(host, port)`` already bound by another
     process? Used by ``_run_uvicorn`` to disambiguate an uvicorn
@@ -525,15 +615,28 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     supported). Now: always show *something* — fuzzy matches when we have
     them, curated popular aliases when we don't.
     """
-    from vllm_mlx.model_aliases import POPULAR_ALIASES, list_aliases, suggest_similar
+    from vllm_mlx.model_aliases import (
+        POPULAR_ALIASES,
+        list_visible_aliases,
+        suggest_similar,
+    )
 
     suggestions = suggest_similar(name)
     if suggestions:
-        print(f"  Did you mean: {', '.join(suggestions)}?")
+        hint = f"Did you mean: {', '.join(suggestions)}?"
     else:
-        print(f"  Try one of: {', '.join(POPULAR_ALIASES)}")
-    print(f"  Run `qmlx models` to see all {len(list_aliases())} aliases,")
-    print(f"  or pass a full path like: {full_path_example}")
+        hint = f"Try one of: {', '.join(POPULAR_ALIASES)}"
+    body = [
+        hint,
+        f"Run `qmlx models` to see all {len(list_visible_aliases())} aliases,",
+        f"or pass a full path like: {full_path_example}",
+    ]
+    ui.panel(
+        f"Unknown model: {name}",
+        body,
+        plain_lines=[f"  {ln}" for ln in body],
+        style="red",
+    )
 
 
 def _check_disk_space(model_name: str, force: bool = False) -> None:
@@ -609,15 +712,33 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         available_gb = available_bytes / (1024**3)
         need_to_free_gb = (required_bytes - available_bytes) / (1024**3)
 
-        print()
-        print("  Error: Insufficient disk space for download.")
-        print(f"    Model size:    {model_size_gb:>7.1f} GB")
-        print(f"    Free space:    {available_gb:>7.1f} GB  ({probe})")
-        print(f"    Need to free:  {need_to_free_gb:>7.1f} GB")
-        print()
-        print("  Suggestions:")
-        print("    - Free disk space, or set HF_HOME to a drive with more room")
-        print("    - Pick a smaller variant: qmlx models")
+        ui.panel(
+            "Error: Insufficient disk space",
+            [
+                "[bold]Model size:[/] "
+                f"{model_size_gb:>7.1f} GB",
+                "[bold]Free space:[/] "
+                f"{available_gb:>7.1f} GB  ({probe})",
+                "[bold]Need to free:[/] "
+                f"{need_to_free_gb:>7.1f} GB",
+                "",
+                "Suggestions:",
+                "  - Free disk space, or set HF_HOME to a drive with more room",
+                "  - Pick a smaller variant: qmlx models",
+            ],
+            plain_lines=[
+                "",
+                "  Error: Insufficient disk space for download.",
+                f"    Model size:    {model_size_gb:>7.1f} GB",
+                f"    Free space:    {available_gb:>7.1f} GB  ({probe})",
+                f"    Need to free:  {need_to_free_gb:>7.1f} GB",
+                "",
+                "  Suggestions:",
+                "    - Free disk space, or set HF_HOME to a drive with more room",
+                "    - Pick a smaller variant: qmlx models",
+            ],
+            style="red",
+        )
         if not force:
             print(
                 "    - Bypass this check (download will likely fail mid-way): "
@@ -834,24 +955,32 @@ def _check_alias_min_memory(user_typed: str) -> None:
     if total_ram_gb >= floor_gb:
         return  # Machine is big enough — silent.
 
-    is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
-    YELLOW = "\x1b[33m" if is_tty else ""
-    BOLD = "\x1b[1m" if is_tty else ""
-    RESET = "\x1b[0m" if is_tty else ""
-    print(
-        f"\n{YELLOW}{BOLD}⚠  Ultra-only alias '{user_typed}' declares a "
+    _plain_body = [
+        f"\n⚠  Ultra-only alias '{user_typed}' declares a "
         f"{floor_gb:.0f} GB unified-memory floor, but this Mac reports "
-        f"{total_ram_gb:.1f} GB.{RESET}"
-    )
-    print(
-        f"{YELLOW}   The model weights are large enough to OOM the Metal "
+        f"{total_ram_gb:.1f} GB.",
+        "   The model weights are large enough to OOM the Metal "
         "allocator (or kernel-panic on macOS < 15.2, issue #324) before "
-        f"the first token generates.{RESET}"
-    )
-    print(
-        f"{YELLOW}   Recommended: pick a Tier-1 alias sized for this "
+        "the first token generates.",
+        "   Recommended: pick a Tier-1 alias sized for this "
         "machine (`qmlx models` for the full list). "
-        f"Proceeding anyway…{RESET}\n"
+        "Proceeding anyway…\n",
+    ]
+    ui.panel(
+        "Ultra-only alias warning",
+        [
+            f"[bold yellow]⚠ Ultra-only alias '{user_typed}' declares a "
+            f"{floor_gb:.0f} GB unified-memory floor, but this Mac reports "
+            f"{total_ram_gb:.1f} GB.[/bold yellow]",
+            "The model weights are large enough to OOM the Metal "
+            "allocator (or kernel-panic on macOS < 15.2, issue #324) before "
+            "the first token generates.",
+            "Recommended: pick a Tier-1 alias sized for this "
+            "machine (`qmlx models` for the full list). "
+            "Proceeding anyway…",
+        ],
+        plain_lines=[ln for ln in _plain_body],
+        style="yellow",
     )
 
 
@@ -951,56 +1080,97 @@ def _check_memory_capacity(model_name: str) -> None:
     used_gb = used_ram_bytes / (1024**3)
     total_gb = total_ram_bytes / (1024**3)
 
-    is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
-    YELLOW = "\x1b[33m" if is_tty else ""
-    RED = "\x1b[31m" if is_tty else ""
-    BOLD = "\x1b[1m" if is_tty else ""
-    DIM = "\x1b[2m" if is_tty else ""
-    RESET = "\x1b[0m" if is_tty else ""
-
-    print()
+    plain_lines: list[str] = [""]
     if ratio >= 0.85:
-        print(
-            f"  {RED}{BOLD}!! Memory pressure warning:{RESET} "
-            f"this model is likely too large for your hardware."
-        )
-        print(
-            f"  {DIM}Continuing may trigger a macOS kernel panic "
-            f"(see issue #324).{RESET}"
-        )
+        plain_lines += [
+            "  !! Memory pressure warning: "
+            "this model is likely too large for your hardware.",
+            "  Continuing may trigger a macOS kernel panic "
+            "(see issue #324).",
+        ]
     else:
-        print(
-            f"  {YELLOW}{BOLD}Memory pressure note:{RESET} "
-            f"this model uses a large fraction of system RAM."
+        plain_lines.append(
+            "  Memory pressure note: "
+            "this model uses a large fraction of system RAM."
         )
-    print()
-    print(f"    Model on disk:           {model_gb:>6.1f} GB")
-    print(
-        f"    Est. working set:        {working_gb:>6.1f} GB  "
-        f"{DIM}(model x 1.5 — short-chat workload; long-context serving will use more){RESET}"
-    )
-    print(f"    Currently used by OS:    {used_gb:>6.1f} GB")
-    print(
-        f"    Total system RAM:        {total_gb:>6.1f} GB  "
-        f"({ratio * 100:.0f}% projected utilization)"
-    )
-    print()
+    plain_lines += [
+        "",
+        f"    Model on disk:           {model_gb:>6.1f} GB",
+        "    Est. working set:        "
+        f"{working_gb:>6.1f} GB  "
+        "(model x 1.5 — short-chat workload; long-context serving will use more)",
+        f"    Currently used by OS:    {used_gb:>6.1f} GB",
+        "    Total system RAM:        "
+        f"{total_gb:>6.1f} GB  "
+        f"({ratio * 100:.0f}% projected utilization)",
+        "",
+    ]
     if ratio >= 0.85:
-        print("  Apple Silicon firmware can panic the whole system rather than")
-        print("  raise an OOM error when unified-memory pressure exceeds the")
-        print("  iBoot AMCC threshold. Recommended actions:")
-        print()
-        print("    - Close other apps to free RAM, or")
-        print("    - Pick a smaller model:    qmlx models")
-        print(
+        plain_lines += [
+            "  Apple Silicon firmware can panic the whole system rather than",
+            "  raise an OOM error when unified-memory pressure exceeds the",
+            "  iBoot AMCC threshold. Recommended actions:",
+            "",
+            "    - Close other apps to free RAM, or",
+            "    - Pick a smaller model:    qmlx models",
             "    - Or lower memory headroom: "
-            "qmlx serve <model> --gpu-memory-utilization 0.75"
+            "qmlx serve <model> --gpu-memory-utilization 0.75",
+        ]
+    else:
+        plain_lines.append(
+            "  If you see crashes or kernel panics, try: "
+            "--gpu-memory-utilization 0.85"
+        )
+    plain_lines.append("")
+
+    body = []
+    if ratio >= 0.85:
+        body.append(
+            "[bold red]!! Memory pressure warning:[/bold red] "
+            "this model is likely too large for your hardware."
+        )
+        body.append(
+            "[dim]Continuing may trigger a macOS kernel panic "
+            "(see issue #324).[/dim]"
         )
     else:
-        print(
-            "  If you see crashes or kernel panics, try: --gpu-memory-utilization 0.85"
+        body.append(
+            "[bold yellow]Memory pressure note:[/bold yellow] "
+            "this model uses a large fraction of system RAM."
         )
-    print()
+    body += [
+        "",
+        f"[bold]Model on disk:[/]          {model_gb:>6.1f} GB",
+        f"[bold]Est. working set:[/]       {working_gb:>6.1f} GB  "
+        "[dim](model x 1.5 — short-chat workload; "
+        "long-context serving will use more)[/dim]",
+        f"[bold]Currently used by OS:[/]   {used_gb:>6.1f} GB",
+        f"[bold]Total system RAM:[/]      {total_gb:>6.1f} GB  "
+        f"({ratio * 100:.0f}% projected utilization)",
+    ]
+    if ratio >= 0.85:
+        body += [
+            "Apple Silicon firmware can panic the whole system "
+            "rather than raise an OOM error when unified-memory "
+            "pressure exceeds the iBoot AMCC threshold.",
+            "",
+            "[bold]Recommended actions:[/bold]",
+            "  - Close other apps to free RAM, or",
+            "  - Pick a smaller model: qmlx models",
+            "  - Or lower memory headroom: "
+            "qmlx serve <model> --gpu-memory-utilization 0.75",
+        ]
+    else:
+        body.append(
+            "If you see crashes or kernel panics, try: "
+            "--gpu-memory-utilization 0.85"
+        )
+    ui.panel(
+        "Memory pressure",
+        body,
+        plain_lines=plain_lines,
+        style="red" if ratio >= 0.85 else "yellow",
+    )
 
 
 def _try_mirror_prefetch(model_name: str) -> bool:
@@ -1576,6 +1746,209 @@ def _preflight_ddtree_or_exit(args):
     return alias_name, profile
 
 
+def _render_startup_banner(args, *, gc_control: bool, cors_origins: list) -> None:
+    """Startup banner (issue #51).
+
+    rich: a titled panel with bold keys. plain: the legacy indented
+    block, byte-identical — note the ``MCP config:`` line stays at
+    column 0 (operators grep for it), which the plain_lines list
+    preserves deliberately.
+    """
+    features: list[str] = []
+    if args.enable_auto_tool_choice:
+        bias_info = (
+            " + logits bias" if getattr(args, "enable_tool_logits_bias", False) else ""
+        )
+        features.append(f"tools: {args.tool_call_parser}{bias_info}")
+    if args.reasoning_parser:
+        features.append(f"reasoning: {args.reasoning_parser}")
+    # Banner mirrors the effective auth state via ``_auth_feature_str``
+    # so the test can call the same function. Pre-fix the gate said
+    # ``if args.api_key`` directly — a sidecar that set env-only saw
+    # ``auth: off`` printed even though ``verify_api_key`` was
+    # enforcing. ``_auth_feature_str`` keeps the banner and the actual
+    # enforcement aligned and is directly unit-testable.
+    auth_feature = _auth_feature_str(args.api_key)
+    if auth_feature:
+        features.append(auth_feature)
+    if args.rate_limit > 0:
+        features.append(f"rate-limit: {args.rate_limit}/min")
+    if args.cloud_model:
+        features.append(f"cloud: {args.cloud_model}")
+    if gc_control:
+        features.append("gc-control")
+    if args.pin_system_prompt:
+        features.append("pin-system-prompt")
+    # Show CORS in the startup banner when CLI flag or env-var-driven
+    # config produced an origin list (``configure_cors_from_env`` is
+    # what actually resolved it — see the call site earlier in this
+    # function).
+    if cors_origins:
+        features.append(f"cors: {', '.join(cors_origins)}")
+    if args.enable_dflash:
+        features.append("dflash: single-user")
+    if args.enable_ddtree:
+        features.append("ddtree: experimental single-user")
+
+    model = args.model
+    mcp_config = args.mcp_config
+    plain_lines = ["  🐆 qMLX", "  " + "─" * 9]
+    if features:
+        plain_lines.append(f"  Features: {', '.join(features)}")
+    plain_lines.append(f"  Model: {model}")
+    if mcp_config:
+        plain_lines.append(f"MCP config: {mcp_config}")
+
+    body = [f"[bold]Model:[/] {model}"]
+    if features:
+        body.append(f"[bold]Features:[/] {', '.join(features)}")
+    if mcp_config:
+        body.append(f"[bold]MCP config:[/] {mcp_config}")
+    ui.panel("🐆 qMLX", body, plain_lines=plain_lines, style="cyan")
+
+
+def _render_config_dump(
+    args, scheduler_config, *, enable_prefix_cache: bool, logger
+) -> None:
+    """Startup config dump (issue #51): what the CLI actually set.
+
+    plain: the legacy un-indented ``Key: value`` lines, printed in
+    place (byte-identical to pre-#51 output). rich: the same data as a
+    titled configuration panel rendered once after collection — the
+    MTP eligibility check (which may ``sys.exit(2)``) still runs in
+    its original position inside the collection block.
+    """
+    pairs: list[tuple[str, str]] = []
+
+    def dump(key: str, value: str) -> None:
+        pairs.append((key, value))
+        if not ui.rich:
+            print(f"{key}: {value}")
+
+    dump("Mode", "Continuous batching (for multiple concurrent users)")
+    if args.chunked_prefill_tokens > 0:
+        dump("Chunked prefill", f"{args.chunked_prefill_tokens} tokens per step")
+    if getattr(args, "spec_decode", "none") == "mtp":
+        dump(
+            "MTP",
+            f"enabled via --speculative-config, "
+            f"max_k={getattr(args, 'mtp_max_k', 1)}",
+        )
+        # Native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990. The
+        # config-only entrypoint is ``--speculative-config
+        # '{"method":"mtp"}'``. Boot-time eligibility check fires here
+        # so misuse bounces with a clear error instead of discovering
+        # the mismatch mid-generation.
+        from vllm_mlx.spec_decode.mtp import (
+            MTPEligibility,
+            detect_mtp_eligibility,
+        )
+
+        # ``_gather_kv_cache_dtype_inputs`` already reads
+        # ``config.json`` for the same model the operator passed in;
+        # reuse it so a side-loaded HF path or alias path both work.
+        try:
+            hf_cfg_eligibility, _ = _gather_kv_cache_dtype_inputs(args.model)
+        except Exception:  # pragma: no cover — best-effort
+            hf_cfg_eligibility = None
+        has_sidecar = bool(getattr(args, "mtp_sidecar", None))
+        eligibility = detect_mtp_eligibility(
+            hf_cfg_eligibility, has_external_sidecar=has_sidecar
+        )
+        if eligibility is MTPEligibility.NONE:
+            if has_sidecar:
+                print(
+                    "error: MTP speculative-config requires either a Qwen3.5 / "
+                    "Qwen3.6 checkpoint with mtp_num_hidden_layers >= 1 in "
+                    "config.json. Assistant sidecars are reserved for future "
+                    "validated support and do not make this model eligible.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "error: MTP speculative-config requires a Qwen3.5 / "
+                    "Qwen3.6 checkpoint with mtp_num_hidden_layers >= 1 in "
+                    "config.json. Assistant sidecars are not currently "
+                    "supported. The loaded model does not qualify.",
+                    file=sys.stderr,
+                )
+            sys.exit(2)
+
+        # Codex round-I BLOCKING #3 / round-K BLOCKING #2:
+        # reconcile the earlier best-effort CLI-thread config read
+        # with the eligibility gate's own read, and thread the
+        # resulting model_type down into
+        # ``scheduler_config.mtp_model_type``. Extracted into
+        # :func:`_apply_mtp_cli_model_type_reconciliation` so a
+        # regression test can drive the helper directly instead of
+        # reimplementing the logic in the test body (round-K
+        # BLOCKING #2 called out that a purely-inline reconciliation
+        # block cannot be exercised without spinning up
+        # ``serve_command``, which lets the test pass even if the
+        # production block is later deleted).
+        _apply_mtp_cli_model_type_reconciliation(
+            scheduler_config=scheduler_config,
+            hf_cfg_eligibility=hf_cfg_eligibility,
+            logger=logger,
+        )
+
+        sidecar_note = (
+            f" +sidecar={getattr(args, 'mtp_sidecar', None)}" if has_sidecar else ""
+        )
+        dump("Spec-decode", f"mtp ({eligibility.value}){sidecar_note}")
+
+    # DFlash is normalized from ``--speculative-config`` near the top of
+    # serve_command. By the time we reach here, args.spec_decode is
+    # "none" for dflash callers. The speculative.dflash gate at the
+    # start of serve_command runs the actual eligibility +
+    # drafter-binding checks via the prod bridge.
+    if args.suffix_decoding:
+        dump(
+            "SuffixDecoding",
+            f"enabled, max_draft={args.suffix_max_draft}, "
+            f"max_suffix={args.suffix_max_suffix_len}, "
+            f"min_conf={args.suffix_min_confidence}",
+        )
+    dump("Stream interval", f"{args.stream_interval} tokens")
+    if args.use_paged_cache:
+        dump(
+            "Paged cache",
+            f"block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}",
+        )
+    elif enable_prefix_cache:
+        dump("Prefix cache", f"max_entries={args.prefix_cache_size}")
+        # TurboQuant KV-cache compression flags (--kv-cache-turboquant / -group-size /
+        # -bits) were cut in dev #57 (Metal-only cleanup); the parser no longer
+        # defines them. getattr guards keep this render branch correct for the
+        # flags that still exist and drop the TurboQuant dump when absent.
+        mode = getattr(args, "kv_cache_turboquant", None)
+        if mode:
+            if mode == "k8v4":
+                dump(
+                    "TurboQuant K8V4",
+                    f"K=8-bit Walsh-Hadamard, V=4-bit Lloyd-Max, "
+                    f"group_size={getattr(args, 'kv_cache_turboquant_group_size', None)}",
+                )
+            else:
+                bits = getattr(args, "kv_cache_turboquant_bits", None)
+                bits_str = str(bits) if bits else "auto"
+                dump(
+                    f"TurboQuant V-cache ({mode})",
+                    f"{bits_str}-bit, "
+                    f"group_size={getattr(args, 'kv_cache_turboquant_group_size', None)} (K stays FP16)",
+                )
+        elif args.kv_cache_quantization:
+            dump(
+                "KV cache quantization",
+                f"{args.kv_cache_quantization_bits}-bit, "
+                f"group_size={args.kv_cache_quantization_group_size}",
+            )
+
+    if ui.rich and pairs:
+        body = "\n".join(f"[bold]{k}:[/] {v}" for k, v in pairs)
+        ui.panel("configuration", [body], plain_lines=[], style="green")
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -2104,50 +2477,11 @@ def serve_command(args):
                 "\n    DDTree if you need them.\n"
             )
 
-    # Startup summary
+    # Startup summary (issue #51: rich panel on a TTY, legacy block otherwise)
     print()
-    print("  🐆 qMLX")
-    print("  ─────────")
-    features = []
-    if args.enable_auto_tool_choice:
-        bias_info = (
-            " + logits bias" if getattr(args, "enable_tool_logits_bias", False) else ""
-        )
-        features.append(f"tools: {args.tool_call_parser}{bias_info}")
-    if args.reasoning_parser:
-        features.append(f"reasoning: {args.reasoning_parser}")
-    # Banner mirrors the effective auth state via ``_auth_feature_str``
-    # so the test can call the same function. Pre-fix the gate said
-    # ``if args.api_key`` directly — a sidecar that set env-only saw
-    # ``auth: off`` printed even though ``verify_api_key`` was
-    # enforcing. ``_auth_feature_str`` keeps the banner and the actual
-    # enforcement aligned and is directly unit-testable.
-    auth_feature = _auth_feature_str(args.api_key)
-    if auth_feature:
-        features.append(auth_feature)
-    if args.rate_limit > 0:
-        features.append(f"rate-limit: {args.rate_limit}/min")
-    if args.cloud_model:
-        features.append(f"cloud: {args.cloud_model}")
-    if gc_control:
-        features.append("gc-control")
-    if args.pin_system_prompt:
-        features.append("pin-system-prompt")
-    # Show CORS in the startup banner when CLI flag or env-var-driven
-    # config produced an origin list (``configure_cors_from_env`` is what
-    # actually resolved it — see the call site earlier in this function).
-    if cors_origins:
-        features.append(f"cors: {', '.join(cors_origins)}")
-    if args.enable_dflash:
-        features.append("dflash: single-user")
-    if args.enable_ddtree:
-        features.append("ddtree: experimental single-user")
-    if features:
-        print(f"  Features: {', '.join(features)}")
-    print(f"  Model: {args.model}")
+    _render_startup_banner(args, gc_control=gc_control, cors_origins=cors_origins)
     # Store MCP config path for FastAPI startup
     if args.mcp_config:
-        print(f"MCP config: {args.mcp_config}")
         os.environ["QMLX_MCP_CONFIG"] = args.mcp_config
 
     # R15 #300: resolve --kv-cache-dtype + --reasoning + safelist BEFORE
@@ -2364,100 +2698,14 @@ def serve_command(args):
         gpu_memory_utilization=args.gpu_memory_utilization,
     )
 
-    print("Mode: Continuous batching (for multiple concurrent users)")
-    if args.chunked_prefill_tokens > 0:
-        print(f"Chunked prefill: {args.chunked_prefill_tokens} tokens per step")
-    if getattr(args, "spec_decode", "none") == "mtp":
-        print(
-            "MTP: enabled via --speculative-config, "
-            f"max_k={getattr(args, 'mtp_max_k', 1)}"
-        )
-    # Native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990. The
-    # config-only entrypoint is ``--speculative-config '{"method":"mtp"}'``.
-    # Boot-time eligibility check fires here so misuse bounces with a clear
-    # error instead of discovering the mismatch mid-generation.
-    if getattr(args, "spec_decode", "none") == "mtp":
-        from vllm_mlx.spec_decode.mtp import (
-            MTPEligibility,
-            detect_mtp_eligibility,
-        )
-
-        # ``_gather_kv_cache_dtype_inputs`` already reads
-        # ``config.json`` for the same model the operator passed in;
-        # reuse it so a side-loaded HF path or alias path both work.
-        try:
-            hf_cfg_eligibility, _ = _gather_kv_cache_dtype_inputs(args.model)
-        except Exception:  # pragma: no cover — best-effort
-            hf_cfg_eligibility = None
-        has_sidecar = bool(getattr(args, "mtp_sidecar", None))
-        eligibility = detect_mtp_eligibility(
-            hf_cfg_eligibility, has_external_sidecar=has_sidecar
-        )
-        if eligibility is MTPEligibility.NONE:
-            if has_sidecar:
-                print(
-                    "error: MTP speculative-config requires either a Qwen3.5 / "
-                    "Qwen3.6 checkpoint with mtp_num_hidden_layers >= 1 in "
-                    "config.json. Assistant sidecars are reserved for future "
-                    "validated support and do not make this model eligible.",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    "error: MTP speculative-config requires a Qwen3.5 / "
-                    "Qwen3.6 checkpoint with mtp_num_hidden_layers >= 1 in "
-                    "config.json. Assistant sidecars are not currently "
-                    "supported. The loaded model does not qualify.",
-                    file=sys.stderr,
-                )
-            sys.exit(2)
-
-        # Codex round-I BLOCKING #3 / round-K BLOCKING #2:
-        # reconcile the earlier best-effort CLI-thread config read
-        # with the eligibility gate's own read, and thread the
-        # resulting model_type down into
-        # ``scheduler_config.mtp_model_type``. Extracted into
-        # :func:`_apply_mtp_cli_model_type_reconciliation` so a
-        # regression test can drive the helper directly instead of
-        # reimplementing the logic in the test body (round-K
-        # BLOCKING #2 called out that a purely-inline reconciliation
-        # block cannot be exercised without spinning up
-        # ``serve_command``, which lets the test pass even if the
-        # production block is later deleted).
-        _apply_mtp_cli_model_type_reconciliation(
-            scheduler_config=scheduler_config,
-            hf_cfg_eligibility=hf_cfg_eligibility,
-            logger=logger,
-        )
-
-        sidecar_note = (
-            f" +sidecar={getattr(args, 'mtp_sidecar', None)}" if has_sidecar else ""
-        )
-        print(f"Spec-decode: mtp ({eligibility.value}){sidecar_note}")
-
-    # DFlash is normalized from ``--speculative-config`` near the top of
-    # serve_command. By the time we reach here, args.spec_decode is
-    # "none" for dflash callers. The speculative.dflash gate at the
-    # start of serve_command runs the actual eligibility +
-    # drafter-binding checks via the prod bridge.
-    if args.suffix_decoding:
-        print(
-            f"SuffixDecoding: enabled, max_draft={args.suffix_max_draft}, "
-            f"max_suffix={args.suffix_max_suffix_len}, "
-            f"min_conf={args.suffix_min_confidence}"
-        )
-    print(f"Stream interval: {args.stream_interval} tokens")
-    if args.use_paged_cache:
-        print(
-            f"Paged cache: block_size={args.paged_cache_block_size}, max_blocks={args.max_cache_blocks}"
-        )
-    elif enable_prefix_cache:
-        print(f"Prefix cache: max_entries={args.prefix_cache_size}")
-        if args.kv_cache_quantization:
-            print(
-                f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
-                f"group_size={args.kv_cache_quantization_group_size}"
-            )
+    # Startup config dump (issue #51: rich panel on a TTY, legacy
+    # "Key: value" lines elsewhere — byte-identical plain output).
+    _render_config_dump(
+        args,
+        scheduler_config,
+        enable_prefix_cache=enable_prefix_cache,
+        logger=logger,
+    )
 
     # Check port availability before loading model (avoid wasting RAM on conflict).
     # Set SO_REUSEADDR to match uvicorn's bind behavior — without it, this
@@ -2650,9 +2898,26 @@ def serve_command(args):
     # The "Ready:" banner is printed FROM that hook once warmup completes and
     # the port is actually bound — printing it here would lie to users who
     # curl immediately and get connection-refused while shaders compile.
-    print()
     host_display = "localhost" if args.host == "0.0.0.0" else args.host
     listen_fd = getattr(args, "listen_fd", None)
+    live = bool(getattr(args, "live", False))
+    if not live:
+        print()
+    if live and listen_fd is None and not ui.rich:
+        # issue #51 phase 3: the strip needs a TTY + rich. Plain mode
+        # (pipe / NO_COLOR / QMLX_PLAIN=1) emits the one info line and
+        # runs the usual blocking uvicorn path below.
+        print()
+        print(
+            "  --live: plain mode — no live strip. Use `qmlx status`"
+        )
+        print("          (or `qmlx status --watch`) for a one-shot view.")
+    elif live and listen_fd is not None:
+        # Socket activation: the strip is driven in-process, but under
+        # supervisor-managed fd handoff there is normally no TTY at all.
+        # Keep it a no-op with an honest info line (issue #51).
+        print()
+        print("  --live: no-op with --listen-fd (no terminal to drive).")
     if listen_fd is not None:
         # Socket activation path — supervisor pre-bound the listening
         # socket. We don't know the actual address from the fd without a
@@ -2662,7 +2927,7 @@ def serve_command(args):
             f"  Starting server on inherited fd {listen_fd} "
             "(warming up — this can take a few seconds)"
         )
-    else:
+    elif not (live and ui.rich):
         print(
             f"  Starting server on http://{host_display}:{args.port} (warming up — this can take a few seconds)"
         )
@@ -2698,8 +2963,14 @@ def serve_command(args):
         _cfg.bind_port = args.port
     else:
         _cfg.bind_listen_fd = listen_fd
+    # ``--live`` (issue #51): the strip shows the endpoint on the ready
+    # flip — suppress the one-shot "Ready:" banner on that path only.
+    _cfg.suppress_ready_banner = bool(live and ui.rich and listen_fd is None)
 
-    _run_uvicorn(app, args, uvicorn_log_level)
+    if live and ui.rich and listen_fd is None:
+        _run_uvicorn_live(app, args, uvicorn_log_level)
+    else:
+        _run_uvicorn(app, args, uvicorn_log_level)
 
 
 def _format_bytes(n: int) -> str:
@@ -2870,9 +3141,15 @@ def models_command(args):
     cross-references against the alias registry, and renders
     ``Alias | HF repo | Size on disk | Last modified``. Also reachable as
     the top-level ``qmlx ls`` alias.
+
+    The default view presents the qwen3.* catalog only (2026-10-23
+    operator directive — the CLI's available-models surface is
+    qwen3.*-only; the bring-up model Qwen3.5-9B-4bit is the canonical
+    served model). Non-qwen3 aliases stay resolvable by explicit name or
+    full HF path; they are simply not listed.
     """
     from vllm_mlx._version_check import print_staleness_warning_if_any
-    from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_aliases import list_visible_profiles
 
     print_staleness_warning_if_any()
 
@@ -2880,9 +3157,56 @@ def models_command(args):
         _print_cached_models()
         return
 
-    profiles = list_profiles()
+    profiles = list_visible_profiles()
+    rows: list[tuple[str, ...]] = []
+    for alias in sorted(profiles.keys()):
+        p = profiles[alias]
+        tools = p.tool_call_parser or "—"
+        reasoning = p.reasoning_parser or "—"
+        if p.is_hybrid:
+            # Hybrid models cannot use spec-decode or suffix-decode regardless
+            # of the supports_spec_decode flag (mlx-lm BatchGenerator gate).
+            spec = "✗ hybrid"
+            tier = "n/a"
+        else:
+            spec = "✓" if p.supports_spec_decode else "✗"
+            tier = p.suffix_decoding_tier
+        # DFlash column — eligible aliases show ✓, everything else "—" so
+        # the visual scan immediately surfaces what supports it. We don't
+        # re-run the eligibility gate here (which would also check that
+        # mlx-vlm 0.5.0+ is installed) — that's a runtime concern; the
+        # registry column is pure declarative state.
+        dflash = "✓" if p.supports_dflash else "—"
+        ddtree = "✓" if p.supports_ddtree else "—"
+        rows.append((alias, tools, reasoning, spec, str(tier), dflash, ddtree))
+
     print()
     print(f"  Available models ({len(profiles)} aliases)")
+    if ui.rich:
+        # issue #51: bordered rich table (auto widths) instead of the
+        # hand-computed fixed layout below.
+        print()
+        ui.rich_table(
+            [
+                ("Alias", None),
+                ("Tools", None),
+                ("Reasoning", None),
+                ("Spec-Decode", None),
+                ("Suffix Tier", None),
+                ("DFlash", None),
+                ("DDTree", None),
+            ],
+            rows,
+            footer=[
+                "Tip: `qmlx info <alias>` for the full per-model profile",
+                "`qmlx pull <alias>` to download",
+                "`qmlx chat <alias>` for an interactive REPL",
+                "`qmlx serve <alias>` for an OpenAI-compatible server",
+            ],
+            style="cyan",
+        )
+        print()
+        return
 
     # Alias width is computed from the actual registry so new long names
     # (e.g. ``deepseek-coder-v2-lite-16b-4bit``, 31 chars) don't push the
@@ -2908,28 +3232,10 @@ def models_command(args):
     print(header)
     print(sep)
 
-    for alias in sorted(profiles.keys()):
-        p = profiles[alias]
-        tools = p.tool_call_parser or "—"
-        reasoning = p.reasoning_parser or "—"
-        if p.is_hybrid:
-            # Hybrid models cannot use spec-decode or suffix-decode regardless
-            # of the supports_spec_decode flag (mlx-lm BatchGenerator gate).
-            spec = "✗ hybrid"
-            tier = "n/a"
-        else:
-            spec = "✓" if p.supports_spec_decode else "✗"
-            tier = p.suffix_decoding_tier
-        # DFlash column — eligible aliases show ✓, everything else "—" so
-        # the visual scan immediately surfaces what supports it. We don't
-        # re-run the eligibility gate here (which would also check that
-        # mlx-vlm 0.5.0+ is installed) — that's a runtime concern; the
-        # registry column is pure declarative state.
-        dflash = "✓" if p.supports_dflash else "—"
-        ddtree = "✓" if p.supports_ddtree else "—"
+    for row in rows:
         row = (
-            f"  {alias:<{alias_width}} {tools:<16} {reasoning:<12} "
-            f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7}"
+            f"  {row[0]:<{alias_width}} {row[1]:<16} {row[2]:<12} "
+            f"{row[3]:<10} {row[4]:<11} {row[5]:<7} {row[6]:<7}"
         )
         print(row)
 
@@ -2988,8 +3294,17 @@ def _snapshot_size_bytes(path) -> int:
 
 
 def _print_pull_summary(repo_id: str, snapshot_dir, elapsed: float) -> None:
-    """Emit the one-line ``Downloaded ... — <size> in <duration>`` summary."""
+    """Emit the pull completion summary (panel on a TTY, one line in plain)."""
     size = _snapshot_size_bytes(snapshot_dir)
+    duration = _format_pull_duration(elapsed)
+    if ui.rich:
+        ui.panel(
+            "pull complete",
+            [f"[cyan]{repo_id}[/cyan]  [green]{_format_bytes(size)}[/green]  in {duration}"],
+            plain_lines=[],
+            style="green",
+        )
+        return
     print(
         f"  Downloaded {repo_id} — {_format_bytes(size)} in "
         f"{_format_pull_duration(elapsed)}"
@@ -3199,13 +3514,122 @@ def ps_command(_args):
         print("\n  No qmlx servers running.")
         return
 
+    ordered = sorted(rows, key=lambda r: int(r[1]))  # numeric port sort
+    if ui.rich:
+        ui.rich_table(
+            ["PID", "PORT", "MODEL", "UPTIME"],
+            [[str(r[0]), str(r[1]), r[2], r[3]] for r in ordered],
+            title="qmlx servers",
+            style="cyan",
+            footer=[f"{len(ordered)} server(s) running"],
+        )
+        return
+
     print()
     print(f"  {'PID':<8}{'PORT':<8}{'MODEL':<40}{'UPTIME':<10}")
     print(f"  {'-' * 66}")
     # Sort numerically by port — string sort would put "10000" before "8000".
-    for pid, port, model, uptime in sorted(rows, key=lambda r: int(r[1])):
+    for pid, port, model, uptime in ordered:
         print(f"  {pid:<8}{port:<8}{model:<40}{uptime:<10}")
     print()
+
+
+def status_command(args):
+    """Show live status of a running qmlx server (issue #51, phase 3).
+
+    One-shot by default; ``--watch`` polls until Ctrl-C. Field-by-field
+    mapping is pinned by tests (AC6) against the ``/v1/status`` payload.
+    """
+    import requests
+
+    target = (getattr(args, "target", None) or "127.0.0.1:8000").strip()
+    if target.startswith(("http://", "https://")):
+        base = target.rstrip("/")
+    else:
+        base = f"http://{target}"
+    timeout = float(getattr(args, "timeout", 3.0))
+
+    def fetch() -> dict:
+        r = requests.get(f"{base}/v1/status", timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+
+    if getattr(args, "watch", False):
+        # --watch: poll until Ctrl-C. Rich mode drives a rich.live region
+        # (transient — leaves no residue); plain mode re-prints the
+        # one-line strip each tick (no erase bytes — pipe-safe).
+        def render() -> str:
+            try:
+                stats = fetch()
+            except Exception:  # noqa: BLE001 — show, keep polling
+                return "warming up… (no server reachable)"
+            if ui.rich:
+                return ui.render_live_line(stats)
+            return _plain_live_line(stats)
+
+        try:
+            with ui.live(render, interval=0.5):
+                pass
+        except KeyboardInterrupt:
+            print()
+        return
+
+    try:
+        stats = fetch()
+    except Exception:  # noqa: BLE001 — connection refused, DNS, 404…
+        print(f"\n  No server reachable at {base}")
+        print("  Start one with: qmlx serve <model>")
+        sys.exit(1)
+
+    rows = ui.status_kv_rows(stats)
+    if ui.rich:
+        ui.rich_table(
+            ["FIELD", "VALUE"],
+            [[k, v] for k, v in rows],
+            title=f"qmlx status — {base}",
+            style="cyan",
+        )
+        return
+    print()
+    print(ui.render_status_table(stats))
+    print()
+
+
+def _plain_live_line(stats: dict) -> str:
+    """Plain one-line status strip (no markup) for ``status --watch``."""
+    model = stats.get("model") or "-"
+    state = "generating" if stats.get("status") == "generating" else "ready"
+    line = f"  {model} · {state} · run {stats.get('num_running', 0)} / wait {stats.get('num_waiting', 0)}"
+    tps = stats.get("generation_tps")
+    if tps:
+        line += f" · {tps:.1f} tok/s"
+    return line
+
+
+def _tui_hint_or_exit() -> None:
+    """Exit(1) with the one-line install hint when textual is missing.
+
+    Must run BEFORE ``from vllm_mlx import tui`` — the tui module itself
+    imports textual at top level (AC9: bare install prints the hint and
+    exits 1, no traceback).
+    """
+    try:
+        import textual  # noqa: F401
+    except Exception:  # noqa: BLE001 — any import failure = extra missing
+        print("TUI extra not installed — run: pip install 'qmlx-serve[tui]'")
+        sys.exit(1)
+
+
+def tui_command(args):
+    """Textual chat TUI — ``qmlx tui [model]`` (issue #51, phase 4)."""
+    from vllm_mlx import tui as _tui
+
+    _tui_hint_or_exit()
+    # ``main()`` pre-resolves ``args.model`` (alias → HF path) exactly like
+    # chat; the TUI requests use the alias the user typed so it matches
+    # the served name when a server was spawned for this model.
+    args.model = getattr(args, "_original_alias", args.model)
+    _tui.run(args)
 
 
 def _spawn_chat_server(
@@ -3415,40 +3839,20 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
 
     import requests
 
-    is_tty = sys.stderr.isatty()
-    spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    cyan = "\x1b[36m" if is_tty else ""
-    dim = "\x1b[2m" if is_tty else ""
-    reset = "\x1b[0m" if is_tty else ""
-    start = time.monotonic()
-    deadline = start + timeout_s
+    # issue #51: the spinner is a ``_ui`` call — rich mode uses a rich
+    # status line, plain mode replays the legacy ANSI frames byte-for-byte
+    # when stderr is a TTY (and is a no-op otherwise).
+    deadline = time.monotonic() + timeout_s
     tick = 0
-
-    def _draw():
-        if not is_tty:
-            return
-        elapsed = int(time.monotonic() - start)
-        ch = spinner[tick % len(spinner)]
-        sys.stderr.write(
-            f"\r  {cyan}{ch}{reset} loading model ... {dim}{elapsed}s{reset}"
-        )
-        sys.stderr.flush()
-
-    def _clear():
-        if not is_tty:
-            return
-        sys.stderr.write("\r" + " " * 40 + "\r")
-        sys.stderr.flush()
-
-    try:
+    with ui.spinner("loading model ...", interval=0.1):
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 raise RuntimeError(
                     f"server exited early (code {proc.returncode}); "
                     "see chat-server.log for details"
                 )
-            # Animate the spinner at 10 fps; only poll /health once a
-            # second to keep the spinner smooth and the network polite.
+            # Animate at 10 fps; only poll /health once a second to keep
+            # the spinner smooth and the network polite.
             if tick % 10 == 0:
                 try:
                     r = requests.get(f"{base_url}/health/ready", timeout=2)
@@ -3456,11 +3860,8 @@ def _wait_for_chat_server(base_url: str, proc, timeout_s: int = 600) -> None:
                         return
                 except requests.RequestException:
                     pass
-            _draw()
             time.sleep(0.1)
             tick += 1
-    finally:
-        _clear()
     raise TimeoutError(
         f"server did not become ready within {timeout_s}s "
         "(large models can take longer — pass --ready-timeout)"
@@ -4163,6 +4564,20 @@ def chat_command(args):
         print()
 
     served_name = getattr(args, "_original_alias", args.model)
+
+    # issue #51 phase 4: ``chat --tui`` — Textual TUI instead of the REPL
+    # loop. base_url is already resolved above (--base-url / --port probe /
+    # spawn + ready-wait); a spawned server (if any) stays in _active_procs
+    # so _cleanup reaps it when the TUI exits.
+    if getattr(args, "tui", False):
+        from vllm_mlx import tui as _tui
+
+        _tui_hint_or_exit()
+        args.model = served_name  # TUI requests use the served name
+        _tui.run(args)
+        _cleanup()
+        return
+
     messages: list[dict] = []
     if args.system:
         messages.append({"role": "system", "content": args.system})
@@ -4671,14 +5086,24 @@ def _print_dflash_status(alias: str, profile) -> None:
     eligible = not r.reasons and have_runtime()
     summary = "✓ eligible" if eligible else "✗ ineligible"
 
+    # Box-less lines feed the rich panel; the plain box is rebuilt below
+    # from the same lines so both modes share one source of truth.
+    lines = [f"DFlash eligibility: {summary}", ""]
+    for k, v in rows:
+        lines.append(f"{k:<18}: {v}")
+
     top = "┌" + "─" * (inner + 2) + "┐"
     bot = "└" + "─" * (inner + 2) + "┘"
-
     body = [top, _row(f"DFlash eligibility: {summary}"), _row(sep)]
     for k, v in rows:
         body.append(_row(f"{k:<18}: {v}"))
     body.append(bot)
-    print("\n".join(body))
+    ui.panel(
+        "DFlash eligibility",
+        lines,
+        plain_lines=body,
+        style="green" if eligible else "yellow",
+    )
     print()
     if eligible:
         print(
@@ -4753,13 +5178,25 @@ def _print_ddtree_status(alias: str, profile) -> None:
 
     eligible = not r.reasons and have_runtime()
     summary = "✓ eligible" if eligible else "✗ ineligible"
+
+    # Box-less lines feed the rich panel; the plain box is rebuilt below
+    # from the same lines so both modes share one source of truth.
+    lines = [f"DDTree eligibility: {summary}", ""]
+    for k, v in rows:
+        lines.append(f"{k:<18}: {v}")
+
     top = "┌" + "─" * (inner + 2) + "┐"
     bot = "└" + "─" * (inner + 2) + "┘"
     body = [top, _row(f"DDTree eligibility: {summary}"), _row(sep)]
     for k, v in rows:
         body.append(_row(f"{k:<18}: {v}"))
     body.append(bot)
-    print("\n".join(body))
+    ui.panel(
+        "DDTree eligibility",
+        lines,
+        plain_lines=body,
+        style="green" if eligible else "yellow",
+    )
     print()
     if eligible:
         print(
@@ -4780,6 +5217,36 @@ def agents_command(args):
     # No agent specified → list all profiles
     if not agent_name:
         profiles = list_profiles()
+        table_rows = []
+        for p in profiles:
+            fc = "FC" if p.needs_function_calling else ""
+            stars = f"{p.stars // 1000}K" if p.stars and p.stars >= 1000 else ""
+            if p.recommended_models:
+                shown = p.recommended_models[:3]
+                models = ", ".join(shown)
+                if len(p.recommended_models) > 3:
+                    models += f" +{len(p.recommended_models) - 3}"
+            else:
+                models = ""
+            table_rows.append([p.name, p.display_name, stars, fc, models])
+
+        footer = [
+            f"{len(profiles)} agents supported",
+            "Usage: qmlx agents <name>          Show setup guide",
+            "       qmlx agents <name> --setup   Auto-configure",
+            "       qmlx agents <name> --test    Run integration tests",
+        ]
+        if ui.rich:
+            print()
+            ui.rich_table(
+                ["NAME", "DISPLAY", "STARS", "FC", "RECOMMENDED MODELS"],
+                table_rows,
+                title="Supported AI Agents",
+                style="cyan",
+                footer=footer,
+            )
+            return
+
         print()
         print("  Supported AI Agents")
         print("  " + "─" * 56)
@@ -5112,6 +5579,17 @@ Examples:
         ),
     )
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
+    # issue #51 phase 3: live status strip on the terminal. TTY+rich only —
+    # plain mode (pipe / NO_COLOR / QMLX_PLAIN=1) emits one info line and
+    # falls back to the usual blocking run; --listen-fd is a no-op. Display-only
+    # flag: never reaches SchedulerConfig, so the CLI↔Config fidelity audit
+    # is unaffected.
+    serve_parser.add_argument(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Live status strip while serving (TTY only; no-op on pipes)",
+    )
     # Socket activation — let an external supervisor (launchd, systemd,
     # parent process) bind the listening socket and execve into
     # ``qmlx`` with the pre-bound fd. This closes the bind→auth
@@ -5882,6 +6360,54 @@ Examples:
     )
     subparsers.add_parser("ps", help="List running qmlx servers")
 
+    # Status — read-only /v1/status client (issue #51, phase 3).
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show live status of a running qmlx server",
+        description=(
+            "Query a running qmlx server's /v1/status endpoint and render "
+            "the result (one-shot by default; --watch polls until Ctrl-C)."
+        ),
+    )
+    status_parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="host:port or base URL of a running server (default: 127.0.0.1:8000)",
+    )
+    status_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Poll until Ctrl-C instead of one-shot",
+    )
+    status_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=3.0,
+        help="Per-request timeout in seconds (default: 3.0)",
+    )
+
+    # TUI — Textual chat TUI (issue #51, phase 4; optional [tui] extra).
+    tui_parser = subparsers.add_parser(
+        "tui",
+        help="Textual chat TUI (requires the [tui] extra)",
+    )
+    tui_parser.add_argument(
+        "model",
+        nargs="?",
+        default="qwen3.5-4b-4bit",
+        help="Model alias to display (server-side model name).",
+    ).completer = alias_completer
+    tui_parser.add_argument(
+        "--port", type=int, default=None, help="Port of a running server to connect to"
+    )
+    tui_parser.add_argument(
+        "--base-url", default=None, help="Base URL of a running server (http://host:port)"
+    )
+    tui_parser.add_argument(
+        "--system", type=str, default=None, help="System prompt"
+    )
+
     # Upgrade — detect install method and run the right upgrade command
     upgrade_parser = subparsers.add_parser(
         "upgrade",
@@ -5986,6 +6512,11 @@ Examples:
         type=int,
         default=600,
         help="Seconds to wait for the spawned server to become ready (default: 600)",
+    )
+    chat_parser.add_argument(
+        "--tui",
+        action="store_true",
+        help="Use the Textual TUI instead of the REPL (requires the [tui] extra)",
     )
     chat_parser.add_argument(
         "--response-timeout",
@@ -6380,7 +6911,7 @@ Examples:
     # NOT inherit the bypass. Codex round-2 BLOCKING #2.
     _chat_spawn_child = os.environ.pop("QMLX_CHAT_SPAWN", "") == "1"
 
-    _GATED_COMMANDS = {"chat", "run", "serve", "pull", "bench", "jlens"}
+    _GATED_COMMANDS = {"chat", "run", "serve", "pull", "jlens"}
     if (
         getattr(args, "command", None) in _GATED_COMMANDS
         and hasattr(args, "model")
@@ -6445,6 +6976,10 @@ Examples:
         rm_command(args)
     elif args.command == "ps":
         ps_command(args)
+    elif args.command == "status":
+        status_command(args)
+    elif args.command == "tui":
+        tui_command(args)
     elif args.command == "upgrade":
         upgrade_command(args)
     elif args.command in ("chat", "run"):

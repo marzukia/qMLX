@@ -282,6 +282,6 @@ The following items are agreed-good but not yet implemented; tracked in [#320](h
 - GitHub Actions SHA-pinning enforcement when workflows change.
 - PR-time transitive-dep audit (currently only release-time).
 - Per-PR install-size delta comment (`du -sh` site-packages diff vs main).
-- Per-PR `qmlx bench --tier smoke` (or equivalent quick model-validation) as a required CI check, gated by an `inference-touching` auto-label.
+- Per-PR quick model-validation (e.g. `python scripts/benchmark_engines.py --engine qmlx --speed-only`) as a required CI check, gated by an `inference-touching` auto-label.
 - `claude-code-security-review` action on PRs touching auth / parsers / serialization paths.
 - Quarterly "review-of-the-review" sampling (re-review 10 random merged PRs to score whether codex missed material issues).

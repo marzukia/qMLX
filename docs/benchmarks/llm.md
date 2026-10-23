@@ -3,7 +3,7 @@
 ## Running LLM Benchmarks
 
 ```bash
-qmlx bench qwen3.5-4b-4bit --num-prompts 5 --max-tokens 256
+python scripts/benchmark_engines.py --engine qmlx --runs 5
 ```
 
 ## Results (M4 Max, 128GB)
@@ -270,14 +270,11 @@ The streaming detokenizer is **not currently viable** for per-request usage due 
 ## Running Benchmarks
 
 ```bash
-# Basic benchmark — short alias works
-qmlx bench qwen3.5-4b-4bit
-
-# With more prompts
-qmlx bench qwen3.5-4b-4bit --num-prompts 10
+# Basic benchmark — engine comparison harness
+python scripts/benchmark_engines.py --engine qmlx
 
 # Save results
-qmlx bench qwen3.5-4b-4bit | tee results.txt
+python scripts/benchmark_engines.py --engine qmlx --output results.json
 
 # Continuous batching test
 python tests/test_continuous_batching.py

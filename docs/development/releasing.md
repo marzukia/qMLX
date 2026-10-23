@@ -70,7 +70,7 @@ fail-silent on every error path). Contract in `tests/test_version_check.py`.
 
 - CI (`ci.yml`) runs lint (ruff + audit) and the test matrix on every PR. It
   does not build or publish anything.
-- The old M3 "doctor" gauntlet (`qmlx doctor`, `qmlx bench --tier`, the G1-G11
-  gate table, `scripts/release_check_m3.sh`) went with the doctor harness in the
-  Qwen-only strip. Those commands no longer exist; `release_check_m3.sh` is a
+- The old M3 "doctor" gauntlet (`qmlx doctor`, the bench `--tier` harness,
+  the G1-G11 gate table, `scripts/release_check_m3.sh`) went with the doctor
+  harness in the Qwen-only strip. Those commands no longer exist; `release_check_m3.sh` is a
   leftover and does not run.
