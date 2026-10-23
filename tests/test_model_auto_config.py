@@ -1195,7 +1195,7 @@ class TestWarnMisboundDeepseekV3Parser:
 
 class TestResolutionLogOnce:
     """0.9.5 dogfood: detect_model_config() is called 2-4 times per
-    `qmlx serve` boot (cli, server, engine_core, pflash). Without
+    `qmlx serve` boot (cli, server, engine_core). Without
     de-dup, the user sees the same multi-line INFO 2-4 times. Log-once
     contract — one emit per unique model_path per process.
     """

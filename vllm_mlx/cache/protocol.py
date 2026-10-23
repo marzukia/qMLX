@@ -13,7 +13,7 @@ Two concepts that look similar but are NOT the same — keep them straight:
 
 A manifest sits **alongside** the engine's ``index.json`` at the export
 root and describes "what model produced this blob, with what quant /
-paged-cache / turboquant-kv settings, and at what protocol version" so a
+paged-cache settings, and at what protocol version" so a
 peer instance can refuse a mismatched import before touching tensors.
 """
 
@@ -81,7 +81,6 @@ _FIELD_TYPES: dict[str, type] = {
     "model_id": str,
     "quantization": str,
     "paged_cache": bool,
-    "turboquant_kv": bool,
     "index_format_version": int,
     "entries": int,
     "total_bytes": int,
@@ -116,7 +115,6 @@ class Manifest:
     model_id: str = ""
     quantization: str = ""
     paged_cache: bool = False
-    turboquant_kv: bool = False
     # The engine's on-disk index format version (``index["version"]``)
     # at the time of export. Separate from protocol_version above —
     # see the module docstring.

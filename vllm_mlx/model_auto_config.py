@@ -89,18 +89,6 @@ class ModelConfig:
     # its own fresh dict (a literal ``{}`` would silently share state).
     suffix_bench_speedup: dict[str, float] = field(default_factory=dict)
 
-    # PFlash long-prompt compression eligibility (#287). Mirrors
-    # ``AliasProfile.pflash_tier`` — the single source of truth lives in
-    # ``aliases.json`` and is copied here by ``detect_model_config`` so
-    # ``serve``/``bench`` can pick up the default without re-resolving
-    # the profile. Values: ``"unknown"`` (engine defaults PFlash off) or
-    # ``"verified"`` (engine defaults PFlash to ``always``). Explicit
-    # CLI ``--pflash`` still wins. See VALID_PFLASH_TIERS for the enum.
-    pflash_tier: str = "unknown"
-
-    # Mirrors ``AliasProfile.turboquant_tier``; see VALID_TURBOQUANT_TIERS.
-    turboquant_tier: str = "unknown"
-
     # DFlash block-diffusion speculative decoding eligibility (#264).
     # Mirrors ``AliasProfile.supports_dflash`` so ``qmlx info`` can
     # call out the DFlash opt-in path in the ``Spec decode`` row instead
@@ -405,7 +393,7 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
 
 
 # Resolution log de-dup. detect_model_config() is called from cli.py,
-# server.py, engine_core.py, and pflash.py during a single ``serve`` boot;
+# server.py, and engine_core.py during a single ``serve`` boot;
 # without this gate the user sees the same multi-line INFO 2-4 times
 # back-to-back. Keyed on model_path so distinct models still each log
 # once. Process-local — a fresh worker process logs anew, which is what
@@ -454,9 +442,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             f"reasoning_parser={profile.reasoning_parser}, "
             f"is_hybrid={profile.is_hybrid}, "
             f"supports_spec_decode={profile.supports_spec_decode}, "
-            f"suffix_tier={profile.suffix_decoding_tier}, "
-            f"pflash_tier={profile.pflash_tier}, "
-            f"turboquant_tier={profile.turboquant_tier}",
+            f"suffix_tier={profile.suffix_decoding_tier}",
         )
         # AliasProfile stores the bench dict as a sorted tuple (frozen
         # dataclasses must avoid mutable shared state). Materialize a
@@ -478,8 +464,6 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             supports_spec_decode=profile.supports_spec_decode,
             suffix_decoding_tier=profile.suffix_decoding_tier,
             suffix_bench_speedup=speedup,
-            pflash_tier=profile.pflash_tier,
-            turboquant_tier=profile.turboquant_tier,
             supports_dflash=profile.supports_dflash,
         )
 
