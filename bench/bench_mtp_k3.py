@@ -31,8 +31,9 @@ Two modes:
           --sidecar mlx-community/Qwen3.5-9B-MTP-4bit
 
 * **self-test**: runs the gates against the deterministic mock models
-  from ``tests/test_mtp_spec_decode.py`` — no download, validates the
-  harness itself (and the gate machinery) on any machine with mlx::
+  against inlined deterministic mock models (only ``mlx`` required,
+  no download, no pytest) — validates the harness itself (and the
+  gate machinery) on any machine with mlx::
 
       python bench/bench_mtp_k3.py --self-test
 
@@ -288,30 +289,146 @@ def load_real_model(model: str, sidecar: str | None, model_repo: str | None):
 
 
 def load_self_test_model(max_tokens: int):
-    """Deterministic mock model FACTORIES (no download) from the test
-    suite.
+    """Deterministic mock model FACTORIES (no download) for the
+    self-test mode.
 
-    The mock models are stateful (script cursors), so each gate run
-    gets a fresh instance — a factory per run keeps the K=0 and K=3
-    streams comparable.
+    The mocks are inlined here (not imported from the test suite) so
+    the harness needs only ``mlx`` — no pytest. They mirror
+    ``_MockedQwen35Model`` / ``_SeededMockModel`` in
+    ``tests/test_mtp_spec_decode.py``. The mock models are stateful
+    (script cursors), so each gate run gets a fresh instance — a
+    factory per run keeps the K=0 and K=3 streams comparable.
     """
-    from tests.test_mtp_spec_decode import (
-        _MockedQwen35Model,
-        _SeededMockModel,
-    )
+
+    class _MockedQwen35Model:
+        """Greedy-capable mock: per-position scripted token ids."""
+
+        def __init__(
+            self, backbone_outputs, mtp_outputs, vocab=512, hidden_size=8
+        ):
+            self._backbone = list(backbone_outputs)
+            self._mtp = list(mtp_outputs)
+            self._backbone_cursor = 0
+            self._mtp_cursor = 0
+            self.vocab = vocab
+            self.hidden_size = hidden_size
+            self.layers = []
+
+        def _logits_for_positions(self, target_ids, batch):
+            out_rows = []
+            for tid in target_ids:
+                row = mx.zeros((batch, self.vocab))
+                row = row + mx.where(
+                    mx.arange(self.vocab)[None, :] == tid,
+                    mx.array(50.0),
+                    mx.array(0.0),
+                )
+                out_rows.append(row)
+            return mx.stack(out_rows, axis=1)
+
+        def __call__(
+            self,
+            inputs,
+            cache=None,
+            input_embeddings=None,
+            return_hidden=False,
+            n_confirmed=0,
+        ):
+            B, S = inputs.shape
+            targets = []
+            for _ in range(S):
+                if self._backbone_cursor < len(self._backbone):
+                    targets.append(self._backbone[self._backbone_cursor])
+                    self._backbone_cursor += 1
+                else:
+                    targets.append(0)
+            logits = self._logits_for_positions(targets, B)
+            hidden = mx.zeros((B, S, self.hidden_size))
+            if return_hidden:
+                return logits, hidden
+            return logits
+
+        def mtp_forward(self, hidden, next_token_ids, mtp_cache):
+            B = next_token_ids.shape[0]
+            S = next_token_ids.shape[1]
+            targets = []
+            for _ in range(S):
+                if self._mtp_cursor < len(self._mtp):
+                    targets.append(self._mtp[self._mtp_cursor])
+                    self._mtp_cursor += 1
+                else:
+                    targets.append(0)
+            return self._logits_for_positions(targets, B)
+
+        def make_mtp_cache(self):
+            return []
+
+    class _SeededMockModel:
+        """Soft (biased) logits so temp>0 sampling is stochastic."""
+
+        def __init__(self, backbone_outputs, mtp_outputs, vocab=512, hidden_size=8):
+            self._backbone = list(backbone_outputs)
+            self._mtp = list(mtp_outputs)
+            self._backbone_cursor = 0
+            self._mtp_cursor = 0
+            self.vocab = vocab
+            self.hidden_size = hidden_size
+            self.layers = []
+
+        def _soft_logits(self, entries, batch):
+            V = self.vocab
+            rows = []
+            for tid, p in entries:
+                row = mx.full((V,), float((1.0 - p) / (V - 1))).astype(mx.float32)
+                row = row.at[tid].add(mx.log(float(p)))
+                rows.append(row[None, :])
+            return mx.stack(rows, axis=1)
+
+        def _consume(self, script, cursor, n):
+            out = []
+            for _ in range(n):
+                if cursor < len(script):
+                    out.append(script[cursor])
+                else:
+                    out.append((0, 0.5))
+            return out
+
+        def __call__(
+            self,
+            inputs,
+            cache=None,
+            input_embeddings=None,
+            return_hidden=False,
+            n_confirmed=0,
+        ):
+            B, S = inputs.shape
+            entries = self._consume(self._backbone, self._backbone_cursor, S)
+            self._backbone_cursor += S
+            logits = self._soft_logits(entries, B)
+            hidden = mx.zeros((B, S, self.hidden_size))
+            if return_hidden:
+                return logits, hidden
+            return logits
+
+        def mtp_forward(self, hidden, next_token_ids, mtp_cache):
+            B = next_token_ids.shape[0]
+            S = next_token_ids.shape[1]
+            entries = self._consume(self._mtp, self._mtp_cursor, S)
+            self._mtp_cursor += S
+            return self._soft_logits(entries, B)
+
+        def make_mtp_cache(self):
+            return []
 
     # G1 mock: a long backbone script; the MTP script is the backbone
     # tail, so every chain-of-3 verify all-accepts and the K=3 stream
     # collapses onto the K=0 stream (byte identity by construction —
     # the gate still validates the loop, the rollback, and the tape).
     backbone = list(range(10, 10 + max_tokens + 8))
-    vocab = 512  # keep every scripted id in range (mock default is 32)
 
     def make_greedy():
         return _MockedQwen35Model(
-            backbone_outputs=list(backbone),
-            mtp_outputs=list(backbone[1:]),
-            vocab=vocab,
+            backbone_outputs=list(backbone), mtp_outputs=list(backbone[1:])
         )
 
     # G2 mock: soft (stochastic) logits — same shape as the seeded
@@ -320,7 +437,7 @@ def load_self_test_model(max_tokens: int):
     mtp_soft = [(t, 0.9) for t in range(31, 31 + max_tokens + 12)]
 
     def make_seeded():
-        return _SeededMockModel(list(backbone_soft), list(mtp_soft), vocab=vocab)
+        return _SeededMockModel(list(backbone_soft), list(mtp_soft))
 
     return make_greedy, make_seeded, mx.array([1], dtype=mx.uint32)
 
