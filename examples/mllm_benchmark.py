@@ -25,7 +25,6 @@ from dataclasses import dataclass
 
 import requests
 from PIL import Image
-from tabulate import tabulate
 
 # Test images from Wikimedia Commons - Dogs!
 # Using different dog images at various original resolutions
@@ -332,7 +331,18 @@ def print_results(results: list[BenchmarkResult]):
         )
 
     headers = ["Resolution", "Pixels", "Time", "Tokens", "Tok/s", "Pixels/s"]
-    print(tabulate(table_data, headers=headers, tablefmt="simple"))
+    # #51: tabulate is no longer a base dep — render the same simple
+    # table by hand (fixed columns, no ANSI).
+    widths = [len(h) for h in headers]
+    for row in table_data:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(str(cell)))
+    print("  " + "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)).rstrip())
+    for row in table_data:
+        print(
+            "  "
+            + "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(row)).rstrip()
+        )
 
     # Summary stats
     total_time = sum(r.time_seconds for r in results)

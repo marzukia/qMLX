@@ -8,7 +8,7 @@ import sys
 from unittest.mock import patch
 
 from vllm_mlx import cli
-from vllm_mlx.model_aliases import list_profiles
+from vllm_mlx.model_aliases import list_profiles, list_visible_profiles
 
 
 def _capture_models_output() -> str:
@@ -24,10 +24,16 @@ def _capture_models_output() -> str:
 
 
 def test_models_command_lists_all_aliases():
-    """Every alias in aliases.json must appear in the table."""
+    """Every *presented* (qwen3.*) alias must appear in the table.
+
+    The available-models surface is qwen3.*-only (operator directive
+    2026-10-23); the full registry still exists but is not listed.
+    Non-qwen3 aliases remain resolvable by explicit name — they just
+    don't show up here.
+    """
     out = _capture_models_output()
-    profiles = list_profiles()
-    assert len(profiles) >= 20, "expected 20+ aliases (per project goal)"
+    profiles = list_visible_profiles()
+    assert len(profiles) >= 20, "expected 20+ visible aliases (per project goal)"
     for alias in profiles:
         assert alias in out, f"alias {alias!r} missing from `qmlx models` output"
     assert f"({len(profiles)} aliases)" in out
@@ -68,26 +74,30 @@ def test_models_command_renders_hybrid_marker_for_qwen35_moe():
     assert "n/a" in row, f"expected suffix tier 'n/a' in row: {row!r}"
 
 
-def test_models_command_renders_parser_for_hermes3_8b():
-    """Non-hybrid model with parser + benched tier renders both columns.
+def test_models_command_renders_parser_for_qwen35_9b():
+    """Non-hybrid model with parser + tier column renders both cells.
 
-    Two contracts: (1) the tool parser cell shows the value from the
-    alias registry, (2) the suffix-tier cell shows the tier currently
-    recorded in ``aliases.json``. Reading the expected tier from the
-    registry (not hardcoding it) means a future bench re-sweep that
-    reclassifies hermes3-8b-4bit doesn't break this test, while a *display*
-    regression (tier dropped from the row entirely) still does.
+    Pinned to the canonical bring-up model (qwen3.5-9b-4bit) per the
+    2026-10-23 operator directive — the table is qwen3.*-only, so the
+    hermes3-8b-4bit pin no longer has a row to inspect. Two contracts:
+    (1) the tool parser cell shows the value from the alias registry,
+    (2) the suffix-tier cell shows the tier currently recorded in
+    ``aliases.json``. Reading the expected tier from the registry (not
+    hardcoding it) means a future bench re-sweep that reclassifies the
+    alias doesn't break this test, while a *display* regression (tier
+    dropped from the row entirely) still does.
     """
     out = _capture_models_output()
-    matches = [line for line in out.splitlines() if "hermes3-8b-4bit " in line]
-    assert matches, "no row found for hermes3-8b-4bit"
+    alias = "qwen3.5-9b-4bit"
+    matches = [line for line in out.splitlines() if f"{alias} " in line]
+    assert matches, f"no row found for {alias}"
     row = matches[0]
-    profile = list_profiles().get("hermes3-8b-4bit")
-    assert profile is not None, "hermes3-8b-4bit alias missing — fixture drift"
+    profile = list_visible_profiles().get(alias)
+    assert profile is not None, f"{alias} alias missing — fixture drift"
     assert (profile.tool_call_parser or "") in row, (
         f"expected tool parser {profile.tool_call_parser!r} in row: {row!r}"
     )
-    assert profile.suffix_decoding_tier in row, (
+    assert str(profile.suffix_decoding_tier) in row, (
         f"expected suffix tier {profile.suffix_decoding_tier!r} in row: {row!r}"
     )
 
@@ -95,8 +105,8 @@ def test_models_command_renders_parser_for_hermes3_8b():
 def test_models_command_renders_em_dash_for_unset_parsers():
     """An alias without tool_call_parser / reasoning_parser should show '—'."""
     out = _capture_models_output()
-    profiles = list_profiles()
-    # Find any alias that has neither parser populated.
+    profiles = list_visible_profiles()
+    # Find any *presented* alias that has neither parser populated.
     candidates = [
         a
         for a, p in profiles.items()

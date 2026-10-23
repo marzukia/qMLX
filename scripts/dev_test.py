@@ -72,6 +72,10 @@ def run_audit():
 
 
 def run_unit():
+    # The three paged-cache demo scripts are Apple-Silicon-only and call
+    # ``sys.exit(0)`` at module level; on non-darwin hosts that aborts
+    # pytest collection (INTERNALERROR). Ignore them for the unit stage —
+    # they are demonstration scripts, not regression tests.
     return run(
         [
             PY,
@@ -80,13 +84,16 @@ def run_unit():
             "tests/",
             "-q",
             "--ignore=tests/integrations",
+            "--ignore=tests/test_paged_cache_benefits.py",
+            "--ignore=tests/test_paged_cache_real_inference.py",
+            "--ignore=tests/test_paged_cache_real_model.py",
             "--deselect",
             "tests/test_event_loop.py",
             "--deselect",
             "tests/test_batching_deterministic.py",
         ],
         "Unit tests (pytest)",
-        timeout=120,
+        timeout=600,  # full suite can exceed 2 min on slow/CI hosts
     )
 
 

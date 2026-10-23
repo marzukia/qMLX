@@ -473,7 +473,10 @@ async def lifespan(app: FastAPI):
     # "Starting server …" line is replaced by this. If neither the
     # host/port nor inherited-fd source of truth was stashed (e.g.
     # embedded usage where uvicorn is owned elsewhere), fall back silently.
-    if _cfg.bind_host and _cfg.bind_port:
+    # ``suppress_ready_banner`` (``qmlx serve --live``, issue #51): the
+    # live status strip already shows the endpoint on the ready flip, so
+    # printing the banner here would interleave with the strip redraw.
+    if _cfg.bind_host and _cfg.bind_port and not _cfg.suppress_ready_banner:
         print(f"  Ready: http://{_cfg.bind_host}:{_cfg.bind_port}/v1")
         print(f"  Docs:  http://{_cfg.bind_host}:{_cfg.bind_port}/docs")
         print()

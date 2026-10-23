@@ -35,8 +35,8 @@ help:
 	@echo "    make stress             8-scenario stress test (needs server)"
 	@echo "    make soak               10-min agent soak test (needs server)"
 	@echo ""
-	@echo "  Bench tiers (regression harness — see harness/README.md):"
-	@echo "    qmlx bench <model> --tier smoke|speed|harness|all"
+	@echo "  Bench tiers (dev-only scripts — see scripts/ and harness/README.md):"
+	@echo "    python scripts/benchmark_engines.py --engine qmlx ..."
 	@echo ""
 	@echo "  Release (see docs/development/releasing.md):"
 	@echo "    make release-smoke      clean-room install+import gate (~30s)"
@@ -64,7 +64,7 @@ soak:
 
 # ---------- removed targets (compat stubs) ----------
 # ``make check / full / benchmark / update-baselines`` ran the doctor
-# tier harness, which moved to ``qmlx bench --tier ...`` in
+# tier harness, which moved to ``scripts/bench_*.py`` in
 # v0.7.22. The doctor CLI has rejected the old subcommands since
 # then; these stubs preserve the migration breadcrumb so an old
 # script gets a usable error instead of GNU make's bare "No rule

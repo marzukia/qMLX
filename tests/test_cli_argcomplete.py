@@ -54,29 +54,29 @@ def test_alias_completer_no_prefix_returns_sorted_list() -> None:
 
 
 def test_alias_completer_filters_by_prefix() -> None:
-    """``gemma-4-<TAB>`` must surface all gemma-4-* aliases and nothing
+    """``qwen3.5-<TAB>`` must surface all qwen3.5-* aliases and nothing
     else. This is the user-visible contract: a startswith filter on the
-    alias name."""
-    result = alias_completer("gemma-4-")
-    assert len(result) >= 5, "should match at least 5 gemma-4 aliases"
-    assert all(n.startswith("gemma-4-") for n in result), (
+    alias name. (The completion pool is qwen3.*-only per the 2026-10-23
+    operator directive — the same catalog ``qmlx models`` presents.)"""
+    result = alias_completer("qwen3.5-")
+    assert len(result) >= 5, "should match at least 5 qwen3.5 aliases"
+    assert all(n.startswith("qwen3.5-") for n in result), (
         f"completer leaked non-matching aliases: "
-        f"{[n for n in result if not n.startswith('gemma-4-')]}"
+        f"{[n for n in result if not n.startswith('qwen3.5-')]}"
     )
-    # Lock in the five QAT aliases shipped in v0.6.78 (PR #523) — a
-    # ``len >= 5`` floor alone would have passed even before they were
-    # added (pre-#523 there were already 5 gemma-4-* aliases). Explicit
-    # membership catches a silent regression where the QAT entries get
-    # dropped from aliases.json without the test failing.
-    qat_aliases = {
-        "gemma-4-12b-qat-4bit",
-        "gemma-4-12b-qat-8bit",
-        "gemma-4-26b-qat-4bit",
-        "gemma-4-31b-qat-4bit",
-        "gemma-4-31b-qat-8bit",
+    # Lock in the canonical bring-up aliases — a ``len >= 5`` floor
+    # alone would have passed even if the flagship entries were
+    # dropped from aliases.json. Explicit membership catches that
+    # regression.
+    canonical = {
+        "qwen3.5-9b-4bit",
+        "qwen3.5-4b-4bit",
+        "qwen3.5-35b-4bit",
+        "qwen3.5-122b-8bit",
+        "qwen3.5-122b-oq4-mtp",
     }
-    missing = qat_aliases - set(result)
-    assert not missing, f"QAT aliases missing from completer output: {missing}"
+    missing = canonical - set(result)
+    assert not missing, f"canonical aliases missing from completer output: {missing}"
 
 
 def test_alias_completer_unknown_prefix_returns_empty() -> None:
@@ -120,15 +120,15 @@ def test_alias_csv_completer_first_token() -> None:
 
 
 def test_alias_csv_completer_appends_to_existing_csv() -> None:
-    """``--models qwen3.5-4b-4bit,gem<TAB>`` should expand only the
+    """``--models qwen3.5-4b-4bit,qwen3.6-<TAB>`` should expand only the
     trailing token but emit the full re-assembled value so the shell
-    inserts ``qwen3.5-4b-4bit,gemma-4-12b-4bit`` rather than dropping the head."""
-    result = alias_csv_completer("qwen3.5-4b-4bit,gemma-4-")
-    assert all(m.startswith("qwen3.5-4b-4bit,gemma-4-") for m in result), (
+    inserts ``qwen3.5-4b-4bit,qwen3.6-27b-4bit`` rather than dropping the head."""
+    result = alias_csv_completer("qwen3.5-4b-4bit,qwen3.6-")
+    assert all(m.startswith("qwen3.5-4b-4bit,qwen3.6-") for m in result), (
         f"csv completer dropped the head before the comma: "
         f"{[m for m in result if not m.startswith('qwen3.5-4b-4bit,')]}"
     )
-    assert len(result) >= 5, "should match at least 5 gemma-4-* tokens"
+    assert len(result) >= 5, "should match at least 5 qwen3.6-* tokens"
 
 
 def test_alias_csv_completer_multiple_commas() -> None:
@@ -193,13 +193,13 @@ def test_load_alias_names_strips_unsafe_keys(
 
     spiked = tmp_path / "spiked.json"
     spiked.write_text(
-        '{"good-alias":{}, "evil\\nname":{}, "evil\\u000bname":{}, '
+        '{"qwen3-good-alias":{}, "evil\\nname":{}, "evil\\u000bname":{}, '
         '"with space":{}, "":{}}'
     )
     monkeypatch.setattr(_completion, "_ALIASES_PATH", spiked)
     monkeypatch.setattr(_completion, "_CACHE", None)
 
-    assert _completion._load_alias_names() == ["good-alias"]
+    assert _completion._load_alias_names() == ["qwen3-good-alias"]
 
 
 def test_load_alias_names_caches_by_mtime(
@@ -213,27 +213,30 @@ def test_load_alias_names_caches_by_mtime(
     from vllm_mlx import _completion
 
     f = tmp_path / "cached.json"
-    f.write_text('{"alpha":{}}')
+    # Keys must be qwen3.* aliases: the completion surface presents the
+    # same qwen3-only catalog as ``qmlx models`` (operator directive
+    # 2026-10-23), so a non-qwen3 key would be filtered out here.
+    f.write_text('{"qwen3-alpha":{}}')
     monkeypatch.setattr(_completion, "_ALIASES_PATH", f)
     monkeypatch.setattr(_completion, "_CACHE", None)
 
     first = _completion._load_alias_names()
-    assert first == ["alpha"]
+    assert first == ["qwen3-alpha"]
     cached_id = id(_completion._CACHE)
 
     second = _completion._load_alias_names()
-    assert second == ["alpha"]
+    assert second == ["qwen3-alpha"]
     assert id(_completion._CACHE) == cached_id, "second call should reuse cache"
 
     # Edit the file; the mtime+size change must invalidate.
-    f.write_text('{"alpha":{}, "beta":{}}')
+    f.write_text('{"qwen3-alpha":{}, "qwen3-beta":{}}')
     # Force a measurable mtime delta in case the FS has 1-second
     # resolution and the writes landed in the same second.
     future = f.stat().st_mtime + 5
     os.utime(f, (future, future))
 
     refreshed = _completion._load_alias_names()
-    assert refreshed == ["alpha", "beta"]
+    assert refreshed == ["qwen3-alpha", "qwen3-beta"]
 
 
 def test_cli_lazy_imports_argcomplete(
@@ -274,8 +277,8 @@ def test_autocomplete_handshake_returns_aliases_on_subprocess() -> None:
     env = {
         **os.environ,
         "_ARGCOMPLETE": "1",
-        "COMP_LINE": "qmlx serve gemma-4-",
-        "COMP_POINT": "24",
+        "COMP_LINE": "qmlx serve qwen3.5-",
+        "COMP_POINT": "19",
         "_ARGCOMPLETE_IFS": "\n",
     }
     # ``sys.executable`` so the child uses THIS interpreter — relying
@@ -299,6 +302,6 @@ def test_autocomplete_handshake_returns_aliases_on_subprocess() -> None:
         f"stderr={result.stderr!r}; stdout={result.stdout!r}"
     )
     completions = [ln for ln in result.stdout.splitlines() if ln.strip()]
-    assert any(c.startswith("gemma-4-") for c in completions), (
-        f"expected gemma-4-* matches, got: {completions[:5]}"
+    assert any(c.startswith("qwen3.5-") for c in completions), (
+        f"expected qwen3.5-* matches, got: {completions[:5]}"
     )
