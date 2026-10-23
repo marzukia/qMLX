@@ -2005,10 +2005,14 @@ class _SeededMockModel:
     genuinely stochastic.
 
     Every scripted position is ``(favored_token, p_favored)``; logits
-    are built so the categorical picks ``favored_token`` with exactly
-    ``p_favored`` and spreads the remainder uniformly over the other
-    vocab entries. This gives the seeded key stream real distributional
-    work: same seed ⇒ same draws ⇒ same stream; different seed ⇒
+    are built in probability scale (base ``(1-p)/(V-1)`` on every entry
+    plus a ``log(p)`` add on the favored entry), so the *softmaxed*
+    categorical picks ``favored_token`` with probability
+    ``p/(p+V-1)`` — ≈1.6% for p=0.5, V=32 — NOT ``p`` itself, and
+    spreads the remaining mass exactly uniformly (``1/(p+V-1)`` each)
+    over the other ``V-1`` vocab entries. The deliberately soft
+    probability gives the seeded key stream real distributional work:
+    same seed ⇒ same draws ⇒ same stream; different seed ⇒
     (almost surely) different stream.
     """
 
@@ -2129,4 +2133,67 @@ def test_generator_k3_unseeded_temp_runs():
     assert s3 == s1, (
         f"unseeded run between two seeded runs changed the seeded "
         f"stream: before {s1} after {s3}"
+    )
+
+
+def test_generator_seeded_key_stream_chains_across_blocks():
+    """t208 MINOR-1: the seeded key stream must not be period-64.
+
+    The original stream re-split the SAME base key on every refill,
+    so draws repeated k1..k64, k1..k64, ... — at K=3 a 96–256 token
+    stream makes ~150–300 draws, so PRNG values at a given chain
+    position recurred every ~10 rounds. Cross 220 draws (3+ refill
+    blocks) and pin:
+
+    (a) same seed ⇒ identical stream across the 64-draw block
+        boundaries,
+    (b) draws at position i and i+64 differ — the period is broken,
+    (c) cross-seed divergence still holds.
+
+    The existing seeded tests (≤20 tokens ≈ <64 draws) stay inside one
+    block and cannot catch a period-64 stream.
+    """
+    from vllm_mlx.spec_decode.mtp.generator import _make_seeded_key_stream
+
+    def draws(seed: int, n: int) -> list[list[int]]:
+        stream = _make_seeded_key_stream(seed)
+        # Keys are uint32 arrays (shape (2,) on this mlx build) —
+        # compare via tolist(), not .item().
+        return [stream().tolist() for _ in range(n)]
+
+    a = draws(42, 220)
+    b = draws(42, 220)
+    assert a == b, (
+        "same seed must give the identical stream across the 64-draw block boundaries"
+    )
+    for i in range(len(a) - 64):
+        assert a[i] != a[i + 64], (
+            f"draw at position {i} equals draw at {i + 64} — the key "
+            "stream is still period-64 (refill must split the last "
+            "consumed subkey, not the base key)"
+        )
+    c = draws(7, 220)
+    assert c != a, "different seeds must give different streams (cross-seed divergence)"
+
+
+def test_generator_k3_seeded_temp_seed_zero_is_valid():
+    """t208 NIT-2: seed=0 is a valid distinct seed, not falsy — the
+    scheduler forwards it (``getattr`` + ``is not None``, never an
+    ``or``-style check) and the generator folds it into the base key,
+    so the seed=0 stream must be deterministic and differ from BOTH
+    the seed=None (unseeded, global-PRNG) path and the seed=1 stream.
+    Closes the H-11 footgun family at the MTP boundary."""
+    s0 = _k3_seeded_stream(0)
+    assert s0, "seed=0 stream empty — generator produced no tokens"
+    s0b = _k3_seeded_stream(0)
+    assert s0 == s0b, (
+        "seed=0 must be reproducible across runs (deterministic key "
+        f"stream):\nfirst:  {s0}\nsecond: {s0b}"
+    )
+    assert s0 != _k3_seeded_stream(1), (
+        f"seed=0 stream equals seed=1 stream {s0} — the seed is not reaching the draws"
+    )
+    assert s0 != _k3_seeded_stream(None), (
+        "seed=0 stream equals the unseeded (seed=None) path — seed=0 "
+        "was dropped by a falsy check"
     )
