@@ -238,16 +238,25 @@ def mtp_generate_step(
     # Issue #53 seeded-temp contract: per-request PRNG seed. When
     # ``seed`` is not ``None`` and ``temp > 0``, every PRNG draw inside
     # this generator (draft sampling, verify sampling, the shared
-    # accept uniform, the residual distribution, the XTC draw) is pulled
-    # from a per-request ``mx.random.key`` stream derived from ``seed``
-    # instead of the process-global ``mx.random.state``. Two runs with
-    # the same ``(seed, temp, top_p, top_k, min_p, xtc_*, max_k,
-    # fixed_k, model, prompt)`` produce identical token streams, and
-    # key-based draws never touch global state, so interleaved seeded
-    # requests in one process cannot cross-contaminate each other.
-    # Greedy (``temp == 0``) performs no draws; the seed is accepted (so
-    # the OpenAI ``seed`` parameter always reaches the MTP path) but is
-    # a no-op there.
+    # accept uniform, the residual distribution, and the XTC draws at
+    # draft and verify position 0) is pulled from a per-request
+    # ``mx.random.key`` stream derived from ``seed`` instead of the
+    # process-global ``mx.random.state``; key-based draws never touch
+    # global state, so interleaved seeded requests in one process
+    # cannot cross-contaminate each other. Two runs with the same
+    # ``(seed, temp, top_p, top_k, min_p, xtc_*, max_k, fixed_k, model,
+    # prompt)`` produce identical token streams for ``temp == 0`` and
+    # for ``temp > 0`` with ``xtc_probability == 0`` (the default — XTC
+    # is skipped entirely); with ``temp > 0`` and ``xtc_probability
+    # > 0``, the verify positions i > 0 keep the legacy XTC path, whose
+    # accept-decision draw goes through upstream ``apply_xtc`` and the
+    # global ``mx.random`` state, so same-seed runs may diverge there —
+    # a follow-up issue keys those draws.
+    # Greedy (``temp == 0``) performs no sampling draws — the shared
+    # accept uniform is still drawn from the key stream every verify
+    # round (the stream advances) but is never read; the seed is
+    # accepted (so the OpenAI ``seed`` parameter always reaches the MTP
+    # path) but is a no-op there.
     seed: int | None = None,
     # Issue #53 d=3 gate-harness knob: pin the draft depth for every
     # round, bypassing the EV depth controller entirely. ``0`` parks

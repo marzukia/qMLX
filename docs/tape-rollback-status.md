@@ -132,7 +132,7 @@ Before enabling K>1 in production:
 - [x] Unit tests written (incl. K=3 position audit + invariant)
 - [x] **Gate harness** (`bench/bench_mtp_k3.py`: G1 byte-identity,
       G2 seeded-temp determinism, G3 accept table; self-test mode
-      passes on Linux + mlx)
+      passes on Linux + mlx, with a working PTX-JIT toolchain)
 - [x] **K=3 generator contract** (mock: accept/reject matrix, seeded
       determinism, fixed_k validation)
 - [ ] **Real-weights gates on Apple Silicon** —
