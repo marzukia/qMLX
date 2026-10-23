@@ -158,6 +158,42 @@ def _make_sampler_chain(
     return chain, xtc_cell
 
 
+def _make_seeded_key_stream(seed: int) -> Callable[[], mx.array]:
+    """Build the per-request PRNG key stream for seeded sampling.
+
+    Issue #53 seeded-temp contract: returns a zero-arg callable that
+    lazily produces one key per call, splitting 64 subkeys at a time
+    (one split per 64 draws — a split costs a host round-trip, the
+    draws are the hot path).
+
+    The splits CHAIN: on refill the last consumed subkey is split
+    into the next block, not the base key re-split. Re-splitting the
+    base key makes the stream period-64 (k1..k64, k1..k64, ...) — at
+    K=3 a 96–256 token stream makes ~150–300 draws, so the PRNG
+    values at a given chain position would recur every ~10 rounds
+    and systematically correlate draft/verify sampling. Chaining
+    keeps the stream a pure function of ``seed`` (same seed ⇒
+    identical stream across runs; different seeds ⇒ almost-surely
+    different streams) while breaking the period-64 repeat.
+
+    ``seed=0`` is a valid, distinct seed — the seed is folded into
+    ``mx.random.key`` as ``int(seed) & 0xFFFFFFFF`` and is never
+    truth-tested, so ``mx.random.key(0)`` is simply seed 0's base key.
+    """
+    base_key = mx.random.key(int(seed) & 0xFFFFFFFF)
+    key_buf: list = []
+    last_key = [base_key]
+
+    def _next_key() -> mx.array:
+        if not key_buf:
+            key_buf.extend(list(mx.random.split(last_key[0], 64)))
+        key = key_buf.pop(0)
+        last_key[0] = key
+        return key
+
+    return _next_key
+
+
 # ---------------------------------------------------------------------------
 # The vendored generator. Body mirrors PR #990 mlx_lm/generate.py:662-997
 # line-by-line; comments and qmlx accept-counter hooks added.
@@ -327,17 +363,7 @@ def mtp_generate_step(
     # (``seed & 0xFFFFFFFF``) — same seed ⇒ same key ⇒ same draw
     # sequence, for any integer in the OpenAI-documented range.
     if seed is not None:
-        _base_key = mx.random.key(int(seed) & 0xFFFFFFFF)
-        _key_buf: list = []
-
-        def _next_key() -> mx.array:
-            # Lazy split: 64 subkeys at a time keeps one split per 64
-            # draws (a split costs a host round-trip; the draws are the
-            # hot path). The stream is a pure function of the seed, so
-            # it is identical across runs.
-            if not _key_buf:
-                _key_buf.extend(list(mx.random.split(_base_key, 64)))
-            return _key_buf.pop(0)
+        _next_key = _make_seeded_key_stream(seed)
     else:
         _next_key = None
 

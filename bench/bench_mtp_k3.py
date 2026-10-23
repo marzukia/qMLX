@@ -15,6 +15,12 @@ issue calls out:
   ``mtp_generate_step`` and drive every PRNG draw: two K=3 ``temp>0``
   runs with the same seed produce byte-identical streams, and a
   different seed produces a different stream.
+* **G2b K0-VS-K3-DIST** (record-only) — issue #53 §3 option A:
+  same-seed K=0 vs K=3 per-position distributional comparison at
+  ``temp>0``. Records the per-position stream diff and the token
+  multiset overlap WITHOUT a pass/fail tolerance gate (Phase 0 of the
+  issue: record-only satisfies option A), and runs on the
+  deterministic mocks so it works on hydrogen without real weights.
 * **G3 ACCEPT TABLE** — per-position acceptance (positions 1..3) and
   decode tok/s at K=1/2/3, derived from the flat generator yield
   stream (the harness does not instrument the loop). Informational by
@@ -30,10 +36,10 @@ Two modes:
           --model mlx-community/Qwen3.5-9B-4bit \\
           --sidecar mlx-community/Qwen3.5-9B-MTP-4bit
 
-* **self-test**: runs the gates against the deterministic mock models
-  against inlined deterministic mock models (only ``mlx`` required,
-  no download, no pytest) — validates the harness itself (and the
-  gate machinery) on any machine with mlx::
+* **self-test**: runs the gates against inlined deterministic mock
+  models (only ``mlx`` required, no download, no pytest) — validates
+  the harness itself (and the gate machinery) on any machine with
+  mlx::
 
       python bench/bench_mtp_k3.py --self-test
 
@@ -195,6 +201,51 @@ def gate_g2_seeded_temp(
     if not divergent:
         msg += f"\n  seed=42: {a}\n  seed=7:    {c}"
     return ok, msg
+
+
+def gate_g2b_k0_vs_k3_distribution(
+    make_model, prompt_ids: mx.array, max_tokens: int, temp: float, seed: int = 42
+) -> tuple[bool, str]:
+    """G2b (issue #53 §3 option A, record-only): same-seed K=0 vs K=3
+    per-position distributional comparison at temp>0.
+
+    Records — with NO pass/fail tolerance gate, per Phase 0 of the
+    issue where record-only satisfies option A — the per-position
+    token diff between a K=0 (no drafter) run and a K=3 (tape
+    rollback) run at identical seed/temperature/top_p, plus the token
+    multiset overlap. Works on the deterministic mock models, so it
+    runs on hydrogen without real weights (real mode compares the
+    injected inner model against itself at two depths).
+    """
+    from collections import Counter
+
+    k0, _, _ = run_stream(
+        make_model(), prompt_ids, max_tokens, k=0, temp=temp, seed=seed, top_p=0.9
+    )
+    k3, _, _ = run_stream(
+        make_model(), prompt_ids, max_tokens, k=3, temp=temp, seed=seed, top_p=0.9
+    )
+    n = min(len(k0), len(k3))
+    diff_positions = [i for i in range(n) if k0[i] != k3[i]]
+    match = n - len(diff_positions)
+    c0, c3 = Counter(k0[:n]), Counter(k3[:n])
+    overlap = sum((c0 & c3).values())
+    pct = lambda m: f"{m / n * 100:.1f}%" if n else "n/a"  # noqa: E731
+    msg = (
+        f"G2b K0-VS-K3-DIST (record-only, option A): seed={seed} "
+        f"temp={temp} — K=0 len={len(k0)}, K=3 len={len(k3)}; "
+        f"per-position identity: {match}/{n} ({pct(match)}); "
+        f"token multiset overlap: {overlap}/{n} ({pct(overlap)}) "
+        "(no tolerance gate — Phase 0 record-only)"
+    )
+    if diff_positions:
+        first = ", ".join(f"pos={i} K0={k0[i]} K3={k3[i]}" for i in diff_positions[:5])
+        msg += f"\n  first diffs: {first}" + (
+            f" (+{len(diff_positions) - 5} more)" if len(diff_positions) > 5 else ""
+        )
+    else:
+        msg += "\n  streams are per-position identical at this seed"
+    return True, msg
 
 
 def gate_g3_accept_table(
@@ -534,6 +585,13 @@ def main(argv: list[str] | None = None) -> int:
     ok, msg = gate_g2_seeded_temp(make_seeded, prompt_ids, args.max_tokens, args.temp)
     print(msg)
     failures += 0 if ok else 1
+
+    # G2b (record-only, issue #53 §3 option A) on the stochastic
+    # model — always passes; the record is the point.
+    _ok, msg = gate_g2b_k0_vs_k3_distribution(
+        make_seeded, prompt_ids, args.max_tokens, args.temp
+    )
+    print(msg)
 
     # G3 on the greedy model.
     ok, _msg, results = gate_g3_accept_table(
