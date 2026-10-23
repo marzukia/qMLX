@@ -112,10 +112,10 @@ def test_status_loop_does_not_block_mount(tui_app):
             await pilot.pause()
             label = tui_app.query_one(Label)
             for _ in range(400):
-                if "test-model · idle" in str(label.visual):
+                if "test-model | idle" in str(label.visual):
                     break
                 await pilot.pause()
-            assert "test-model · idle" in str(label.visual)
+            assert "test-model | idle" in str(label.visual)
             assert "server not reachable" not in str(label.visual)
             assert tui_app.is_running
 

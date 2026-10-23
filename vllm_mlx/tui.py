@@ -55,18 +55,22 @@ def _resolve_base_url(args) -> str:
 
 
 def _status_line(stats: dict | None) -> str:
-    """Plain one-line status from a /v1/status payload (AC6 fields)."""
+    """Plain one-line status from a /v1/status payload (AC6 fields).
+
+    ASCII only (issue #63.1): no emoji/middot glyphs — a terminal font
+    without coverage renders them as tofu boxes.
+    """
     if stats is None:
-        return "  ⚡ qmlx — server not reachable"
+        return "  qmlx | server not reachable"
     model = stats.get("model") or "-"
     state = stats.get("status", "idle")
-    line = f"  ⚡ {model} · {state} · run {stats.get('num_running', 0)}"
+    line = f"  qmlx | {model} | {state} | run {stats.get('num_running', 0)}"
     tps = stats.get("generation_tps") or 0.0
     if tps > 0:
-        line += f" · {tps:.1f} tok/s"
+        line += f" | {tps:.1f} tok/s"
     up = stats.get("uptime_s")
     if up is not None:
-        line += f" · up {int(up)}s"
+        line += f" | up {int(up)}s"
     return line
 
 
@@ -85,11 +89,13 @@ class QMLXTUI(App):
             self.history.append({"role": "system", "content": system})
 
     def compose(self) -> ComposeResult:
-        yield Header("🐆 qMLX TUI")
+        # ASCII icon: the Header default ("⭘") is a tofu box on
+        # non-emoji fonts (issue #63.1). The title comes from App.TITLE.
+        yield Header(icon=" ")
         yield Log(auto_scroll=True)
         yield Label(_status_line(None), id="qmlx-status")
         yield Input(
-            placeholder=f"Message {self.model}…  (Ctrl-Q quits)",
+            placeholder=f"Message {self.model}...  (Ctrl-Q quits)",
             id="qmlx-input",
         )
         yield Footer()
@@ -144,7 +150,7 @@ class QMLXTUI(App):
         import requests
 
         self.history.append({"role": "user", "content": message})
-        self._write(log, f"🐆 {message}")
+        self._write(log, f"> {message}")
         reply = ""
         try:
             with requests.post(
