@@ -1255,27 +1255,6 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # AttributeError; not consumed by any code path. Removed in
             # v0.8.0 alongside the loader's deprecation handler.
             "diffusion_backend",
-            # PFlash long-prompt compression eligibility (#287). One of
-            # VALID_PFLASH_TIERS ({"unknown", "verified"}). It IS a
-            # routing decision in the sense that it flips the engine's
-            # default ``--pflash`` mode, but the value space is a closed
-            # enum, the routing flip is gated behind a user-overridable
-            # CLI flag (``--pflash off`` always wins), and the field is
-            # validated by VALID_PFLASH_TIERS at JSON load — so a typo'd
-            # value fails loud rather than misrouting.
-            "pflash_tier",
-            # TurboQuant K8V4 default-on tier (issue #355, PR #952). One
-            # of VALID_TURBOQUANT_TIERS ({"unknown", "k8v4_verified"}).
-            # Same routing-vs-data tradeoff as ``pflash_tier``: the
-            # value flips the engine's no-flag ``--kv-cache-turboquant``
-            # default, but the value space is a closed enum, the
-            # explicit CLI flag still wins, and ``_coerce`` validates
-            # against ``VALID_TURBOQUANT_TIERS`` at JSON load so a
-            # typo'd value fails loud at startup rather than silently
-            # misrouting. New tier fields with this shape MUST be
-            # registered here AND in their VALID_*_TIERS enum — adding
-            # the dataclass field alone is what broke the gate in #952.
-            "turboquant_tier",
         }
     )
 
@@ -1667,7 +1646,6 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--enable-ddtree",
         "--enable-mtp",
         "--enable-kv-cache-quantization",
-        "--enable-kv-cache-turboquant",
         "--enable-prefix-cache",
         "--disable-prefix-cache",
         # SSD KV-restore feature toggle, not a model auto-detection/router.
@@ -1903,7 +1881,7 @@ def _routing_shaped_constants_in_module(source: str) -> set[str]:
     mutually exclusive"`` (an error message) does not. Embedded flag
     names in error messages and docstrings are noise, not bypass."""
     # DeepSeek round-4 fix (PR #409): real argparse flag names accept
-    # uppercase letters (`--enable-TurboQuant`). The lowercase-only
+    # uppercase letters (`--enable-DFlash`). The lowercase-only
     # character class let any such flag escape the Constant-string
     # scan (prong 2 of test_no_unregistered_routing_shaped_flags).
     # IGNORECASE on the whole pattern keeps the prefix list (force/no/

@@ -39,8 +39,7 @@ CLI_ENTRY_PATHS = [
 # star-unpacked at construction sites via ``**helper(args)``. The audit
 # expands the starred unpacking into the field set the helper injects
 # so the drift check doesn't false-positive on the shared entrypoint
-# mirror pattern (#969 — ``cli.py`` and ``server.py`` both call
-# ``turboquant_scheduler_kwargs`` to guarantee lock-step behaviour).
+# mirror pattern (#969).
 #
 # Key: helper function name (matches ``Call.func.id``); may include
 # local aliases used by ``from ... import ... as _local``.
@@ -48,27 +47,11 @@ CLI_ENTRY_PATHS = [
 # Keep the field set in sync with the helper body — a mismatch here
 # either (a) hides a real drift (values in helper, missing here) or
 # (b) creates a false-clean audit (values here, not in helper).
-KWARG_INJECTOR_HELPERS: dict[str, set[str]] = {
-    "turboquant_scheduler_kwargs": {
-        "kv_cache_turboquant",
-        "kv_cache_turboquant_bits",
-        "kv_cache_turboquant_group_size",
-        "kv_cache_turboquant_mode",
-    },
-    # Import-time aliases used inside the two entrypoints.
-    "_turboquant_scheduler_kwargs": {
-        "kv_cache_turboquant",
-        "kv_cache_turboquant_bits",
-        "kv_cache_turboquant_group_size",
-        "kv_cache_turboquant_mode",
-    },
-    "_server_turboquant_scheduler_kwargs": {
-        "kv_cache_turboquant",
-        "kv_cache_turboquant_bits",
-        "kv_cache_turboquant_group_size",
-        "kv_cache_turboquant_mode",
-    },
-}
+#
+# Empty since issue #54 phase 1 removed the last injector helper;
+# the mechanism stays so a future shared-kwargs helper is registered
+# here in the same step it lands.
+KWARG_INJECTOR_HELPERS: dict[str, set[str]] = {}
 
 
 def _dataclass_field_names(source_path: Path, class_name: str) -> set[str]:

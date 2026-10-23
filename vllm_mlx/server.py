@@ -115,7 +115,6 @@ from .api.utils import (
     clean_output_text,  # noqa: F401
     extract_json_from_response,  # noqa: F401
     extract_multimodal_content,  # noqa: F401
-    is_mllm_model,  # noqa: F401
     sanitize_output,  # noqa: F401
     strip_special_tokens,  # noqa: F401
     strip_thinking_tags,  # noqa: F401
@@ -1687,46 +1686,6 @@ Examples:
         default=True,
         help="Enable continuous batching (default: on).",
     )
-    # PFlash long-prompt prefill compression (#287). Off by default. The
-    # unified ``qmlx serve`` CLI exposes the same surface; we mirror
-    # it here so the standalone ``python -m vllm_mlx.server`` path is
-    # not a silent gap (SOP §10).
-    from .cli import _add_pflash_args as _add_pflash_args_to_server_parser
-
-    _add_pflash_args_to_server_parser(parser)
-    # Deprecated flags — accepted silently to avoid breaking user scripts
-    import argparse as _ap
-
-    parser.add_argument(
-        "--simple-engine", action="store_true", default=False, help=_ap.SUPPRESS
-    )
-    parser.add_argument(
-        "--kv-bits", type=int, default=None, choices=[4, 8], help=_ap.SUPPRESS
-    )
-    parser.add_argument("--kv-group-size", type=int, default=64, help=_ap.SUPPRESS)
-    parser.add_argument("--draft-model", type=str, default=None, help=_ap.SUPPRESS)
-    parser.add_argument("--num-draft-tokens", type=int, default=4, help=_ap.SUPPRESS)
-    # TurboQuant flags — MUST match ``qmlx serve`` (cli.py) choice
-    # set + defaults so this standalone entry is functionally at parity.
-    # Pre-#969, this parser was missing the ``"none"`` off-switch added
-    # in #962 (argparse rejected the flag outright) AND the parsed values
-    # were never threaded into ``SchedulerConfig`` below (silent drop —
-    # same bug class as #400). Both entries now share the
-    # ``turboquant_scheduler_kwargs`` helper.
-    parser.add_argument(
-        "--kv-cache-turboquant",
-        nargs="?",
-        const="v4",
-        default=None,
-        choices=["v4", "k8v4", "none"],
-        help=_ap.SUPPRESS,
-    )
-    parser.add_argument(
-        "--kv-cache-turboquant-bits", type=int, default=None, help=_ap.SUPPRESS
-    )
-    parser.add_argument(
-        "--kv-cache-turboquant-group-size", type=int, default=32, help=_ap.SUPPRESS
-    )
     parser.add_argument(
         "--mcp-config",
         type=str,
@@ -1999,47 +1958,10 @@ Examples:
     # was silently dropped — same bug class as #400. The unified qmlx
     # CLI builds a richer SchedulerConfig in cli.py; the standalone path only
     # exposes a small subset of flags, so we plumb just those.
-    from .pflash import config_from_args as _server_pflash_config_from_args
-    from .pflash import resolve_pflash_mode_default as _server_pflash_resolve_default
-    from .pflash import validate_model_support as _server_pflash_validate
     from .scheduler import SchedulerConfig
-
-    # Per-alias PFlash default (#287): verified Qwen3.5 / Qwen3.6 aliases
-    # switch to ``always`` when the user passes no ``--pflash`` flag; all
-    # other aliases keep the conservative ``off``. Explicit overrides win.
-    args.pflash = _server_pflash_resolve_default(args, model_name=args.model)
-    try:
-        server_pflash_config = _server_pflash_config_from_args(args)
-        _server_pflash_validate(
-            server_pflash_config,
-            model_name=args.model,
-            is_mllm=getattr(args, "mllm", False) or is_mllm_model(args.model),
-        )
-    except ValueError as e:
-        parser.error(str(e))
-
-    # TurboQuant resolution (#969): mirror ``qmlx serve`` so the
-    # standalone entry actually honors ``--kv-cache-turboquant``. The
-    # helper collapses the ``"none"`` off-switch sentinel to ``None`` and
-    # applies the per-alias ``k8v4_verified`` default. There is no
-    # ``--kv-cache-quantization`` flag on this parser, so the mutual-
-    # exclusion check in ``cli.py`` is a no-op here (``getattr`` guard on
-    # the shared helper covers programmatic callers that inject one).
-    from .turboquant import (
-        resolve_turboquant_mode_default as _server_turboquant_resolve_default,
-    )
-    from .turboquant import (
-        turboquant_scheduler_kwargs as _server_turboquant_scheduler_kwargs,
-    )
-
-    args.kv_cache_turboquant = _server_turboquant_resolve_default(
-        args, model_name=args.model
-    )
 
     scheduler_config = SchedulerConfig(
         prefill_step_size=args.prefill_step_size,
-        pflash_config=server_pflash_config,
-        **_server_turboquant_scheduler_kwargs(args),
     )
 
     # Load model before starting server

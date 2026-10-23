@@ -9,7 +9,7 @@ remains are the shared, stateless helpers the disk path still needs:
 
 - tokens-bin (de)serialisation and safetensors header inspection
 - cache trimming / offset helpers for hybrid recurrent-state layers
-- KV quantisation / dequantisation and turboquant compression
+- KV quantisation / dequantisation
 - ``estimate_kv_cache_memory`` and ``MemoryCacheConfig``
 
     # Store tracks memory automatically
@@ -553,16 +553,12 @@ def _cache_classes_compatible(
     Reasoning (see #198 BUG B):
 
     * ``KVCache`` / ``MambaCache`` / etc. — always loadable. Under
-      ``kv_quantize`` or ``kv_turboquant`` the next ``store()`` call
-      will recompress; until then they pass through fetch unchanged.
+      ``kv_quantize`` the next ``store()`` call will recompress; until
+      then they pass through fetch unchanged.
     * ``QuantizedKVCache`` — only loadable when ``kv_quantize=True``.
       The dequantize path in ``_decompress_cache`` is guarded on the
       flag; under any other config the tuple-form ``keys`` reach the
       scheduler and crash (#198 BUG A's downstream symptom).
-    * ``TurboQuantKVCache`` — only loadable when ``kv_turboquant=True``.
-      In practice never persisted (no ``state`` attribute), so this
-      branch is defensive.
-
     Returns ``(is_compatible, reason)``. ``reason`` is empty when ok.
     """
     if not class_names:
@@ -575,12 +571,6 @@ def _cache_classes_compatible(
             return (
                 False,
                 f"persisted {cn} requires --kv-cache-quantization "
-                "(current config does not enable it)",
-            )
-        if cn == "TurboQuantKVCache" and not config.kv_turboquant:
-            return (
-                False,
-                f"persisted {cn} requires --kv-cache-turboquant "
                 "(current config does not enable it)",
             )
     return True, ""
@@ -701,12 +691,6 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
     for layer_cache in cache:
         if layer_cache is None:
             continue
-        # TurboQuantKVCache: has values_compressed instead of values
-        from .turboquant import TurboQuantKVCache
-
-        if isinstance(layer_cache, TurboQuantKVCache):
-            total_bytes += layer_cache.memory_bytes
-            continue
         # Handle different cache object types
         # Check dict first since dicts have .keys() method that would match below
         if isinstance(layer_cache, dict) and "state" in layer_cache:
@@ -768,13 +752,6 @@ class MemoryCacheConfig:
     kv_bits: int = 8
     kv_group_size: int = 64
     kv_min_quantize_tokens: int = 256
-    # TurboQuant KV cache compression. ``kv_turboquant_mode`` selects
-    # between the legacy ``"v4"`` (V-only) and ``"k8v4"`` (K-8bit +
-    # V-4bit) schemes shipped in R15 Phase 4.
-    kv_turboquant: bool = False
-    kv_turboquant_bits: int | None = None  # None = auto-select by head_dim
-    kv_turboquant_group_size: int = 32
-    kv_turboquant_mode: str = "v4"
 
     def __post_init__(self) -> None:
         if not 0.0 < self.max_memory_percent <= 1.0:
@@ -864,11 +841,6 @@ def _trim_cache_offset(cache: list[Any], trim_by: int) -> list[Any]:
             tc.offset = max(layer_cache.offset - trim_by, 0)
             tc.group_size = layer_cache.group_size
             tc.bits = layer_cache.bits
-            trimmed.append(tc)
-        elif hasattr(layer_cache, "values_compressed"):
-            # TurboQuantKVCache — use its trim method on a copy
-            tc = copy.copy(layer_cache)
-            tc.trim(trim_by)
             trimmed.append(tc)
         elif (
             hasattr(layer_cache, "offset")
@@ -1164,79 +1136,6 @@ def _dequantize_cache_streaming(cache: list[Any]) -> list[Any]:
             mx.eval(kv.keys, kv.values)
             cache[i] = None
             result.append(kv)
-        else:
-            result.append(layer)
-    return result
-
-
-def _turboquant_compress_cache(
-    cache: list[Any],
-    bits: int | None,
-    group_size: int,
-    mode: str = "v4",
-) -> list[Any]:
-    """Compress KVCache tensors using TurboQuant.
-
-    Args:
-        cache: Per-layer KV cache list.
-        bits: V-side bit width (3 or 4). ``None`` triggers auto-select
-            by ``head_dim`` — 3-bit for head_dim>=96, 4-bit for 64.
-        group_size: V-side group size.
-        mode: Compression mode — ``"v4"`` (V-only, legacy) or
-            ``"k8v4"`` (K-8bit + V-4bit). When set to ``"k8v4"`` the
-            V-side bit width is forced to 4 (the K8 path is only
-            validated against V4).
-    """
-    from mlx_lm.models.cache import KVCache
-
-    from .turboquant import TurboQuantConfig, TurboQuantKVCache, auto_select_bits
-
-    compressed_count = 0
-    result = []
-    for layer in cache:
-        if layer is None:
-            result.append(layer)
-            continue
-        if isinstance(layer, KVCache) and layer.keys is not None:
-            head_dim = layer.values.shape[-1] if layer.values is not None else 128
-            if mode == "k8v4":
-                # K8V4 is V4-pinned; ignore the V-side ``bits`` arg so
-                # operators who left the legacy default (``None``) on
-                # head_dim=96+ don't fall back to V=3-bit silently.
-                actual_bits = 4
-            else:
-                actual_bits = bits if bits is not None else auto_select_bits(head_dim)
-            config = TurboQuantConfig(
-                bits=actual_bits, group_size=group_size, mode=mode
-            )
-            result.append(TurboQuantKVCache.from_kv_cache(layer, config))
-            compressed_count += 1
-        else:
-            result.append(layer)
-
-    if compressed_count > 0:
-        logger.debug(
-            f"TurboQuant compressed {compressed_count}/{len(cache)} layers "
-            f"(mode={mode}, {bits or 'auto'}-bit V, group_size={group_size})"
-        )
-    return result
-
-
-def _turboquant_decompress_cache(cache: list[Any]) -> list[Any]:
-    """Decompress TurboQuantKVCache layers back to regular KVCache."""
-    from .turboquant import TurboQuantKVCache
-
-    result = []
-    for layer in cache:
-        if layer is None:
-            result.append(layer)
-            continue
-        # K8V4 stores K in ``keys_compressed`` (``.keys`` is None); V4
-        # stores K as fp16 in ``.keys``. Trigger decode for either path.
-        if isinstance(layer, TurboQuantKVCache) and (
-            layer.keys is not None or layer.keys_compressed is not None
-        ):
-            result.append(layer.to_kv_cache())
         else:
             result.append(layer)
     return result

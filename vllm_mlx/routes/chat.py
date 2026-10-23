@@ -1981,21 +1981,6 @@ async def _create_chat_completion_impl(
     if _forced_prefix:
         chat_kwargs["forced_assistant_prefix"] = _forced_prefix
 
-    # PFlash routing (#287): structured-output prompts are
-    # prompt-integrity-sensitive — lossy compression would corrupt the
-    # JSON schema context, and there is no user-facing opt-out for
-    # structured output, so they stay hard-protected here.
-    #
-    # Tools used to be lumped in with structured output but have a
-    # separate user-facing knob — ``PFlashConfig.skip_when_tools``
-    # (default skip; CLI ``--pflash-include-tools`` inverts it). The
-    # gate flows through ``has_tools`` instead. Force-setting
-    # ``requires_prompt_integrity=True`` for tools here short-circuits
-    # the ``skip_when_tools`` branch and made the documented CLI
-    # opt-in dead (codex r6 BLOCKING).
-    if response_format:
-        chat_kwargs["requires_prompt_integrity"] = True
-
     if resolved_thinking is not None:
         chat_kwargs["enable_thinking"] = resolved_thinking
 

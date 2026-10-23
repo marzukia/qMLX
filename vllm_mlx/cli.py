@@ -1126,84 +1126,6 @@ def _ensure_model_downloaded(model_name: str) -> None:
         print(f"\n  Pre-download skipped ({type(e).__name__}); server will retry.")
 
 
-def _add_pflash_args(parser) -> None:
-    """Attach PFlash long-prompt-compression CLI flags to an argparse parser.
-
-    Used by both ``serve`` and ``bench`` so the flag surface stays in
-    sync. The default for ``--pflash`` is intentionally ``None``
-    (sentinel for "user passed nothing") so the per-alias resolver in
-    ``pflash.resolve_pflash_mode_default`` can switch the engine to
-    ``always`` for ``pflash_tier="verified"`` aliases (Qwen3.5 /
-    Qwen3.6 family per #287) without breaking the explicit-override
-    contract: passing ``--pflash off`` still wins.
-    """
-    parser.add_argument(
-        "--pflash",
-        choices=["off", "auto", "always"],
-        default=None,
-        help="Enable PFlash long-prompt prefill compression "
-        "(off, auto, always). Default: 'always' for verified aliases "
-        "(Qwen3.5 / Qwen3.6 family per #287), 'off' for everything else.",
-    )
-    parser.add_argument(
-        "--pflash-threshold",
-        type=int,
-        default=32_768,
-        help="Minimum prompt tokens before --pflash auto compresses (default: 32768).",
-    )
-    parser.add_argument(
-        "--pflash-keep-ratio",
-        type=float,
-        default=0.20,
-        help="Fraction of prompt tokens to keep when compressing "
-        "(default: 0.20 — matches the bench-validated profile in PR #649: "
-        "TTFT 3.87x-8.5x, needle recall 5/5 across tested cells).",
-    )
-    parser.add_argument(
-        "--pflash-min-keep-tokens",
-        type=int,
-        default=2_048,
-        help="Minimum tokens to keep when compressing (default: 2048).",
-    )
-    parser.add_argument(
-        "--pflash-sink-tokens",
-        type=int,
-        default=256,
-        help="Leading prompt tokens always kept by PFlash (default: 256).",
-    )
-    parser.add_argument(
-        "--pflash-tail-tokens",
-        type=int,
-        default=2_048,
-        help="Trailing prompt tokens always kept by PFlash (default: 2048).",
-    )
-    parser.add_argument(
-        "--pflash-block-size",
-        type=int,
-        default=128,
-        help="Middle-token scoring block size (default: 128).",
-    )
-    parser.add_argument(
-        "--pflash-query-window",
-        type=int,
-        default=512,
-        help="Trailing query window used to score middle blocks (default: 512).",
-    )
-    parser.add_argument(
-        "--pflash-stride-blocks",
-        type=int,
-        default=8,
-        help="Keep every Nth middle block as an anchor during scoring "
-        "(0 disables anchors, default: 8).",
-    )
-    parser.add_argument(
-        "--pflash-include-tools",
-        action="store_true",
-        help="Allow PFlash compression on prompts with tool definitions. "
-        "By default tool prompts are skipped for tool-call reliability.",
-    )
-
-
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
@@ -1695,7 +1617,7 @@ def serve_command(args):
     # DFlash depends on the optional ``mlx-vlm`` bridge that ships in
     # the ``[dflash]`` extra. Pre-0.9.3 the missing-runtime error only
     # surfaced ~50 lines into serve_command, AFTER:
-    #   - alias profile resolved (logged twice via pflash)
+    #   - alias profile resolved (logged twice)
     #   - tool/reasoning parsers auto-configured
     #   - CORS allow-origin warning printed
     # so the operator saw five INFO lines and a banner before the
@@ -1790,35 +1712,6 @@ def serve_command(args):
         print(
             "Error: --gpu-memory-utilization must be between 0.0 (exclusive) and 1.0 (inclusive)"
         )
-        sys.exit(1)
-
-    # Validate PFlash config and reject unsupported model combinations
-    # at startup. Done here (not lazily in the scheduler) so a typo in
-    # --pflash-keep-ratio doesn't surface as a model-load failure
-    # after a multi-minute weight download. See #287.
-    #
-    # ``resolve_pflash_mode_default`` runs before ``config_from_args``
-    # so the per-alias default (``"always"`` for verified Qwen3.5 /
-    # Qwen3.6 aliases, ``"off"`` everywhere else) is materialized into
-    # ``args.pflash``. The resolved value then flows through the same
-    # validation path the user-explicit case takes.
-    from .api.utils import is_mllm_model
-    from .pflash import (
-        config_from_args,
-        resolve_pflash_mode_default,
-        validate_model_support,
-    )
-
-    args.pflash = resolve_pflash_mode_default(args, model_name=args.model)
-    try:
-        pflash_config = config_from_args(args)
-        validate_model_support(
-            pflash_config,
-            model_name=args.model,
-            is_mllm=getattr(args, "mllm", False) or is_mllm_model(args.model),
-        )
-    except ValueError as e:
-        print(f"Error: {e}")
         sys.exit(1)
 
     # Auto-detect parser config from model name when not explicitly set.
@@ -2257,66 +2150,13 @@ def serve_command(args):
         print(f"MCP config: {args.mcp_config}")
         os.environ["QMLX_MCP_CONFIG"] = args.mcp_config
 
-    # Warn about deprecated flags
-    if getattr(args, "simple_engine", False):
-        print(
-            "\n  ⚠ --simple-engine is deprecated and has no effect."
-            "\n    BatchedEngine is now the sole engine — it handles both"
-            "\n    single-user and multi-user workloads with equal performance.\n"
-        )
-    if getattr(args, "kv_bits", None) is not None:
-        print(
-            "\n  ⚠ --kv-bits is deprecated and has no effect."
-            "\n    For prefix cache quantization, use --kv-cache-quantization instead.\n"
-        )
-    if getattr(args, "draft_model", None):
-        print(
-            "\n  ⚠ --draft-model is deprecated and has no effect."
-            "\n    For DFlash speculative decoding, use "
-            """--speculative-config '{"method":"dflash"}' """
-            "(requires a DFlash-eligible alias). "
-            "For MTP, use "
-            """--speculative-config '{"method":"mtp"}' """
-            "(requires a model with MTP head).\n"
-        )
-    if getattr(args, "specprefill", False):
-        print("\n  ⚠ --specprefill is deprecated and has no effect.\n")
-
-    # Resolve per-alias TurboQuant default before the mutual-exclusion
-    # check below — operator-explicit values still win. The
-    # ``turboquant_scheduler_kwargs`` helper is the shared invariant
-    # (#969) — ``python -m vllm_mlx.server`` calls the same helper so
-    # the two entrypoints can't drift.
-    from .turboquant import (
-        resolve_turboquant_mode_default,
-    )
-    from .turboquant import (
-        turboquant_scheduler_kwargs as _turboquant_scheduler_kwargs,
-    )
-
-    args.kv_cache_turboquant = resolve_turboquant_mode_default(
-        args, model_name=args.model
-    )
-
-    # Mutual exclusion: turboquant (any mode) vs standard quantization.
-    # The argparse layer normalizes the flag to either ``None`` (off),
-    # ``"v4"``, or ``"k8v4"``. Anything truthy means TurboQuant is on.
-    if args.kv_cache_turboquant and args.kv_cache_quantization:
-        print(
-            "\n  Error: --kv-cache-turboquant and --kv-cache-quantization are "
-            "mutually exclusive. Choose one.\n"
-        )
-        sys.exit(1)
-
     # R15 #300: resolve --kv-cache-dtype + --reasoning + safelist BEFORE
-    # the legacy --kv-cache-quantization flag wins. When --kv-cache-
-    # turboquant is on, leave the kv-cache-dtype path alone — TurboQuant
-    # owns the V cache and would conflict with QuantizedKVCache. When
-    # the legacy --kv-cache-quantization flag is passed, honor it
-    # verbatim for backwards compatibility; the new dtype flag only
-    # takes effect on operators who haven't pinned the legacy bool.
+    # the legacy --kv-cache-quantization flag wins. When the legacy
+    # --kv-cache-quantization flag is passed, honor it verbatim for
+    # backwards compatibility; the new dtype flag only takes effect on
+    # operators who haven't pinned the legacy bool.
     kv_cache_decision = None
-    if not args.kv_cache_turboquant and not args.kv_cache_quantization:
+    if not args.kv_cache_quantization:
         from .kv_cache_dtype import (
             dtype_to_quantization_bits,
             log_kv_cache_decision,
@@ -2501,15 +2341,6 @@ def serve_command(args):
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
         kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
         kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
-        # TurboQuant compression (R15 Phase 4: mode-aware). Shared
-        # helper (#969) — ``python -m vllm_mlx.server`` calls the same
-        # ``turboquant_scheduler_kwargs`` so both entrypoints stay in
-        # lock-step. ``--kv-cache-turboquant`` carries a mode value:
-        # ``None`` when off, ``"v4"`` for the legacy V-only path,
-        # ``"k8v4"`` for the K-8bit + V-4bit mix. SchedulerConfig keeps
-        # the boolean ``kv_cache_turboquant`` for downstream callers;
-        # the mode string rides on the dedicated ``_mode`` field.
-        **_turboquant_scheduler_kwargs(args),
         # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok
         # boundaries. ``0`` disables; the runtime module guards every
         # hot-path call with ``should_checkpoint`` so the cost when off
@@ -2521,8 +2352,6 @@ def serve_command(args):
             getattr(args, "enable_disk_kv_restore", True)
             and not getattr(args, "disable_disk_kv_restore", False)
         ),
-        # PFlash long-prompt compression (#287)
-        pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
         # SchedulerConfig so the admission gate enforces the same cap
         # that ``mx.set_memory_limit`` only treats as a guideline. The
@@ -2624,24 +2453,7 @@ def serve_command(args):
         )
     elif enable_prefix_cache:
         print(f"Prefix cache: max_entries={args.prefix_cache_size}")
-        if args.kv_cache_turboquant:
-            mode = args.kv_cache_turboquant
-            if mode == "k8v4":
-                print(
-                    f"TurboQuant K8V4: K=8-bit Walsh-Hadamard, V=4-bit Lloyd-Max, "
-                    f"group_size={args.kv_cache_turboquant_group_size}"
-                )
-            else:
-                bits_str = (
-                    str(args.kv_cache_turboquant_bits)
-                    if args.kv_cache_turboquant_bits
-                    else "auto"
-                )
-                print(
-                    f"TurboQuant V-cache ({mode}): {bits_str}-bit, "
-                    f"group_size={args.kv_cache_turboquant_group_size} (K stays FP16)"
-                )
-        elif args.kv_cache_quantization:
+        if args.kv_cache_quantization:
             print(
                 f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
                 f"group_size={args.kv_cache_quantization_group_size}"
@@ -5454,49 +5266,6 @@ Examples:
         default=256,
         help="Minimum tokens for quantization to apply (default: 256)",
     )
-    # TurboQuant KV cache compression (experimental, R15 Phase 4).
-    #
-    # Accepts an optional mode value:
-    #   --kv-cache-turboquant              → V-only legacy (v4)
-    #   --kv-cache-turboquant v4           → V-only explicit
-    #   --kv-cache-turboquant k8v4         → K-8bit + V-4bit mix (R15 Phase 4)
-    #   --kv-cache-turboquant none         → explicit off-switch (overrides
-    #                                        alias ``turboquant_tier=k8v4_verified``
-    #                                        auto-resolution; see
-    #                                        ``resolve_turboquant_mode_default``)
-    #
-    # The bare-flag form preserves PR #157 backward compatibility. Mode
-    # is mutually exclusive with --kv-cache-quantization.
-    serve_parser.add_argument(
-        "--kv-cache-turboquant",
-        nargs="?",
-        const="v4",
-        default=None,
-        choices=["v4", "k8v4", "none"],
-        help="Enable TurboQuant KV-cache compression. ``v4`` (default when "
-        "the flag is bare) is V-only 3-4 bit Lloyd-Max with K in FP16; "
-        "``k8v4`` is the R15 Phase 4 mix — K at 8-bit Walsh-Hadamard + V at "
-        "4-bit Lloyd-Max (~4.6x KV compression on dense models); ``none`` "
-        "is the explicit off-switch — overrides the alias-driven "
-        "``turboquant_tier=k8v4_verified`` default so the operator can A/B "
-        "the bare FP16 KV path. Experimental — mutually exclusive with "
-        "--kv-cache-quantization.",
-    )
-    serve_parser.add_argument(
-        "--kv-cache-turboquant-bits",
-        type=int,
-        default=None,
-        choices=[3, 4],
-        help="V-side bit width for TurboQuant (default: auto-select by head_dim — "
-        "3-bit for head_dim>=96, 4-bit for head_dim=64). Ignored when "
-        "--kv-cache-turboquant=k8v4 (V is pinned to 4-bit there).",
-    )
-    serve_parser.add_argument(
-        "--kv-cache-turboquant-group-size",
-        type=int,
-        default=32,
-        help="Group size for TurboQuant V-side quantization (default: 32)",
-    )
     # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok boundaries.
     # 0 disables the feature entirely (no scheduler-hot-path cost, no
     # ~/.cache/qmlx/kv_checkpoints/ directory creation); the default
@@ -5547,32 +5316,6 @@ Examples:
         action="store_true",
         default=True,
         help="Enable continuous batching (default: on).",
-    )
-    # Deprecated flags — accepted silently to avoid breaking user scripts
-    serve_parser.add_argument(
-        "--simple-engine",
-        action="store_true",
-        default=False,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--kv-bits",
-        type=int,
-        default=None,
-        choices=[4, 8],
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--kv-group-size",
-        type=int,
-        default=64,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--draft-model",
-        type=str,
-        default=None,
-        help=argparse.SUPPRESS,
     )
     serve_parser.add_argument(
         "--speculative-config",
@@ -5681,36 +5424,6 @@ Examples:
     serve_parser.add_argument(
         "--suffix-min-draft-len",
         type=int,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--num-draft-tokens",
-        type=int,
-        default=4,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--specprefill",
-        action="store_true",
-        default=False,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--specprefill-threshold",
-        type=int,
-        default=8192,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--specprefill-keep-pct",
-        type=float,
-        default=0.3,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--specprefill-draft-model",
-        type=str,
         default=None,
         help=argparse.SUPPRESS,
     )
@@ -6124,9 +5837,6 @@ Examples:
             "disable."
         ),
     )
-    # PFlash long-prompt prefill compression (#287). Off by default; see
-    # vllm_mlx/pflash.py for the design and the prefix-cache bypass.
-    _add_pflash_args(serve_parser)
     # Models command. ``ls`` is registered as a top-level alias that
     # defaults to ``models --cached`` (the locally-cached view) — two
     # muscle-memory entry points, one underlying impl.

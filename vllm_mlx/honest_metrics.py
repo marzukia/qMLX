@@ -179,7 +179,7 @@ class HonestMetrics:
         Call site: the single accounting point at the end of the
         scheduler's ``_maybe_disk_restore``, reached only when a disk
         checkpoint lookup actually ran (all the earlier gate returns —
-        feature off, PFlash, an in-memory hit, empty prompt — happen
+        feature off, an in-memory hit, empty prompt — happen
         before the lookup and are NOT attempts). ``hit`` is true only when
         a checkpoint was found, verified, and installed onto the request;
         every lookup-miss / validation-reject path is a miss.

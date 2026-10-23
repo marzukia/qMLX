@@ -27,8 +27,8 @@ and ``Scheduler`` MLLM-twin, rendered as Prometheus counters in
 These are observability-only counters. ``Scheduler.abort_request`` and
 ``_force_abort_request`` semantics are unchanged — the counters bolt on
 to existing returns. Defaults to zero on engines that never see an
-abort so dashboards never flip to "no data" after a deploy (mirrors the
-M-02 PFlash flat-line treatment).
+abort so dashboards never flip to "no data" after a deploy (strict-mode
+counters are always rendered, even at zero).
 
 The tests below cover four behavioural surfaces:
 
@@ -82,7 +82,7 @@ class _DummyTokenizer:
 def _make_scheduler() -> Scheduler:
     """Build a real ``Scheduler`` against an identity tokenizer.
 
-    Mirrors the helper in ``test_pflash_metrics.py`` so the M-01
+    Real scheduler against an identity tokenizer so the M-01
     counters are exercised by the same scheduler entry points that
     serve production traffic.
     """
@@ -1253,9 +1253,9 @@ async def test_two_completed_streaming_requests_leave_counter_unchanged():
 def metrics_client():
     """FastAPI TestClient mounting only the metrics router.
 
-    Mirrors ``test_metrics_route.metrics_client`` and ``test_pflash_
-    metrics.metrics_client`` so the M-01 counters are exercised
-    through the same render path as every other series.
+    Mirrors ``test_metrics_route.metrics_client`` so the M-01
+    counters are exercised through the same render path as every
+    other series.
     """
     from vllm_mlx.config import reset_config
     from vllm_mlx.routes.metrics import _reset_accumulator_for_tests, router

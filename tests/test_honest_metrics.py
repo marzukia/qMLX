@@ -192,7 +192,7 @@ def test_disk_restore_hit_counts_hit(monkeypatch):
     _patch_dkc(monkeypatch, lookup_result=loaded, requires_full=False)
     hm = HonestMetrics()
     req = _restore_request()
-    Scheduler._maybe_disk_restore(_restore_self(hm), req, pflash_compressed=False)
+    Scheduler._maybe_disk_restore(_restore_self(hm), req)
     # Verified + installed → the only HIT path.
     assert req.cache_hit_type == "disk"
     assert req.cached_tokens == 3
@@ -214,7 +214,7 @@ def test_disk_restore_verify_fail_counts_miss(monkeypatch):
     _patch_dkc(monkeypatch, lookup_result=loaded, requires_full=False)
     hm = HonestMetrics()
     req = _restore_request()
-    Scheduler._maybe_disk_restore(_restore_self(hm), req, pflash_compressed=False)
+    Scheduler._maybe_disk_restore(_restore_self(hm), req)
     assert req.cache_hit_type == "miss"  # untouched by the rejected restore
     assert hm.snapshot()["kv_restore_result"] == {"hit": 0, "miss": 1}
 
@@ -226,7 +226,7 @@ def test_disk_restore_lookup_miss_counts_miss(monkeypatch):
     _patch_dkc(monkeypatch, lookup_result=None)
     hm = HonestMetrics()
     req = _restore_request()
-    Scheduler._maybe_disk_restore(_restore_self(hm), req, pflash_compressed=False)
+    Scheduler._maybe_disk_restore(_restore_self(hm), req)
     assert hm.snapshot()["kv_restore_result"] == {"hit": 0, "miss": 1}
 
 
@@ -247,7 +247,7 @@ def test_disk_restore_no_attempt_counts_neither(monkeypatch):
     req = _restore_request()
     # Feature disabled → gate returns before the lookup ever runs.
     Scheduler._maybe_disk_restore(
-        _restore_self(hm, enabled=False), req, pflash_compressed=False
+        _restore_self(hm, enabled=False), req
     )
     assert called["lookup"] is False  # no lookup == no attempt
     assert hm.snapshot()["kv_restore_result"] == {"hit": 0, "miss": 0}

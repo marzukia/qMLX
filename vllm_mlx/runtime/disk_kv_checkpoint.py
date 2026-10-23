@@ -100,6 +100,7 @@ import logging
 import math
 import os
 import shutil
+import struct
 import tempfile
 import threading
 import time
@@ -231,6 +232,12 @@ _TMP_INFIX = ".tmp"
 # corrupt (a hard byte-verify / load failure). Renaming aside stops a
 # later ``build_content_index`` scan from re-adding the poisoned entry.
 _CORRUPT_SUFFIX = ".corrupt"
+# Suffix for checkpoints auto-purged at load time because they carry a
+# cache class this build no longer knows (``TurboQuantKVCache`` after the
+# issue #54 phase 1 removal of TurboQuant KV compression). Same
+# rename-aside mechanism as ``_CORRUPT_SUFFIX``; a distinct marker so an
+# operator can tell "format broken" apart from "feature removed".
+_TURBOQUANT_PURGED_SUFFIX = ".turboquant_purged"
 
 
 # ---------------------------------------------------------------------------
@@ -1466,6 +1473,59 @@ class LoadedCheckpoint:
     path: str
 
 
+def _checkpoint_has_turboquant_layers(path: str) -> bool:
+    """Header-only check: does this safetensors body carry TurboQuant
+    layers? ``save_prompt_cache`` writes per-layer cache class names
+    under ``2.{idx}`` keys of the ``__metadata__`` block, so the answer
+    is available from the JSON header without materializing any tensor
+    data. Returns ``False`` for anything we can't parse (the caller then
+    lets ``load_prompt_cache`` fail the usual way).
+    """
+    try:
+        size = os.path.getsize(path)
+        if size < 8:
+            return False
+        with open(path, "rb") as f:
+            header_len = struct.unpack("<Q", f.read(8))[0]
+            if header_len <= 0 or 8 + header_len > size:
+                return False
+            header_bytes = f.read(header_len)
+        header = json.loads(header_bytes)
+    except (OSError, ValueError, struct.error):
+        return False
+    meta = header.get("__metadata__") if isinstance(header, dict) else None
+    if not isinstance(meta, dict):
+        return False
+    return any(
+        k.startswith("2.") and v == "TurboQuantKVCache"
+        for k, v in meta.items()
+    )
+
+
+def _purge_turboquant_checkpoint(body_path: str) -> None:
+    """Rename a TurboQuant checkpoint's three on-disk artifacts aside.
+
+    The sibling of the index's ``_quarantine`` rename, owned by
+    :func:`load_checkpoint` so the purge happens on every load path.
+    Best-effort: a rename failure is logged and swallowed — the ``None``
+    return already makes this process re-prefill, and a later rescan
+    skips the renamed body (the scan only picks ``*_CHECKPOINT_EXT``
+    names).
+    """
+    base = body_path[: -len(_CHECKPOINT_EXT)]
+    for src in (body_path, base + _METADATA_EXT, base + _TOKENS_EXT):
+        try:
+            if os.path.exists(src):
+                os.replace(src, src + _TURBOQUANT_PURGED_SUFFIX)
+        except OSError as e:
+            logger.warning(
+                "[disk_kv_checkpoint] turboquant purge rename failed "
+                "for %r: %s",
+                src,
+                e,
+            )
+
+
 def load_checkpoint(path: str) -> LoadedCheckpoint | None:
     """Load one checkpoint by absolute safetensors path.
 
@@ -1487,6 +1547,23 @@ def load_checkpoint(path: str) -> LoadedCheckpoint | None:
             return None
 
         if not os.path.isfile(path):
+            return None
+
+        # TurboQuant KV compression was removed (issue #54 phase 1).
+        # Checkpoints written while it was on carry TurboQuantKVCache
+        # layers that ``load_prompt_cache`` can no longer instantiate —
+        # a hard load error is the pre-decision behavior, but the
+        # operator chose (b): auto-purge with a warning. Rename the
+        # artifacts aside so rescans stop re-selecting a checkpoint
+        # that can never load, and let the request re-prefill.
+        if _checkpoint_has_turboquant_layers(path):
+            logger.warning(
+                f"[disk_kv_checkpoint] {path!r} was written with "
+                f"TurboQuant KV compression, which was removed; "
+                f"auto-purging (artifacts renamed with suffix "
+                f"{_TURBOQUANT_PURGED_SUFFIX}) — request will re-prefill"
+            )
+            _purge_turboquant_checkpoint(path)
             return None
 
         try:

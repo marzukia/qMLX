@@ -872,7 +872,6 @@ def _run_persist_boundary(root, monkeypatch, model_name, tokens, canon):
     monkeypatch.setattr(_dkc, "get_default_root", lambda: root)
     cfg = SimpleNamespace(
         kv_disk_checkpoint_interval=256,
-        kv_cache_turboquant=False,
         kv_cache_quantization=False,
         kv_cache_min_quantize_tokens=10**9,
         kv_cache_dtype="bf16",
@@ -1012,7 +1011,7 @@ def test_minor4_partial_rejected_for_full_only_model(root: str, monkeypatch):
     )
 
     before = _dkc.get_stats()["restore_rejects"].get("full_checkpoint_mismatch", 0)
-    Scheduler._maybe_disk_restore(stub, request, pflash_compressed=False)
+    Scheduler._maybe_disk_restore(stub, request)
 
     after = _dkc.get_stats()["restore_rejects"].get("full_checkpoint_mismatch", 0)
     assert after == before + 1, "guard (d) did not reject the partial checkpoint"

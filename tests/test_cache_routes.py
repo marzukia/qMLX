@@ -118,7 +118,6 @@ def test_manifest_roundtrip(tmp_path):
         model_id="mlx-community/Qwen3.5-9B-4bit",
         quantization="4bit",
         paged_cache=True,
-        turboquant_kv=False,
         index_format_version=2,
         entries=42,
         total_bytes=12_345_678,

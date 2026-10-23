@@ -143,12 +143,12 @@ class Request:
     # Set after tokenization
     prompt_token_ids: list[int] | None = None
     # Logical client prompt length used for accounting (usage, billing).
-    # Stays uncompressed even when PFlash replaces prompt_token_ids with a
-    # shorter model input — see model_prompt_tokens for the post-transform
-    # count that actually drives the prefill workload.
+    # Stays as the original client-visible length even when prompt
+    # transforms shorten the model input — see model_prompt_tokens for
+    # the post-transform count that drives the prefill workload.
     num_prompt_tokens: int = 0
     # Actual tokens the model prefills after prompt transforms. Equals
-    # num_prompt_tokens when PFlash does not engage.
+    # num_prompt_tokens when no transform engages.
     model_prompt_tokens: int = 0
 
     # Generation state
@@ -166,16 +166,9 @@ class Request:
     remaining_tokens: list[int] | None = None  # Tokens still needing processing
     prefix_boundary: int = 0  # Token count for shared prefix (messages[:-1])
 
-    # Routing hints used by PFlash to decide whether to compress (#287).
+    # Diffusion lane routing hint: True when the request carried a tool
+    # spec (consumed by the diffusion scheduler path).
     has_tools: bool = False
-    requires_prompt_integrity: bool = False
-
-    # PFlash prompt compression state. When pflash_metadata["compressed"]
-    # is True, prompt_token_ids is the compressed list and
-    # original_prompt_token_ids holds the pre-compression sequence so
-    # downstream accounting paths can still report client-visible counts.
-    original_prompt_token_ids: list[int] | None = None
-    pflash_metadata: dict[str, Any] | None = None
 
     # Paged cache fields (for BlockAwarePrefixCache)
     block_table: Optional["BlockTable"] = None  # Block table for paged cache
