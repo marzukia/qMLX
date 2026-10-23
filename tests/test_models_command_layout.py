@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from vllm_mlx.cli import models_command
-from vllm_mlx.model_aliases import list_profiles
+from vllm_mlx.model_aliases import list_profiles, list_visible_profiles
 
 
 def _capture(capsys, **arg_overrides):
@@ -44,7 +44,10 @@ def test_every_row_aligns_with_the_header_separator(capsys):
         if set(ln.strip()) == {"─"}:
             break
         data_rows.append(ln)
-    assert len(data_rows) >= 100, "expected the full 120-alias listing"
+    assert len(data_rows) >= 50, "expected the full presented (qwen3.*) listing"
+    # Row count must match the visible catalog exactly — the available-
+    # models surface is qwen3.*-only (operator directive 2026-10-23).
+    assert len(data_rows) == len(list_visible_profiles())
 
     # Column position of "Tools" in the header — every data row must
     # have its second column starting at the same offset.
@@ -78,7 +81,11 @@ def test_alias_column_width_floor_is_24(capsys, monkeypatch):
     from vllm_mlx.model_aliases import AliasProfile
 
     short_profile = AliasProfile(hf_path="x/y")
-    monkeypatch.setattr(model_aliases, "list_profiles", lambda: {"qwen": short_profile})
+    # Patch the *presented* catalog (models_command renders
+    # list_visible_profiles, the qwen3.*-only operator-facing view).
+    monkeypatch.setattr(
+        model_aliases, "list_visible_profiles", lambda: {"qwen3": short_profile}
+    )
     out = _capture(capsys)
     # Header has "Alias" followed by at least 19 spaces before "Tools"
     # → column starts at position 2 + 24 + 1 = 27.
@@ -92,10 +99,10 @@ def test_alias_column_width_floor_is_24(capsys, monkeypatch):
 
 
 def test_longest_real_alias_does_not_overflow(capsys):
-    """End-to-end: with the real registry, the longest alias still gets
-    its column with at least 1 space before the next column."""
+    """End-to-end: with the real registry, the longest *presented* alias
+    still gets its column with at least 1 space before the next column."""
     out = _capture(capsys)
-    longest_alias = max(list_profiles().keys(), key=len)
+    longest_alias = max(list_visible_profiles().keys(), key=len)
     data_line = next(
         ln for ln in out.splitlines() if ln.lstrip().startswith(longest_alias)
     )

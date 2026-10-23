@@ -560,6 +560,38 @@ def list_aliases() -> dict[str, str]:
     return {alias: profile.hf_path for alias, profile in _load().items()}
 
 
+def is_qwen3_alias(alias: str) -> bool:
+    """True when ``alias`` belongs to the Qwen3 family (``qwen3.*``).
+
+    Operator directive 2026-10-23: the qmlx CLI presents a qwen3.*-only
+    available-models surface — the bring-up model on the Mac is
+    Qwen3.5-9B-4bit, which matches ``qwen3.*`` and is the canonical
+    served model. Prefix match on ``qwen3`` covers qwen3.5 / qwen3.6 /
+    qwen3-* (coder, vl, instruct) while excluding qwen2.5, qwopus, &co.
+    """
+    return alias.startswith("qwen3")
+
+
+def list_visible_profiles() -> dict[str, AliasProfile]:
+    """Operator-facing catalog: the qwen3.* subset of :func:`list_profiles`.
+
+    Used by the CLI's available-models surface (``qmlx models``, the
+    unknown-model help, shell completion). The full registry remains
+    resolvable by explicit name / full HF path — only the *presented*
+    list is filtered.
+    """
+    return {
+        alias: profile
+        for alias, profile in _load().items()
+        if is_qwen3_alias(alias)
+    }
+
+
+def list_visible_aliases() -> dict[str, str]:
+    """qwen3.* subset of :func:`list_aliases` (operator-facing view)."""
+    return {alias: p.hf_path for alias, p in list_visible_profiles().items()}
+
+
 def list_profiles() -> dict[str, AliasProfile]:
     """Return all alias profiles. Use this when you need parser/capability
     info, not just the HF path."""
@@ -648,6 +680,13 @@ def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
     letter family — at which point the caller should show a curated
     "popular models" fallback rather than leave the user empty-handed.
     """
+    # The reactive "did you mean" pool is the full registry (not just the
+    # qwen3.* present catalog): the user already signaled a family by
+    # typing it, so a same-family correction to a resolvable non-qwen3
+    # alias is a better suggestion than a qwen3 bait-and-switch. The
+    # qwen3.*-only operator directive governs the *presented* catalog
+    # (``qmlx models``, shell completion, popular-models fallback), not
+    # typo recovery for families that remain resolvable by explicit name.
     aliases = list(_load().keys())
 
     # Pass 1: strict family prefix.
@@ -700,14 +739,12 @@ def suggest_similar(name: str, n: int = 3, cutoff: float = 0.5) -> list[str]:
 # Curated "what should a brand-new user try" list. Surfaced when the user
 # typed a name we couldn't match to anything (or even fuzzy-match within a
 # family). Hand-picked rather than auto-generated so it always leads with
-# the small/fast tier and one well-known representative per category —
-# auto-generation would spit out alphabetic noise like ``bonsai-*`` first.
+# the small/fast tier — auto-generation would spit out alphabetic noise.
+# qwen3.*-only per the 2026-10-23 operator directive (the CLI presents a
+# qwen3-only catalog); leads with the canonical bring-up model.
 POPULAR_ALIASES: tuple[str, ...] = (
-    "qwen3.5-4b-4bit",  # default smoke / small
-    "qwen3.5-9b-4bit",  # mid-size general
+    "qwen3.5-9b-4bit",  # canonical bring-up model (operator directive)
+    "qwen3.5-4b-4bit",  # small / fast tier
     "qwen3.6-27b-4bit",  # latest hybrid family
     "qwen3-coder-30b-4bit",  # coding
-    "gpt-oss-20b",  # 0.10.0: OpenAI open-weights harmony family
-    "mistral-24b-4bit",  # mistral
-    "deepseek-r1-32b-4bit",  # reasoning
 )

@@ -11,12 +11,11 @@ Performance benchmarks for qmlx on Apple Silicon.
 ## Quick Commands
 
 ```bash
-# LLM benchmark — short aliases work
-qmlx bench qwen3.5-4b-4bit
+# Engine comparison benchmark (qmlx vs ollama vs llama-cpp)
+python scripts/benchmark_engines.py --engine qmlx
 
-# Or by full HF repo (vision/multimodal benches live in scripts/ — they are
-# dev-only and not shipped with `pip install qmlx-serve`)
-qmlx bench mlx-community/Qwen3.5-9B-4bit
+# Or benchmark every locally available alias at once (dev-only script)
+bash scripts/bench_all_models.sh
 ```
 
 ## Standalone Test Defaults
@@ -55,7 +54,7 @@ Results will vary on different Apple Silicon chips.
 If you have a different Apple Silicon chip, please share your results:
 
 ```bash
-qmlx bench qwen3.5-4b-4bit | tee results.txt
+python scripts/benchmark_engines.py --engine qmlx | tee results.txt
 ```
 
 Open an issue with your results at [GitHub Issues](https://github.com/raullenchai/Rapid-MLX/issues).
