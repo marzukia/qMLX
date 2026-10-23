@@ -872,7 +872,6 @@ def _run_persist_boundary(root, monkeypatch, model_name, tokens, canon):
     monkeypatch.setattr(_dkc, "get_default_root", lambda: root)
     cfg = SimpleNamespace(
         kv_disk_checkpoint_interval=256,
-        kv_cache_turboquant=False,
         kv_cache_quantization=False,
         kv_cache_min_quantize_tokens=10**9,
         kv_cache_dtype="bf16",

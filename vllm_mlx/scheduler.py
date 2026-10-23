@@ -146,19 +146,6 @@ class SchedulerConfig:
     kv_cache_quantization_group_size: int = 64
     kv_cache_min_quantize_tokens: int = 256
 
-    # TurboQuant KV cache compression (R15 Phase 4).
-    #
-    # ``kv_cache_turboquant`` is the legacy boolean toggle (PR #157).
-    # ``kv_cache_turboquant_mode`` carries the V-only vs K8V4 selection:
-    #   * ``"v4"``  — K=FP16, V=3-4bit Lloyd-Max (PR #157).
-    #   * ``"k8v4"`` — K=8-bit Walsh-Hadamard, V=4-bit (this PR).
-    # The boolean is kept for downstream callers that pre-date the mode
-    # field; treat ``kv_cache_turboquant=True`` + mode unset as ``"v4"``.
-    kv_cache_turboquant: bool = False
-    kv_cache_turboquant_bits: int | None = None  # None = auto-select by head_dim
-    kv_cache_turboquant_group_size: int = 32
-    kv_cache_turboquant_mode: str = "v4"
-
     # R15-P1 (task #296): disk-backed KV checkpointing.
     # ``0`` disables the feature so the scheduler hot-path never touches
     # the disk module; the default 256 matches MLX-LM's ``KVCache.step``
@@ -5369,7 +5356,6 @@ class Scheduler:
                 _quantize_cache,
                 _slice_kv_to_length,
                 _trim_to_offset,
-                _turboquant_compress_cache,
             )
             from .runtime import disk_kv_checkpoint as _dkc
 
@@ -5427,16 +5413,6 @@ class Scheduler:
                     # are exactly the prompt-prefix KV.
                     write_cache = _slice_kv_to_length(write_cache, target_len)
                 if (
-                    self.config.kv_cache_turboquant
-                    and target_len >= self.config.kv_cache_min_quantize_tokens
-                ):
-                    write_cache = _turboquant_compress_cache(
-                        write_cache,
-                        self.config.kv_cache_turboquant_bits,
-                        self.config.kv_cache_turboquant_group_size,
-                        self.config.kv_cache_turboquant_mode,
-                    )
-                elif (
                     self.config.kv_cache_quantization
                     and target_len >= self.config.kv_cache_min_quantize_tokens
                 ):

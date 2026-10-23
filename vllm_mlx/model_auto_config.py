@@ -89,9 +89,6 @@ class ModelConfig:
     # its own fresh dict (a literal ``{}`` would silently share state).
     suffix_bench_speedup: dict[str, float] = field(default_factory=dict)
 
-    # Mirrors ``AliasProfile.turboquant_tier``; see VALID_TURBOQUANT_TIERS.
-    turboquant_tier: str = "unknown"
-
     # DFlash block-diffusion speculative decoding eligibility (#264).
     # Mirrors ``AliasProfile.supports_dflash`` so ``qmlx info`` can
     # call out the DFlash opt-in path in the ``Spec decode`` row instead
@@ -445,8 +442,7 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             f"reasoning_parser={profile.reasoning_parser}, "
             f"is_hybrid={profile.is_hybrid}, "
             f"supports_spec_decode={profile.supports_spec_decode}, "
-            f"suffix_tier={profile.suffix_decoding_tier}, "
-            f"turboquant_tier={profile.turboquant_tier}",
+            f"suffix_tier={profile.suffix_decoding_tier}",
         )
         # AliasProfile stores the bench dict as a sorted tuple (frozen
         # dataclasses must avoid mutable shared state). Materialize a
@@ -468,7 +464,6 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             supports_spec_decode=profile.supports_spec_decode,
             suffix_decoding_tier=profile.suffix_decoding_tier,
             suffix_bench_speedup=speedup,
-            turboquant_tier=profile.turboquant_tier,
             supports_dflash=profile.supports_dflash,
         )
 
