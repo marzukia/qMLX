@@ -61,9 +61,9 @@ def test_serve_parser_exposes_speculative_config() -> None:
     assert "--spec-decode" not in out.stdout
     # Help text mentions the install path so users know how to enable
     # the feature when it's missing.
-    assert "[dflash]" in out.stdout, (
-        "help text should reference the qmlx-serve[dflash] extras"
-    )
+    assert (
+        "[dflash]" in out.stdout
+    ), "help text should reference the qmlx-serve[dflash] extras"
 
 
 def _dflash_cli_args(**overrides):
@@ -238,31 +238,42 @@ def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> N
 def test_models_listing_renders_dflash_column(capsys) -> None:
     """``qmlx models`` must show a ``DFlash`` column so users can
     scan eligibility at a glance. The known-good alias renders ✓; a
-    non-DFlash alias renders —."""
+    non-DFlash alias renders BLANK (issue #62: a column that is "—"
+    for 50 of 51 rows is a wall, not data)."""
     from vllm_mlx.cli import models_command
 
     models_command(None)
     captured = capsys.readouterr()
     # Header
     assert "DFlash" in captured.out
-    # The qwen3.5-27b-8bit row must show ✓ in its DFlash column. We can't
-    # anchor on exact column offsets (table widths may shift), so look
-    # for the alias and the marker on the same line.
+    # issue #62: rows may lead with the "● " installed marker, so anchor
+    # on the alias as a substring. DFlash is the second-to-last plain-mode
+    # column (fixed 7-char field after one space) — extract by tail
+    # offset, not the header label ("Spec-Decode" overflows its field by
+    # one char, so header offsets past it are off by one).
     lines = captured.out.splitlines()
+
+    def dflash_cell(row: str) -> str:
+        return row[-16:-8].strip()
+
     eligible_row = next(
         (line for line in lines if "qwen3.5-27b-8bit " in line),
         None,
     )
     assert eligible_row is not None, "qwen3.5-27b-8bit row missing"
-    assert "✓" in eligible_row, f"DFlash column should be ✓: {eligible_row!r}"
+    assert (
+        dflash_cell(eligible_row) == "✓"
+    ), f"DFlash column should be ✓: {eligible_row!r}"
 
-    # A non-DFlash alias renders — in the DFlash column.
+    # A non-DFlash alias renders blank in the DFlash column.
     ineligible_row = next(
         (line for line in lines if "qwen3.5-4b-4bit " in line),
         None,
     )
     assert ineligible_row is not None, "qwen3.5-4b-4bit row missing"
-    assert "—" in ineligible_row, f"DFlash column should be —: {ineligible_row!r}"
+    assert (
+        dflash_cell(ineligible_row) == ""
+    ), f"DFlash column should be blank (issue #62): {ineligible_row!r}"
 
 
 # =============================================================================
@@ -741,9 +752,9 @@ def test_stream_completion_surfaces_constructor_exception(monkeypatch) -> None:
     # Must still get a clean [DONE] terminator + the error block.
     # finish_reason is OpenAI-spec-compliant ``"length"`` (see the
     # generator-exception test above for full rationale).
-    assert "data: [DONE]" in body, (
-        f"constructor-time crash must still terminate the stream; got:\n{body}"
-    )
+    assert (
+        "data: [DONE]" in body
+    ), f"constructor-time crash must still terminate the stream; got:\n{body}"
     assert '"finish_reason": "length"' in body
     assert "dflash_runtime_error" in body
     assert "simulated OOM at generator construction" in body
@@ -794,12 +805,12 @@ def test_stream_completion_reports_length_when_max_tokens_hit(monkeypatch) -> No
     body = b"".join(chunks).decode()
     # The penultimate SSE event carries the final finish_reason — must be
     # "length", not "stop", since we hit the token budget.
-    assert '"finish_reason": "length"' in body, (
-        f"max_tokens hit should report finish_reason=length; got:\n{body}"
-    )
-    assert '"finish_reason": "stop"' not in body, (
-        f"must not also emit finish_reason=stop on the final event; got:\n{body}"
-    )
+    assert (
+        '"finish_reason": "length"' in body
+    ), f"max_tokens hit should report finish_reason=length; got:\n{body}"
+    assert (
+        '"finish_reason": "stop"' not in body
+    ), f"must not also emit finish_reason=stop on the final event; got:\n{body}"
 
 
 @_skip_without_mlx_vlm
@@ -857,9 +868,9 @@ def test_stream_completion_reports_stop_when_eos_lands_at_max_tokens(
         "EOS at exactly max_tokens must be classified as stop, not length; "
         f"got:\n{body}"
     )
-    assert '"finish_reason": "length"' not in body, (
-        f"must not also emit length when last token is EOS; got:\n{body}"
-    )
+    assert (
+        '"finish_reason": "length"' not in body
+    ), f"must not also emit length when last token is EOS; got:\n{body}"
 
 
 @_skip_without_mlx_vlm
@@ -992,9 +1003,9 @@ def test_dflashruntime_accept_lens_tolerates_wrong_type(caplog) -> None:
 
     with caplog.at_level(logging.WARNING, logger="vllm_mlx.speculative.dflash.runtime"):
         rt.reset_accept_lens()
-    assert any("unexpected type" in rec.message for rec in caplog.records), (
-        "reset_accept_lens should warn (not crash) when accept_lens isn't a list"
-    )
+    assert any(
+        "unexpected type" in rec.message for rec in caplog.records
+    ), "reset_accept_lens should warn (not crash) when accept_lens isn't a list"
     # Snapshot also degrades gracefully — empty list, not raise.
     assert rt.accept_lens_snapshot() == []
 
@@ -1011,7 +1022,7 @@ def test_run_dflash_server_raises_when_mlx_vlm_missing(monkeypatch) -> None:
     from vllm_mlx.speculative.dflash import server as srv
 
     monkeypatch.setattr(srv, "have_runtime", lambda: False)
-    with pytest.raises(RuntimeError, match=r"qmlx\[dflash\]"):
+    with pytest.raises(RuntimeError, match=r"qmlx-serve\[dflash\]"):
         srv.run_dflash_server(
             main_model_repo="mlx-community/Qwen3.5-27B-8bit",
             drafter_repo="z-lab/Qwen3.5-27B-DFlash",

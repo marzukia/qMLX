@@ -26,6 +26,11 @@ def test_every_row_aligns_with_the_header_separator(capsys):
     the same column positions as the header. With the old fixed 24-char
     alias column, the 31-char ``deepseek-coder-v2-lite-16b-4bit`` row
     pushed Tools / Reasoning / Spec-Decode out one full column position.
+
+    issue #62: installed rows lead with a "● " marker *inside* the Alias
+    cell, and missing-data cells render blank (not "✗" / "unknown") —
+    the check below validates the *padding* between the alias name and
+    the header's Tools offset, so neither breaks it.
     """
     out = _capture(capsys)
     lines = [ln for ln in out.splitlines() if ln.startswith("  ")]
@@ -50,27 +55,19 @@ def test_every_row_aligns_with_the_header_separator(capsys):
     assert len(data_rows) == len(list_visible_profiles())
 
     # Column position of "Tools" in the header — every data row must
-    # have its second column starting at the same offset.
+    # have its second column starting at the same offset. The Alias cell
+    # is either "<alias>" or "● <alias>" (installed marker, issue #62);
+    # the marker's internal space is part of the cell, and the fixed
+    # column padding between the cell and tools_col must be blank.
     tools_col = header.index("Tools")
-    # The split-on-spaces second token starts at the first non-space
-    # character after the alias. With the dynamic width that position
-    # is exactly tools_col on every row.
     for row in data_rows:
-        # Find the position of the first non-space after the leading
-        # alias name. The alias may itself contain hyphens but not
-        # spaces; the first space-delimited gap separates alias and
-        # tools.
-        stripped = row[2:]  # drop the leading "  " indent
-        first_gap = stripped.find(" ")
-        # Index of the second column (Tools) in absolute terms:
-        second_col_abs = (
-            2
-            + len(stripped[:first_gap])
-            + (len(stripped[first_gap:]) - len(stripped[first_gap:].lstrip()))
-        )
-        assert second_col_abs == tools_col, (
-            f"Row mis-aligned: tools col at {second_col_abs}, header at "
-            f"{tools_col}. Row: {row!r}"
+        cell = row[2:tools_col].rstrip()
+        name = cell[2:] if cell.startswith("● ") else cell
+        assert (
+            name and " " not in name
+        ), f"Alias cell is not one name (optional '● ' marker): {row!r}"
+        assert row[2 + len(cell) : tools_col].isspace(), (
+            f"Row mis-aligned: non-blank padding before Tools col. " f"Row: {row!r}"
         )
 
 
@@ -110,6 +107,6 @@ def test_longest_real_alias_does_not_overflow(capsys):
     # The character immediately after the alias must be a space and
     # what follows must be the Tools column (not another part of the
     # alias name).
-    assert after_alias.startswith(" "), (
-        f"No padding between alias and Tools column for {longest_alias!r}"
-    )
+    assert after_alias.startswith(
+        " "
+    ), f"No padding between alias and Tools column for {longest_alias!r}"

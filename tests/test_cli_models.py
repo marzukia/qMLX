@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from unittest.mock import patch
 
@@ -48,7 +49,8 @@ def test_models_command_shows_capability_columns():
 
 def test_models_command_renders_hybrid_marker_for_qwen35_moe():
     """Hybrid MoE models (e.g. qwen3.5-35b-4bit, the A3B variant) must
-    show '✗ hybrid' + tier 'n/a'.
+    show the 'hybrid' marker and a BLANK suffix-tier cell (issue #62:
+    'n/a' / 'unknown' rendered the data gap as data).
 
     r6-A R6-C1: the test was previously written against the DENSE
     ``qwen3.5-4b-4bit`` alias, which we've now flipped to non-hybrid (it
@@ -63,15 +65,17 @@ def test_models_command_renders_hybrid_marker_for_qwen35_moe():
     profiles = list_profiles()
     qwen35_moe = profiles.get("qwen3.5-35b-4bit")
     assert qwen35_moe is not None, "qwen3.5-35b-4bit alias missing — fixture drift"
-    assert qwen35_moe.is_hybrid, (
-        "qwen3.5-35b-4bit (A3B MoE) should remain is_hybrid=True"
-    )
+    assert (
+        qwen35_moe.is_hybrid
+    ), "qwen3.5-35b-4bit (A3B MoE) should remain is_hybrid=True"
 
     matches = [line for line in out.splitlines() if "qwen3.5-35b-4bit " in line]
     assert matches, "no row found for qwen3.5-35b-4bit"
     row = matches[0]
-    assert "✗ hybrid" in row, f"expected '✗ hybrid' marker in row: {row!r}"
-    assert "n/a" in row, f"expected suffix tier 'n/a' in row: {row!r}"
+    assert "hybrid" in row, f"expected 'hybrid' marker in row: {row!r}"
+    # Absent tier renders blank — no 'n/a', no 'unknown' placeholder.
+    assert "n/a" not in row, f"expected blank tier cell (was 'n/a'): {row!r}"
+    assert "unknown" not in row, f"expected blank tier cell: {row!r}"
 
 
 def test_models_command_renders_parser_for_qwen35_9b():
@@ -94,16 +98,24 @@ def test_models_command_renders_parser_for_qwen35_9b():
     row = matches[0]
     profile = list_visible_profiles().get(alias)
     assert profile is not None, f"{alias} alias missing — fixture drift"
-    assert (profile.tool_call_parser or "") in row, (
-        f"expected tool parser {profile.tool_call_parser!r} in row: {row!r}"
-    )
-    assert str(profile.suffix_decoding_tier) in row, (
-        f"expected suffix tier {profile.suffix_decoding_tier!r} in row: {row!r}"
-    )
+    assert (
+        profile.tool_call_parser or ""
+    ) in row, f"expected tool parser {profile.tool_call_parser!r} in row: {row!r}"
+    tier = profile.suffix_decoding_tier
+    if tier in ("unknown", "n/a"):
+        # Issue #62: an unbenched tier renders blank, not as data.
+        assert (
+            str(tier) not in row
+        ), f"unbenched tier {tier!r} should render blank: {row!r}"
+    else:
+        assert str(tier) in row, f"expected suffix tier {tier!r} in row: {row!r}"
 
 
-def test_models_command_renders_em_dash_for_unset_parsers():
-    """An alias without tool_call_parser / reasoning_parser should show '—'."""
+def test_models_command_renders_blank_for_unset_parsers():
+    """An alias without tool_call_parser / reasoning_parser renders
+    BLANK cells (issue #62) — the em-dash placeholder printed the data
+    gap as data. Check the actual column cells, not a dash count (other
+    columns no longer use '—' either)."""
     out = _capture_models_output()
     profiles = list_visible_profiles()
     # Find any *presented* alias that has neither parser populated.
@@ -121,8 +133,23 @@ def test_models_command_renders_em_dash_for_unset_parsers():
     matches = [line for line in out.splitlines() if f"{alias} " in line]
     assert matches, f"no row found for {alias}"
     row = matches[0]
-    # Both placeholders should appear.
-    assert row.count("—") >= 2, f"expected two em-dashes in row: {row!r}"
+    # The plain path lays rows out as fixed-width fields; derive every
+    # field boundary from the captured header so the test survives a
+    # legitimate width re-size (issue #62 shrunk the fixed columns).
+    header = next(
+        ln
+        for ln in out.splitlines()
+        if ln.lstrip().startswith("Alias") and "Tools" in ln and "Reasoning" in ln
+    )
+    tools_col = header.index("Tools")
+    reason_col = header.index("Reasoning")
+    spec_col = header.index("Spec-Decode")
+    tools_cell = row[tools_col : reason_col - 1].strip()
+    reasoning_cell = row[reason_col : spec_col - 1].strip()
+    assert tools_cell == "", f"expected blank Tools cell, got {tools_cell!r}: {row!r}"
+    assert (
+        reasoning_cell == ""
+    ), f"expected blank Reasoning cell, got {reasoning_cell!r}: {row!r}"
 
 
 def test_models_command_mentions_chat_pull_serve_in_tip():
@@ -275,3 +302,171 @@ def test_scan_hf_cache_models_filters_to_models_only(tmp_path, monkeypatch):
     assert "mlx-community/FakeModel" in repos
     assert all("squad" not in r for r in repos)
     assert all("demo" not in r for r in repos)
+
+
+# ---------------------------------------------------------------------------
+# issue #62 defect 1 — overflow: installed rows first, TTY cap, --all
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_profiles(n: int) -> dict:
+    """A hermetic alias registry: n synthetic aliases, no capabilities."""
+    from types import SimpleNamespace
+
+    profs = {}
+    for i in range(n):
+        alias = f"syn-{i:02d}"
+        profs[alias] = SimpleNamespace(
+            hf_path=f"org/{alias}",
+            tool_call_parser=None,
+            reasoning_parser=None,
+            is_hybrid=False,
+            supports_spec_decode=False,
+            suffix_decoding_tier="unknown",
+            supports_dflash=False,
+            supports_ddtree=False,
+        )
+    return profs
+
+
+def test_models_installed_rows_sort_first(monkeypatch, capsys):
+    """Installed aliases render before pullable ones (issue #62)."""
+    profiles = _synthetic_profiles(6)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: {"syn-03"})
+    cli.models_command(None)
+    out = capsys.readouterr().out
+    idx = {a: out.index(a) for a in ("syn-00", "syn-03", "syn-05")}
+    assert idx["syn-03"] < idx["syn-00"] < idx["syn-05"]
+    # Alphabetical order is preserved *within* each group.
+    assert idx["syn-00"] < out.index("syn-01") < idx["syn-05"]
+
+
+def test_models_tty_cap_collapses_overflow(monkeypatch, capsys):
+    """On a 30-line TTY the table caps so the column header stays on
+    screen; the remainder collapses into a pointer at `--all`."""
+    from types import SimpleNamespace
+
+    profiles = _synthetic_profiles(30)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: set())
+    monkeypatch.setattr("vllm_mlx._ui.is_rich", lambda: True)
+    monkeypatch.setattr(
+        "shutil.get_terminal_size", lambda fallback=None: os.terminal_size((100, 30))
+    )
+    cli.models_command(SimpleNamespace(cached=False, all_models=False))
+    out = capsys.readouterr().out
+    # 30 lines - 12 chrome - 1 pointer line = 17 rows shown, 13 collapsed.
+    assert "… 13 more" in out
+    for i in range(17):
+        assert f"syn-{i:02d}" in out
+    for i in range(17, 30):
+        assert f"syn-{i:02d}" not in out
+
+
+def test_models_all_flag_disables_tty_cap(monkeypatch, capsys):
+    """`--all` shows every row even on a small TTY."""
+    from types import SimpleNamespace
+
+    profiles = _synthetic_profiles(30)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: set())
+    monkeypatch.setattr("vllm_mlx._ui.is_rich", lambda: True)
+    monkeypatch.setattr(
+        "shutil.get_terminal_size", lambda fallback=None: os.terminal_size((100, 30))
+    )
+    cli.models_command(SimpleNamespace(cached=False, all_models=True))
+    out = capsys.readouterr().out
+    assert "… " not in out
+    assert f"Available models ({len(profiles)} aliases)" in out
+    for i in range(30):
+        assert f"syn-{i:02d}" in out
+
+
+def test_models_pipe_output_uncapped(monkeypatch, capsys):
+    """Plain (pipe) output is never row-capped — scripts must see every
+    alias regardless of terminal size."""
+    from types import SimpleNamespace
+
+    profiles = _synthetic_profiles(30)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: set())
+    monkeypatch.setattr(
+        "shutil.get_terminal_size", lambda fallback=None: os.terminal_size((100, 12))
+    )
+    cli.models_command(SimpleNamespace(cached=False, all_models=False))
+    out = capsys.readouterr().out
+    assert "… " not in out
+    for i in range(30):
+        assert f"syn-{i:02d}" in out
+
+
+def test_models_installed_rows_carry_marker(monkeypatch, capsys):
+    """Installed rows lead with a '● ' prefix; the title reports the
+    local count (issue #62, defect 3)."""
+    profiles = _synthetic_profiles(5)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: {"syn-02"})
+    cli.models_command(None)
+    out = capsys.readouterr().out
+    assert "● syn-02" in out
+    assert "— 1 local" in out
+    for a in ("syn-00", "syn-01", "syn-03", "syn-04"):
+        assert f"● {a}" not in out
+
+
+def test_models_title_has_no_local_suffix_when_none_local(monkeypatch, capsys):
+    profiles = _synthetic_profiles(3)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: set())
+    cli.models_command(None)
+    out = capsys.readouterr().out
+    assert "Available models (3 aliases)" in out
+    assert "local" not in out
+    assert "● " not in out
+
+
+def test_models_rich_mode_dims_pullable_rows(monkeypatch, capsys):
+    """rich path: row_styles plumbed through — installed rows get
+    ``None`` (full strength), pullable rows get ``dim``."""
+    from types import SimpleNamespace
+
+    import vllm_mlx._ui as ui_mod
+
+    profiles = _synthetic_profiles(4)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: {"syn-00"})
+    monkeypatch.setattr("vllm_mlx._ui.is_rich", lambda: True)
+    monkeypatch.setattr(
+        "shutil.get_terminal_size", lambda fallback=None: os.terminal_size((100, 40))
+    )
+    captured_styles = {}
+
+    def fake_rich_table(headers, rows, **kwargs):
+        captured_styles.update(kwargs)
+        # render nothing but the alias column, so the marker is visible
+        for r in rows:
+            print(r[0])
+
+    monkeypatch.setattr(ui_mod, "rich_table", fake_rich_table)
+    cli.models_command(SimpleNamespace(cached=False, all_models=False))
+    out = capsys.readouterr().out
+    styles = captured_styles.get("row_styles")
+    assert styles is not None
+    assert styles[0] is None  # installed
+    assert all(s == "dim" for s in styles[1:])
+    assert "● syn-00" in out
