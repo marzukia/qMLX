@@ -107,16 +107,18 @@ def _stderr_console():
     return Console(stderr=True)
 
 
-def emit(text: str = "") -> None:
+def emit(text: str = "", *, markup: bool = False) -> None:
     """Print one line of operator-facing output.
 
     plain: ``print(text)`` — byte-identical to the pre-facade output.
     rich: the same line through a ``Console`` with markup and highlight
     disabled so existing strings (arrows, dashes, ``**``) pass through
     verbatim; the Console adds only terminal-aware width handling.
+    ``markup=True`` (issue #61 compact banner) enables rich markup on
+    the TTY path; plain mode always ignores it.
     """
     if is_rich():
-        _console().print(text, markup=False, highlight=False, soft_wrap=False)
+        _console().print(text, markup=markup, highlight=False, soft_wrap=False)
     else:
         print(text)
 
@@ -382,6 +384,63 @@ def render_status_table(stats: dict) -> str:
     return "\n".join(out)
 
 
+def _strip_lines(console, markup: str) -> list[str]:
+    """Render a strip markup string to wrapped ANSI lines at console width.
+
+    Used to (a) know exactly how many lines the strip occupies (it may
+    wrap on narrow terminals) and (b) dedup unchanged redraws — while
+    the engine warms up the strip is constant (``warming up…``) and
+    redrawing it every poll would scroll the screen for nothing.
+    """
+    with console.capture() as capture:
+        console.print(markup, markup=True, highlight=False, soft_wrap=False)
+    lines = capture.get().split("\n")
+    while lines and lines[-1] in ("", "\x1b[0m"):
+        lines.pop()
+    return lines or [""]
+
+
+def _draw_live_strip(console, lines: list[str]) -> None:
+    """Redraw the live status strip on its own line (issue #61).
+
+    The strip is anchored to the BOTTOM of the screen and is the only
+    writer of that line. Each poll repositions there (CUP), erases the
+    line (``ESC[2K``), redraws the strip, and finishes with a newline
+    so the cursor lands at column 0 of a fresh line. Log writers that
+    bypass this console — uvicorn's and qmlx's loggers write straight
+    to stderr, one ``write`` per record — therefore always start on a
+    line of their own: the strip and the log stream can never share a
+    visual line.
+
+    The whole redraw (position + clear + text + newline) is a single
+    ``write`` well under PIPE_BUF, so it is atomic with respect to
+    those one-write log records: a log line lands before or after the
+    strip, never inside it.
+
+    Because the strip region always includes the bottom row, the
+    trailing newline scrolls the screen one row per redraw — the
+    bottom-of-screen position the issue calls for: the strip stays
+    pinned to the bottom while log output scrolls above it. Redraws
+    of an UNCHANGED strip are skipped by :func:`live`, so the screen
+    only scrolls when the strip actually changes.
+
+    On a non-terminal or degenerate-sized terminal (tests, pipes)
+    falls back to a plain newline-terminated line — still a line of
+    its own, still no ANSI, per the plain-mode contract.
+    """
+    _width, height = console.size
+    if not console.is_terminal or height < 2:
+        sys.stdout.write("\n".join(lines) + "\n")
+        sys.stdout.flush()
+        return
+    top = max(1, height - len(lines) + 1)
+    chunk = f"\x1b[{top};1H"
+    for line in lines:
+        chunk += "\x1b[2K" + line + "\n"
+    sys.stdout.write(chunk)
+    sys.stdout.flush()
+
+
 @contextmanager
 def live(
     render_fn,
@@ -395,25 +454,28 @@ def live(
     plain text); ``stop_fn`` is polled each tick — when it returns
     true the display ends (e.g. the server thread exited).
 
-    rich: a ``rich.live.Live`` region driven on the calling thread.
+    rich: a bottom-anchored status line driven on the calling thread —
+    see :func:`_draw_live_strip` for the line discipline that keeps
+    the strip off the log stream's lines (issue #61). Redraws of an
+    unchanged strip are skipped so the screen only scrolls when the
+    strip content actually changes.
     plain: ``render_fn`` is re-printed every tick (no ANSI erase
     sequences — plain output stays a clean byte stream for pipes).
     """
     import time
 
     if is_rich():
-        from rich.live import Live
-
-        with Live(
-            render_fn(),
-            console=_console(),
-            screen=False,
-            transient=True,
-            refresh_per_second=4,
-        ) as live:
-            while not stop_fn():
-                time.sleep(interval)
-                live.update(render_fn())
+        console = _console()
+        last: list[str] | None = None
+        while not stop_fn():
+            lines = _strip_lines(console, render_fn())
+            if lines != last:
+                _draw_live_strip(console, lines)
+                last = lines
+            time.sleep(interval)
+        lines = _strip_lines(console, render_fn())
+        if lines != last:
+            _draw_live_strip(console, lines)
         return
 
     while not stop_fn():
