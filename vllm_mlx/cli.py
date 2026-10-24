@@ -430,13 +430,16 @@ def _run_uvicorn_live(app, args, log_level: str) -> None:
     """Run the server with a live status strip on the terminal (#51).
 
     Rich/TTY only — the caller gates on ``ui.rich``. uvicorn runs on a
-    daemon thread while the main thread drives a ``rich.live.Live``
-    strip fed by the in-process stats payload
-    (``get_config().engine.get_stats()`` — zero HTTP round-trips, the
-    same data ``/v1/status`` serves). Access logging is off for this
-    path so the strip stays the only writer on the live region (issue
-    #51 C8); uvicorn's other logs still land on stderr via its logger
-    handlers.
+    daemon thread while the main thread drives a bottom-anchored live
+    strip (``ui.live`` → ``_ui._draw_live_strip``) fed by the
+    in-process stats payload (``get_config().engine.get_stats()`` —
+    zero HTTP round-trips, the same data ``/v1/status`` serves). The
+    strip owns its own line (clear+redraw per poll, newline-terminated)
+    so uvicorn's log lines — which still land on stderr via their
+    logger handlers — always start on a fresh line and never fuse with
+    the strip (issue #61). Access logging is off for this path so the
+    strip is the only high-frequency writer on the terminal (issue
+    #51 C8).
     """
     import threading
 
@@ -1747,12 +1750,20 @@ def _preflight_ddtree_or_exit(args):
 
 
 def _render_startup_banner(args, *, gc_control: bool, cors_origins: list) -> None:
-    """Startup banner (issue #51).
+    """Startup banner (issue #51; compacted by issue #61).
 
-    rich: a titled panel with bold keys. plain: the legacy indented
-    block, byte-identical — note the ``MCP config:`` line stays at
-    column 0 (operators grep for it), which the plain_lines list
-    preserves deliberately.
+    2-3 lines total in BOTH render modes, so the banner AND the
+    ``Starting server on …`` endpoint line below it stay on-screen on
+    a 100x30 terminal at the "warming up" moment (issue #61 AC2). The
+    pre-#61 rich panel (title border + body + bottom border = 4-5
+    lines) and the legacy plain block (header + divider + rows = 4-5
+    lines) both scrolled off a 30-row screen before the endpoint line
+    printed.
+
+    plain: the legacy 2-space-indented layout minus the header/divider
+    lines; ``MCP config:`` stays at column 0 (operators grep for it,
+    kept from the pre-#51 byte layout). rich: the same lines through
+    :func:`vllm_mlx._ui.emit` with markup.
     """
     features: list[str] = []
     if args.enable_auto_tool_choice:
@@ -1792,19 +1803,19 @@ def _render_startup_banner(args, *, gc_control: bool, cors_origins: list) -> Non
 
     model = args.model
     mcp_config = args.mcp_config
-    plain_lines = ["  🐆 qMLX", "  " + "─" * 9]
-    if features:
-        plain_lines.append(f"  Features: {', '.join(features)}")
-    plain_lines.append(f"  Model: {model}")
-    if mcp_config:
-        plain_lines.append(f"MCP config: {mcp_config}")
 
-    body = [f"[bold]Model:[/] {model}"]
-    if features:
-        body.append(f"[bold]Features:[/] {', '.join(features)}")
-    if mcp_config:
-        body.append(f"[bold]MCP config:[/] {mcp_config}")
-    ui.panel("🐆 qMLX", body, plain_lines=plain_lines, style="cyan")
+    if ui.rich:
+        ui.emit(f"[cyan]🐆 qMLX[/cyan]  [bold]Model:[/] {model}", markup=True)
+        if features:
+            ui.emit(f"  [bold]Features:[/] {', '.join(features)}", markup=True)
+        if mcp_config:
+            ui.emit(f"  [bold]MCP config:[/] {mcp_config}", markup=True)
+    else:
+        print(f"  🐆 qMLX  Model: {model}")
+        if features:
+            print(f"  Features: {', '.join(features)}")
+        if mcp_config:
+            print(f"MCP config: {mcp_config}")
 
 
 def _render_config_dump(
@@ -2927,7 +2938,11 @@ def serve_command(args):
             f"  Starting server on inherited fd {listen_fd} "
             "(warming up — this can take a few seconds)"
         )
-    elif not (live and ui.rich):
+    else:
+        # issue #61: the endpoint line prints in ALL modes, including
+        # ``--live`` rich mode. The live strip only shows the endpoint
+        # after ``ready`` flips, so without this line a 100x30
+        # operator sees no URL during the whole warming-up phase.
         print(
             f"  Starting server on http://{host_display}:{args.port} (warming up — this can take a few seconds)"
         )
