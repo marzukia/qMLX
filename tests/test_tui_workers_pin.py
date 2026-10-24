@@ -235,6 +235,47 @@ def test_streaming_indicator_in_log(tui_app, monkeypatch):
     asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
 
 
+def test_headless_screenshot_no_tofu(tmp_path):
+    """A 100x30 headless screenshot of the idle TUI renders without tofu
+    (issue #63.1). The SVG from ``App.save_screenshot`` contains the
+    screen's text; any non-ASCII codepoint outside the box-drawing /
+    block-elements ranges is a tofu candidate on a basic terminal font
+    (emoji, dingbats, CJK…). Box drawing (U+2500-257F) and block
+    elements (U+2580-259F) are whitelisted: the SVG renderer draws the
+    focused Input's cursor/underline with them, and they are part of
+    standard console fonts (not the tofu-prone symbol sets).
+    The HF repo id in the stubbed /v1/status must not leak into the
+    strip (issue #63.4), which the assertion also covers."""
+    app = _tui.QMLXTUI("http://127.0.0.1:1", model="test-model")
+    app._poll_status = lambda self: {  # noqa: SLF001 — hermetic stub
+        "model": "mlx-community/Qwen3.5-4B-MLX-4bit",
+        "status": "idle",
+        "num_running": 0,
+    }
+    screenshot = tmp_path / "tui_100x30.svg"
+
+    async def body() -> None:
+        async with app.run_test(headless=True, size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.save_screenshot(str(screenshot))
+            assert app.is_running
+
+    asyncio.run(asyncio.wait_for(body(), timeout=_TIMEOUT))
+    assert screenshot.exists()
+    text = screenshot.read_text(encoding="utf-8")
+    tofu = sorted(
+        {
+            ch
+            for ch in text
+            if ord(ch) > 127 and not (0x2500 <= ord(ch) <= 0x259F)
+        }
+    )
+    assert tofu == [], f"tofu candidates in 100x30 screenshot: {tofu!r}"
+    # Strip density pin (issue #63.4): the alias, never the HF repo id.
+    assert "test-model" in text
+    assert "mlx-community" not in text
+
+
 def test_status_line_uses_alias_not_hf_path():
     """Strip shape (issue #63.4): the alias the operator launched with,
     never the full HF repo id from /v1/status, and a lighter layout
