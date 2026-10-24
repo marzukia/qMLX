@@ -409,3 +409,66 @@ def test_models_pipe_output_uncapped(monkeypatch, capsys):
     assert "… " not in out
     for i in range(30):
         assert f"syn-{i:02d}" in out
+
+
+def test_models_installed_rows_carry_marker(monkeypatch, capsys):
+    """Installed rows lead with a '● ' prefix; the title reports the
+    local count (issue #62, defect 3)."""
+    profiles = _synthetic_profiles(5)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: {"syn-02"})
+    cli.models_command(None)
+    out = capsys.readouterr().out
+    assert "● syn-02" in out
+    assert "— 1 local" in out
+    for a in ("syn-00", "syn-01", "syn-03", "syn-04"):
+        assert f"● {a}" not in out
+
+
+def test_models_title_has_no_local_suffix_when_none_local(monkeypatch, capsys):
+    profiles = _synthetic_profiles(3)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: set())
+    cli.models_command(None)
+    out = capsys.readouterr().out
+    assert "Available models (3 aliases)" in out
+    assert "local" not in out
+    assert "● " not in out
+
+
+def test_models_rich_mode_dims_pullable_rows(monkeypatch, capsys):
+    """rich path: row_styles plumbed through — installed rows get
+    ``None`` (full strength), pullable rows get ``dim``."""
+    from types import SimpleNamespace
+
+    import vllm_mlx._ui as ui_mod
+
+    profiles = _synthetic_profiles(4)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: {"syn-00"})
+    monkeypatch.setattr("vllm_mlx._ui.is_rich", lambda: True)
+    monkeypatch.setattr(
+        "shutil.get_terminal_size", lambda fallback=None: os.terminal_size((100, 40))
+    )
+    captured_styles = {}
+
+    def fake_rich_table(headers, rows, **kwargs):
+        captured_styles.update(kwargs)
+        # render nothing but the alias column, so the marker is visible
+        for r in rows:
+            print(r[0])
+
+    monkeypatch.setattr(ui_mod, "rich_table", fake_rich_table)
+    cli.models_command(SimpleNamespace(cached=False, all_models=False))
+    out = capsys.readouterr().out
+    styles = captured_styles.get("row_styles")
+    assert styles is not None
+    assert styles[0] is None  # installed
+    assert all(s == "dim" for s in styles[1:])
+    assert "● syn-00" in out

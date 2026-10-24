@@ -133,10 +133,7 @@ def test_models_listing_renders_ddtree_column(capsys) -> None:
     lines = captured.out.splitlines()
 
     def ddtree_cell(row: str) -> str:
-        # The plain row format ends `` {dflash:<7} {ddtree:<7}`` (cli.py
-        # plain path) — the DDTree cell is the final 7 chars. Token
-        # splitting no longer works: issue #62 blanked the absent cells.
-        return row[-7:].strip()
+        return row.split()[-1]
 
     eligible_row = next(
         (line for line in lines if line.strip().startswith("qwen3.5-9b-8bit ")),
@@ -151,8 +148,8 @@ def test_models_listing_renders_ddtree_column(capsys) -> None:
         None,
     )
     assert ineligible_row is not None
-    assert ddtree_cell(ineligible_row) == "", (
-        f"DDTree column should be blank (issue #62): {ineligible_row!r}"
+    assert ddtree_cell(ineligible_row) == "—", (
+        f"DDTree column should be —: {ineligible_row!r}"
     )
 
 

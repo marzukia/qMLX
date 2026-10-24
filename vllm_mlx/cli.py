@@ -3232,8 +3232,30 @@ def models_command(args):
             truncated_count = len(rows) - keep
             rows = rows[:keep]
 
+    # issue #62 (defect 3): installed-vs-available marker. The registry
+    # knows exactly what is local (``installed`` above) — lead those rows
+    # with "● " and dim the pullable remainder on the TTY path. Plain
+    # (pipe) mode gets the same prefix, no dimming (no ANSI there).
+    # The prefix rides inside the alias field: alias_width = longest+2
+    # leaves exactly 2 spare columns, so no column width changes.
+    row_styles: list[str | None] = []
+    marked_rows: list[tuple[str, ...]] = []
+    for r in rows:
+        if r[0] in installed:
+            marked_rows.append(("● " + r[0], *r[1:]))
+            row_styles.append(None)
+        else:
+            marked_rows.append(r)
+            row_styles.append("dim")
+    rows = marked_rows
+
+    local_n = len(installed)
+    title = f"  Available models ({len(profiles)} aliases)"
+    if local_n:
+        title += f" — {local_n} local"
+
     print()
-    print(f"  Available models ({len(profiles)} aliases)")
+    print(title)
     if ui.rich:
         # issue #51: bordered rich table (auto widths) instead of the
         # hand-computed fixed layout below.
@@ -3256,6 +3278,7 @@ def models_command(args):
                 "`qmlx serve <alias>` for an OpenAI-compatible server",
             ],
             style="cyan",
+            row_styles=row_styles,
         )
         if truncated_count:
             print(f"  … {truncated_count} more — full list: `qmlx models --all`")

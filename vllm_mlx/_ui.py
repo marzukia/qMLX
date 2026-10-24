@@ -171,13 +171,16 @@ def rich_table(
     style: str = "cyan",
     header_style: str = "bold",
     footer: Sequence[str] | None = None,
+    row_styles: Sequence[str | None] | None = None,
 ) -> None:
     """Render a ``rich.table.Table`` on a TTY.
 
     ``headers`` entries may be plain strings or ``(name, hint)`` tuples
     (the hint is dropped — callers that share a plain/rich header spec
     keep one source of truth). ``footer`` is an optional list of hint
-    lines rendered below the table.
+    lines rendered below the table. ``row_styles`` optionally carries a
+    per-row style (e.g. ``"dim"`` for pullable rows vs ``None`` for
+    installed ones — issue #62).
 
     Plain-mode callers should instead use :func:`plain_table` (fixed
     widths) or keep their legacy hand-rolled layout.
@@ -189,8 +192,9 @@ def rich_table(
     for h in headers:
         name = h[0] if isinstance(h, tuple) else h
         table.add_column(name, overflow="fold")
-    for row in rows:
-        table.add_row(*row)
+    for i, row in enumerate(rows):
+        row_style = row_styles[i] if row_styles is not None and i < len(row_styles) else None
+        table.add_row(*row, style=row_style)
     _console().print(table)
     if footer:
         for line in footer:
