@@ -3137,6 +3137,12 @@ def models_command(args):
     ``supports_spec_decode`` / ``suffix_decoding_tier`` shows up — letting
     users pick a model on capabilities, not just on name.
 
+    Cells with no information render blank (issue #62): unset parsers, an
+    unbenched suffix tier (``unknown``), an unbenched DFlash/DDTree gate
+    (no ``✓``), and a plain unsupported spec-decode all leave the cell
+    empty. Only positive, decision-relevant facts are printed — the data
+    gap is not the star of the table.
+
     ``--cached`` swaps to a disk-only view: scans the HuggingFace cache,
     cross-references against the alias registry, and renders
     ``Alias | HF repo | Size on disk | Last modified``. Also reachable as
@@ -3161,24 +3167,32 @@ def models_command(args):
     rows: list[tuple[str, ...]] = []
     for alias in sorted(profiles.keys()):
         p = profiles[alias]
-        tools = p.tool_call_parser or "—"
-        reasoning = p.reasoning_parser or "—"
+        # Blank the absent cells (issue #62): a wall of "unknown" / "—" /
+        # "✗" read as data when it is only the registry admitting it has
+        # no number yet. Unset → ""; a positive capability stays "✓".
+        tools = p.tool_call_parser or ""
+        reasoning = p.reasoning_parser or ""
         if p.is_hybrid:
             # Hybrid models cannot use spec-decode or suffix-decode regardless
             # of the supports_spec_decode flag (mlx-lm BatchGenerator gate).
-            spec = "✗ hybrid"
-            tier = "n/a"
+            # The "hybrid" marker is itself the data — keep it.
+            spec = "hybrid"
+            tier = ""
         else:
-            spec = "✓" if p.supports_spec_decode else "✗"
-            tier = p.suffix_decoding_tier
-        # DFlash column — eligible aliases show ✓, everything else "—" so
-        # the visual scan immediately surfaces what supports it. We don't
-        # re-run the eligibility gate here (which would also check that
-        # mlx-vlm 0.5.0+ is installed) — that's a runtime concern; the
-        # registry column is pure declarative state.
-        dflash = "✓" if p.supports_dflash else "—"
-        ddtree = "✓" if p.supports_ddtree else "—"
-        rows.append((alias, tools, reasoning, spec, str(tier), dflash, ddtree))
+            spec = "✓" if p.supports_spec_decode else ""
+            tier = (
+                ""
+                if p.suffix_decoding_tier in ("unknown", "n/a")
+                else str(p.suffix_decoding_tier)
+            )
+        # DFlash column — eligible aliases show ✓, everything else blank
+        # (issue #62: a column that is "—" for 50 of 51 rows is a wall,
+        # not data). We don't re-run the eligibility gate here (which would
+        # also check that mlx-vlm 0.5.0+ is installed) — that's a runtime
+        # concern; the registry column is pure declarative state.
+        dflash = "✓" if p.supports_dflash else ""
+        ddtree = "✓" if p.supports_ddtree else ""
+        rows.append((alias, tools, reasoning, spec, tier, dflash, ddtree))
 
     print()
     print(f"  Available models ({len(profiles)} aliases)")
