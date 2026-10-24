@@ -132,25 +132,32 @@ def test_models_listing_renders_ddtree_column(capsys) -> None:
     assert "DDTree" in captured.out
     lines = captured.out.splitlines()
 
+    # issue #62: rows may lead with the "● " installed marker, so anchor
+    # on the alias as a substring. DDTREE is the plain-mode last column
+    # (fixed 7-char field after one space), so the cell is the tail of
+    # the row — this also sidesteps the header's "Spec-Decode" label
+    # overflowing its 10-char field by one char (header labels are not
+    # column-accurate past Spec-Decode).
     def ddtree_cell(row: str) -> str:
-        return row.split()[-1]
+        return row[-8:].strip()
 
     eligible_row = next(
-        (line for line in lines if line.strip().startswith("qwen3.5-9b-8bit ")),
+        (line for line in lines if "qwen3.5-9b-8bit " in line),
         None,
     )
     assert eligible_row is not None
-    assert ddtree_cell(eligible_row) == "✓", (
-        f"DDTree column should be ✓: {eligible_row!r}"
-    )
+    assert (
+        ddtree_cell(eligible_row) == "✓"
+    ), f"DDTree column should be ✓: {eligible_row!r}"
     ineligible_row = next(
-        (line for line in lines if line.strip().startswith("qwen3.5-9b-4bit ")),
+        (line for line in lines if "qwen3.5-9b-4bit " in line),
         None,
     )
     assert ineligible_row is not None
-    assert ddtree_cell(ineligible_row) == "—", (
-        f"DDTree column should be —: {ineligible_row!r}"
-    )
+    # issue #62: a DDTREE-ineligible alias renders BLANK, not "—".
+    assert (
+        ddtree_cell(ineligible_row) == ""
+    ), f"DDTree column should be blank: {ineligible_row!r}"
 
 
 @dataclass

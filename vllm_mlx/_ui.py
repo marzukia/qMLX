@@ -187,13 +187,20 @@ def rich_table(
     """
     from rich.table import Table
 
-    table = Table(title=title, title_style=style, header_style=header_style,
-                  show_lines=False, pad_edge=False)
+    table = Table(
+        title=title,
+        title_style=style,
+        header_style=header_style,
+        show_lines=False,
+        pad_edge=False,
+    )
     for h in headers:
         name = h[0] if isinstance(h, tuple) else h
         table.add_column(name, overflow="fold")
     for i, row in enumerate(rows):
-        row_style = row_styles[i] if row_styles is not None and i < len(row_styles) else None
+        row_style = (
+            row_styles[i] if row_styles is not None and i < len(row_styles) else None
+        )
         table.add_row(*row, style=row_style)
     _console().print(table)
     if footer:
@@ -208,18 +215,12 @@ def plain_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     for row in rows:
         for i, cell in enumerate(row):
             widths[i] = max(widths[i], len(cell))
-    out = [
-        "  " + "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)).rstrip()
-    ]
-    out.append(
-        "  " + "  ".join("-" * widths[i] for i in range(len(headers))).rstrip()
-    )
+    out = ["  " + "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)).rstrip()]
+    out.append("  " + "  ".join("-" * widths[i] for i in range(len(headers))).rstrip())
     for row in rows:
         out.append(
             "  "
-            + "  ".join(
-                str(c).ljust(widths[i]) for i, c in enumerate(row)
-            ).rstrip()
+            + "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(row)).rstrip()
         )
     return "\n".join(out)
 
@@ -256,9 +257,7 @@ def spinner(text: str, *, interval: float = 0.1) -> Iterator[None]:
             if state["tick"] % 10 == 0:
                 elapsed = int(time.monotonic() - state["start"])
                 ch = frames[state["tick"] % len(frames)]
-                sys.stderr.write(
-                    f"\r  {cyan}{ch}{reset} {text} {dim}{elapsed}s{reset}"
-                )
+                sys.stderr.write(f"\r  {cyan}{ch}{reset} {text} {dim}{elapsed}s{reset}")
                 sys.stderr.flush()
             state["tick"] += 1
             time.sleep(interval)
