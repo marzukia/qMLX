@@ -716,12 +716,9 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         ui.panel(
             "Error: Insufficient disk space",
             [
-                "[bold]Model size:[/] "
-                f"{model_size_gb:>7.1f} GB",
-                "[bold]Free space:[/] "
-                f"{available_gb:>7.1f} GB  ({probe})",
-                "[bold]Need to free:[/] "
-                f"{need_to_free_gb:>7.1f} GB",
+                "[bold]Model size:[/] " f"{model_size_gb:>7.1f} GB",
+                "[bold]Free space:[/] " f"{available_gb:>7.1f} GB  ({probe})",
+                "[bold]Need to free:[/] " f"{need_to_free_gb:>7.1f} GB",
                 "",
                 "Suggestions:",
                 "  - Free disk space, or set HF_HOME to a drive with more room",
@@ -1086,13 +1083,11 @@ def _check_memory_capacity(model_name: str) -> None:
         plain_lines += [
             "  !! Memory pressure warning: "
             "this model is likely too large for your hardware.",
-            "  Continuing may trigger a macOS kernel panic "
-            "(see issue #324).",
+            "  Continuing may trigger a macOS kernel panic " "(see issue #324).",
         ]
     else:
         plain_lines.append(
-            "  Memory pressure note: "
-            "this model uses a large fraction of system RAM."
+            "  Memory pressure note: " "this model uses a large fraction of system RAM."
         )
     plain_lines += [
         "",
@@ -1163,8 +1158,7 @@ def _check_memory_capacity(model_name: str) -> None:
         ]
     else:
         body.append(
-            "If you see crashes or kernel panics, try: "
-            "--gpu-memory-utilization 0.85"
+            "If you see crashes or kernel panics, try: " "--gpu-memory-utilization 0.85"
         )
     ui.panel(
         "Memory pressure",
@@ -2762,9 +2756,9 @@ def serve_command(args):
         _profile = resolve_profile(_alias_name)
         # The eligibility check at top of serve_command guarantees this
         # passes — assert to be defensive against future refactors.
-        assert _profile is not None and _profile.supports_dflash, (
-            f"DFlash profile invariant violated for {_alias_name!r}"
-        )
+        assert (
+            _profile is not None and _profile.supports_dflash
+        ), f"DFlash profile invariant violated for {_alias_name!r}"
         # The vLLM-style surface uses ``model`` for the drafter override.
         run_dflash_server(
             main_model_repo=_profile.hf_path,
@@ -2789,9 +2783,9 @@ def serve_command(args):
         _profile = getattr(args, "_ddtree_profile", None)
         if _alias_name is None or _profile is None:
             _alias_name, _profile = _preflight_ddtree_or_exit(args)
-        assert _profile is not None and _profile.supports_ddtree, (
-            f"DDTree profile invariant violated for {_alias_name!r}"
-        )
+        assert (
+            _profile is not None and _profile.supports_ddtree
+        ), f"DDTree profile invariant violated for {_alias_name!r}"
         assert _profile.ddtree_draft_model is not None
         assert _profile.ddtree_speculative_tokens is not None
         assert _profile.ddtree_tree_budget is not None
@@ -2909,9 +2903,7 @@ def serve_command(args):
         # (pipe / NO_COLOR / QMLX_PLAIN=1) emits the one info line and
         # runs the usual blocking uvicorn path below.
         print()
-        print(
-            "  --live: plain mode — no live strip. Use `qmlx status`"
-        )
+        print("  --live: plain mode — no live strip. Use `qmlx status`")
         print("          (or `qmlx status --watch`) for a one-shot view.")
     elif live and listen_fd is not None:
         # Socket activation: the strip is driven in-process, but under
@@ -3133,16 +3125,20 @@ def _print_cached_models() -> None:
 def _installed_alias_set(profiles) -> set[str]:
     """Aliases whose weights are already local (issue #62: sort first).
 
-    ``try_to_load_from_cache`` is a pure-local HuggingFace cache probe
-    (no network round-trip) — the same check ``qmlx serve`` uses to
-    decide whether a resolved path is loadable.
+    ``is_repo_cached`` (vllm_mlx/_download_gate.py) is the same
+    weight-file-presence probe ``qmlx serve`` / ``qmlx chat`` use to
+    decide whether a resolved path is loadable: the ``refs/main``-pinned
+    snapshot must contain the ``model*.safetensors`` shards mlx-lm's
+    loader globs. A config.json-only partial cache (interrupted pull)
+    or a cached non-existence sentinel does not count as installed
+    (review m4 on PR #64). Purely local — no network, no hang.
     """
-    from huggingface_hub import try_to_load_from_cache
+    from vllm_mlx._download_gate import is_repo_cached
 
     installed: set[str] = set()
     for alias, p in profiles.items():
         hf = getattr(p, "hf_path", None)
-        if hf and try_to_load_from_cache(hf, "config.json") is not None:
+        if hf and is_repo_cached(hf):
             installed.add(alias)
     return installed
 
@@ -3217,20 +3213,27 @@ def models_command(args):
     # top of the screen. The overflow collapses into a one-line pointer
     # at ``--all``. Pipe output stays uncapped (script-safe).
     installed = _installed_alias_set(profiles)
-    rows.sort(key=lambda r: 0 if r[0] in installed else 1)  # stable: alpha within groups
+    rows.sort(
+        key=lambda r: 0 if r[0] in installed else 1
+    )  # stable: alpha within groups
 
     truncated_count = 0
-    if ui.rich and not getattr(args, "all_models", False):
-        term_lines = shutil.get_terminal_size(fallback=(80, 24)).lines
-        # Fixed chrome: leading blank + title + blank + table top border /
-        # header / separator / bottom border (4) + trailing blank + the
-        # 4-line tip block = 12 lines.
-        max_rows = term_lines - 12
-        if 0 < max_rows < len(rows):
-            # Reserve one line for the "… N more" pointer when truncating.
-            keep = max_rows - 1 if max_rows >= 2 else max_rows
-            truncated_count = len(rows) - keep
-            rows = rows[:keep]
+    term_cols, term_lines = (80, 24)
+    if ui.rich:
+        term_cols, term_lines = shutil.get_terminal_size(fallback=(80, 24))
+        if not getattr(args, "all_models", False):
+            # Fixed chrome: leading blank + title + blank + table top border /
+            # header / separator / bottom border (4) + trailing blank + the
+            # 4-line tip block = 12 lines; the pointer line below reserves
+            # one more when truncating. With the single-line-row contract
+            # (M1, issue #62) every row renders as exactly one line, so
+            # chrome + keep + pointer = term_lines exactly.
+            max_rows = term_lines - 12
+            if 0 < max_rows < len(rows):
+                # Reserve one line for the "… N more" pointer when truncating.
+                keep = max_rows - 1 if max_rows >= 2 else max_rows
+                truncated_count = len(rows) - keep
+                rows = rows[:keep]
 
     # issue #62 (defect 3): installed-vs-available marker. The registry
     # knows exactly what is local (``installed`` above) — lead those rows
@@ -3260,16 +3263,39 @@ def models_command(args):
         # issue #51: bordered rich table (auto widths) instead of the
         # hand-computed fixed layout below.
         print()
+        headers = [
+            ("Alias", None),
+            ("Tools", None),
+            ("Reasoning", None),
+            ("Spec-Decode", None),
+            ("Suffix Tier", None),
+            ("DFlash", None),
+            ("DDTree", None),
+        ]
+        # issue #62 (M1): exactly one rendered line per row at any width.
+        # rich's auto-width shrinks the Alias column below the longest
+        # "● <alias>" cell at narrow widths, folding those cells (and
+        # wrapping the "Suffix Tier" header) into 2-3 lines — which broke
+        # the chrome/row-count assumption above. Clip the alias with "…"
+        # so the table's desired width fits the terminal: the six fixed
+        # columns keep their full content width, the Alias column absorbs
+        # the remainder. Overhead = 3*n_cols - 1 (n_cols border lines +
+        # 2 padding per column minus the two pad_edge corners, pad_edge is
+        # off in rich_table).
+        col_w = [
+            max(len(h[0] if isinstance(h, tuple) else h), *(len(r[i]) for r in rows))
+            for i, h in enumerate(headers)
+        ]
+        alias_budget = term_cols - (3 * len(headers) - 1) - sum(col_w[1:])
+        if rows and 0 < alias_budget < max(len(r[0]) for r in rows):
+            rows = [
+                (r[0][: alias_budget - 1] + "…", *r[1:])
+                if len(r[0]) > alias_budget
+                else r
+                for r in rows
+            ]
         ui.rich_table(
-            [
-                ("Alias", None),
-                ("Tools", None),
-                ("Reasoning", None),
-                ("Spec-Decode", None),
-                ("Suffix Tier", None),
-                ("DFlash", None),
-                ("DDTree", None),
-            ],
+            headers,
             rows,
             footer=[
                 "Tip: `qmlx info <alias>` for the full per-model profile",
@@ -3377,7 +3403,9 @@ def _print_pull_summary(repo_id: str, snapshot_dir, elapsed: float) -> None:
     if ui.rich:
         ui.panel(
             "pull complete",
-            [f"[cyan]{repo_id}[/cyan]  [green]{_format_bytes(size)}[/green]  in {duration}"],
+            [
+                f"[cyan]{repo_id}[/cyan]  [green]{_format_bytes(size)}[/green]  in {duration}"
+            ],
             plain_lines=[],
             style="green",
         )
@@ -3704,6 +3732,7 @@ def tui_command(args):
     # instead of an ImportError traceback (AC9).
     _tui_hint_or_exit()
     from vllm_mlx import tui as _tui
+
     # ``main()`` pre-resolves ``args.model`` (alias → HF path) exactly like
     # chat; the TUI requests use the alias the user typed so it matches
     # the served name when a server was spawned for this model.
@@ -4653,6 +4682,7 @@ def chat_command(args):
         # at module top level (AC9: bare install → hint + exit 1, no traceback).
         _tui_hint_or_exit()
         from vllm_mlx import tui as _tui
+
         args.model = served_name  # TUI requests use the served name
         _tui.run(args)
         _cleanup()
@@ -6492,11 +6522,11 @@ Examples:
         "--port", type=int, default=None, help="Port of a running server to connect to"
     )
     tui_parser.add_argument(
-        "--base-url", default=None, help="Base URL of a running server (http://host:port)"
+        "--base-url",
+        default=None,
+        help="Base URL of a running server (http://host:port)",
     )
-    tui_parser.add_argument(
-        "--system", type=str, default=None, help="System prompt"
-    )
+    tui_parser.add_argument("--system", type=str, default=None, help="System prompt")
 
     # Upgrade — detect install method and run the right upgrade command
     upgrade_parser = subparsers.add_parser(
