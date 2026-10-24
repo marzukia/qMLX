@@ -27,6 +27,15 @@ from textual.widgets import Footer, Header, Input, Label, Log
 #: extra is missing — pinned by tests (AC9).
 TUI_INSTALL_HINT = "TUI extra not installed — run: pip install 'qmlx-serve[tui]'"
 
+#: Empty-state starter prompts (issue #63.3): the Log used to sit at
+#: ~20 blank rows until the first message. These are example prompts
+#: the operator can copy/type as-is; they are plain text, not sent.
+STARTER_PROMPTS = (
+    "> summarize the latest commit on git log",
+    "> explain how disk KV restore works in vllm_mlx",
+    "> draft release notes for the current version",
+)
+
 
 def tui_available() -> bool:
     """True when the ``textual`` import succeeds in this install."""
@@ -54,26 +63,52 @@ def _resolve_base_url(args) -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def _status_line(stats: dict | None) -> str:
-    """Plain one-line status from a /v1/status payload (AC6 fields)."""
+def _status_line(stats: dict | None, alias: str) -> str:
+    """One-line status strip from a /v1/status payload.
+
+    ASCII only (issue #63.1). The model is shown by the ALIAS the
+    operator launched with (issue #63.4), not the full HF repo id that
+    /v1/status reports, and the strip stays light: no run count, no
+    uptime — state plus (only while generating) throughput.
+    """
     if stats is None:
-        return "  ⚡ qmlx — server not reachable"
-    model = stats.get("model") or "-"
+        return f"qmlx | {alias} | offline"
     state = stats.get("status", "idle")
-    line = f"  ⚡ {model} · {state} · run {stats.get('num_running', 0)}"
+    line = f"qmlx | {alias} | {state}"
     tps = stats.get("generation_tps") or 0.0
     if tps > 0:
-        line += f" · {tps:.1f} tok/s"
-    up = stats.get("uptime_s")
-    if up is not None:
-        line += f" · up {int(up)}s"
+        line += f" | {tps:.1f} tok/s"
     return line
+
+
+def _session_banner(model: str, base_url: str) -> str:
+    """Empty-state banner (issue #63.3): session line + starter prompts,
+    so an empty session never shows ~20 blank Log rows."""
+    return (
+        f"-- qMLX session | model: {model} | endpoint: {base_url}/v1\n"
+        "-- starter prompts (type your own):\n"
+        + "\n".join(f"   {p}" for p in STARTER_PROMPTS)
+        + "\n"
+    )
 
 
 class QMLXTUI(App):
     """Chat TUI: streaming completions + a 1.5s-poll /v1/status strip."""
 
-    BINDINGS = [Binding("q", "quit", "Quit", show=False)]
+    #: One title for the whole surface (issue #63.2): the window title,
+    #: the in-app Header and (before #63) the clock were three separate
+    #: title-ish rows. The Header renders ``App.TITLE`` verbatim and
+    #: keeps its clock off, so the operator sees exactly one title row.
+    TITLE = "QMLX TUI"
+
+    BINDINGS = [
+        # Issue #63.5: the quit affordance must be visible — show=True
+        # lists the key in the Footer. The key is ctrl+q, not a bare
+        # 'q': the Input swallows printable characters, so a bare 'q'
+        # only reached the app when the Input was unfocused — in a chat
+        # TUI where the Input is the only focusable widget, never.
+        Binding("ctrl+q", "quit", "Quit", show=True),
+    ]
 
     def __init__(self, base_url: str, model: str, *, system: str | None = None):
         super().__init__()
@@ -85,19 +120,18 @@ class QMLXTUI(App):
             self.history.append({"role": "system", "content": system})
 
     def compose(self) -> ComposeResult:
-        yield Header("🐆 qMLX TUI")
+        # ASCII icon: the Header default ("⭘") is a tofu box on
+        # non-emoji fonts (issue #63.1). The title comes from App.TITLE.
+        yield Header(icon=" ")
         yield Log(auto_scroll=True)
-        yield Label(_status_line(None), id="qmlx-status")
-        yield Input(
-            placeholder=f"Message {self.model}…  (Ctrl-Q quits)",
-            id="qmlx-input",
-        )
+        yield Label(_status_line(None, self.model), id="qmlx-status")
+        yield Input(placeholder=f"Message {self.model}...", id="qmlx-input")
         yield Footer()
 
     def on_mount(self) -> None:
         log = self.query_one(Log)
         label = self.query_one(Label)
-        log.write(f"model: {self.model} · endpoint: {self.base_url}/v1")
+        log.write(_session_banner(self.model, self.base_url))
         # Pass the loop UN-CALLED and run it in a worker THREAD — calling
         # ``self._status_loop()`` here ran the blocking while-True loop in
         # place on the app thread, so on_mount never returned and the app
@@ -128,23 +162,58 @@ class QMLXTUI(App):
         )
 
     def _write(self, log: Log, msg: str) -> None:
-        """Append one line to the conversation log, from any thread.
+        """Append text to the conversation log, from any thread.
 
         Worker threads must not touch widgets directly — the write is
         serialized onto the app thread via ``call_from_thread``.
         """
         self.call_from_thread(log.write, msg)
 
+    def _set_last_line(self, log: Log, text: str) -> None:
+        """Replace the last line of the Log in place, from any thread.
+
+        textual 0.89's Log has no public API for editing an existing
+        line (``Log.lines`` returns the backing list but documents that
+        mutating it does not refresh). The streaming indicator
+        (issue #63.6) needs exactly that: the 'generating...' line is
+        replaced by the first streamed token. ``_lines`` is the
+        same list ``Log.lines`` returns, and the mutation is applied
+        on the app thread via ``call_from_thread``.
+        """
+
+        def _apply() -> None:
+            lines = log._lines  # noqa: SLF001 — see docstring
+            if not lines:
+                lines.append(text)
+            else:
+                lines[-1] = text
+            log.refresh_lines(len(lines) - 1)
+
+        self.call_from_thread(_apply)
+
     def _send(self, message: str, log: Log) -> None:
         """Run one chat turn (streamed) in a worker thread.
 
         ``log`` is captured on the app thread before the worker starts;
-        all writes go through ``_write`` → ``call_from_thread``.
+        all writes go through ``_write`` / ``_set_last_line`` →
+        ``call_from_thread``.
+
+        Log shape per turn (issue #63.6 — the indicator lives in the
+        log, not just the status strip):
+
+        - the user line is finalized with a newline (the old code left
+          it unterminated, so the reply appended onto the user's line);
+        - a 'generating...' line is written immediately, so the log
+          shows the turn is in flight even before the first token;
+        - the first token REPLACES the indicator line (later deltas
+          append), so the reply stays one clean line;
+        - the line is finalized when the stream ends or on error.
         """
         import requests
 
         self.history.append({"role": "user", "content": message})
-        self._write(log, f"🐆 {message}")
+        self._write(log, f"> {message}\n")
+        self._set_last_line(log, "generating...")
         reply = ""
         try:
             with requests.post(
@@ -176,11 +245,18 @@ class QMLXTUI(App):
                         "content"
                     )
                     if delta:
+                        if not reply:
+                            # First token: replace the indicator.
+                            self._set_last_line(log, delta)
+                        else:
+                            self._write(log, delta)
                         reply += delta
-                        self._write(log, delta)
         except Exception as e:  # noqa: BLE001 — surface, don't crash the app
-            self._write(log, f"\n[error] {e}\n")
+            self._set_last_line(log, f"[error] {e}")
+            self._write(log, "\n")
             return
+        if not reply:
+            self._set_last_line(log, "(no reply)")
         if reply:
             self.history.append({"role": "assistant", "content": reply})
         self._write(log, "\n")
@@ -203,7 +279,9 @@ class QMLXTUI(App):
         """
         while self.is_running:
             try:
-                self.call_from_thread(label.update, _status_line(self._poll_status()))
+                self.call_from_thread(
+                    label.update, _status_line(self._poll_status(), self.model)
+                )
             except Exception:  # noqa: BLE001 — app gone: stop the loop quietly
                 return
             time.sleep(1.5)
