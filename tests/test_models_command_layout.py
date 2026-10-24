@@ -50,33 +50,28 @@ def test_every_row_aligns_with_the_header_separator(capsys):
     assert len(data_rows) == len(list_visible_profiles())
 
     # Column position of "Tools" in the header — every data row must
-    # keep the same column geometry: the gap space after the alias
-    # field sits at the same offset, and a non-blank Tools cell fits
-    # its field. (The pre-#62 "first gap" heuristic can't work once
-    # issue #62 blanks missing cells — a row with no tool parser has
-    # no Tools token to find.)
+    # have its second column starting at the same offset.
     tools_col = header.index("Tools")
-    reason_col = header.index("Reasoning")
-    # "  " indent + alias field + one gap space ⇒ alias field width is
-    # whatever the header geometry implies.
-    alias_field_width = tools_col - 3
-    tools_field_width = reason_col - tools_col - 1
+    # The split-on-spaces second token starts at the first non-space
+    # character after the alias. With the dynamic width that position
+    # is exactly tools_col on every row.
     for row in data_rows:
-        # A name longer than its field (the 0.9.5 bug: 31-char alias in
-        # a 24-char column) pushes the gap space — it must stay put.
-        assert row[2 + alias_field_width] == " ", (
-            f"Row mis-aligned: alias field gap not at offset "
-            f"{2 + alias_field_width}: {row!r}"
+        # Find the position of the first non-space after the leading
+        # alias name. The alias may itself contain hyphens but not
+        # spaces; the first space-delimited gap separates alias and
+        # tools.
+        stripped = row[2:]  # drop the leading "  " indent
+        first_gap = stripped.find(" ")
+        # Index of the second column (Tools) in absolute terms:
+        second_col_abs = (
+            2
+            + len(stripped[:first_gap])
+            + (len(stripped[first_gap:]) - len(stripped[first_gap:].lstrip()))
         )
-        # A populated Tools cell must start exactly at the header's
-        # Tools column and fit its field — a longer value widens the
-        # field and shifts every later column; the gap space right
-        # after the field must stay put. Blank cells (issue #62) just
-        # leave the column empty.
-        if row[tools_col] != " ":
-            assert row[tools_col + tools_field_width] == " ", (
-                f"Tools cell content runs past its column: {row!r}"
-            )
+        assert second_col_abs == tools_col, (
+            f"Row mis-aligned: tools col at {second_col_abs}, header at "
+            f"{tools_col}. Row: {row!r}"
+        )
 
 
 def test_alias_column_width_floor_is_24(capsys, monkeypatch):

@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import os
+import shutil
 import sys
 
 from vllm_mlx import _ui as ui
@@ -3129,6 +3130,23 @@ def _print_cached_models() -> None:
     print()
 
 
+def _installed_alias_set(profiles) -> set[str]:
+    """Aliases whose weights are already local (issue #62: sort first).
+
+    ``try_to_load_from_cache`` is a pure-local HuggingFace cache probe
+    (no network round-trip) — the same check ``qmlx serve`` uses to
+    decide whether a resolved path is loadable.
+    """
+    from huggingface_hub import try_to_load_from_cache
+
+    installed: set[str] = set()
+    for alias, p in profiles.items():
+        hf = getattr(p, "hf_path", None)
+        if hf and try_to_load_from_cache(hf, "config.json") is not None:
+            installed.add(alias)
+    return installed
+
+
 def models_command(args):
     """List available model aliases with their per-model profile capabilities.
 
@@ -3194,6 +3212,26 @@ def models_command(args):
         ddtree = "✓" if p.supports_ddtree else ""
         rows.append((alias, tools, reasoning, spec, tier, dflash, ddtree))
 
+    # issue #62 (defect 1): installed rows first, then a terminal-height
+    # cap on the TTY path so the column header can never scroll off the
+    # top of the screen. The overflow collapses into a one-line pointer
+    # at ``--all``. Pipe output stays uncapped (script-safe).
+    installed = _installed_alias_set(profiles)
+    rows.sort(key=lambda r: 0 if r[0] in installed else 1)  # stable: alpha within groups
+
+    truncated_count = 0
+    if ui.rich and not getattr(args, "all_models", False):
+        term_lines = shutil.get_terminal_size(fallback=(80, 24)).lines
+        # Fixed chrome: leading blank + title + blank + table top border /
+        # header / separator / bottom border (4) + trailing blank + the
+        # 4-line tip block = 12 lines.
+        max_rows = term_lines - 12
+        if 0 < max_rows < len(rows):
+            # Reserve one line for the "… N more" pointer when truncating.
+            keep = max_rows - 1 if max_rows >= 2 else max_rows
+            truncated_count = len(rows) - keep
+            rows = rows[:keep]
+
     print()
     print(f"  Available models ({len(profiles)} aliases)")
     if ui.rich:
@@ -3219,6 +3257,8 @@ def models_command(args):
             ],
             style="cyan",
         )
+        if truncated_count:
+            print(f"  … {truncated_count} more — full list: `qmlx models --all`")
         print()
         return
 
@@ -6342,6 +6382,16 @@ Examples:
         default=False,
         help="Only list models that are downloaded to the local HuggingFace "
         "cache (alias, HF repo, size on disk, last modified).",
+    )
+    models_parser.add_argument(
+        "--all",
+        dest="all_models",
+        action="store_true",
+        default=False,
+        help=(
+            "Show every alias — disables the terminal-height cap (issue #62). "
+            "Installed rows still sort first."
+        ),
     )
     subparsers.add_parser(
         "ls",

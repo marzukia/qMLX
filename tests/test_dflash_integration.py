@@ -238,7 +238,8 @@ def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> N
 def test_models_listing_renders_dflash_column(capsys) -> None:
     """``qmlx models`` must show a ``DFlash`` column so users can
     scan eligibility at a glance. The known-good alias renders ✓; a
-    non-DFlash alias renders —."""
+    non-DFlash alias renders blank (issue #62: '—' printed the data
+    gap as data)."""
     from vllm_mlx.cli import models_command
 
     models_command(None)
@@ -256,13 +257,21 @@ def test_models_listing_renders_dflash_column(capsys) -> None:
     assert eligible_row is not None, "qwen3.5-27b-8bit row missing"
     assert "✓" in eligible_row, f"DFlash column should be ✓: {eligible_row!r}"
 
-    # A non-DFlash alias renders — in the DFlash column.
+    # A non-DFlash alias renders blank in the DFlash column.
     ineligible_row = next(
         (line for line in lines if "qwen3.5-4b-4bit " in line),
         None,
     )
     assert ineligible_row is not None, "qwen3.5-4b-4bit row missing"
-    assert "—" in ineligible_row, f"DFlash column should be —: {ineligible_row!r}"
+    # The plain row format ends `` {dflash:<7} {ddtree:<7}`` (cli.py plain
+    # path) — anchor from the right so header/column-width drift can't
+    # shift the cell (issue #62 blanked the cells).
+    dflash_cell = ineligible_row[-15:-8].strip()
+    assert dflash_cell == "", (
+        f"DFlash column should be blank: {ineligible_row!r}"
+    )
+    # No '—' wall anywhere in the listing (issue #62).
+    assert "—" not in ineligible_row, f"em-dash wall remains: {ineligible_row!r}"
 
 
 # =============================================================================

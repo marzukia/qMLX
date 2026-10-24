@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from unittest.mock import patch
 
@@ -305,3 +306,106 @@ def test_scan_hf_cache_models_filters_to_models_only(tmp_path, monkeypatch):
     assert "mlx-community/FakeModel" in repos
     assert all("squad" not in r for r in repos)
     assert all("demo" not in r for r in repos)
+
+
+# ---------------------------------------------------------------------------
+# issue #62 defect 1 — overflow: installed rows first, TTY cap, --all
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_profiles(n: int) -> dict:
+    """A hermetic alias registry: n synthetic aliases, no capabilities."""
+    from types import SimpleNamespace
+
+    profs = {}
+    for i in range(n):
+        alias = f"syn-{i:02d}"
+        profs[alias] = SimpleNamespace(
+            hf_path=f"org/{alias}",
+            tool_call_parser=None,
+            reasoning_parser=None,
+            is_hybrid=False,
+            supports_spec_decode=False,
+            suffix_decoding_tier="unknown",
+            supports_dflash=False,
+            supports_ddtree=False,
+        )
+    return profs
+
+
+def test_models_installed_rows_sort_first(monkeypatch, capsys):
+    """Installed aliases render before pullable ones (issue #62)."""
+    profiles = _synthetic_profiles(6)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: {"syn-03"})
+    cli.models_command(None)
+    out = capsys.readouterr().out
+    idx = {a: out.index(a) for a in ("syn-00", "syn-03", "syn-05")}
+    assert idx["syn-03"] < idx["syn-00"] < idx["syn-05"]
+    # Alphabetical order is preserved *within* each group.
+    assert idx["syn-00"] < out.index("syn-01") < idx["syn-05"]
+
+
+def test_models_tty_cap_collapses_overflow(monkeypatch, capsys):
+    """On a 30-line TTY the table caps so the column header stays on
+    screen; the remainder collapses into a pointer at `--all`."""
+    from types import SimpleNamespace
+
+    profiles = _synthetic_profiles(30)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: set())
+    monkeypatch.setattr("vllm_mlx._ui.is_rich", lambda: True)
+    monkeypatch.setattr(
+        "shutil.get_terminal_size", lambda fallback=None: os.terminal_size((100, 30))
+    )
+    cli.models_command(SimpleNamespace(cached=False, all_models=False))
+    out = capsys.readouterr().out
+    # 30 lines - 12 chrome - 1 pointer line = 17 rows shown, 13 collapsed.
+    assert "… 13 more" in out
+    for i in range(17):
+        assert f"syn-{i:02d}" in out
+    for i in range(17, 30):
+        assert f"syn-{i:02d}" not in out
+
+
+def test_models_all_flag_disables_tty_cap(monkeypatch, capsys):
+    """`--all` shows every row even on a small TTY."""
+    from types import SimpleNamespace
+
+    profiles = _synthetic_profiles(30)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: set())
+    monkeypatch.setattr("vllm_mlx._ui.is_rich", lambda: True)
+    monkeypatch.setattr(
+        "shutil.get_terminal_size", lambda fallback=None: os.terminal_size((100, 30))
+    )
+    cli.models_command(SimpleNamespace(cached=False, all_models=True))
+    out = capsys.readouterr().out
+    assert "… " not in out
+    assert f"Available models ({len(profiles)} aliases)" in out
+    for i in range(30):
+        assert f"syn-{i:02d}" in out
+
+
+def test_models_pipe_output_uncapped(monkeypatch, capsys):
+    """Plain (pipe) output is never row-capped — scripts must see every
+    alias regardless of terminal size."""
+    from types import SimpleNamespace
+
+    profiles = _synthetic_profiles(30)
+    monkeypatch.setattr(
+        "vllm_mlx.model_aliases.list_visible_profiles", lambda: profiles
+    )
+    monkeypatch.setattr(cli, "_installed_alias_set", lambda p: set())
+    monkeypatch.setattr("shutil.get_terminal_size", lambda fallback=None: os.terminal_size((100, 12)))
+    cli.models_command(SimpleNamespace(cached=False, all_models=False))
+    out = capsys.readouterr().out
+    assert "… " not in out
+    for i in range(30):
+        assert f"syn-{i:02d}" in out
