@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``scripts/tmax_merge_vision.py`` (issue #56, scope 1).
 
-The merge tool is the inverse of ``tmax_strip_vision.py``: it takes a
+The merge tool is the inverse of the removed vision-strip script: it takes a
 text-only MLX snapshot plus an HF base carrying the vision tower and
 produces a vision-capable MLX snapshot. These tests pin the shard write,
 the config restoration, the index bookkeeping, and the idempotency /
