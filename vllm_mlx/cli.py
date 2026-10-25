@@ -2043,6 +2043,19 @@ def serve_command(args):
     if prompt_upgrade_if_available():
         sys.exit(0)
 
+    # Local-path serve (issue #52 step 3): when the model is a local
+    # directory, validate it up front (a missing shard surfaces as a
+    # clean one-block error instead of a deep mlx-lm traceback) and pin
+    # the process to offline mode so config + weights resolve from the
+    # local dir with ZERO HuggingFace hub access — the guarantee is in
+    # code, not in an env var the user has to remember. No-op for
+    # alias / HF-repo names (they keep the normal download path).
+    from .local_model import is_local_model_path, preflight_local_model, set_hf_offline
+
+    if is_local_model_path(args.model):
+        preflight_local_model(args.model)
+        set_hf_offline()
+
     # Pre-fetch the model via the R2 mirror (with HF fallback) BEFORE the
     # heavy server boot. Without this, ``serve`` falls into
     # ``mlx_lm.load`` → ``huggingface_hub.snapshot_download`` directly and
@@ -3453,9 +3466,67 @@ def _print_pull_summary(repo_id: str, snapshot_dir, elapsed: float) -> None:
     )
 
 
+def _pull_local_model(args) -> None:
+    """Offline-capable install (issue #52 step 1).
+
+    ``qmlx pull /path/to/model`` validates the directory (config +
+    weights + tokenizer) and registers it under ``~/.cache/qmlx/models/``
+    so the user can serve it by name later — zero HuggingFace access.
+    Default is a symlink (zero extra disk); ``--copy`` makes a real
+    copy for models that will be moved or unmounted.
+    """
+    from pathlib import Path
+
+    from .local_model import (
+        LocalModelValidationError,
+        register_local_model,
+        validate_local_model_dir,
+    )
+
+    src = Path(args.model).expanduser()
+    report = validate_local_model_dir(src)
+    if not report.ok:
+        print()
+        print(LocalModelValidationError(src, report).render())
+        print()
+        sys.exit(1)
+    name = getattr(args, "name", None) or src.resolve().name
+    try:
+        dest = register_local_model(src, name=name, copy=getattr(args, "copy", False))
+    except LocalModelValidationError as e:
+        print()
+        print(e.render())
+        print()
+        sys.exit(1)
+    except ValueError as e:
+        # _registry_entry rejects path-shaped / flag-shaped names.
+        print()
+        print(f"  Error: invalid --name: {name!r} ({e})")
+        print("  Names must be a single path component (no '/', no leading '-').")
+        print()
+        sys.exit(1)
+    verb = "Copied" if getattr(args, "copy", False) else "Linked"
+    size_gb = report.size_bytes / (1024**3)
+    print(f"  {verb}: {name} → {dest} ({size_gb:.1f} GB)")
+    print("  Serve with: qmlx serve " + name)
+    print("  Verify with: qmlx doctor --model " + name)
+
+
 def pull_command(args):
     """Download a model to the HuggingFace cache without serving."""
     import time
+
+    # Offline-capable install (issue #52 step 1): a local directory is
+    # validated + registered instead of pulled from HuggingFace.
+    # Path-shaped arguments (absolute / home- / cwd-relative) are
+    # always local — a nonexistent path fails cleanly here instead of
+    # being misrouted to the hub as a repo id.
+    looks_local = os.path.isdir(args.model) or args.model.startswith(
+        ("/", "~", "./", "..")
+    )
+    if looks_local:
+        _pull_local_model(args)
+        return
 
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import HFValidationError
@@ -6421,6 +6492,24 @@ Examples:
     pull_parser.add_argument(
         "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
+    pull_parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help=(
+            "Local dirs only: name to register under "
+            "(~/.cache/qmlx/models/<name>). Defaults to the directory's "
+            "basename. Ignored for alias / HF repo pulls."
+        ),
+    )
+    pull_parser.add_argument(
+        "--copy",
+        action="store_true",
+        help=(
+            "Local dirs only: copy the model instead of symlinking it "
+            "(for models that will be moved or unmounted later)."
+        ),
+    )
     rm_parser = subparsers.add_parser(
         "rm", help="Remove a cached model from the HuggingFace cache"
     )
@@ -6482,6 +6571,30 @@ Examples:
         help="Base URL of a running server (http://host:port)",
     )
     tui_parser.add_argument("--system", type=str, default=None, help="System prompt")
+
+    # Doctor — environment health check (issue #52, onboarding step 2).
+    # Fast (well under a second), side-effect-free, works offline. Exit
+    # 0 when nothing is broken, 1 when any check fails; warnings never
+    # affect the exit code.
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Check the environment (python, mlx, model dir, disk) — onboarding step 2",
+    )
+    doctor_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help=(
+            "Model to check: a local model directory, a registered local "
+            "model name (qmlx pull <dir>), an alias, or an HF repo name "
+            "(probed against the local HF cache only — no network)."
+        ),
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the report as JSON (for scripting).",
+    )
 
     # Upgrade — detect install method and run the right upgrade command
     upgrade_parser = subparsers.add_parser(
@@ -6696,14 +6809,16 @@ Examples:
 
     # Resolve model aliases before dispatch.
     #
-    # The doctor subcommand is exempt for historical reasons (and as a
-    # belt-and-suspenders guard now that doctor doesn't take ``--model``):
-    # an env-health probe should never trigger an alias→path lookup.
+    # The doctor subcommand is exempt: its ``--model`` argument is
+    # resolved inside ``check_model`` (registered local name → alias →
+    # local path → HF name) so a probe can never be misrouted through
+    # the serve/chat resolution rules (e.g. the unknown-name fast-fail).
     if (
         hasattr(args, "model")
         and args.model
         and getattr(args, "command", None) != "doctor"
     ):
+        from vllm_mlx.local_model import resolve_local_model
         from vllm_mlx.model_aliases import resolve_model
 
         resolved = resolve_model(args.model)
@@ -6719,18 +6834,39 @@ Examples:
             print(f"  Alias: {args.model} → {resolved}", file=_alias_stream)
             args._original_alias = args.model
             args.model = resolved
-        elif "/" not in args.model and not os.path.exists(args.model):
-            # Not an alias, not a HuggingFace org/name path, not a local
-            # directory — fail fast with suggestions instead of letting
-            # the request hit HuggingFace and 404 with a 30-line trace.
-            print(
-                f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
-            )
-            _print_unknown_model_help(
-                args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
-            )
-            sys.exit(1)
-
+        else:
+            # Registered local model (issue #52 step 1): a name created by
+            # ``qmlx pull <local-dir>`` resolves to its registered path so
+            # it can be served with zero HuggingFace access.
+            local = resolve_local_model(args.model)
+            if local is not None:
+                if local.is_symlink() and not local.exists():
+                    # Registered but the target moved / vanished — fail
+                    # fast with an actionable message instead of routing
+                    # the name to HuggingFace for a confusing 404.
+                    print(
+                        f"\n  Error: local model '{args.model}' is registered "
+                        f"but its target is missing: {local.resolve()}"
+                    )
+                    print(
+                        "  Re-register it: qmlx pull <path-to-model> --name "
+                        f"{args.model}"
+                    )
+                    sys.exit(1)
+                print(f"  Local model: {args.model} → {local}")
+                args.model = str(local)
+            elif "/" not in args.model and not os.path.exists(args.model):
+                # Not an alias, not a registered local model, not a
+                # HuggingFace org/name path, not a local directory — fail
+                # fast with suggestions instead of letting the request hit
+                # HuggingFace and 404 with a 30-line trace.
+                print(
+                    f"\n  Error: '{args.model}' is not a known alias, local model, or HuggingFace path."
+                )
+                _print_unknown_model_help(
+                    args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
+                )
+                sys.exit(1)
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large
     # repo (chat/run/serve/pull/bench), warn the user before kicking off
@@ -6822,6 +6958,10 @@ Examples:
         status_command(args)
     elif args.command == "tui":
         tui_command(args)
+    elif args.command == "doctor":
+        from vllm_mlx.doctor import doctor_command
+
+        doctor_command(args)
     elif args.command == "upgrade":
         upgrade_command(args)
     elif args.command in ("chat", "run"):
