@@ -3814,11 +3814,21 @@ async def _wait_with_disconnect(
     try:
         from ..scheduler import BackpressureError
     except ImportError:
-        # ``scheduler`` imports ``mlx.core`` at module level; on
-        # non-Apple-Silicon platforms (e.g. Linux CI) it's unavailable.
-        # ``BackpressureError`` is only raised by real engines with
-        # admission control, so a never-raised placeholder keeps the
-        # ``except`` clause below safe without pulling in ``mlx``.
+        import importlib.util
+
+        if importlib.util.find_spec("mlx") is not None:
+            # mlx is importable, so the scheduler failure has a cause
+            # other than the missing-MLX case below - a genuine bug.
+            # Surface it at import time instead of substituting the
+            # placeholder (which would make the ``except`` clause below
+            # miss the real ``BackpressureError`` raised by engines).
+            raise
+
+        # ``scheduler`` imports ``mlx.core`` at module level; without
+        # ``mlx`` (e.g. Linux CI) it's unavailable. ``BackpressureError``
+        # is only raised by real engines with admission control, so a
+        # never-raised placeholder keeps the ``except`` clause below safe
+        # without pulling in ``mlx``.
         class BackpressureError(Exception):  # type: ignore[no-redef]
             pass
 
