@@ -5,7 +5,7 @@ NOT shipped with pip — this is for local development only.
 Orchestrates all test levels from quick lint to overnight benchmarks.
 
 Usage:
-    python scripts/dev_test.py lint          # ruff + import check (~10s)
+    python scripts/dev_test.py lint          # ruff check + format --check (~10s)
     python scripts/dev_test.py unit          # pytest unit suite (~30s)
     python scripts/dev_test.py smoke         # lint + unit (~1 min)
     python scripts/dev_test.py stress        # 8-test stress suite (needs server)
@@ -52,12 +52,18 @@ def run_lint():
         [PY, "-m", "ruff", "--version"], capture_output=True, cwd=REPO_ROOT
     )
     if result.returncode == 0:
-        return run([PY, "-m", "ruff", "check", "vllm_mlx/", "tests/"], "Lint (ruff)")
-    ruff_bin = shutil.which("ruff")
-    if ruff_bin:
-        return run([ruff_bin, "check", "vllm_mlx/", "tests/"], "Lint (ruff)")
-    print("  ruff not installed — pip install ruff")
-    return False
+        ruff = [PY, "-m", "ruff"]
+    else:
+        ruff_bin = shutil.which("ruff")
+        if not ruff_bin:
+            print("  ruff not installed — pip install ruff")
+            return False
+        ruff = [ruff_bin]
+    ok = run(ruff + ["check", "vllm_mlx/", "tests/"], "Lint (ruff check)")
+    return ok and run(
+        ruff + ["format", "--check", "vllm_mlx/", "tests/"],
+        "Lint (ruff format --check)",
+    )
 
 
 def run_audit():
