@@ -74,6 +74,75 @@ cd qMLX
 pip install -e .
 ```
 
+## Onboarding (3 steps)
+
+Get from zero to a served model in three commands. Every step works
+offline once the pieces are on disk — no HuggingFace account, no hub
+network access, no env vars to remember.
+
+### 1. Get a model
+
+**With network** — pull from HuggingFace by alias or repo:
+
+```sh
+qmlx pull qwen3.5-9b-4bit
+```
+
+**Offline** — point at a local model directory (an mlx-community
+snapshot, an `mlx_lm.convert` output, a mirror download). The directory
+is validated (config + weights + tokenizer) and registered under
+`~/.cache/qmlx/models/` so you can serve it by name:
+
+```sh
+qmlx pull /path/to/Qwen3.5-9B-4bit        # symlink (default, zero extra disk)
+qmlx pull /path/to/Qwen3.5-9B-4bit --copy # real copy (model will move later)
+qmlx pull /path/to/Qwen3.5-9B-4bit --name my-qwen  # custom name
+```
+
+A directory that is missing `config.json`, a `model*.safetensors`
+weight shard, or a tokenizer file fails with a readable report of
+exactly what is missing — nothing is registered half-done.
+
+### 2. Check the environment
+
+```sh
+qmlx doctor --model my-qwen
+```
+
+`qmlx doctor` is a fast (well under a second), side-effect-free probe
+that answers one question: *is this machine ready to serve?* It checks
+the Python version, the mlx / mlx-lm / transformers versions (against
+the pyproject floors), the backend (Apple Silicon / Metal), the model
+directory (readable, config parses, weights + tokenizer present), and
+disk space (KV-checkpoint volume free space, model volume headroom).
+
+Output is a ✓ / ⚠ / ✗ report with an aggregate summary. Exit code is
+`0` when nothing is broken and `1` when any check fails — warnings
+never affect the exit code, so it is safe to gate a script on. Add
+`--json` for machine-readable output. Without `--model` it checks the
+environment only.
+
+### 3. Serve
+
+```sh
+qmlx serve my-qwen --port 8000
+```
+
+`qmlx serve` accepts an alias, an HF repo, a registered local model
+name, or a local model directory directly:
+
+```sh
+qmlx serve /path/to/Qwen3.5-9B-4bit --port 8000
+```
+
+A local-path serve resolves the model config + weights from the local
+directory with **zero HuggingFace hub access**: the directory is
+validated up front (a missing shard fails with a clean report instead
+of a deep loader traceback), and the process is pinned to offline mode
+so no incidental lookup ever falls back to the hub — the guarantee is
+in code, not in an env var. Aliases and HF repos keep the normal
+mirror/HF download path.
+
 ## Serving
 
 ```sh
