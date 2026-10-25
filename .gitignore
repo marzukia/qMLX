@@ -56,10 +56,6 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Generated benchmark reports
-reports/benchmarks/ollama-comparison/*.json
-reports/benchmarks/ollama-comparison/*.md
-
 # Translations
 *.mo
 *.pot
@@ -121,20 +117,8 @@ gsm8k_*.json
 # Aider
 .aider*
 
-# Temp reports (scan outputs)
-reports/*.json
-reports/*.md
-reports/*.tsv
-reports/scan_*
-
 # Scratch review notes (codex review-loop dumps)
 reviews/
-
-# Doctor harness — per-run artefacts (baselines/ ARE checked in)
-harness/runs/*
-!harness/runs/.gitkeep
-# Scorecard timestamped runs are local; only latest.md is tracked
-harness/scorecard/scorecard-*.md
 
 # Local agent tracker — never commit
 TODO.md
