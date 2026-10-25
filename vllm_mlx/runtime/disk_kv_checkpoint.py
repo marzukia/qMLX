@@ -2607,7 +2607,13 @@ class DiskCheckpointIndex:
         reaches here after a hard gate failed.
         """
         with self._lock:
-            self._by_key.get(key, {}).pop(media_key, None)
+            bucket = self._by_key.get(key)
+            if bucket is not None:
+                bucket.pop(media_key, None)
+                # Media-bucketed index (#56): drop the key once its bucket
+                # is empty so evicted keys don't accumulate as empty dicts.
+                if not bucket:
+                    del self._by_key[key]
 
         if ref is not None:
             # A quarantined delta is gone for good (renamed to .corrupt, and
@@ -2655,7 +2661,12 @@ class DiskCheckpointIndex:
         across disk I/O (there is none here).
         """
         with self._lock:
-            self._by_key.get(key, {}).pop(media_key, None)
+            bucket = self._by_key.get(key)
+            if bucket is not None:
+                bucket.pop(media_key, None)
+                # Same empty-bucket cleanup as :meth:`_quarantine`.
+                if not bucket:
+                    del self._by_key[key]
 
         logger.info(
             "[kv_restore_soft_evict] dropped transient-failure key len=%d "

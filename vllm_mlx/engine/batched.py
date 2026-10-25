@@ -988,15 +988,25 @@ class BatchedEngine(BaseEngine):
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
 
     async def _start_mllm(self) -> None:
-        """MLLM (vision) serving was removed in the Qwen-only build.
+        """MLLM (vision) serving in the Qwen-only build (issue #56).
 
-        ``_is_mllm`` is always False for the text-only models this build
-        serves, so ``start()`` never routes here. Kept as a stub so the
-        dispatch in ``start()`` stays structurally intact.
+        The mlx_vlm-based MLLM scheduler was removed in the Qwen-only
+        simplification (#20). Vision-capable models are served through
+        the LLM engine path instead: the model loads via ``mlx_lm``
+        (vision-capable MLX builds carry the vision tower in-repo — see
+        ``scripts/tmax_merge_vision.py``) and the issue #56 image-aware
+        KV wiring (``media_key`` + ``pixel_values`` + chunked-prefill
+        vision kwargs) handles the vision forward. ``is_mllm`` stays
+        True so the chat route keeps accepting image/video content
+        blocks (``allow_image=engine.is_mllm``).
         """
-        raise RuntimeError(
-            "MLLM/vision serving is not available in this text-only build."
+        logger.info(
+            f"MLLM model detected ({self._model_name}) — serving via the "
+            "LLM engine path (mlx_vlm MLLM scheduler removed in the "
+            "Qwen-only build; vision forward via issue #56 image-aware "
+            "KV wiring)"
         )
+        await self._start_llm()
 
     async def _start_llm(self) -> None:
         """Start the LLM engine with AsyncEngineCore."""
