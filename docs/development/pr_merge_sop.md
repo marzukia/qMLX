@@ -172,7 +172,7 @@ Skip rule:
 
 The bar is **0 regressions vs the per-model baseline in `harness/baselines/`** *for models that have committed baselines* (currently `qwen3.5-35b-8bit` and `qwen3.6-35b-4bit`). For models without baselines, document the chosen ad-hoc reference (e.g., "compared against output on commit X", "manual eyeball vs main"). Pre-existing fails (Test 10 streaming usage, `<|im_end|>` leak, thinking-toggle on qwen3.5-4b-4bit) are documented; new fails block merge.
 
-## Step 9 — Anthropic-compat round-trip (gated on parser/router PRs)
+## Step 8 — Anthropic-compat round-trip (gated on parser/router PRs)
 
 If the diff touches `vllm_mlx/parsers/`, `vllm_mlx/reasoning/`, `vllm_mlx/routes/anthropic.py`, or `vllm_mlx/routes/chat.py`:
 
@@ -187,7 +187,7 @@ curl -s http://localhost:8000/anthropic/v1/messages \
 
 Output must be a non-empty Anthropic-shaped response, no `!!!!!!` token-id-0 corruption, no streaming-think misroute. The `/anthropic` surface shares router-level code with `/v1/chat/completions` but diverges at the streaming-think router; multiple historical regressions (#288, #289) shipped with green OpenAI-compat smoke and broken `/anthropic`.
 
-## Step 10 — CI gate
+## Step 9 — CI gate
 
 ```bash
 gh pr view <PR#> --repo marzukia/qMLX --json mergeable,mergeStateStatus,statusCheckRollup
@@ -205,7 +205,7 @@ Wait for `MERGEABLE (CLEAN)`. All checks must be `SUCCESS`. Required checks: `li
 | **Broken main** (every PR's CI is failing this check, including merges that already passed) | Same check failing on `main` itself or on multiple unrelated open PRs | Don't merge anything against the broken check until main is fixed. Open a separate hotfix PR for the broken check itself. |
 | **Pre-existing flake on PR's affected file** | Failure also reproduces on clean main | Document in PR description with the proof command. Doesn't block merge. |
 
-## Step 11 — Final PR description audit
+## Step 10 — Final PR description audit
 
 Before merge, the PR description must accurately reflect actual current state:
 
@@ -214,7 +214,7 @@ Before merge, the PR description must accurately reflect actual current state:
 - Out-of-scope follow-ups documented (so reviewers don't ask "why didn't you do X").
 - All `[x]` boxes have evidence in the PR or comments.
 
-## Step 12 — Merge
+## Step 11 — Merge
 
 - **Squash-merge** for clean main history:
 
@@ -282,6 +282,6 @@ The following items are agreed-good but not yet implemented; tracked in [#320](h
 - GitHub Actions SHA-pinning enforcement when workflows change.
 - PR-time transitive-dep audit (currently only release-time).
 - Per-PR install-size delta comment (`du -sh` site-packages diff vs main).
-- Per-PR quick model-validation (e.g. `python scripts/benchmark_engines.py --engine qmlx --speed-only`) as a required CI check, gated by an `inference-touching` auto-label.
+- Per-PR `qmlx bench --tier smoke` (or equivalent quick model-validation) as a required CI check, gated by an `inference-touching` auto-label.
 - `claude-code-security-review` action on PRs touching auth / parsers / serialization paths.
 - Quarterly "review-of-the-review" sampling (re-review 10 random merged PRs to score whether codex missed material issues).
