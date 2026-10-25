@@ -44,12 +44,12 @@ If the PR is necessary but the value is borderline against the cost (CI minutes,
 
 Not every PR runs the full gauntlet. Skip rules:
 
-| PR class | Step 0 | Steps 1-6 | Step 7 (supply chain) | Steps 8-9 | Steps 10-12 |
+| PR class | Step 0 | Steps 1-6 | Step 7 (supply chain) | Steps 8-9 | Steps 10-11 |
 |---|---|---|---|---|---|
 | Dependabot / version-bump bot | satisfied by the bump itself | codex single round on the diff | mandatory — read the dep CHANGELOG | unchanged | unchanged |
 | `chore: bump version to X.Y.Z` (release) | satisfied by linking the commits being shipped | n/a (just the version bump) | bundle-level audit at release time, see [`releasing.md`](releasing.md) | unchanged | unchanged |
 | Revert PR | must name the regression / commit being reverted | targeted tests for the affected area | n/a unless deps reverted | unchanged | unchanged |
-| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | **only skip gates that are physically blocked by the broken-main condition** — if the touched surface is parser / router / inference, run Step 8 (`bench --tier check`) and Step 9 (Anthropic-compat) targeted to the affected surface anyway, those are the *highest-value* gates for a hotfix | document each skipped gate inline in the PR; merge once unblocked gates pass; file follow-up issue for any deferred non-blocking gate |
+| Hotfix to broken main | satisfied if a regression issue is open or being filed | targeted tests + lint only; full unit can be skipped if main itself is broken | unchanged | **only skip gates that are physically blocked by the broken-main condition** — if the touched surface is parser / router / inference, run the `--tier check` bench and Step 8 (Anthropic-compat) targeted to the affected surface anyway, those are the *highest-value* gates for a hotfix | document each skipped gate inline in the PR; merge once unblocked gates pass; file follow-up issue for any deferred non-blocking gate |
 | Embargoed security fix | filed under coordinated-disclosure process; PR opens against private fork | full gauntlet but in private | mandatory | mandatory | merge with disclosure window |
 
 For first-time contributors learning the ropes: relax tone, not standards. Walk them through fixes instead of closing; that builds the contributor base.
@@ -153,24 +153,6 @@ Manual checks for the gaps the automated step doesn't cover today (tracked as fo
 - **License drift** — if any new direct dep was added, verify its license is in our compatible set (Apache-2.0, MIT, BSD-*, ISC, MPL-2.0). AGPL/SSPL into the Apache-2.0 tree forces a relicense and must be refused.
 - **GitHub Actions SHA pinning** — if `.github/workflows/` changed, every `uses: x/y@<ref>` must be a 40-char SHA, not a tag. Mutable tags = supply-chain compromise vector (see Trivy 2026 incident).
 - **Transitive dep tree** — if `pyproject.toml` deps changed (even a version bump), spot-check the resolved tree for new transitive packages. Release-time `pip-audit` in the bundle is currently the safety net; PR-time visibility is a known gap.
-
-## Step 8 — Doctor harness `make check` / `make full` (gated)
-
-Skip rule:
-
-- **Don't touch inference code** → skip and **explicitly note** in PR description: "make check skipped — no inference-path changes".
-- **Touch inference code** → run, even if it takes ~10 min:
-
-  ```bash
-  # make check runs against the default model (qwen3.5-4b-4bit) — ~10 min
-  make check
-  # make full runs across multiple models (~1-2 hr) — only when changes affect generation correctness
-  make full
-  # to override the model, call bench directly (the make targets don't pass --model through):
-  python3 -m vllm_mlx.cli bench <alias> --tier check
-  ```
-
-The bar is **0 regressions vs the per-model baseline in `harness/baselines/`** *for models that have committed baselines* (currently `qwen3.5-35b-8bit` and `qwen3.6-35b-4bit`). For models without baselines, document the chosen ad-hoc reference (e.g., "compared against output on commit X", "manual eyeball vs main"). Pre-existing fails (Test 10 streaming usage, `<|im_end|>` leak, thinking-toggle on qwen3.5-4b-4bit) are documented; new fails block merge.
 
 ## Step 8 — Anthropic-compat round-trip (gated on parser/router PRs)
 
