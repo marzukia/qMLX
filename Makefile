@@ -1,4 +1,4 @@
-.PHONY: help smoke lint audit test stress soak release-smoke release-check-m3 clean check full benchmark update-baselines
+.PHONY: help smoke lint audit test stress soak release-smoke release-check-m3 clean check full benchmark
 
 # Pick the interpreter:
 #   1. Active venv ($VIRTUAL_ENV/bin/python) — wins so contributors using
@@ -35,8 +35,7 @@ help:
 	@echo "    make stress             8-scenario stress test (needs server)"
 	@echo "    make soak               10-min agent soak test (needs server)"
 	@echo ""
-	@echo "  Bench tiers (dev-only scripts — see scripts/ and harness/README.md):"
-	@echo "    python scripts/benchmark_engines.py --engine qmlx ..."
+	@echo "    qmlx bench <model> --tier smoke|speed|harness|all"
 	@echo ""
 	@echo "  Release (see docs/development/releasing.md):"
 	@echo "    make release-smoke      clean-room install+import gate (~30s)"
@@ -96,5 +95,3 @@ release-check-m3:
 	@MODEL=$(MODEL) PY=$(PY) bash scripts/release_check_m3.sh
 
 clean:
-	rm -rf harness/runs/*
-	@echo "Cleared harness/runs/ — baselines kept."
