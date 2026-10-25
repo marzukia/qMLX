@@ -168,7 +168,9 @@ def _patch_dkc(monkeypatch, *, lookup_result, requires_full=False):
     monkeypatch.setattr(
         dkc,
         "get_content_index",
-        lambda: SimpleNamespace(lookup=lambda ids: lookup_result),
+        # Issue #56: lookup is now (ids, media_key) — the media bucket is
+        # part of the keying contract, so the mock mirrors the new arity.
+        lambda: SimpleNamespace(lookup=lambda ids, media_key="": lookup_result),
     )
     monkeypatch.setattr(dkc, "record_restore_reject", lambda reason: None)
     monkeypatch.setattr(dkc, "record_hook_error", lambda: None)
