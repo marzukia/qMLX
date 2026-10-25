@@ -8,19 +8,19 @@ Tape-based SSM rollback for MTP speculative decoding is **ALREADY IMPLEMENTED** 
 
 ### Files
 
-1. **`vllm_mlx/spec_decode/mtp/tape_rollback.py`** (356 lines)
+1. **`vllm_mlx/spec_decode/mtp/tape_rollback.py`** (374 lines)
    - `TapeRecorder` - Manages recording lifecycle
    - `TapeBuffer` - Stores tape data in memory
    - `LayerTape` - Per-layer tape entries
    - `verify_tape_correctness()` - Bit-exactness validation
    - Memory footprint: **KB-scale** vs MB-scale snapshots
 
-2. **`vllm_mlx/spec_decode/mtp/cache_patch.py`** (379 lines)
+2. **`vllm_mlx/spec_decode/mtp/cache_patch.py`** (386 lines)
    - GatedDeltaNet patch records tape at positions 1..n_confirmed
    - `rollback_state` format: `[(conv_snap_1, ssm_snap_1), ...]`
    - Calls tape recorder as optional hook
 
-3. **`vllm_mlx/spec_decode/mtp/generator.py`** (938 lines)
+3. **`vllm_mlx/spec_decode/mtp/generator.py`** (1058 lines)
    - Lines 612-624: TAPE rollback enabled, no K clamping
    - `_rollback_draft()` handles tape format
    - Supports K>=2 chain-of-K drafts
@@ -57,62 +57,89 @@ Tape-based SSM rollback for MTP speculative decoding is **ALREADY IMPLEMENTED** 
 
 **Savings:** 5000x reduction in rollback memory footprint
 
-## Gate Test: Bit-Exact K=3 vs K=0
+## Gate Harness: d=3 (K=3) Byte-Exactness
 
-The critical gate test verifies that tape rollback produces **bit-identical** output to non-speculative decoding. This ensures the lossless contract is maintained.
+The critical gate verifies that tape rollback produces **byte-identical**
+output to non-speculative decoding. The harness lives in
+`bench/bench_mtp_k3.py` (rewritten for issue #53) and gates three
+contracts:
 
-### Test Implementation
+* **G1 LOSSLESS-D3** — K=0 vs K=3 at `temp=0` must emit byte-identical
+  token streams (any SSM mis-restoration shows up as a divergence).
+* **G2 SEEDED-TEMP** — the OpenAI `seed` reaches `mtp_generate_step`
+  (wired through the scheduler) and drives every PRNG draw: same seed
+  ⇒ byte-identical temp>0 stream; different seed ⇒ different stream.
+* **G3 ACCEPT TABLE** — per-position acceptance (pos 1..3) and decode
+  tok/s at K=1/2/3, derived from the flat generator yield stream.
 
-See `tests/test_mtp_tape_rollback.py` for:
-- Unit tests for `TapeRecorder`, `TapeBuffer`, `LayerTape`
-- Integration test placeholder for K=3 vs K=0 comparison
-- Size estimation and formatting tests
-
-### Running the Gate Test
+The harness has two modes:
 
 ```bash
-# Full model test (requires Apple Silicon + 96GB RAM)
+# Real model (Apple Silicon with the 9B checkpoint, or any mlx host)
 python bench/bench_mtp_k3.py \
-  --model mlx-community/Qwen3.5-122B-A10B-oQ4-mtp \
-  --max-k 3 \
-  --max-tokens 200
+  --model mlx-community/Qwen3.5-9B-4bit \
+  --sidecar mlx-community/Qwen3.5-9B-MTP-4bit
 
-# Expected results (from M3 Ultra benchmarks):
-# K=1: 93.3% acceptance, ~1.6x speedup
-# K=2: 66.7% acceptance
-# K=3: 81.1% acceptance (pos1: 90%, pos2: 96.3%, pos3: 76.9%), ~2x+ speedup
+# Self-test: deterministic mocks, no download — validates the harness
+# itself (and the gate machinery) on any machine with mlx
+python bench/bench_mtp_k3.py --self-test
 ```
+
+Exit status is 0 when every gate passes, 1 otherwise — wireable into a
+release checklist.
+
+### Supporting unit tests
+
+`tests/test_mtp_tape_rollback.py` now contains the K=3 position audit:
+
+* `test_k3_tape_rollback_position_audit[accepted=0..3]` — full
+  `mtp_generate_step` runs at `fixed_k=3` against a fake SSM cache that
+  emulates the GatedDeltaNet chunk-split tape; asserts the exact
+  restored conv/SSM state at every accept depth, tape clearing on
+  all-accept, and tape entry count `k_len`.
+* `test_k3_tape_invariant_fires_on_misrecorded_tape` — the generator's
+  pre-verify invariant (`[MTP-d3] SSM tape invariant violated`) fires
+  when a layer records fewer than `k_len` tape entries.
+
+`tests/test_mtp_spec_decode.py` adds the K=3 generator contract
+(fixed-depth accept/reject matrix, cache commit carryover, seeded-temp
+byte-exact determinism, `fixed_k` validation), and
+`tests/test_mtp_real_weights.py` adds the heavy real-weights gates:
+
+* `test_mtp_k3_lossless_byte_equal_against_baseline` — K=3 temp=0 vs
+  non-spec decode on the real hybrid target.
+* `test_mtp_k3_seeded_temp_determinism` — same seed ⇒ identical stream,
+  different seed ⇒ different stream (temp>0).
+
+Run the real-weights gates with `QMLX_RUN_HEAVY_TESTS=1` (they are
+skipped in the normal sweep).
 
 ### Bit-Exactness Verification
 
-The gate test must verify:
-1. **Token-by-token match** - K=3 output equals K=0 output
-2. **SSM state match** - Tape rollback produces identical SSM state
-3. **Logprob match** - Log probabilities are identical
+The gates verify:
 
-```python
-def test_k3_bit_exact_vs_k0():
-    """Gate test: K=3 generation must be bit-exact vs K=0 baseline."""
-    # Generate with K=0 (no spec decode)
-    output_k0 = generate(prompt, max_k=0, temp=0.0)
-    
-    # Generate with K=3 (spec decode with tape rollback)
-    output_k3 = generate(prompt, max_k=3, temp=0.0)
-    
-    # Must be byte-identical
-    assert output_k0.tokens == output_k3.tokens
-    assert output_k0.logprobs == output_k3.logprobs
-```
+1. **Token-by-token match** — K=3 output equals K=0 output (G1).
+2. **SSM state match** — restored conv/SSM states are bit-identical to
+   the state a sequential run would have (unit audit above).
+3. **Seeded temp>0 reproducibility** — the seed stream is internal to
+   the generator, so spec decode is reproducible per seed (G2).
 
 ## Deployment Checklist
 
 Before enabling K>1 in production:
 
 - [x] Tape rollback code implemented
-- [x] Unit tests written
-- [ ] **Gate test passed** (K=3 vs K=0 bit-exact)
-- [ ] Integration test with full model
-- [ ] Performance benchmark (K=1 vs K=3 speedup)
+- [x] Unit tests written (incl. K=3 position audit + invariant)
+- [x] **Gate harness** (`bench/bench_mtp_k3.py`: G1 byte-identity,
+      G2 seeded-temp determinism, G3 accept table; self-test mode
+      passes on Linux + mlx, with a working PTX-JIT toolchain)
+- [x] **K=3 generator contract** (mock: accept/reject matrix, seeded
+      determinism, fixed_k validation)
+- [ ] **Real-weights gates on Apple Silicon** —
+      `QMLX_RUN_HEAVY_TESTS=1 python -m pytest tests/test_mtp_real_weights.py`
+      and `python bench/bench_mtp_k3.py --model ... --sidecar ...`
+      (G1/G2/G3 on real hybrid weights)
+- [ ] Performance benchmark (K=1 vs K=3 speedup) on the 122B target
 - [ ] Rollback to production K=1 if gate fails
 
 ## Expected Impact
@@ -120,15 +147,15 @@ Before enabling K>1 in production:
 | Configuration | Accept Rate | Speedup | Status |
 |--------------|-------------|---------|--------|
 | K=1 (no tape) | 93.3% | ~1.6x | ✅ Working |
-| K=2 (tape) | ~80% | ~1.8x | ⚠️ Untested |
-| K=3 (tape) | 81.1% | ~2.2x | ⚠️ Untested |
+| K=2 (tape) | ~80% | ~1.8x | ✅ Gated (mock) — real weights pending |
+| K=3 (tape) | 81.1% | ~2.2x | ✅ Gated (mock) — real weights pending |
 
 ## Next Steps
 
-1. **Run gate test** on marzuki-helium with Qwen3.5-122B
-2. **Verify bit-exactness** at temp=0 (greedy decoding)
-3. **Benchmark speedup** vs K=1 baseline
-4. **Enable K>1** in production if gate passes
+1. **Run the real-weights gates** on marzuki-carbon (9B) and
+   marzuki-helium (122B) and record G1–G3 results here.
+2. **Benchmark speedup** vs K=1 baseline on the 122B target.
+3. **Enable K>1** in production if the real-weights gate passes.
 
 ## References
 
@@ -141,6 +168,7 @@ Before enabling K>1 in production:
 
 ---
 
-**Status:** Implementation complete, gate test pending
-**Date:** 2026-07-21
+**Status:** d=3 gate harness + K=3 contracts implemented and gated on
+mocks; real-weights gates pending on Apple Silicon
+**Date:** 2026-07-26
 **Author:** qMLX team
