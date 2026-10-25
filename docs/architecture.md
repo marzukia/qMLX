@@ -56,7 +56,6 @@ scripts/                       # Dev-only (NOT shipped with pip)
 └── cross_model_stress.py      # Multi-model validation
 
 tests/                         # pytest unit tests (2100+)
-harness/                       # Regression baselines + thresholds
 ```
 
 ## Request Flow
