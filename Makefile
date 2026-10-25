@@ -1,4 +1,4 @@
-.PHONY: help smoke lint audit test stress soak release-smoke release-check-m3 clean check full benchmark
+.PHONY: help smoke lint audit test stress soak release-smoke release-check-m3 clean check full benchmark update-baselines
 
 # Pick the interpreter:
 #   1. Active venv ($VIRTUAL_ENV/bin/python) — wins so contributors using

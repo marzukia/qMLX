@@ -286,7 +286,7 @@ def run_workload(
         # before the first content delta — TTFT below would land at
         # end-of-reasoning, decode_time computes to ~0.2s, and the
         # MIN_DECODE_TIME gate rejects every reasoning-heavy workload.
-        # z-lab's canonical demo (scripts/demo_dflash.py) uses /no_think
+        # z-lab's canonical demo used /no_think
         # in the prompt for the same reason. The kwarg path is more
         # robust since not every model honors the /no_think sentinel.
         "enable_thinking": False,
