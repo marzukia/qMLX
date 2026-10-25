@@ -30,52 +30,23 @@ classifiers = [
 ]
 
 dependencies = [
-    # Core — these are all you need for `qmlx serve <text-model>`
-    # Floor bump to 0.31.2 (mlx) + 0.31.3 (mlx-lm) for #720 take-2 — see
-    # tests/test_mllm_cross_thread_stream_contract.py for the empirical
-    # status of the cross-thread `Stream(gpu, N)` crash on this floor.
-    # The 0.7.41 ``mx.default_stream`` shim in engine_core.py and
-    # mllm_batch_generator.py is DELIBERATELY retained: 0.31.2 added
-    # ``mx.new_thread_local_stream`` / ``ThreadLocalStream`` / ``clear_streams``
-    # and mlx-lm 0.31.3 switched its module-level ``generation_stream`` to
-    # ``mx.new_thread_local_stream`` (mlx_lm/generate.py:226 in 0.31.3), but
-    # repro on 0.31.2 still crashes when arrays produced on thread T1 (with
-    # default_stream / new_stream / new_thread_local_stream) are materialised
-    # on T2 via np.array(arr). The shim adopts the worker's process-wide
-    # default — the only path that round-trips cleanly across threads.
+    # Core — all you need for `qmlx serve <text-model>`. Floor 0.31.2/0.31.3
+    # (#720): the cross-thread Stream(gpu, N) repro still crashes, so the
+    # 0.7.41 mx.default_stream shim in engine_core.py is deliberately retained.
     "mlx>=0.31.2",
-    "mlx-lm>=0.31.3",  # 0.31.1+ required for presence_penalty/frequency_penalty kwargs on make_logits_processors (#512); 0.31.3 added thread-local generation_stream but cross-thread eval is still broken (see shim sites).
+    "mlx-lm>=0.31.3",  # #512: presence_penalty/frequency_penalty kwargs; 0.31.3 thread-local generation_stream, cross-thread eval still broken (shim sites).
     # mlx-vlm is opt-in via [vision] extras (saves ~322 MB for text-only users)
-    #
-    # Upper cap <5.13 (release-blocker): mlx-lm and mlx-vlm both float
-    # transformers with no upper bound, but transformers 5.13.0 tightened
-    # ``AutoTokenizer.register`` to dereference ``key.__module__`` while mlx-lm
-    # still registers tokenizers by *string* class name (mlx_lm/
-    # tokenizer_utils.py:505) — so under 5.13 even a bare ``import mlx_lm``
-    # (and therefore every serve / gemma-4 / DiffusionGemma launch) raises
-    # ``AttributeError: 'str' object has no attribute '__module__'`` at import
-    # time. 5.5.0-5.12.x import cleanly (a fresh resolve currently lands
-    # 5.12.1). Drop the cap once mlx-lm registers real tokenizer classes.
-    # Mirrors the rapid-desktop sidecar pin (PR #498).
-    #
-    # HY3 vendor note (2026-07-09): the 0.11.0 Hy3 vendor drop
-    # (``vllm_mlx/models/hy_v3.py``) was validated end-to-end against
-    # ``transformers==5.7.0`` — that release is treated as the *canonical
-    # reference version* for the vendored model_type. The public floor
-    # stays at 5.0.0 so we don't force a downgrade / resolver conflict
-    # on users whose environments already sit at 5.8-5.12 for another
-    # dependency — the vendored HY3 tokenizer path in
-    # ``vllm_mlx/utils/tokenizer.py`` bypasses ``AutoTokenizer`` entirely
-    # (via ``_VENDORED_MODEL_TYPES``), so the transformers minor is not
-    # in the HY3 hot path. If a future transformers release above 5.7
-    # introduces an HY3-specific regression, we tighten the floor with a
-    # dedicated bump PR + Phase-0 re-audit rather than pinning here.
+    # Cap <5.13: 5.13.0 tightened AutoTokenizer.register (key.__module__) while
+    # mlx-lm registers tokenizers by string class name — bare `import mlx_lm`
+    # raises AttributeError. Drop the cap once mlx-lm registers real classes.
+    # HY3 (2026-07-09): 0.11.0 vendor drop validated against transformers 5.7.0
+    # (canonical ref); floor stays 5.0.0 — the vendored HY3 tokenizer path
+    # bypasses AutoTokenizer, so the transformers minor is not in the hot path.
     "transformers>=5.0.0,<5.13",
     "tokenizers>=0.19.0",
     "huggingface-hub>=0.23.0",
     "numpy>=1.24.0",
-    # pillow is opt-in via [vision] extras — only the MLLM paths (mllm.py,
-    # benchmark.py image mode) touch PIL, and mlx-vlm requires it anyway.
+    # pillow is opt-in via [vision] extras — only MLLM paths touch PIL; mlx-vlm requires it.
     "tqdm>=4.66.0",
     "pyyaml>=6.0",
     "requests>=2.28.0",
@@ -88,81 +59,40 @@ dependencies = [
     "uvicorn>=0.23.0",
     "mcp>=1.0.0",
     "jsonschema>=4.0.0",
-    # argcomplete — shell tab completion for the `qmlx` CLI. Tiny
-    # pure-Python package (~50 KB) wired into argparse via the magic
-    # `# PYTHON_ARGCOMPLETE_OK` marker in cli.py and a per-arg
-    # `.completer = alias_completer` for model positionals. Required
-    # (not optional) so `qmlx chat gemma-4-<TAB>` works on every
-    # install without an extras step. Activation in the user's shell is
-    # one-time: `eval "$(register-python-argcomplete qmlx)"` in
-    # ~/.zshrc, or `activate-global-python-argcomplete` system-wide.
-    # The Homebrew formula handles activation automatically.
-    #
-    # >=3.6 is required: a recent Python 3.12 micro release added a 4th
-    # positional `intermixed` argument to argparse._parse_known_args.
-    # argcomplete <3.6 subclasses that hook with only 3 positional args,
-    # so the very first Tab raises TypeError mid-handshake and the shell
-    # silently shows nothing. 3.6.0 ships the variadic signature fix.
+    # argcomplete — shell tab completion for the `qmlx` CLI (PYTHON_ARGCOMPLETE_OK
+    # marker in cli.py); required so `qmlx chat <TAB>` works on every install.
+    # >=3.6: fixes TypeError from 3.12's 4th `intermixed` arg in argparse.
     "argcomplete>=3.6",
-    # openai-harmony — official harmony-protocol streaming parser. Used
-    # by ``HarmonyStreamingRouter`` (output_router_harmony.py) to route
-    # gpt-oss tool calls correctly (issue #513 / cluster #444 #455
-    # #468 #480). Same library vLLM and SGLang delegate to for gpt-oss
-    # tool calling. Soft-imported at runtime; the legacy custom state
-    # machine remains the fallback if the dep is unavailable.
+    # openai-harmony — official harmony-protocol streaming parser for
+    # HarmonyStreamingRouter (gpt-oss tool calls, #513 / cluster #444 #455
+    # #468 #480). Soft-imported; legacy state machine is the fallback.
     "openai-harmony>=0.0.8",
 ]
 
 [project.optional-dependencies]
-# Vision/multimodal models (Gemma 4, Qwen-VL, etc.) — adds ~322 MB
-# Required for any model with vision input. Text-only models work without this.
-# 0.5.0+ also unlocks DFlash speculative decoding (see [dflash] extras).
+# Vision/multimodal (Gemma 4, Qwen-VL) — adds ~322 MB; required for any model
+# with vision input. 0.6.3: DiffusionGemma (DLM #1347 + long-context prefill
+# #1348); 0.5.0 also unlocks DFlash speculative decoding.
 vision = [
-    "mlx-vlm>=0.6.3",  # 0.6.3: DiffusionGemma (Gemma 4 DLM PR #1347 + long-context prefill PR #1348). 0.6.1 floor: gemma4_unified architecture. 0.5.0 baseline: gemma4 multi-image + tool-parser fixes, continuous-batching guard. Also unlocks DFlash spec-decode hooks (see [dflash] extras).
+    "mlx-vlm>=0.6.3",  # 0.6.3: DiffusionGemma (#1347/#1348); 0.6.1: gemma4_unified; 0.5.0: gemma4 multi-image + tool-parser fixes, DFlash hooks.
     "torch>=2.3.0",
-    # vllm_mlx imports PIL directly on vision paths (mllm.py, benchmark.py
-    # image mode); mlx-vlm requires it too — listed for explicitness.
+    # PIL on vision paths (mllm.py, benchmark.py image mode); mlx-vlm requires it too.
     "pillow>=10.0.0",
 ]
-# DFlash speculative decoding for Qwen3.5/3.6 dense 8-bit models
-# (issue #264). Adds ~1-4 GB at runtime (drafter weights) and depends on
-# mlx-vlm's spec-decode runtime. Text-only — does NOT pull torch/cv2 like
-# the vision extras do. Only enable if you serve a DFlash-eligible alias
-# (e.g. qwen3.5-27b-8bit) with --speculative-config '{"method":"dflash"}'.
+# DFlash speculative decoding for Qwen3.5/3.6 dense 8-bit (#264) — adds ~1-4 GB
+# (drafter weights), depends on mlx-vlm's spec-decode runtime. Text-only (no
+# torch/cv2). Serve a DFlash-eligible alias with --speculative-config '{"method":"dflash"}'.
 dflash = [
     "mlx-vlm>=0.6.3",
 ]
-# MTP (Multi-Token Prediction) speculative decoding — Gemma 4 external
-# assistant path via ``--speculative-config '{"method":"mtp","model":"<path>"}'``.
-# assistant-drafter loader in
-# ``vllm_mlx/spec_decode/mtp/gemma4_inject.py`` transitively pulls
-# ``mlx_lm.utils`` → ``transformers`` which reaches for PIL when a
-# checkpoint contains an image-processor preprocessor_config.json (the
-# case for the assistant drafters we've dogfooded so far). Without PIL
-# on PYTHONPATH, boot fails with ``ModuleNotFoundError: No module named
-# 'PIL'`` at the ``dispatch_mtp_inject`` call site, BEFORE the eligibility
-# banner prints — misleading users into thinking their sidecar path is
-# wrong. Text-only; does NOT pull torch/cv2 like [vision].
-#
-# Codex round-I NIT (0.9.13 PR-A): do NOT re-pin ``mlx-vlm`` here.
-# The only place a Gemma 4 MTP boot touches ``mlx_vlm`` at all is
-# during target model construction in
-# ``vllm_mlx/models/gemma4_text.py``, which surfaces its own
-# actionable ImportError with a size-tiered install hint (16 MB vs
-# +450 MB). Duplicating that pin under ``[mtp]`` doubled the install
-# surface of a text-only sidecar path just to satisfy a transitive
-# PIL import that ``pillow`` already covers directly. Operators who
-# want Gemma 4 targets install ``qmlx-serve[mtp,vision]`` (or the
-# ``pip install --no-deps mlx-vlm>=0.6.1`` sliver flagged by
-# gemma4_text.py) — the ``[mtp]`` extra stays narrow to just the
-# MTP subsystem's own direct dependencies.
+# MTP (Multi-Token Prediction) spec decode — Gemma 4 assistant path via
+# --speculative-config '{"method":"mtp","model":"<path>"}'. pillow: the drafter
+# loader transitively reaches PIL; no mlx-vlm re-pin (gemma4_text.py has its own ImportError hint).
 mtp = [
     "pillow>=10.0.0",
 ]
-# HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py).
-# Off the hot path — only maintainers who seed models.rapidmlx.com need
-# this. Users NEVER install [mirror]; the client-side download path
-# (vllm_mlx/_mirror.py) uses stdlib urllib and does NOT depend on boto3.
+# HF → Cloudflare R2 mirror tooling (scripts/mirror_to_r2.py) — maintainers only;
+# users NEVER install [mirror] (client-side download uses stdlib urllib, no boto3).
 mirror = [
     "boto3>=1.34.0",
 ]
@@ -177,9 +107,8 @@ chat = [
     "gradio>=4.0.0",
     "pytz>=2024.1",
 ]
-# All extras — union of vision + chat.
-# Expanded directly to avoid a self-dependency that breaks
-# pip install .[all] and editable installs.
+# All extras — union of vision + chat, expanded directly to avoid a
+# self-dependency that breaks `pip install .[all]` and editable installs.
 all = [
     # vision
     "mlx-vlm>=0.6.3",
@@ -190,52 +119,27 @@ all = [
     "pytz>=2024.1",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
 ]
-# Test runtime — the *minimum* deps `pytest tests/` needs to import the
-# suite and collect every test without a plugin-missing error. Kept
-# narrow on purpose so:
-#   1. a CI job or contributor can install JUST this set when plugins
-#      are missing, without dragging in the linter/typer toolchain.
-#   2. Contributors who only want to run tests don't have to install the
-#      full dev toolbox.
-# The canonical source of truth: if pytest needs it to collect/run a
-# test, it goes here, not in `dev`.
-# Closes #185 — orchestrated test runs have
-# been crashing across multiple fix waves because pytest-asyncio
-# (required by `asyncio_mode = auto` in pytest.ini) keeps falling out
-# of the host Python after `pip install --no-deps --force-reinstall .`
-# in orchestrated runs. The systematic fix is to publish the test deps
-# as their own extras so orchestrated runs can re-install them from the
-# canonical source, instead of every script hand-maintaining a list.
+# Test runtime — the minimum deps `pytest tests/` needs to collect every test.
+# Kept narrow so CI/contributors can install just this set (not the dev toolbox).
+# Closes #185: orchestrated runs re-install test deps from this canonical source.
 test = [
     "pytest>=7.0.0",
-    # pytest-asyncio is REQUIRED — pytest.ini sets `asyncio_mode = auto`,
-    # which means every `async def test_*` is collected as an asyncio
-    # test. Without the plugin, those tests fail at collection with
-    # "async def functions are not natively supported".
+    # REQUIRED: pytest.ini sets asyncio_mode = auto; without the plugin, async tests fail at collection.
     "pytest-asyncio>=0.21.0",
-    # Parse the /metrics output through the official Prometheus parser
-    # to catch format regressions. NOT used at runtime — the route
-    # hand-rolls the exposition format to avoid a runtime dep.
+    # Parses /metrics in tests only — the route hand-rolls the exposition format (no runtime dep).
     "prometheus_client>=0.16.0",
-    # Parse pyproject.toml in the L-07 vision-extra lock-in tests
-    # (tests/test_vision_extra_install.py). ``tomllib`` is stdlib on
-    # Python ≥3.11; the environment marker pins ``tomli`` only on
-    # Python 3.10 so the L-07 suite always runs against the documented
-    # supported floor (codex round-2 BLOCKING — without this, CI on 3.10
-    # would module-skip the entire lock-in suite and let a future
-    # refactor silently drop the ``[vision]`` extra).
+    # L-07 vision-extra lock-in tests parse pyproject.toml; tomllib is stdlib on
+    # >=3.11, so tomli is pinned only on 3.10 (the supported floor).
     'tomli>=2.0.1; python_version < "3.11"',
-    # Full-unit imports / runs optional-surface tests too. Keep these in
-    # [test] so orchestrated runs can rebuild a venv that actually runs
-    # ``pytest tests/`` without hand-installed local extras.
+    # Optional-surface tests need these too, so orchestrated runs can rebuild a
+    # venv that runs `pytest tests/` without hand-installed local extras.
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
 ]
 dev = [
-    # Test runtime (must mirror the `test` extras above so a future
-    # drift can't silently break the "install dev, run pytest" workflow
-    # contributors have used since day one).
+    # Test runtime — must mirror the `test` extras so "install dev, run pytest"
+    # keeps working.
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "prometheus_client>=0.16.0",
@@ -243,10 +147,8 @@ dev = [
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
-    # Linters / typer — NOT in the `test` extras because running the
-    # tests doesn't need them; lint is its own CI step (ruff) and runs
+    # Linters — NOT in the `test` extras; lint is its own CI step (ruff) run
     # from the host environment.
-    "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
@@ -288,10 +190,6 @@ vllm_mlx = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["vllm_mlx*"]
-
-[tool.black]
-line-length = 88
-target-version = ["py310", "py311", "py312", "py313"]
 
 [tool.ruff]
 line-length = 88
