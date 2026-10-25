@@ -780,6 +780,7 @@ class EngineCore:
         videos: list[Any] | None = None,
         prefix_boundary: int = 0,
         has_tools: bool = False,
+        requires_prompt_integrity: bool = False,
         media_key: str = "",
         pixel_values: Any | None = None,
     ) -> str:
@@ -795,6 +796,9 @@ class EngineCore:
             prefix_boundary: Token count for shared prefix (for cache)
             has_tools: Whether the request includes tool definitions
                 (routed to the diffusion lane scheduler)
+                (used by PFlash to skip compression — #287)
+            requires_prompt_integrity: Whether lossy prompt transforms
+                (PFlash) must be skipped for this request
             media_key: Stable media-content key for image-aware KV cache
                 keying (issue #56). "" for text-only requests.
             pixel_values: Processed vision tensors for the request (issue
@@ -819,6 +823,7 @@ class EngineCore:
             videos=videos,
             prefix_boundary=prefix_boundary,
             has_tools=has_tools,
+            requires_prompt_integrity=requires_prompt_integrity,
             media_key=media_key or "",
             pixel_values=pixel_values,
         )

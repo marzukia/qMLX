@@ -103,13 +103,17 @@ def _check_admission_or_503(engine) -> None:
     Engines without a ``check_admission`` attribute (test stubs)
     silently no-op.
     """
-    from ..scheduler import BackpressureError
-
     check = getattr(engine, "check_admission", None)
     if check is None:
         # Engine doesn't implement admission control (e.g. test stub) —
         # fall through to the runtime catch in ``_wait_with_disconnect``.
+        # The ``scheduler`` import is deferred past this early return so
+        # engines without admission control (test stubs) never pull in
+        # ``scheduler`` — which imports ``mlx.core`` at module level — on
+        # non-Apple-Silicon platforms (e.g. Linux CI unit tests).
         return
+    from ..scheduler import BackpressureError
+
     try:
         check()
     except BackpressureError as exc:
@@ -3807,7 +3811,16 @@ async def _wait_with_disconnect(
     """
     import time as _time
 
-    from ..scheduler import BackpressureError
+    try:
+        from ..scheduler import BackpressureError
+    except ImportError:
+        # ``scheduler`` imports ``mlx.core`` at module level; on
+        # non-Apple-Silicon platforms (e.g. Linux CI) it's unavailable.
+        # ``BackpressureError`` is only raised by real engines with
+        # admission control, so a never-raised placeholder keeps the
+        # ``except`` clause below safe without pulling in ``mlx``.
+        class BackpressureError(Exception):  # type: ignore[no-redef]
+            pass
 
     _t0 = _time.monotonic()
 

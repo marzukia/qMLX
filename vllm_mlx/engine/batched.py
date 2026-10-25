@@ -1029,18 +1029,25 @@ class BatchedEngine(BaseEngine):
         logger.info(f"BatchedEngine loaded: {self._model_name} (mllm={self._is_mllm})")
 
     async def _start_mllm(self) -> None:
-        """MLLM (vision) serving was removed in the Qwen-only build.
+        """MLLM (vision) serving in the Qwen-only build (issue #56).
 
-        Only reachable when the operator explicitly passed ``--mllm``:
-        auto-detected multimodal models fall back to the text path in
-        :meth:`start` instead of raising. Kept as a stub so the dispatch
-        in ``start()`` stays structurally intact.
+        The mlx_vlm-based MLLM scheduler was removed in the Qwen-only
+        simplification (#20). Vision-capable models are served through
+        the LLM engine path instead: the model loads via ``mlx_lm``
+        (vision-capable MLX builds carry the vision tower in-repo — see
+        ``scripts/tmax_merge_vision.py``) and the issue #56 image-aware
+        KV wiring (``media_key`` + ``pixel_values`` + chunked-prefill
+        vision kwargs) handles the vision forward. ``is_mllm`` stays
+        True so the chat route keeps accepting image/video content
+        blocks (``allow_image=engine.is_mllm``).
         """
-        raise RuntimeError(
-            "MLLM/vision serving is not available in this text-only "
-            "build. Drop --mllm to serve this model as text-only, or "
-            "use a vision-capable build for image input."
+        logger.info(
+            f"MLLM model detected ({self._model_name}) — serving via the "
+            "LLM engine path (mlx_vlm MLLM scheduler removed in the "
+            "Qwen-only build; vision forward via issue #56 image-aware "
+            "KV wiring)"
         )
+        await self._start_llm()
 
     async def _start_llm(self) -> None:
         """Start the LLM engine with AsyncEngineCore."""
@@ -1496,6 +1503,7 @@ class BatchedEngine(BaseEngine):
         # chat()/stream_chat() set ``has_tools`` from the request's tool
         # spec; raw-prompt callers default to False.
         has_tools = bool(kwargs.pop("has_tools", False))
+        requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
         # Forced-tool-call prefix injected by ``chat()`` when the OpenAI
         # ``tool_choice`` is a forced function; the engine generates only
         # the continuation, so we prepend the prefix to the response text
@@ -1506,6 +1514,7 @@ class BatchedEngine(BaseEngine):
             sampling_params=sampling_params,
             prefix_boundary=prefix_boundary,
             has_tools=has_tools,
+            requires_prompt_integrity=requires_prompt_integrity,
             # Issue #56: image-aware KV keying — the stable media-content
             # key rides on the Request so disk KV checkpoints mix it into
             # the prompt-prefix key (a changed image never reuses stale KV).
@@ -1693,11 +1702,13 @@ class BatchedEngine(BaseEngine):
 
         prefix_boundary = kwargs.pop("prefix_boundary", 0)
         has_tools = bool(kwargs.pop("has_tools", False))
+        requires_prompt_integrity = bool(kwargs.pop("requires_prompt_integrity", False))
         request_id = await self._engine.add_request(
             prompt=prompt,
             sampling_params=sampling_params,
             prefix_boundary=prefix_boundary,
             has_tools=has_tools,
+            requires_prompt_integrity=requires_prompt_integrity,
             # Issue #56: same media-key forwarding as generate() — the
             # streaming path must key checkpoints identically or a
             # streamed turn 1 and a non-streamed turn 2 would diverge.

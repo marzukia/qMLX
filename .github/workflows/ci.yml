@@ -120,6 +120,10 @@ jobs:
             tests/test_local_model.py \
             tests/test_doctor.py \
             tests/test_pull_local.py \
+            tests/test_media_digest.py \
+            tests/test_tmax_merge_vision.py \
+            tests/test_text_only_media_gate.py \
+            tests/test_image_block_requires_vision_model.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
@@ -174,6 +178,9 @@ jobs:
             tests/test_tool_logits.py \
             tests/test_conformance.py \
             tests/test_diffusion_engine.py \
+            tests/test_vision_kv_e2e_wiring.py \
+            tests/test_image_aware_cache_keys.py \
+            tests/test_disk_kv_checkpoint.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"
