@@ -14,10 +14,16 @@ import platform
 import sys
 import time
 
-# Skip if not on Apple Silicon
+# Skip if not on Apple Silicon. As a script (``python tests/...``) exit
+# cleanly; under pytest a module-level ``sys.exit(0)`` is a collection
+# error (SystemExit) so skip instead (Linux CI / dev machines).
 if sys.platform != "darwin" or platform.machine() != "arm64":
-    print("This test requires Apple Silicon")
-    sys.exit(0)
+    if __name__ == "__main__":
+        print("This test requires Apple Silicon")
+        sys.exit(0)
+    import pytest
+
+    pytest.skip("This test requires Apple Silicon", allow_module_level=True)
 
 
 async def run_concurrent_inference():
