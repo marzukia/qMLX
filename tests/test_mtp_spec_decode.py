@@ -1792,3 +1792,501 @@ def test_generator_records_counter_on_accept_and_reject():
     assert snap.accepts == 2, f"expected 2 accepts; got {snap}"
     assert snap.tokens_saved == 2
     assert snap.accept_ratio == pytest.approx(2 / 3)
+
+
+# ----------------------------------------------------------------------
+# Issue #53: d=3 (K=3) spec decode through tape rollback.
+#
+# The K=1 tests above pin ``disable_auto_k=True``. The K=3 tests below
+# use the ``fixed_k`` gate-harness knob (added in this change) to run
+# the full chain-of-K draft + batched ``(K+1)``-position verify +
+# sequential accept walk at depth 3, and to exercise the seeded-temp
+# contract (``seed`` reaching every PRNG draw inside the generator).
+# ----------------------------------------------------------------------
+
+
+def test_generator_k3_fixed_all_accept_single_round():
+    """``fixed_k=3`` at temp=0: all three drafts accepted in one verify
+    round — one backbone forward (S=4) yields main + 3 accepted drafts
+    + bonus.
+
+    Sequence:
+
+      K=0 bootstrap: backbone S=1 → 7 (primary, from_draft=False)
+      MTP chain K=3 (3 x S=1 calls) → drafts 11, 12, 13
+      verify: backbone S=4 → [11, 12, 13, 14]
+        toks[0..2] == drafts → all accept; bonus = toks[3] = 14
+
+    Yields: (7,F), (11,T), (12,T), (13,T), (14,F).
+    Counter: 3 attempts, 3 accepts, 3 tokens saved.
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model = _MockedQwen35Model(
+        backbone_outputs=[7, 11, 12, 13, 14],
+        mtp_outputs=[11, 12, 13],
+    )
+    counter = MTPAcceptCounter()
+    prompt = mx.array([1], dtype=mx.uint32)
+    emitted = []
+    for tok, _lp, from_draft in mtp_generate_step(
+        prompt,
+        model,
+        max_tokens=5,
+        temp=0.0,
+        accept_counter=counter,
+        max_k=3,
+        fixed_k=3,
+    ):
+        emitted.append((tok, from_draft))
+
+    assert emitted == [(7, False), (11, True), (12, True), (13, True), (14, False)], (
+        f"K=3 all-accept stream wrong: {emitted}"
+    )
+    snap = counter.snapshot()
+    assert snap.attempts == 3
+    assert snap.accepts == 3
+    assert snap.tokens_saved == 3
+
+
+def test_generator_k3_fixed_all_accept_cache_commit_carryover():
+    """Two consecutive all-accept K=3 rounds: the chain-carry
+    ``cache_commit`` (S=2 mtp_forward) after round 1 must seed round 2's
+    chain correctly.
+
+    Round 1: main=7; chain (3 x S=1) → drafts 11,12,13; verify S=4
+    → [11,12,13,14] all accept + bonus 14.
+    Round 2: cache_commit (S=2: sentinel + draft21) then 2 x S=1
+    (drafts 22, 23); verify S=4 → [21,22,23,24] all accept + bonus 24.
+
+    Yields: 7,F 11,T 12,T 13,T 14,F 21,T 22,T 23,T 24,F.
+    MTP slot consumption: 3 (round-1 chain) + 4 (round-2 chain incl.
+    the S=2 commit) = 7 cursor advance.
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model = _MockedQwen35Model(
+        backbone_outputs=[7, 11, 12, 13, 14, 21, 22, 23, 24],
+        mtp_outputs=[11, 12, 13, 99, 21, 22, 23],
+    )
+    counter = MTPAcceptCounter()
+    prompt = mx.array([1], dtype=mx.uint32)
+    emitted = []
+    for tok, _lp, from_draft in mtp_generate_step(
+        prompt,
+        model,
+        max_tokens=9,
+        temp=0.0,
+        accept_counter=counter,
+        max_k=3,
+        fixed_k=3,
+    ):
+        emitted.append((tok, from_draft))
+
+    assert emitted == [
+        (7, False),
+        (11, True),
+        (12, True),
+        (13, True),
+        (14, False),
+        (21, True),
+        (22, True),
+        (23, True),
+        (24, False),
+    ], f"K=3 two-round all-accept stream wrong: {emitted}"
+    # The S=2 cache_commit call must have consumed two mtp slots
+    # (sentinel 99 + draft 21) — i.e. the carryover path ran.
+    assert model._mtp_cursor == 7, (
+        f"expected 7 mtp slots consumed (3 + 2 + 2), got "
+        f"{model._mtp_cursor} — cache_commit carryover missing?"
+    )
+    snap = counter.snapshot()
+    assert snap.attempts == 6
+    assert snap.accepts == 6
+    assert snap.tokens_saved == 6
+
+
+@pytest.mark.parametrize("accepted_count", [0, 1, 2])
+def test_generator_k3_fixed_reject_matrix(accepted_count):
+    """K=3 verify with the first ``accepted_count`` drafts matching and
+    the next one diverging: the generator must emit the accepted
+    drafts, then the backbone's residual at the reject position, then
+    stop (max_tokens sized to end right there).
+
+    n_to_drop = 3 - accepted_count drafts are rolled back from the
+    caches (no-op on the mock's empty cache list — the stream and
+    counter are the observable contract).
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    drafts = [11, 12, 13]
+    backbone = (
+        [7] + [drafts[i] if i < accepted_count else 20 for i in range(3)] + [99]
+    )  # bonus slot (unused on reject)
+    model = _MockedQwen35Model(backbone_outputs=backbone, mtp_outputs=drafts)
+    counter = MTPAcceptCounter()
+    prompt = mx.array([1], dtype=mx.uint32)
+    emitted = []
+    for tok, _lp, from_draft in mtp_generate_step(
+        prompt,
+        model,
+        max_tokens=2 + accepted_count,
+        temp=0.0,
+        accept_counter=counter,
+        max_k=3,
+        fixed_k=3,
+    ):
+        emitted.append((tok, from_draft))
+
+    expected = [(7, False)]
+    expected.extend((d, True) for d in drafts[:accepted_count])
+    expected.append((20, False))
+    assert emitted == expected, (
+        f"accepted_count={accepted_count}: expected {expected}, got {emitted}"
+    )
+    snap = counter.snapshot()
+    assert snap.attempts == 3, f"attempts must count all K positions: {snap}"
+    assert snap.accepts == accepted_count
+    assert snap.tokens_saved == accepted_count
+
+
+@pytest.mark.parametrize(
+    "fixed_k, max_k, match",
+    [
+        (4, 3, "must lie in"),
+        (-1, 3, "must lie in"),
+    ],
+)
+def test_generator_fixed_k_validation(fixed_k, max_k, match):
+    """``fixed_k`` outside ``[0, max_k]`` fails fast at construction."""
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model = _MockedQwen35Model(backbone_outputs=[7], mtp_outputs=[])
+    with pytest.raises(ValueError, match=match):
+        list(
+            mtp_generate_step(
+                mx.array([1], dtype=mx.uint32),
+                model,
+                max_tokens=2,
+                temp=0.0,
+                max_k=max_k,
+                fixed_k=fixed_k,
+            )
+        )
+
+
+def test_generator_fixed_k_zero_parks_every_round():
+    """``fixed_k=0`` disables the drafter entirely: plain backbone
+    decode, every token ``from_draft=False``, zero mtp_forward calls.
+    This is the K=0 baseline the gate harness compares against."""
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model = _MockedQwen35Model(backbone_outputs=[7, 8, 9, 10], mtp_outputs=[11, 12, 13])
+    prompt = mx.array([1], dtype=mx.uint32)
+    emitted = []
+    for tok, _lp, from_draft in mtp_generate_step(
+        prompt,
+        model,
+        max_tokens=4,
+        temp=0.0,
+        max_k=3,
+        fixed_k=0,
+    ):
+        emitted.append((tok, from_draft))
+
+    assert emitted == [(7, False), (8, False), (9, False), (10, False)]
+    assert model._mtp_cursor == 0, "fixed_k=0 must never call the MTP head"
+
+
+class _SeededMockModel:
+    """Mock model with SOFT (biased) logits so temp>0 sampling is
+    genuinely stochastic.
+
+    Every scripted position is ``(favored_token, p_favored)``; logits
+    are built in probability scale (base ``(1-p)/(V-1)`` on every entry
+    plus a ``log(p)`` add on the favored entry), so the *softmaxed*
+    categorical picks ``favored_token`` with probability
+    ``p/(p+V-1)`` — ≈1.6% for p=0.5, V=32 — NOT ``p`` itself, and
+    spreads the remaining mass exactly uniformly (``1/(p+V-1)`` each)
+    over the other ``V-1`` vocab entries. The deliberately soft
+    probability gives the seeded key stream real distributional work:
+    same seed ⇒ same draws ⇒ same stream; different seed ⇒
+    (almost surely) different stream.
+    """
+
+    def __init__(self, backbone_outputs, mtp_outputs, vocab=32, hidden_size=8):
+        self._backbone = list(backbone_outputs)
+        self._mtp = list(mtp_outputs)
+        self._backbone_cursor = 0
+        self._mtp_cursor = 0
+        self.vocab = vocab
+        self.hidden_size = hidden_size
+        self.layers = []
+
+    def _soft_logits(self, entries, batch):
+        V = self.vocab
+        rows = []
+        for tid, p in entries:
+            row = mx.full((V,), float((1.0 - p) / (V - 1))).astype(mx.float32)
+            row = row.at[tid].add(mx.log(float(p)))
+            rows.append(row[None, :])
+        return mx.stack(rows, axis=1)  # (B, S, V) with B=1
+
+    def _consume(self, script, cursor, n):
+        out = []
+        for _ in range(n):
+            if cursor < len(script):
+                out.append(script[cursor])
+            else:
+                out.append((0, 0.5))
+        return out
+
+    def __call__(
+        self,
+        inputs,
+        cache=None,
+        input_embeddings=None,
+        return_hidden: bool = False,
+        n_confirmed: int = 0,
+    ):
+        B, S = inputs.shape
+        entries = self._consume(self._backbone, self._backbone_cursor, S)
+        self._backbone_cursor += S
+        logits = self._soft_logits(entries, B)
+        hidden = mx.zeros((B, S, self.hidden_size))
+        if return_hidden:
+            return logits, hidden
+        return logits
+
+    def mtp_forward(self, hidden, next_token_ids, mtp_cache):
+        B = next_token_ids.shape[0]
+        S = next_token_ids.shape[1]
+        entries = self._consume(self._mtp, self._mtp_cursor, S)
+        self._mtp_cursor += S
+        return self._soft_logits(entries, B)
+
+    def make_mtp_cache(self):
+        return []
+
+
+def _k3_seeded_stream(seed, max_tokens=8, temp=1.0):
+    """Run a fixed_k=3 temp>0 stream with the given seed and return the
+    flat (tok, from_draft) emission list."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    # Backbone positions 1..8: favor tokens 21..28 at p=0.5.
+    # MTP positions: favor tokens 31..36 at p=0.9 (disjoint from the
+    # backbone favorites so the verify accept walk sees a real
+    # p_target(draft) << p_draft(draft) mismatch — acceptance becomes
+    # a genuine function of the shared u draw).
+    backbone = [(0, 0.5)] + [(t, 0.5) for t in range(21, 29)]
+    mtp = [(t, 0.9) for t in range(31, 38)]
+    model = _SeededMockModel(backbone, mtp)
+    counter = MTPAcceptCounter()
+    prompt = mx.array([1], dtype=mx.uint32)
+    return [
+        (int(tok), from_draft)
+        for tok, _lp, from_draft in mtp_generate_step(
+            prompt,
+            model,
+            max_tokens=max_tokens,
+            temp=temp,
+            accept_counter=counter,
+            max_k=3,
+            fixed_k=3,
+            seed=seed,
+        )
+    ]
+
+
+def test_generator_k3_seeded_temp_determinism():
+    """Issue #53 seeded-temp contract: at temp>0 the same seed must
+    reproduce the exact same token stream across two independent
+    generator instances (same key stream), while a different seed
+    produces a different stream (the seed genuinely reaches every
+    PRNG draw)."""
+    s1 = _k3_seeded_stream(42)
+    s2 = _k3_seeded_stream(42)
+    assert s1, "seeded stream empty — generator produced no tokens"
+    assert s1 == s2, (
+        f"same seed must give identical streams:\nfirst:  {s1}\nsecond: {s2}"
+    )
+    s3 = _k3_seeded_stream(7)
+    assert s3 != s1, (
+        f"different seed should (almost surely) diverge, but got the "
+        f"identical stream {s1} — the seed is not reaching the draws"
+    )
+
+
+def test_generator_k3_unseeded_temp_runs():
+    """``seed=None`` at temp>0 still runs (global-PRNG path, unchanged
+    behavior) and interleaving an unseeded run between two seeded runs
+    must not disturb the seeded key stream — key-based draws are
+    independent of ``mx.random.state``."""
+    s1 = _k3_seeded_stream(42)
+    s2 = _k3_seeded_stream(None)  # unseeded, consumes global state
+    assert s2, "unseeded stream empty"
+    s3 = _k3_seeded_stream(42)
+    assert s3 == s1, (
+        f"unseeded run between two seeded runs changed the seeded "
+        f"stream: before {s1} after {s3}"
+    )
+
+
+def test_generator_seeded_key_stream_chains_across_blocks():
+    """t208 MINOR-1: the seeded key stream must not be period-64.
+
+    The original stream re-split the SAME base key on every refill,
+    so draws repeated k1..k64, k1..k64, ... — at K=3 a 96–256 token
+    stream makes ~150–300 draws, so PRNG values at a given chain
+    position recurred every ~10 rounds. Cross 220 draws (3+ refill
+    blocks) and pin:
+
+    (a) same seed ⇒ identical stream across the 64-draw block
+        boundaries,
+    (b) draws at position i and i+64 differ — the period is broken,
+    (c) cross-seed divergence still holds.
+
+    The existing seeded tests (≤20 tokens ≈ <64 draws) stay inside one
+    block and cannot catch a period-64 stream.
+    """
+    from vllm_mlx.spec_decode.mtp.generator import _make_seeded_key_stream
+
+    def draws(seed: int, n: int) -> list[list[int]]:
+        stream = _make_seeded_key_stream(seed)
+        # Keys are uint32 arrays (shape (2,) on this mlx build) —
+        # compare via tolist(), not .item().
+        return [stream().tolist() for _ in range(n)]
+
+    a = draws(42, 220)
+    b = draws(42, 220)
+    assert a == b, (
+        "same seed must give the identical stream across the 64-draw block boundaries"
+    )
+    for i in range(len(a) - 64):
+        assert a[i] != a[i + 64], (
+            f"draw at position {i} equals draw at {i + 64} — the key "
+            "stream is still period-64 (refill must split the last "
+            "consumed subkey, not the base key)"
+        )
+    c = draws(7, 220)
+    assert c != a, "different seeds must give different streams (cross-seed divergence)"
+
+
+def test_generator_k3_seeded_temp_seed_zero_is_valid():
+    """t208 NIT-2: seed=0 is a valid distinct seed, not falsy — the
+    scheduler forwards it (``getattr`` + ``is not None``, never an
+    ``or``-style check) and the generator folds it into the base key,
+    so the seed=0 stream must be deterministic and differ from BOTH
+    the seed=None (unseeded, global-PRNG) path and the seed=1 stream.
+    Closes the H-11 footgun family at the MTP boundary."""
+    s0 = _k3_seeded_stream(0)
+    assert s0, "seed=0 stream empty — generator produced no tokens"
+    s0b = _k3_seeded_stream(0)
+    assert s0 == s0b, (
+        "seed=0 must be reproducible across runs (deterministic key "
+        f"stream):\nfirst:  {s0}\nsecond: {s0b}"
+    )
+    assert s0 != _k3_seeded_stream(1), (
+        f"seed=0 stream equals seed=1 stream {s0} — the seed is not reaching the draws"
+    )
+    assert s0 != _k3_seeded_stream(None), (
+        "seed=0 stream equals the unseeded (seed=None) path — seed=0 "
+        "was dropped by a falsy check"
+    )
+
+
+# ----------------------------------------------------------------------
+# Issue #58: MTP seeded contract — key the XTC draws at verify
+# positions i > 0.
+#
+# #55 wired the per-request key stream for the position-0 XTC draws
+# (draft step + shared verify position 0). The verify positions i > 0
+# kept the legacy path — ``draw=None`` → upstream ``apply_xtc`` → a
+# fresh ``mx.random.uniform(0, 1)`` from the process-global PRNG — so
+# two same-seed runs could diverge (the XTC accept/reject at i > 0
+# flipped with the global draw). This issue keys those draws to the
+# same per-request stream; ``seed=None`` stays bit-for-bit
+# pre-change (``draw=None`` → the upstream global-draw path).
+# ----------------------------------------------------------------------
+
+
+def _k3_xtc_seeded_stream(seed, max_tokens=8, temp=0.7):
+    """Run a fixed_k=3 temp>0 XTC stream with the given seed and
+    return the flat (tok, from_draft) emission list.
+
+    Issue #58 verify parameters: temp=0.7, xtc_probability=0.5,
+    max_k=3, fixed_k=3 (seed=42 in the determinism test). The
+    ``xtc_probability=0.5`` gate fires on half the draws, so the
+    XTC accept/reject at every verify position (i > 0 included) is
+    a genuine function of the draw.
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    # Same soft-logit layout as ``_k3_seeded_stream`` — disjoint
+    # backbone / MTP favorites so the verify accept walk sees a real
+    # p_target(draft) << p_draft(draft) mismatch.
+    backbone = [(0, 0.5)] + [(t, 0.5) for t in range(21, 29)]
+    mtp = [(t, 0.9) for t in range(31, 38)]
+    model = _SeededMockModel(backbone, mtp)
+    counter = MTPAcceptCounter()
+    prompt = mx.array([1], dtype=mx.uint32)
+    return [
+        (int(tok), from_draft)
+        for tok, _lp, from_draft in mtp_generate_step(
+            prompt,
+            model,
+            max_tokens=max_tokens,
+            temp=temp,
+            accept_counter=counter,
+            max_k=3,
+            fixed_k=3,
+            seed=seed,
+            xtc_probability=0.5,
+        )
+    ]
+
+
+def test_generator_k3_xtc_seeded_temp_determinism():
+    """Issue #58 repro: with seed + temp>0 + xtc_probability>0, two
+    ``mtp_generate_step`` runs with the same seed must produce a
+    byte-identical token stream — including the XTC accept/reject
+    at verify positions i > 0, which pre-fix drew from the
+    process-global PRNG. A different seed must (almost surely)
+    diverge, proving the seed reaches the i > 0 XTC draws."""
+    s1 = _k3_xtc_seeded_stream(42)
+    s2 = _k3_xtc_seeded_stream(42)
+    assert s1, "seeded XTC stream empty — generator produced no tokens"
+    assert s1 == s2, (
+        f"same seed must give identical streams (issue #58 repro):\n"
+        f"first:  {s1}\nsecond: {s2}"
+    )
+    s3 = _k3_xtc_seeded_stream(7)
+    assert s3 != s1, (
+        f"different seed should (almost surely) diverge, but got the "
+        f"identical stream {s1} — the seed is not reaching the i>0 "
+        "XTC draws"
+    )
+
+
+def test_generator_k3_xtc_seeded_draws_do_not_touch_global_state():
+    """The i > 0 XTC draws must come from the per-request key stream,
+    not the global PRNG: interleaving an unseeded XTC run (which
+    consumes global state — its i > 0 draws go through upstream
+    ``apply_xtc``'s ``mx.random.uniform``) between two seeded runs
+    must not disturb the seeded stream. Pre-fix, the second seeded
+    run read the advanced global state at i > 0 and diverged."""
+    s1 = _k3_xtc_seeded_stream(42)
+    s2 = _k3_xtc_seeded_stream(None)  # unseeded, consumes global state
+    assert s2, "unseeded XTC stream empty"
+    s3 = _k3_xtc_seeded_stream(42)
+    assert s3 == s1, (
+        f"unseeded run between two seeded runs changed the seeded "
+        f"stream: before {s1} after {s3} — the i>0 XTC draws still "
+        "touch the global PRNG"
+    )

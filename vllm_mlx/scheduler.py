@@ -1791,6 +1791,11 @@ def _install_mtp_vendored(
                 _mtp_top_p = getattr(_mtp_sp, "top_p", 0.0) or 0.0
                 _mtp_top_k = getattr(_mtp_sp, "top_k", 0) or 0
                 _mtp_min_p = getattr(_mtp_sp, "min_p", 0.0) or 0.0
+                # Issue #53: the OpenAI ``seed`` parameter must reach the
+                # MTP hot loop (it previously only wired into the plain
+                # decode sampler via H-11). No ``or`` here — seed=0 is
+                # a valid, distinct seed.
+                _mtp_seed = getattr(_mtp_sp, "seed", None)
 
                 gen = mtp_generate_step(
                     prompt=first_tok_arr.astype(mx.uint32),
@@ -1805,6 +1810,7 @@ def _install_mtp_vendored(
                     model_id=controller_key or f"mtp-model-{id(mtp_model)}",
                     max_k=max_k,
                     disable_auto_k=disable_auto_k,
+                    seed=_mtp_seed,
                     # 0.9.13 PR-C: EOS holdout — feed the
                     # BatchGenerator's assembled stop set to the
                     # controller so positions past EOS are not

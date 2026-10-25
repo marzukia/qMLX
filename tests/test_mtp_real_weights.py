@@ -303,3 +303,98 @@ def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens)
             f"baseline {base_tokens} vs mtp {mtp_tokens}. "
             f"Accept rate this run: {counter.snapshot()}."
         )
+
+
+def test_mtp_k3_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens):
+    """Issue #53 d=3 gate: at temp=0, K=3 (``fixed_k=3, max_k=3``) MTP
+    spec decode must be byte-equal to non-spec decode on the real
+    Qwen3.5-9B-4bit hybrid target.
+
+    Unlike the default K=1 run above, this exercises the full
+    chain-of-3 draft + batched 4-position verify + tape rollback on
+    the real GatedDeltaNet layers — the path whose correctness is the
+    point of this change. Any SSM-state mis-restoration on a rejected
+    draft shows up as a token divergence against the pristine
+    baseline.
+    """
+    import mlx.core as _mx
+
+    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model, tokenizer = loaded_model
+    inner = model.language_model
+
+    for prompt in _BASELINE_PROMPTS:
+        base_tokens = baseline_tokens[prompt]
+
+        counter = MTPAcceptCounter()
+        prompt_ids = _mx.array(tokenizer.encode(prompt), _mx.uint32)
+        mtp_tokens: list[int] = []
+        for tok, _, _ in mtp_generate_step(
+            prompt_ids,
+            inner,
+            max_tokens=_BASELINE_N_TOKENS,
+            temp=0.0,
+            accept_counter=counter,
+            max_k=3,
+            fixed_k=3,
+        ):
+            mtp_tokens.append(int(tok))
+            if len(mtp_tokens) >= _BASELINE_N_TOKENS:
+                break
+
+        assert mtp_tokens == base_tokens, (
+            f"K=3 MTP-vs-baseline divergence on prompt {prompt[:40]!r}: "
+            f"baseline {base_tokens} vs mtp {mtp_tokens}. "
+            f"Accept stats this run: {counter.snapshot()}."
+        )
+
+
+def test_mtp_k3_seeded_temp_determinism(loaded_model):
+    """Issue #53 seeded-temp contract on real weights: two K=3
+    temp>0 runs with the same seed must produce byte-identical token
+    streams (the seed reaches every PRNG draw inside the generator),
+    while a different seed produces a different stream."""
+    import mlx.core as _mx
+
+    from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model, tokenizer = loaded_model
+    inner = model.language_model
+    prompt = "Explain how a Bloom filter works."
+    prompt_ids = _mx.array(tokenizer.encode(prompt), _mx.uint32)
+
+    def run(seed):
+        counter = MTPAcceptCounter()
+        out: list[int] = []
+        for tok, _, _ in mtp_generate_step(
+            prompt_ids,
+            inner,
+            max_tokens=_BASELINE_N_TOKENS,
+            temp=0.7,
+            top_p=0.9,
+            accept_counter=counter,
+            max_k=3,
+            fixed_k=3,
+            seed=seed,
+        ):
+            out.append(int(tok))
+            if len(out) >= _BASELINE_N_TOKENS:
+                break
+        return out
+
+    a = run(42)
+    b = run(42)
+    c = run(7)
+    assert a, "seeded K=3 run produced no tokens"
+    assert a == b, (
+        f"same seed must reproduce the K=3 temp>0 stream byte-identically:\n"
+        f"run1: {a}\nrun2: {b}"
+    )
+    assert c != a, (
+        f"different seed should (almost surely) diverge from seed=42, "
+        f"but got the identical stream {a} — the seed is not reaching "
+        f"the MTP PRNG draws"
+    )
