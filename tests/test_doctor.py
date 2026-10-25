@@ -159,7 +159,10 @@ def test_backend_apple_silicon_ok(healthy_env: None):
     )
 
 
-def test_backend_intel_mac_warns(monkeypatch: pytest.MonkeyPatch):
+def test_backend_intel_mac_warns(healthy_env: None, monkeypatch: pytest.MonkeyPatch):
+    # healthy_env stubs the package/disk probes (the CI matrix unit job
+    # has no MLX stack, so the real pkg_version would FAIL); only the
+    # backend probe is the target of this test.
     monkeypatch.setattr(doctor, "platform_info", lambda: ("Darwin", "x86_64"))
     report = run_checks()
     assert (
@@ -298,7 +301,9 @@ def test_disk_nearly_full_fails(monkeypatch: pytest.MonkeyPatch):
     assert report.exit_code == 1
 
 
-def test_disk_small_warns(monkeypatch: pytest.MonkeyPatch):
+def test_disk_small_warns(healthy_env: None, monkeypatch: pytest.MonkeyPatch):
+    # healthy_env stubs the package/platform probes (the CI matrix unit
+    # job has no MLX stack); only the disk probe is the target here.
     monkeypatch.setattr(doctor, "disk_free_bytes", lambda path: 5 * 1024**3)
     report = run_checks()
     assert _status_by_label(report, "Disk", "KV checkpoint volume") is CheckStatus.WARN
@@ -331,7 +336,10 @@ def test_exit_code_contract(healthy_env: None):
     assert run_checks().exit_code == 0
 
 
-def test_warnings_never_fail_exit(monkeypatch: pytest.MonkeyPatch):
+def test_warnings_never_fail_exit(healthy_env: None, monkeypatch: pytest.MonkeyPatch):
+    # healthy_env stubs the package/disk probes so this test controls
+    # every check: with the platform override, exactly two checks warn
+    # (backend + unspecified model) and none fail — exit must be 0.
     monkeypatch.setattr(doctor, "platform_info", lambda: ("Linux", "x86_64"))
     report = run_checks()
     assert report.n_warn >= 1
