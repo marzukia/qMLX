@@ -246,12 +246,12 @@ def mtp_generate_step(
     # cannot cross-contaminate each other. Two runs with the same
     # ``(seed, temp, top_p, top_k, min_p, xtc_*, max_k, fixed_k, model,
     # prompt)`` produce identical token streams for ``temp == 0`` and
-    # for ``temp > 0`` with ``xtc_probability == 0`` (the default — XTC
-    # is skipped entirely); with ``temp > 0`` and ``xtc_probability
-    # > 0``, the verify positions i > 0 keep the legacy XTC path, whose
-    # accept-decision draw goes through upstream ``apply_xtc`` and the
-    # global ``mx.random`` state, so same-seed runs may diverge there —
-    # a follow-up issue keys those draws.
+    # for ``temp > 0`` (including ``xtc_probability > 0`` — issue #58
+    # keys every fresh XTC draw — the verify positions i > 0 and the
+    # park/bootstrap round's position 0 — to the same per-request
+    # stream as the draft step's position-0 draw, so no XTC draw
+    # touches the global PRNG when ``seed`` is set; unseeded runs
+    # keep the legacy global-draw path bit-for-bit).
     # Greedy (``temp == 0``) performs no sampling draws — the shared
     # accept uniform is still drawn from the key stream every verify
     # round (the stream advances) but is never read; the seed is
@@ -496,8 +496,22 @@ def mtp_generate_step(
                         if prev is not None
                         else yy[i : i + 1]
                     )
-                # Shared XTC draw only for position 0 (verify position).
-                draw = xtc_draw if i == 0 else None
+                # Shared XTC draw from the draft step (verify
+                # position 0). Every other position — the verify
+                # positions i > 0 and the park/bootstrap round's
+                # position 0 — gets a fresh draw: from the
+                # per-request key stream when seeded (issue #58,
+                # matching the position-0 path in ``_step_mtp``) so
+                # same-seed runs stay byte-identical; unseeded runs
+                # keep the legacy path (``draw=None`` → upstream
+                # ``apply_xtc``'s fresh global ``mx.random.uniform()
+                # ``), bit-for-bit.
+                if i == 0 and xtc_draw is not None:
+                    draw = xtc_draw
+                elif _xtc_cell is not None and _next_key is not None:
+                    draw = mx.random.uniform(key=_next_key())
+                else:
+                    draw = None
                 tok, lp, alp = _process_and_sample(
                     prev, logits[:, i, :].squeeze(0), draw
                 )
