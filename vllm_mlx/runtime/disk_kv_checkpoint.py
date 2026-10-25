@@ -1351,6 +1351,10 @@ def write_checkpoint(
                     req_hash=req_hash,
                     token_offset=token_offset,
                     save_uuid=save_uuid,
+                    # Issue #56: rebuild the media bucket from the same
+                    # sidecar field the scheduler stamps on the write, so a
+                    # restart re-indexes into the identical bucket.
+                    media_key=str((extra_metadata or {}).get("media_key") or ""),
                 )
             except Exception as e:  # pragma: no cover — index is best-effort
                 logger.debug(f"[disk_kv_checkpoint] content-index hand-off failed: {e}")
@@ -2102,7 +2106,15 @@ class DiskCheckpointIndex:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._by_key: dict[tuple[int, ...], _CheckpointRef] = {}
+        # Issue #56 (image-aware keying): nested as
+        # ``token tuple -> media key -> ref``. The outer key stays the token
+        # sequence so the prefix scan in :meth:`lookup` keeps its exact
+        # pre-#56 shape and cost; the inner dict lets two checkpoints that
+        # share a token sequence but carry DIFFERENT image content coexist
+        # without clobbering each other. Media key ``""`` is the text-only
+        # (pre-#56) bucket: text prompts never match image checkpoints and
+        # vice versa, so a changed image can never reuse a stale image KV.
+        self._by_key: dict[tuple[int, ...], dict[str, _CheckpointRef]] = {}
 
     # ------------------------------------------------------------------ #
     # Population                                                         #
@@ -2116,6 +2128,7 @@ class DiskCheckpointIndex:
         req_hash: str,
         token_offset: int,
         save_uuid: str | None = None,
+        media_key: str = "",
     ) -> bool:
         """Register one freshly-written checkpoint. In-memory only.
 
@@ -2125,6 +2138,12 @@ class DiskCheckpointIndex:
         trusted as a prefix, so we skip it rather than index an unverifiable
         entry. Newest write for a given key wins (a re-run of the same prefix
         points at the most recent, still-present file).
+
+        ``media_key`` (issue #56) is the stable media-content key for
+        multimodal prompts (``""`` for text-only). Two checkpoints with the
+        same token sequence but different media land in different inner
+        buckets, so the later write only shadows the earlier one when the
+        media matches too.
 
         Returns True when the entry was indexed, False when skipped.
         """
@@ -2146,7 +2165,7 @@ class DiskCheckpointIndex:
             save_uuid=save_uuid,
         )
         with self._lock:
-            self._by_key[key] = ref
+            self._by_key.setdefault(key, {})[media_key or ""] = ref
         return True
 
     def build_from_root(self, root: str) -> int:
@@ -2163,7 +2182,7 @@ class DiskCheckpointIndex:
         re-prefills).
         """
         # --- disk phase (index lock NOT held) ---
-        collected: list[tuple[tuple[int, ...], _CheckpointRef]] = []
+        collected: list[tuple[tuple[int, ...], str, _CheckpointRef]] = []
         for path, _mtime, _size in scan_checkpoints(root):
             parsed = _parse_checkpoint_path(path)
             if parsed is None:
@@ -2174,10 +2193,18 @@ class DiskCheckpointIndex:
                 continue
             if len(tokens) != token_offset:
                 continue
+            # Issue #56: rebuild the media-aware key from the sidecar so a
+            # restart re-adds image checkpoints to the SAME bucket they were
+            # written into. Pre-#56 sidecars carry no media_key -> "" (the
+            # text-only bucket), which is correct: those checkpoints are
+            # text-only by construction.
+            side = _read_sidecar_for_path(path)
+            media_key = str((side or {}).get("media_key") or "")
             key = tuple(tokens)
             collected.append(
                 (
                     key,
+                    media_key,
                     _CheckpointRef(
                         path=path,
                         root=root,
@@ -2191,14 +2218,17 @@ class DiskCheckpointIndex:
         # --- index phase (index lock held, no disk I/O) ---
         indexed = 0
         with self._lock:
-            for key, ref in collected:
-                self._by_key[key] = ref
+            for key, media_key, ref in collected:
+                self._by_key.setdefault(key, {})[media_key] = ref
                 indexed += 1
         return indexed
 
-    def longest_strict_prefix(self, query_tokens) -> _CheckpointRef | None:
+    def longest_strict_prefix(
+        self, query_tokens, media_key: str = ""
+    ) -> _CheckpointRef | None:
         """Return the indexed checkpoint that is the longest STRICT prefix of
-        ``query_tokens`` (length < len(query)), or None.
+        ``query_tokens`` (length < len(query)) in the ``media_key`` bucket,
+        or None.
 
         Used at delta-WRITE time to discover a parent for the checkpoint about
         to be written: the current tokens minus at least one tail token. Unlike
@@ -2215,7 +2245,10 @@ class DiskCheckpointIndex:
         best: _CheckpointRef | None = None
         best_len = -1
         with self._lock:
-            for k, ref in self._by_key.items():
+            for k, bucket in self._by_key.items():
+                ref = bucket.get(media_key or "")
+                if ref is None:
+                    continue
                 lk = len(k)
                 if lk <= best_len or lk >= len(q):
                     continue
@@ -2242,7 +2275,15 @@ class DiskCheckpointIndex:
         if not q:
             return None
         with self._lock:
-            items = list(self._by_key.items())
+            # Diagnostics only: take the first ref of each token key so a
+            # token key that carries several media buckets still contributes
+            # one divergence candidate (the token sequence is what this
+            # diagnostic measures).
+            items = [
+                (k, next(iter(bucket.values())))
+                for k, bucket in self._by_key.items()
+                if bucket
+            ]
         best_lcp = -1
         best_off = 0
         best_key = None
@@ -2269,9 +2310,16 @@ class DiskCheckpointIndex:
         In-memory only; takes just the index lock.
         """
         with self._lock:
-            doomed = [k for k, ref in self._by_key.items() if ref.req_hash == req_hash]
-            for key in doomed:
-                del self._by_key[key]
+            doomed: list[tuple[tuple[int, ...], str]] = [
+                (k, mk)
+                for k, bucket in self._by_key.items()
+                for mk, ref in bucket.items()
+                if ref.req_hash == req_hash
+            ]
+            for key, mk in doomed:
+                del self._by_key[key][mk]
+                if not self._by_key[key]:
+                    del self._by_key[key]
             return len(doomed)
 
     def clear(self) -> None:
@@ -2324,7 +2372,9 @@ class DiskCheckpointIndex:
             return
 
     def lookup(
-        self, query_tokens: list[int] | tuple[int, ...]
+        self,
+        query_tokens: list[int] | tuple[int, ...],
+        media_key: str = "",
     ) -> LoadedCheckpoint | None:
         """Return the best verified restore candidate for ``query_tokens``.
 
@@ -2384,9 +2434,10 @@ class DiskCheckpointIndex:
         # Belt-and-suspenders bound: each iteration either returns or evicts
         # (removes) the matched key, so entries strictly decrease. Cap at
         # entries+1 so a pathological radix/side-map disagreement can never
-        # spin forever.
+        # spin forever. Issue #56: candidates are the media-bucket entries;
+        # count the whole index (all media buckets) as the safe upper bound.
         with self._lock:
-            max_iters = len(self._by_key) + 1
+            max_iters = sum(len(b) for b in self._by_key.values()) + 1
 
         for _ in range(max_iters):
             # --- phase 1: in-memory resolution (index lock only) ---
@@ -2394,7 +2445,10 @@ class DiskCheckpointIndex:
                 n_entries = len(self._by_key)
                 key = None
                 best_len = -1
-                for k in self._by_key:
+                for k, bucket in self._by_key.items():
+                    ref = bucket.get(media_key or "")
+                    if ref is None:
+                        continue
                     lk = len(k)
                     if lk <= best_len or lk > len(query):
                         continue
@@ -2410,7 +2464,7 @@ class DiskCheckpointIndex:
                     )
                     self._log_partial_divergence(query, 0)
                     return None
-                ref = self._by_key.get(key)
+                ref = self._by_key.get(key, {}).get(media_key or "")
 
             if ref is None:
                 # Index inconsistency: the radix knows the key but the side
@@ -2419,7 +2473,7 @@ class DiskCheckpointIndex:
                     "[kv_restore_lookup] MISS reason=key_not_in_map matched_len=%d",
                     len(key),
                 )
-                self._soft_evict(key)
+                self._soft_evict(key, media_key or "")
                 continue
 
             offset = ref.token_offset
@@ -2429,14 +2483,14 @@ class DiskCheckpointIndex:
                     offset,
                     len(key),
                 )
-                self._soft_evict(key)
+                self._soft_evict(key, media_key or "")
                 continue
             if list(key) != query[:offset]:
                 logger.info(
                     "[kv_restore_lookup] MISS reason=prefix_bytes_differ offset=%d",
                     offset,
                 )
-                self._soft_evict(key)
+                self._soft_evict(key, media_key or "")
                 continue
 
             # --- phase 2: disk verify + materialise (index lock dropped) ---
@@ -2460,10 +2514,12 @@ class DiskCheckpointIndex:
                         "[kv_restore_skip] transient reason=tokens_blob_io_error offset=%d",
                         offset,
                     )
-                    self._soft_evict(key)
+                    self._soft_evict(key, media_key or "")
                 else:
                     # HARD: bytes genuinely wrong / incompatible. Quarantine.
-                    self._quarantine(key, ref, offset, "tokens_blob_verify_fail")
+                    self._quarantine(
+                        key, ref, offset, "tokens_blob_verify_fail", media_key or ""
+                    )
                 continue
             # A delta leaf must be assembled up its base_hash chain; a full base
             # loads directly. The chain assembler is gated on the delta feature
@@ -2491,7 +2547,7 @@ class DiskCheckpointIndex:
                     "[kv_restore_skip] transient reason=load_checkpoint_none offset=%d",
                     offset,
                 )
-                self._soft_evict(key)
+                self._soft_evict(key, media_key or "")
                 continue
             if loaded.token_offset != offset:
                 logger.info(
@@ -2499,14 +2555,14 @@ class DiskCheckpointIndex:
                     offset,
                     loaded.token_offset,
                 )
-                self._soft_evict(key)
+                self._soft_evict(key, media_key or "")
                 continue
             if not _cache_offset_matches(loaded.cache, offset):
                 logger.info(
                     "[kv_restore_lookup] MISS reason=cache_offset_mismatch offset=%d",
                     offset,
                 )
-                self._soft_evict(key)
+                self._soft_evict(key, media_key or "")
                 continue
             if offset < len(query):
                 # Restored a proper prefix, not the whole prompt. If a
@@ -2530,6 +2586,7 @@ class DiskCheckpointIndex:
         ref: _CheckpointRef | None,
         offset: int,
         reason: str,
+        media_key: str = "",
     ) -> None:
         """Evict a corrupt / inconsistent checkpoint from the index and disk.
 
@@ -2550,7 +2607,13 @@ class DiskCheckpointIndex:
         reaches here after a hard gate failed.
         """
         with self._lock:
-            self._by_key.pop(key, None)
+            bucket = self._by_key.get(key)
+            if bucket is not None:
+                bucket.pop(media_key, None)
+                # Media-bucketed index (#56): drop the key once its bucket
+                # is empty so evicted keys don't accumulate as empty dicts.
+                if not bucket:
+                    del self._by_key[key]
 
         if ref is not None:
             # A quarantined delta is gone for good (renamed to .corrupt, and
@@ -2580,7 +2643,7 @@ class DiskCheckpointIndex:
             reason,
         )
 
-    def _soft_evict(self, key: tuple[int, ...]) -> None:
+    def _soft_evict(self, key: tuple[int, ...], media_key: str = "") -> None:
         """Drop ``key`` from the in-memory index without touching disk.
 
         The TRANSIENT-failure sibling of :meth:`_quarantine`. A gate that
@@ -2598,7 +2661,12 @@ class DiskCheckpointIndex:
         across disk I/O (there is none here).
         """
         with self._lock:
-            self._by_key.pop(key, None)
+            bucket = self._by_key.get(key)
+            if bucket is not None:
+                bucket.pop(media_key, None)
+                # Same empty-bucket cleanup as :meth:`_quarantine`.
+                if not bucket:
+                    del self._by_key[key]
 
         logger.info(
             "[kv_restore_soft_evict] dropped transient-failure key len=%d "
@@ -2610,7 +2678,7 @@ class DiskCheckpointIndex:
         """Snapshot of index size for /metrics folding."""
         with self._lock:
             return {
-                "content_index_entries": len(self._by_key),
+                "content_index_entries": sum(len(b) for b in self._by_key.values()),
                 "content_index_nodes": 0,
             }
 

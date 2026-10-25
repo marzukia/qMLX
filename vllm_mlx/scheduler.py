@@ -616,6 +616,28 @@ def _install_chunked_prefill(
         self._stats.generation_tokens += len(responses)
         return responses
 
+    def _prefill_vision_kwargs(
+        self,
+        uids: list[Any],
+        requests: dict[Any, "Request"] | None,
+        uid_to_request_id: dict[Any, Any] | None,
+    ) -> dict[str, Any]:
+        """Vision forward kwargs for a prefill batch (issue #56, scoped mode).
+
+        A single-request vision prefill forwards the request's processed
+        ``pixel_values`` into the model forward, so the vision tower
+        encodes the image during prefill and the image-token positions
+        pick up the encoded KV. Multi-request vision batches stay out of
+        scope — for those (and for every text request) the returned dict
+        is empty, keeping the forward call byte-identical to pre-#56.
+        """
+        if len(uids) != 1 or requests is None or uid_to_request_id is None:
+            return {}
+        rid = uid_to_request_id.get(uids[0])
+        req = requests.get(rid) if rid else None
+        pv = getattr(req, "pixel_values", None) if req is not None else None
+        return {"pixel_values": pv} if pv is not None else {}
+
     def _chunked_next(self=batch_gen):  # noqa: C901
         """
         Replacement for _next() that chunks large prefills.
@@ -650,7 +672,11 @@ def _install_chunked_prefill(
             n_to_process = min(budget, remaining - 1) if remaining > 1 else 0
 
             if n_to_process > 0:
-                self.model(mx.contiguous(inputs[:, :n_to_process]), cache=prompt_cache)
+                self.model(
+                    mx.contiguous(inputs[:, :n_to_process]),
+                    cache=prompt_cache,
+                    **(partial.get("vision_kwargs") or {}),
+                )
                 mx.eval([c.state for c in prompt_cache])
                 inputs = inputs[:, n_to_process:]
                 partial["inputs"] = inputs
@@ -818,11 +844,19 @@ def _install_chunked_prefill(
                         _adjusted_pb = _pb - _cached
                         if 0 < _adjusted_pb < padded.shape[1]:
                             _first_chunk = _adjusted_pb
+                    # Issue #56 (vision x hybrid batching, scoped mode): a
+                    # single-request vision prefill forwards the request's
+                    # processed pixel values into the forward below; text
+                    # forwards stay byte-identical (empty kwargs dict).
+                    _vision_kwargs = self._prefill_vision_kwargs(
+                        uids, requests, uid_to_request_id
+                    )
                     n_to_process = min(_first_chunk, padded.shape[1] - 1)
                     if n_to_process > 0:
                         self.model(
                             mx.contiguous(padded[:, :n_to_process]),
                             cache=prompt_cache,
+                            **_vision_kwargs,
                         )
                         mx.eval([c.state for c in prompt_cache])
                         padded = padded[:, n_to_process:]
@@ -840,6 +874,7 @@ def _install_chunked_prefill(
                         "processed": n_to_process,
                         "total": max_length,
                         "is_cached": is_cached,
+                        "vision_kwargs": _vision_kwargs,
                     }
                     if is_cached:
                         self._partial["last_inputs"] = last_inputs
@@ -910,6 +945,7 @@ def _install_chunked_prefill(
     batch_gen._next = _chunked_next
     batch_gen._generation_step = _generation_step
     batch_gen.remove = _patched_remove
+    batch_gen._prefill_vision_kwargs = _prefill_vision_kwargs  # t286 MINOR-1: closure must land on batch_gen (scheduler.py:812 call site)
 
     logger.info(f"[chunked_prefill] installed with budget={budget} tokens per step")
 
@@ -3232,7 +3268,11 @@ class Scheduler:
 
             prompt_tokens = list(request.prompt_token_ids)
             _t0 = _time.monotonic()
-            self._disk_persist_boundary(prompt_tokens, extracted_cache)
+            self._disk_persist_boundary(
+                prompt_tokens,
+                extracted_cache,
+                media_key=getattr(request, "media_key", "") or "",
+            )
             _dt = _time.monotonic() - _t0
             logger.info(
                 f"[prompt_cache_save] request={request_id[:12]} "
@@ -3412,7 +3452,11 @@ class Scheduler:
             _t0 = _time.monotonic()
             stored = False
             try:
-                self._disk_persist_boundary(prefix_tokens, reconstructed)
+                self._disk_persist_boundary(
+                    prefix_tokens,
+                    reconstructed,
+                    media_key=getattr(request, "media_key", "") or "",
+                )
                 stored = True
             except Exception as exc:
                 logger.debug(
@@ -3500,7 +3544,9 @@ class Scheduler:
                                     request.prompt_token_ids[:current_computed]
                                 )
                                 self._disk_persist_boundary(
-                                    prefix_tokens, reconstructed
+                                    prefix_tokens,
+                                    reconstructed,
+                                    media_key=getattr(request, "media_key", "") or "",
                                 )
                                 request._mid_prefill_last_save = current_computed
                                 logger.info(
@@ -3562,7 +3608,11 @@ class Scheduler:
             prefix_tokens = list(request.prompt_token_ids[:total_cached])
 
             _t0 = _time.monotonic()
-            self._disk_persist_boundary(prefix_tokens, reconstructed)
+            self._disk_persist_boundary(
+                prefix_tokens,
+                reconstructed,
+                media_key=getattr(request, "media_key", "") or "",
+            )
             _dt = _time.monotonic() - _t0
 
             # Throttle key: advance unconditionally after the disk save so
@@ -5474,7 +5524,12 @@ class Scheduler:
         return outputs, finished_ids
 
     def _disk_persist_boundary(
-        self, tokens, cache, *, stable_prefix_len: int | None = None
+        self,
+        tokens,
+        cache,
+        *,
+        stable_prefix_len: int | None = None,
+        media_key: str = "",
     ) -> None:
         """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
@@ -5537,7 +5592,23 @@ class Scheduler:
             mname = getattr(self, "_model_name", None)
             root = _dkc.get_default_root()
             raw = _arr.array("i", (int(t) for t in key_tokens)).tobytes()
-            req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
+            # Issue #56: mix the stable media-content key into the checkpoint
+            # hash. Text-only checkpoints (empty media_key) keep the exact
+            # pre-#56 hash bytes, so checkpoints already on disk remain
+            # restorable; multimodal prompts hash model+tokens+media so a
+            # changed image can never land on a stale image's checkpoint.
+            if media_key:
+                req_hash = _hl.sha256(
+                    str(mname).encode() + raw + b"\x00" + media_key.encode()
+                ).hexdigest()[:16]
+            else:
+                req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
+            extra_metadata: dict = {
+                "tokens_key": list(key_tokens),
+                "save_uuid": uuid.uuid4().hex,
+            }
+            if media_key:
+                extra_metadata["media_key"] = media_key
 
             # Dedup: reproduce store()'s exact-match skip without the RAM cache.
             # The writer is atomic (temp + fsync + rename), so a present file is
@@ -5593,7 +5664,9 @@ class Scheduler:
                 _dkc.model_requires_full_checkpoint(mname)
             ):
                 try:
-                    parent = _dkc.get_content_index().longest_strict_prefix(key_tokens)
+                    parent = _dkc.get_content_index().longest_strict_prefix(
+                        key_tokens, media_key
+                    )
                     if parent is not None:
                         pside = _dkc.read_sidecar(
                             root, parent.req_hash, parent.token_offset
@@ -5642,10 +5715,7 @@ class Scheduler:
                 kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
                 requires_full_checkpoint=_dkc.model_requires_full_checkpoint(mname),
                 model_name=mname,
-                extra_metadata={
-                    "tokens_key": list(key_tokens),
-                    "save_uuid": uuid.uuid4().hex,
-                },
+                extra_metadata=extra_metadata,
                 kind=delta_kind,
                 delta_cache=delta_cache,
                 delta_meta=delta_meta,
@@ -5746,7 +5816,9 @@ class Scheduler:
             # that itself raises still lands as a miss (via the outer
             # except + finally), matching the restore-reject accounting.
             _restore_attempted = True
-            loaded = _dkc.get_content_index().lookup(prompt_ids)
+            loaded = _dkc.get_content_index().lookup(
+                prompt_ids, getattr(request, "media_key", "") or ""
+            )
             if loaded is None:
                 # No verified prefix on disk — normal miss, prefill.
                 # Diagnostics (#7): for a DEEP miss, find the nearest
@@ -6242,6 +6314,14 @@ class Scheduler:
                             full_token_sequence,
                             request._extracted_cache,
                             stable_prefix_len=len(request.prompt_token_ids),
+                            # Issue #56: completion checkpoints of image
+                            # prompts must land in the request's media
+                            # bucket, else a multi-turn image conversation
+                            # (restore looks up (prompt_ids, media_key))
+                            # never reuses them and two different images
+                            # with identical tokens collide in the text
+                            # bucket.
+                            media_key=getattr(request, "media_key", "") or "",
                         )
                         _store_dt = _time.monotonic() - _store_t0
 
