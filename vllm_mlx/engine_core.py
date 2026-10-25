@@ -749,6 +749,8 @@ class EngineCore:
         prefix_boundary: int = 0,
         has_tools: bool = False,
         requires_prompt_integrity: bool = False,
+        media_key: str = "",
+        pixel_values: Any | None = None,
     ) -> str:
         """
         Add a request for processing.
@@ -764,6 +766,12 @@ class EngineCore:
                 (used by PFlash to skip compression — #287)
             requires_prompt_integrity: Whether lossy prompt transforms
                 (PFlash) must be skipped for this request
+            media_key: Stable media-content key for image-aware KV cache
+                keying (issue #56). "" for text-only requests.
+            pixel_values: Processed vision tensors for the request (issue
+                #56 scoped mode). The scheduler forwards them to the model
+                on the single-request vision prefill; None for text-only
+                requests keeps the forward byte-identical to pre-#56.
 
         Returns:
             The request ID
@@ -783,6 +791,8 @@ class EngineCore:
             prefix_boundary=prefix_boundary,
             has_tools=has_tools,
             requires_prompt_integrity=requires_prompt_integrity,
+            media_key=media_key or "",
+            pixel_values=pixel_values,
         )
 
         # Throttle requests for hybrid models (GatedDeltaNet + Transformer).

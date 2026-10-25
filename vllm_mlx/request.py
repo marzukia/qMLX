@@ -184,6 +184,12 @@ class Request:
     # Multimodal content (images, video) - raw inputs
     images: list[Any] | None = None
     videos: list[Any] | None = None
+    # Issue #56: stable media-content key (see vllm_mlx.media_digest). "" for
+    # text-only requests; a stable joined digest for image/video requests.
+    # Disk KV checkpoint keying and the restore content index mix this into
+    # the prompt-prefix key so a changed image never reuses the previous
+    # image's KV while an identical image keeps its prefix hits.
+    media_key: str = ""
 
     # Processed multimodal inputs for VLM batching
     pixel_values: Any | None = None  # Processed image tensors (mx.array)
