@@ -158,9 +158,6 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
-vllm = [
-    "vllm>=0.4.0",
-]
 # Guided decoding with outlines for structured JSON output
 guided = [
     "outlines[mlxlm]>=1.0.0",
@@ -170,16 +167,9 @@ Homepage = "https://qmlx.mrzk.io"
 Documentation = "https://github.com/marzukia/qMLX#readme"
 Repository = "https://github.com/marzukia/qMLX"
 
-[project.entry-points."vllm.platform_plugins"]
-mlx = "vllm_mlx.plugin:mlx_platform_plugin"
-
 [project.scripts]
 qmlx = "vllm_mlx.cli:main"
 qmlx-chat = "vllm_mlx.gradio_app:main"
-# Deprecated pre-rename aliases — kept so existing users' scripts/muscle
-# memory keep working. Prefer the qmlx* commands above.
-vllm-mlx = "vllm_mlx.cli:main"
-vllm-mlx-chat = "vllm_mlx.gradio_app:main"
 
 [tool.setuptools.package-data]
 vllm_mlx = [

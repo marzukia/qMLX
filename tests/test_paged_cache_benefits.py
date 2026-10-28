@@ -461,7 +461,7 @@ def main():
     print("  - Hash-based deduplication")
 
     print("\nUsage:")
-    print("  vllm-mlx serve <model> --continuous-batching --use-paged-cache")
+    print("  qmlx serve <model> --continuous-batching --use-paged-cache")
     print()
 
 
