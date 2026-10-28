@@ -115,8 +115,8 @@ async def healthz():
 
     R7-H8 (dogfood-088 Talia r1/r2): this route used to delegate to
     ``/health``, which calls ``engine.get_stats()`` on every hit. That
-    call (a) synchronizes with the Metal command queue via
-    ``mx.get_active_memory()`` (allocator lock under load), and
+    call (a) synchronizes with the device command queue via the
+    backend's active-memory query (allocator lock under load), and
     (b) iterates ``scheduler.running`` + ``scheduler.waiting`` building
     per-request progress dicts via ``get_running_requests_info``. Under
     8-way streaming concurrency, p99 climbed from ~70 ms (Olu r5) to
@@ -293,10 +293,10 @@ async def status():
         "total_completion_tokens": stats.get("total_completion_tokens", 0),
         "generation_tps": _tps("generation_tps"),
         "prompt_tps": _tps("prompt_tps"),
-        "metal": {
-            "active_memory_gb": stats.get("metal_active_memory_gb"),
-            "peak_memory_gb": stats.get("metal_peak_memory_gb"),
-            "cache_memory_gb": stats.get("metal_cache_memory_gb"),
+        "device": {
+            "active_memory_gb": stats.get("device_active_memory_gb"),
+            "peak_memory_gb": stats.get("device_peak_memory_gb"),
+            "cache_memory_gb": stats.get("device_cache_memory_gb"),
         },
         # Always emit an object (never null) so dashboards with strict
         # number-or-object schemas don't crash when prefix cache is
@@ -426,9 +426,17 @@ async def debug_mx_arrays():
             kv_bf16_bytes += nbytes
 
     top = sorted(by_shape.items(), key=lambda kv: -kv[1]["bytes"])[:15]
+    from vllm_mlx.device import get_backend
+
+    _backend = get_backend()
     return {
         "total_arrays": len(seen),
-        "metal_active_bytes": int(mx.metal.get_active_memory()),
+        # Item 3 (device/backend seam): active memory through the seam
+        # (renamed from ``metal_active_bytes`` — the API shape is what
+        # clients pin, and the value is backend-shaped, not Metal-shaped).
+        "device_active_bytes": (
+            int(_backend.memory_stats().active_bytes) if _backend else 0
+        ),
         "ssm_state_1x64x128x128": {"count": ssm_count, "bytes": ssm_bytes},
         "kv_bf16_1x2xNx256": {"count": kv_bf16_count, "bytes": kv_bf16_bytes},
         "top_shapes_by_bytes": [

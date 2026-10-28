@@ -241,31 +241,37 @@ class TestIncrementalCacheEval:
 
 
 class TestMemoryStats:
-    """Tests for Metal memory stats in get_stats()."""
+    """Tests for device memory stats in get_stats() (item 3: the stats
+    now flow through the device/backend seam)."""
 
-    @patch("vllm_mlx.scheduler.mx")
-    def test_metal_stats_included(self, mock_mx):
-        """Verify Metal memory stats appear in get_stats()."""
-        mock_mx.metal.is_available.return_value = True
-        mock_mx.get_active_memory.return_value = 10_000_000_000  # 10GB
-        mock_mx.get_peak_memory.return_value = 15_000_000_000  # 15GB
-        mock_mx.get_cache_memory.return_value = 2_000_000_000  # 2GB
+    @patch("vllm_mlx.device.get_backend")
+    def test_metal_stats_included(self, mock_get_backend):
+        """Verify device memory stats appear in get_stats()."""
+        from vllm_mlx.device import MemoryStats
 
-        scheduler = _make_scheduler()
-        stats = scheduler.get_stats()
-
-        assert stats["metal_active_memory_gb"] == 10.0
-        assert stats["metal_peak_memory_gb"] == 15.0
-        assert stats["metal_cache_memory_gb"] == 2.0
-
-    @patch("vllm_mlx.scheduler.mx")
-    def test_metal_stats_graceful_on_error(self, mock_mx):
-        """Verify get_stats() works even if Metal stats fail."""
-        mock_mx.metal.is_available.side_effect = RuntimeError("no metal")
+        backend = MagicMock()
+        backend.memory_stats.return_value = MemoryStats(
+            active_bytes=10_000_000_000,  # 10GB
+            peak_bytes=15_000_000_000,  # 15GB
+            cache_bytes=2_000_000_000,  # 2GB
+        )
+        mock_get_backend.return_value = backend
 
         scheduler = _make_scheduler()
         stats = scheduler.get_stats()
 
-        # Should still return basic stats without Metal info
+        assert stats["device_active_memory_gb"] == 10.0
+        assert stats["device_peak_memory_gb"] == 15.0
+        assert stats["device_cache_memory_gb"] == 2.0
+
+    @patch("vllm_mlx.device.get_backend")
+    def test_metal_stats_graceful_on_error(self, mock_get_backend):
+        """Verify get_stats() works even if the backend stats fail."""
+        mock_get_backend.side_effect = RuntimeError("no backend")
+
+        scheduler = _make_scheduler()
+        stats = scheduler.get_stats()
+
+        # Should still return basic stats without device info
         assert "num_waiting" in stats
-        assert "metal_active_memory_gb" not in stats
+        assert "device_active_memory_gb" not in stats

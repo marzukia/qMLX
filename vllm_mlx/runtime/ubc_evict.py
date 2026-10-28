@@ -51,7 +51,11 @@ file from disk if another reader touches it later.
 
 The helper:
 
-* Is a no-op on non-Darwin platforms (returns 0).
+* Is a no-op when the active backend does not declare the
+  ``os_memory_eviction`` capability (the device/backend seam, item 3 —
+  "free OS-side memory before restore" is a capability, not a
+  ``sys.platform`` check; on the Metal backend the capability is
+  ``True`` only on Darwin, so behavior is unchanged).
 * Never raises — every error path logs at WARNING/DEBUG and returns 0.
 * Surfaces a process-monotonic ``ubc_evicted_bytes_total`` counter via
   :func:`snapshot` / :func:`render_prometheus_lines` (consumed by
@@ -79,6 +83,37 @@ import time
 from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------
+# OS-side memory-eviction capability — routed through the seam
+# ---------------------------------------------------------------------
+def eviction_supported() -> bool:
+    """Whether the active backend can free OS-side memory pre-restore.
+
+    Item 3 (device/backend seam): the darwin gate used to live here as
+    a raw ``sys.platform`` check. The decision now comes from the
+    backend's ``os_memory_eviction`` capability — "free OS-side memory
+    before restore" is a capability, not a platform check (a ported
+    ROCm/CUDA backend on Linux declares its own page-cache/``madvise``
+    story).
+
+    Falls back to the ``sys.platform`` check only when no backend
+    resolves (``mlx`` not installed — the helper still works in a
+    pure-Python environment, as before).
+    """
+    try:
+        from vllm_mlx.device import get_backend
+
+        backend = get_backend()
+    except Exception:
+        backend = None
+    if backend is not None:
+        try:
+            return bool(backend.capabilities().os_memory_eviction)
+        except Exception:
+            pass
+    return sys.platform == "darwin"
+
 
 # ---------------------------------------------------------------------
 # Darwin syscall constants
@@ -113,12 +148,13 @@ _libc: ctypes.CDLL | None = None
 def _get_libc() -> ctypes.CDLL | None:
     """Return the cached libc handle with the three syscalls typed, or None.
 
-    Returns None on non-Darwin platforms or when libc cannot be loaded
+    Returns None when the backend does not declare the
+    ``os_memory_eviction`` capability, or when libc cannot be loaded
     (e.g. exotic OS X builds without ``libSystem.dylib`` on the standard
     path). Idempotent.
     """
     global _libc
-    if sys.platform != "darwin":
+    if not eviction_supported():
         return None
     if _libc is not None:
         return _libc
@@ -203,13 +239,15 @@ def ubc_evict(path: str) -> int:
     returns 0. The intent is operator visibility, not enforcement: a
     failure here should never prevent a model from loading.
 
-    No-op on non-Darwin platforms. Linux/Windows model loads do not
-    suffer the UBC retention bug (Linux ``mmap`` pages are released by
-    the kernel's page-cache eviction policy under memory pressure
-    without needing an explicit syscall).
+    No-op when the active backend does not declare the
+    ``os_memory_eviction`` capability (Metal: non-Darwin platforms —
+    Linux/Windows model loads do not suffer the UBC retention bug;
+    Linux ``mmap`` pages are released by the kernel's page-cache
+    eviction policy under memory pressure without needing an explicit
+    syscall).
     """
-    if sys.platform != "darwin":
-        logger.debug("ubc_evict no-op on %s", sys.platform)
+    if not eviction_supported():
+        logger.debug("ubc_evict no-op (backend lacks os_memory_eviction)")
         _bump_counter(0, failed=False)
         return 0
 
@@ -318,8 +356,8 @@ def ubc_evict_paths(paths: Iterable[str]) -> int:
     Logs one INFO line per shard summarising the eviction so operators
     can correlate boot-time RSS drops with specific files.
     """
-    if sys.platform != "darwin":
-        logger.debug("ubc_evict_paths no-op on %s", sys.platform)
+    if not eviction_supported():
+        logger.debug("ubc_evict_paths no-op (backend lacks os_memory_eviction)")
         return 0
     total = 0
     t0 = time.monotonic()
@@ -398,6 +436,7 @@ def reset_for_tests() -> None:
 __all__ = [
     "ubc_evict",
     "ubc_evict_paths",
+    "eviction_supported",
     "snapshot",
     "render_prometheus_lines",
     "reset_for_tests",
