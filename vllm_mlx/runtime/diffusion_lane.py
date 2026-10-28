@@ -34,6 +34,7 @@ fresh ``pip install qmlx`` lands a build that has the
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import queue
 import re
@@ -287,13 +288,32 @@ class DiffusionEngine(BaseEngine):
     ``input_ids.shape[0] > 1``. The route layer rejects ``n > 1`` and
     structured-output flags before the engine sees them.
 
-    Threading model: ``stream_diffusion_generate`` is a synchronous
-    generator that occupies the GPU for a non-trivial slice (block of
-    256 tokens × K denoising steps). We push it onto a worker thread
-    and drain into an ``asyncio.Queue`` so the event loop stays
-    responsive. One thread per active request — DiffusionGemma is
-    batch-1 only, so concurrent requests sit in admission queue at
-    the route layer, not here.
+    Threading model (serialized multiplexing — qMLX review 2026-10-28
+    item 4 of 9): ALL MLX work — model load AND every diffusion job —
+    runs on a single ``mlx-step`` owner thread (a
+    ``ThreadPoolExecutor(max_workers=1)`` initialised with
+    ``engine_core._init_mlx_step_thread``), the same owner-thread
+    pattern the AR lane uses. The persistent
+    ``qmlx-diffusion-worker`` thread is a pure dispatcher: it pulls
+    jobs off ``_jobs`` and submits them to the executor, never
+    touching MLX itself. When the caller hands the engine the AR
+    lane's executor (``mlx_executor=``), diffusion work time-slices
+    on the SAME thread behind AR work — one device, one stream,
+    multiplexed. When no executor is provided (standalone
+    diffusion serving), the engine creates and owns its own.
+
+    The pre-fix design ran the generator on the worker thread after a
+    process-wide ``mx.set_default_stream(worker_stream)`` — a
+    mutation visible to the AR lane's owner thread mid-flight (a
+    race on any backend). That call is gone; the owner thread's
+    thread-local default stream is the only stream anything runs on.
+
+    ``stream_diffusion_generate`` is a synchronous generator that
+    occupies the GPU for a non-trivial slice (block of 256 tokens ×
+    K denoising steps). We drain it into an ``asyncio.Queue`` so
+    the event loop stays responsive. DiffusionGemma is batch-1
+    only, so concurrent requests sit in the admission queue at the
+    route layer, not here.
     """
 
     # ``supports_tool_calls`` is an *instance* attribute set in
@@ -314,10 +334,18 @@ class DiffusionEngine(BaseEngine):
         model_name: str,
         max_tokens: int = 4096,
         scheduler_config: Any = None,
+        mlx_executor: concurrent.futures.ThreadPoolExecutor | None = None,
     ) -> None:
         self._model_name = model_name
         self._max_tokens = max_tokens
         self._scheduler_config = scheduler_config
+        # The single mlx-step owner thread for every MLX op in this
+        # engine. Caller-provided (shared with the AR lane) → we do
+        # NOT own its lifecycle (same ``_owns_executor`` discipline
+        # as AsyncEngineCore). None → standalone mode: we create
+        # (lazily, in ``_start_worker_once``) and own our own.
+        self._mlx_executor = mlx_executor
+        self._owns_mlx_executor = mlx_executor is None
         self._model: Any = None
         self._processor: Any = None
         self._loaded = False
@@ -380,18 +408,24 @@ class DiffusionEngine(BaseEngine):
         # its queue and release.
         self._generation_lock = asyncio.Lock()
 
-        # Persistent GPU worker thread: owns model loading AND every
-        # GPU op. Required because mlx's per-stream binding is
-        # thread-local — weights loaded on thread A can't be
-        # mx.eval'd from thread B without crashing with
+        # Persistent dispatcher thread: pulls jobs off ``_jobs`` and
+        # submits every MLX-touching phase (model load + each
+        # generator run) to the single ``mlx-step`` executor — the
+        # owner thread for all MLX work in this process. The
+        # dispatcher itself never touches MLX: mlx's per-stream
+        # binding is thread-local, so weights loaded on thread A
+        # can't be mx.eval'd from thread B without crashing with
         # ``RuntimeError: There is no Stream(gpu, 0) in current
-        # thread``. mlx-vlm's own server uses the same pattern (one
-        # ``ResponseGenerator._thread`` that loads + runs in one
-        # place; see mlx_vlm/server/generation.py:894).
+        # thread``. Keeping ONE thread (the executor's) for every
+        # MLX op is the whole point (qMLX review 2026-10-28 item 4:
+        # the pre-fix worker did its own GPU work after a
+        # process-wide ``mx.set_default_stream`` — a race on any
+        # backend when the AR lane's owner thread was mid-flight).
         #
         # Job protocol: callers push a ``(prompt, max_tokens, cfg,
-        # out_queue)`` tuple onto ``_jobs``; the worker either
-        # streams ``GenerationOutput`` chunks back via ``out_queue``
+        # out_queue)`` tuple onto ``_jobs``; the worker submits the
+        # job to the mlx-step executor and streams
+        # ``GenerationOutput`` chunks back via ``out_queue``
         # (terminated by ``_STREAM_DONE``) or pushes the exception
         # on failure. Push ``None`` to request shutdown.
         self._jobs: queue.Queue[Any] = queue.Queue()
@@ -482,6 +516,22 @@ class DiffusionEngine(BaseEngine):
                 self._stop = False
             if self._worker is not None:
                 return
+            # Standalone mode: create the mlx-step owner thread we
+            # own. Same single-thread + initializer pattern as
+            # engine_core — the owner thread's thread-local default
+            # stream is the only stream any MLX op in this process
+            # runs on; nothing else calls mx.set_default_stream.
+            # (A dead worker from a failed load does NOT invalidate
+            # the executor — only a clean stop() tears it down, so
+            # guard on None.)
+            if self._owns_mlx_executor and self._mlx_executor is None:
+                from ..engine_core import _init_mlx_step_thread
+
+                self._mlx_executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1,
+                    thread_name_prefix="mlx-step",
+                    initializer=_init_mlx_step_thread,
+                )
             self._worker = threading.Thread(
                 target=self._worker_loop,
                 name="qmlx-diffusion-worker",
@@ -490,9 +540,9 @@ class DiffusionEngine(BaseEngine):
             self._worker.start()
 
     async def start(self) -> None:
-        # Block the asyncio loop while the worker initialises the
-        # model on its own thread. Load takes ~2-3 s on M3 Ultra, well
-        # under the lifespan startup budget.
+        # Block the asyncio loop while the worker dispatches the
+        # model load to the mlx-step owner thread. Load takes ~2-3 s
+        # on M3 Ultra, well under the lifespan startup budget.
         self._start_worker_once()
         await asyncio.to_thread(self._wait_until_ready)
 
@@ -561,6 +611,15 @@ class DiffusionEngine(BaseEngine):
         # A transient load failure or stuck-worker episode would
         # otherwise keep the restarted engine permanently 503-ing
         # at admission or raising the cached load_error.
+        # Tear down the mlx-step executor we own (standalone mode).
+        # The worker has already exited, so no job is in-flight and
+        # the executor's queue is empty — shutdown(wait=True)
+        # returns immediately. Caller-provided executors (shared
+        # with the AR lane) are NOT ours to stop (same
+        # ``_owns_executor`` discipline as AsyncEngineCore).
+        if self._owns_mlx_executor and self._mlx_executor is not None:
+            self._mlx_executor.shutdown(wait=True)
+            self._mlx_executor = None
         self._model = None
         self._processor = None
         self._loaded = False
@@ -660,12 +719,55 @@ class DiffusionEngine(BaseEngine):
         self._start_worker_once()
         self._wait_until_ready()
 
-    def _worker_loop(self) -> None:
-        """GPU worker — owns model load AND every diffusion call.
+    def _load_on_step_thread(self) -> None:
+        """Model load — runs on the mlx-step owner thread.
 
-        Step 1: load model. Once loaded, set ``_ready`` so
-        ``_wait_until_ready`` returns.
-        Step 2: pump jobs until ``_stop`` flips or sentinel arrives.
+        Submitted by ``_worker_loop`` so the mlx-vlm ``load()`` and
+        the family sanity check happen on the SAME thread that later
+        runs every ``stream_diffusion_generate`` job: mlx's
+        per-stream binding is thread-local, and the module-level
+        ``generation_stream`` (rebound to this thread's default
+        stream by ``_init_mlx_step_thread``) must be created and
+        touched here, not on the dispatcher thread.
+        """
+        try:
+            from mlx_vlm.generate.diffusion import (
+                diffusion_generation_family,
+            )
+            from mlx_vlm.utils import load
+        except BaseException as e:  # noqa: BLE001 — friendly error below
+            raise RuntimeError(
+                "DiffusionEngine failed to import its mlx / mlx-vlm "
+                "dependencies. Install or upgrade: "
+                "`pip install -U 'mlx-vlm>=0.6.3'`. "
+                f"Underlying error: {e}"
+            ) from e
+        logger.info(f"Loading DiffusionEngine model: {self._model_name}")
+        model, processor = load(self._model_name)
+        family = diffusion_generation_family(model)
+        if family != "block":
+            raise RuntimeError(
+                f"{self._model_name!r} is not a block-diffusion model "
+                f"(diffusion_generation_family returned {family!r}). "
+                "DiffusionEngine only supports DiffusionGemma-family "
+                "block-canvas checkpoints."
+            )
+        _break_mlx_vlm_eos_token_id_aliasing(model, processor)
+        self._model = model
+        self._processor = processor
+        self._loaded = True
+
+    def _worker_loop(self) -> None:
+        """Dispatcher — submits every MLX-touching phase to the
+        single mlx-step owner thread.
+
+        Step 1: model load on the executor (NOT on this thread —
+        see ``_load_on_step_thread``). Once loaded, set ``_ready``
+        so ``_wait_until_ready`` returns.
+        Step 2: pump jobs until ``_stop`` flips or sentinel arrives;
+        each job is submitted to the executor and awaited here so
+        the done_event / cancel / stuck-flag protocol below is
+        unchanged.
 
         Every failure path BEFORE ``self._ready.set()`` MUST surface
         through ``self._load_error`` and then ``self._ready.set()`` —
@@ -677,50 +779,7 @@ class DiffusionEngine(BaseEngine):
         kill the worker before any startup signal.
         """
         try:
-            import mlx.core as mx
-            from mlx_vlm.generate.diffusion import (
-                diffusion_generation_family,
-            )
-            from mlx_vlm.utils import load
-        except BaseException as e:  # noqa: BLE001 — propagate to caller
-            self._load_error = RuntimeError(
-                "DiffusionEngine failed to import its mlx / mlx-vlm "
-                "dependencies. Install or upgrade: "
-                "`pip install -U 'mlx-vlm>=0.6.3'`. "
-                f"Underlying error: {e}"
-            )
-            self._ready.set()
-            return
-
-        try:
-            logger.info(f"Loading DiffusionEngine model: {self._model_name}")
-            model, processor = load(self._model_name)
-            family = diffusion_generation_family(model)
-            if family != "block":
-                raise RuntimeError(
-                    f"{self._model_name!r} is not a block-diffusion model "
-                    f"(diffusion_generation_family returned {family!r}). "
-                    "DiffusionEngine only supports DiffusionGemma-family "
-                    "block-canvas checkpoints."
-                )
-            _break_mlx_vlm_eos_token_id_aliasing(model, processor)
-            self._model = model
-            self._processor = processor
-            self._loaded = True
-        except BaseException as e:  # noqa: BLE001 — propagate to caller
-            self._load_error = e
-            self._ready.set()
-            return
-
-        # Pre-bind the GPU stream on THIS thread so the diffusion
-        # generator's internal ``mx.eval`` calls have a valid default
-        # to dispatch to. Once set here, it persists for the lifetime
-        # of the worker — every job below inherits the same binding.
-        # Any failure here also has to flip ``_ready`` so the lifespan
-        # startup doesn't deadlock on a partially-loaded worker.
-        try:
-            worker_stream = mx.default_stream(mx.default_device())
-            mx.set_default_stream(worker_stream)
+            self._mlx_executor.submit(self._load_on_step_thread).result()
         except BaseException as e:  # noqa: BLE001 — propagate to caller
             self._load_error = e
             self._ready.set()
@@ -747,7 +806,20 @@ class DiffusionEngine(BaseEngine):
                 # the moment we got around to it (codex round 6 [P2]).
                 if cancel_event.is_set():
                     continue
-                self._run_generator(prompt, max_tokens, cfg, out_q, cancel_event)
+                # Run the generator ON the mlx-step owner thread —
+                # the same thread that loaded the model (mlx's
+                # per-stream binding is thread-local). The
+                # dispatcher blocks here until the job drains so
+                # the done_event / cancel / stuck-flag protocol
+                # below is unchanged.
+                self._mlx_executor.submit(
+                    self._run_generator,
+                    prompt,
+                    max_tokens,
+                    cfg,
+                    out_q,
+                    cancel_event,
+                ).result()
             except BaseException as e:  # noqa: BLE001 — surface to caller
                 out_q.put(e)
             finally:
@@ -1391,10 +1463,11 @@ class DiffusionEngine(BaseEngine):
         import mlx.core as mx  # noqa: F401 — kept for symmetry with mlx_vlm
         from mlx_vlm.generate.diffusion import stream_diffusion_generate
 
-        # NOTE: this method ALWAYS runs on the persistent worker
-        # thread (see ``_worker_loop``), so the model weights, the
-        # tokenizer-managed kv_cache, and the default GPU stream are
-        # all bound to the same thread. We intentionally do NOT wrap
+        # NOTE: this method ALWAYS runs on the mlx-step owner
+        # thread (submitted by ``_worker_loop``), so the model
+        # weights, the tokenizer-managed kv_cache, and the default
+        # GPU stream are all bound to the same thread. We
+        # intentionally do NOT wrap
         # in mlx-vlm's ``wired_limit(model, [generation_stream])`` —
         # on M3 Ultra with the 26B-A4B-it-4bit checkpoint, that wrap
         # forces a single Metal command buffer past the per-buffer
