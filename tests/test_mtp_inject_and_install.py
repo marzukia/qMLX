@@ -88,3 +88,112 @@ def test_looks_like_vlm_wrapper_false_when_args_already_has_hidden_size():
         language_model=SimpleNamespace(args=_llm_args_ns(hidden_size=1024)),
     )
     assert _looks_like_vlm_wrapper(model) is False
+
+
+# ----------------------------------------------------------------------
+# _resolve_model_weights_dir / _load_mtp_weights_from_repo — local
+# checkpoint support (dogfood 2026-10-28: a self-contained MTP
+# checkpoint served from a local directory must not be rejected as
+# "without mtp_sidecar or model_repo" — its own safetensors carry the
+# mtp.* keys)
+# ----------------------------------------------------------------------
+
+
+def test_resolve_model_weights_dir_local_directory(tmp_path):
+    """A local checkpoint directory is used in place (no download)."""
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        _resolve_model_weights_dir,
+    )
+
+    assert _resolve_model_weights_dir(str(tmp_path)) == str(tmp_path)
+
+
+def test_resolve_model_weights_dir_local_safetensors_file(tmp_path):
+    """A direct *.safetensors file resolves to its parent directory."""
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        _resolve_model_weights_dir,
+    )
+
+    f = tmp_path / "model.safetensors"
+    f.write_bytes(b"")
+    assert _resolve_model_weights_dir(str(f)) == str(tmp_path)
+
+
+def test_resolve_model_weights_dir_hf_repo_download(monkeypatch, tmp_path):
+    """Non-path references still go through snapshot_download."""
+    import huggingface_hub
+
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        _resolve_model_weights_dir,
+    )
+
+    calls = {}
+
+    def _fake_snapshot_download(repo_id, allow_patterns=None):
+        calls["repo_id"] = repo_id
+        return str(tmp_path)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake_snapshot_download)
+    assert _resolve_model_weights_dir("some/repo") == str(tmp_path)
+    assert calls["repo_id"] == "some/repo"
+
+
+def test_resolve_model_weights_dir_unresolvable_repo(monkeypatch):
+    """A repo id that fails to download returns None (soft failure)."""
+    import huggingface_hub
+
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        _resolve_model_weights_dir,
+    )
+
+    def _boom(repo_id, allow_patterns=None):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", _boom)
+    assert _resolve_model_weights_dir("some/repo") is None
+
+
+def test_load_mtp_weights_from_repo_local_dir_embedded_mtp(tmp_path):
+    """Self-contained MTP checkpoint: mtp.* keys in the local
+    directory's safetensors are extracted (prefixes stripped) with no
+    sidecar and no HF round-trip — the exact dogfood case that used
+    to hard-reject at boot."""
+    import mlx.core as mx
+
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        _load_mtp_weights_from_repo,
+    )
+
+    weights = {
+        "model.layers.0.self_attn.q_proj.weight": mx.zeros((4, 8)),
+        "mtp.layers.0.self_attn.q_proj.weight": mx.zeros((4, 8)),
+        "mtp.layers.0.self_attn.o_proj.weight": mx.zeros((8, 4)),
+        "mtp.fc.weight": mx.zeros((8, 16)),
+    }
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+
+    loaded = _load_mtp_weights_from_repo(str(tmp_path))
+    assert loaded is not None
+    assert "layers.0.self_attn.q_proj.weight" in loaded
+    assert "layers.0.self_attn.o_proj.weight" in loaded
+    assert "fc.weight" in loaded
+    # backbone (non-mtp) keys must not leak into the MTP weight set
+    assert not any(k.startswith("model.") for k in loaded)
+
+
+def test_load_mtp_weights_from_repo_local_dir_without_mtp_keys(tmp_path):
+    """A local checkpoint without mtp.* keys returns None — the
+    injector then reports the accurate 'no MTP weight tensors found'
+    refusal instead of a download error."""
+    import mlx.core as mx
+
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        _load_mtp_weights_from_repo,
+    )
+
+    weights = {
+        "model.layers.0.self_attn.q_proj.weight": mx.zeros((4, 8)),
+    }
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+
+    assert _load_mtp_weights_from_repo(str(tmp_path)) is None

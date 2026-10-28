@@ -264,22 +264,57 @@ def _fix_mtp_norm_double_shift(model: Any) -> None:
         )
 
 
-def _load_mtp_weights_from_repo(model_repo: str) -> dict[str, Any] | None:
-    """Try to load MTP weights from a model's own HF repo safetensors."""
-    import glob as _glob
+def _resolve_model_weights_dir(model_repo: str) -> str | None:
+    """Resolve a model reference to a local directory of safetensors.
+
+    Accepts:
+
+    * a local checkpoint directory (used in place — the common case
+      for ``qmlx serve <local-path>``),
+    * a local ``*.safetensors`` file (its parent directory),
+    * an HF Hub repo id (downloaded via ``snapshot_download``).
+
+    Returns the directory to scan for ``*.safetensors`` files, or
+    ``None`` when the reference cannot be resolved.
+    """
     import os
 
-    import mlx.core as mx
-    from huggingface_hub import snapshot_download
+    if os.path.isdir(model_repo):
+        return model_repo
+    if os.path.isfile(model_repo) and model_repo.endswith(".safetensors"):
+        return os.path.dirname(os.path.abspath(model_repo))
 
     try:
-        local = snapshot_download(model_repo, allow_patterns=["*.safetensors"])
-    except Exception as exc:
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_repo, allow_patterns=["*.safetensors"])
+    except Exception as exc:  # pragma: no cover — network failure path
         logger.warning(
             "[mtp.inject] Could not download model repo %r: %s",
             model_repo,
             exc,
         )
+        return None
+
+
+def _load_mtp_weights_from_repo(model_repo: str) -> dict[str, Any] | None:
+    """Load MTP weights from a model's own checkpoint safetensors.
+
+    ``model_repo`` may be an HF Hub repo id (downloaded on demand) or a
+    local path — a checkpoint directory, or a direct ``*.safetensors``
+    file. Local checkpoints with an embedded MTP head (the ``*-mtp``
+    conversions, e.g. ``Qwen3.8-27B-oQ4e-mtp``) are the primary case:
+    the head weights ship inside the main checkpoint, so
+    ``qmlx serve <local-path> --speculative-config
+    '{"method":"mtp"}'`` works with no sidecar.
+    """
+    import glob as _glob
+    import os
+
+    import mlx.core as mx
+
+    local = _resolve_model_weights_dir(model_repo)
+    if local is None:
         return None
 
     mtp_weights: dict[str, Any] = {}
@@ -719,14 +754,23 @@ def inject_mtp_support(
     else:
         # No sidecar and no auto-detected weights.
         if not allow_random_init:
-            logger.warning(
-                "[mtp.inject] inject_mtp_support called without "
-                "mtp_sidecar or model_repo; refusing to "
-                "ship a random-init MTP head. Pass "
-                "mtp_sidecar='mlx-community/Qwen3.5-9B-MTP-4bit' (or "
-                "equivalent) for production use, or set "
-                "allow_random_init=True for unit-test wiring probes."
-            )
+            if model_repo is not None:
+                logger.warning(
+                    "[mtp.inject] no MTP weight tensors found in %r "
+                    "(looked for keys like 'mtp.layers.0.*' in the "
+                    "checkpoint's safetensors); refusing to ship a "
+                    "random-init MTP head.",
+                    model_repo,
+                )
+            else:
+                logger.warning(
+                    "[mtp.inject] inject_mtp_support called without "
+                    "mtp_sidecar or model_repo; refusing to "
+                    "ship a random-init MTP head. Pass "
+                    "mtp_sidecar='mlx-community/Qwen3.5-9B-MTP-4bit' (or "
+                    "equivalent) for production use, or set "
+                    "allow_random_init=True for unit-test wiring probes."
+                )
             return False
         # Test-only path — explicit opt-in to random-init weights for
         # wiring tests that pin the surfaces without paying the
