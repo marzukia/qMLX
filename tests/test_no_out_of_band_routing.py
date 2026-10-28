@@ -121,15 +121,6 @@ ALLOWED_QMLX_ENV_VARS: frozenset[str] = frozenset(
         # Test/integration helpers — server URL for integration suites,
         # not consulted at runtime by the engine.
         "QMLX_BASE_URL",
-        # Telemetry consent toggle (off/on), not engine routing.
-        "QMLX_TELEMETRY",
-        # Telemetry debug log toggle (stderr trace of POST attempts to
-        # the collector). Pure observability, not engine routing.
-        "QMLX_TELEMETRY_DEBUG",
-        # Telemetry collector endpoint override for Phase 2 dev rigs and
-        # local-Worker testing. Production stays on
-        # ``telemetry.rapidmlx.com``; never consulted by the engine.
-        "QMLX_TELEMETRY_ENDPOINT",
         # Port for doctor harness probe checks, not engine routing.
         "QMLX_PORT",
         # Skip the [Y/n] confirmation prompt before large model downloads
@@ -1455,10 +1446,10 @@ def test_os_environ_composed_key_is_detected():
 
     # Negative control: literal Constant + module-level Name reference
     # must NOT be flagged (these are legitimate patterns used in
-    # vllm_mlx/mcp/config.py and vllm_mlx/telemetry/state.py).
+    # vllm_mlx/mcp/config.py).
     benign_sources = (
         "import os\nos.environ.get('VLLM_MLX_MCP_CONFIG')\n",
-        "import os\nENV_VAR = 'QMLX_TELEMETRY'\nos.environ.get(ENV_VAR)\n",
+        "import os\nENV_VAR = 'QMLX_TOKEN'\nos.environ.get(ENV_VAR)\n",
     )
     for source in benign_sources:
         tree = ast.parse(source)
@@ -1663,8 +1654,6 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # Perf / UX toggles, not routing decisions.
         "--force-disk-check",  # forces eager disk-space check
         "--no-gc-control",  # disables Python GC tuning
-        # Privacy toggle.
-        "--no-telemetry",
     }
 )
 

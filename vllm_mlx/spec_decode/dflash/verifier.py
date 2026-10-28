@@ -91,7 +91,7 @@ class VerifyResult:
         accepted_len: Convenience: ``len(accepted_tokens)``.
         block_was_full: True when every position in the draft block
             matched. Used by the generator to track "full block win"
-            telemetry.
+            stats.
         verify_offset_after: Cache offset AFTER this round's commit.
             The generator passes it to the drafter's next call as
             ``current_position``.
