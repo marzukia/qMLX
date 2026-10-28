@@ -102,7 +102,7 @@ def _default_on_orphan(expected_ppid: int, observed_ppid: int) -> None:
     """Default orphan reaction: log + SIGTERM self + SIGKILL after grace.
 
     The lifespan ``shutdown`` hook in ``server.py`` runs on SIGTERM and
-    is responsible for flushing the prefix cache, finalising telemetry,
+    is responsible for flushing the prefix cache
     and emitting the ``Application shutdown complete.`` banner. We give
     it the same ~5 s wall-clock window the rapid-desktop side hands its
     ``terminateChild`` SIGTERM grace before escalating to SIGKILL —

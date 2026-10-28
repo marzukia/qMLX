@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -323,15 +323,23 @@ def test_detect_install_method_no_binary_falls_back_to_pip(monkeypatch):
 
 @pytest.fixture
 def interactive(monkeypatch):
-    """Enable the prompt path: TTY on stdin+stderr, not disabled, not in CI."""
+    """Enable the prompt path: TTY on stdin+stderr, not disabled, not in CI.
+
+    The fork's ``_disabled()`` returns True unconditionally (version check
+    disabled outright), so patch it to False to exercise the prompt path.
+    """
     monkeypatch.delenv("QMLX_DISABLE_VERSION_CHECK", raising=False)
     monkeypatch.delenv("CI", raising=False)
+    monkeypatch.setattr(vc, "_disabled", lambda: False)
     monkeypatch.setattr(vc.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(vc.sys.stderr, "isatty", lambda: True)
 
 
 def test_prompt_returns_false_when_disabled(monkeypatch, interactive):
     monkeypatch.setenv("QMLX_DISABLE_VERSION_CHECK", "1")
+    # The 'interactive' fixture patches _disabled to False; restore the
+    # disabled short-circuit so we verify "disabled => no fetch".
+    monkeypatch.setattr(vc, "_disabled", lambda: True)
     # Disabled MUST short-circuit before fetching anything.
     monkeypatch.setattr(
         vc,
@@ -398,9 +406,10 @@ def test_prompt_returns_false_for_pep440_non_final_release(
 
 
 def test_prompt_returns_false_when_upgrade_subprocess_fails(monkeypatch, interactive):
-    """Brew/pip failure (network, conflict, sudo prompt) must NOT cause
-    serve to exit silently. Return False so the caller continues booting
-    with the current version. DeepSeek finding #2 on PR #428.
+    """Non-interactive by default (operator order 10-28): the upgrade
+    is never auto-run, so a brew/pip failure can't cause serve to exit
+    silently — the function always returns False and the caller
+    continues booting with the current version.
     """
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
     monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
@@ -413,15 +422,15 @@ def test_prompt_returns_false_when_upgrade_subprocess_fails(monkeypatch, interac
             upgrade_argv=["brew", "upgrade", "raullenchai/qmlx/qmlx"],
         ),
     )
-    fake_result = MagicMock(returncode=1)
     with (
-        patch("builtins.input", return_value="y"),
-        patch("subprocess.run", return_value=fake_result),
+        patch("builtins.input") as inp,
+        patch("subprocess.run") as run,
     ):
-        # Failed upgrade → return False so serve continues with the
-        # current installed version. The user sees the exit code and can
-        # retry manually.
+        # No prompt, no auto-upgrade — serve continues with the
+        # current installed version.
         assert vc.prompt_upgrade_if_available() is False
+        inp.assert_not_called()
+        run.assert_not_called()
 
 
 def test_prompt_returns_false_when_offline(monkeypatch, interactive):
@@ -452,7 +461,14 @@ def test_prompt_returns_false_when_user_declines(monkeypatch, interactive):
         run.assert_not_called()
 
 
-def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive):
+def test_prompt_is_non_interactive_and_never_runs_upgrade(
+    monkeypatch, interactive, capsys
+):
+    """Operator order 10-28: the interactive ``Run it now? [Y/n]`` prompt
+    is gone. A newer release yields a single informational line and a
+    ``False`` return — the upgrade is never auto-run (version info stays
+    available on demand via ``qmlx --version`` / ``qmlx upgrade``).
+    """
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
     monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.6.62")
     monkeypatch.setattr(
@@ -464,21 +480,24 @@ def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive
             upgrade_argv=["brew", "upgrade", "raullenchai/qmlx/qmlx"],
         ),
     )
-    fake_result = MagicMock(returncode=0)
-    # Empty answer == default Y.
     with (
-        patch("builtins.input", return_value=""),
-        patch("subprocess.run", return_value=fake_result) as run,
+        patch("builtins.input") as inp,
+        patch("subprocess.run") as run,
     ):
-        assert vc.prompt_upgrade_if_available() is True
-        run.assert_called_once_with(
-            ["brew", "upgrade", "raullenchai/qmlx/qmlx"], check=False
-        )
+        assert vc.prompt_upgrade_if_available() is False
+        inp.assert_not_called()
+        run.assert_not_called()
+    out = capsys.readouterr().out
+    assert "A newer qmlx is available: 0.6.62" in out
+    assert "brew upgrade raullenchai/qmlx/qmlx" in out
+    assert "Run it now?" not in out
 
 
-def test_prompt_crosses_minor_boundary(monkeypatch, interactive):
-    """``staleness_warning`` stays silent across minor bumps, but the
-    interactive prompt opts in — user can still say no."""
+def test_prompt_crosses_minor_boundary(monkeypatch, interactive, capsys):
+    """``staleness_warning`` stays silent across minor bumps, and the
+    version check is non-interactive: a newer release across a minor
+    boundary prints a notice and returns False — no prompt, no
+    auto-upgrade (the user can still upgrade on demand)."""
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.62")
     monkeypatch.setattr(vc, "get_latest_version", lambda force_refresh=False: "0.7.0")
     monkeypatch.setattr(
@@ -490,9 +509,10 @@ def test_prompt_crosses_minor_boundary(monkeypatch, interactive):
             upgrade_argv=["pip"],
         ),
     )
-    with patch("builtins.input", return_value="n") as inp:
+    with patch("builtins.input") as inp:
         assert vc.prompt_upgrade_if_available() is False
-        inp.assert_called_once()
+        inp.assert_not_called()
+    assert "A newer qmlx is available: 0.7.0" in capsys.readouterr().out
 
 
 def test_prompt_never_raises(monkeypatch, interactive):

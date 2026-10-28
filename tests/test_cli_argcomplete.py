@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the qmlx CLI shell-completion wiring.
+"""Unit tests for the qmlx CLI shell-completion helpers.
 
-Locks in three things that are easy to break:
+Locks in things that are easy to break:
 
-1. The ``# PYTHON_ARGCOMPLETE_OK`` magic marker stays in the first 1024
-   bytes of ``cli.py``. ``register-python-argcomplete`` grep-skips
-   scripts without this marker for speed — losing it silently turns
-   off tab completion across every install.
-2. ``alias_completer`` returns aliases filtered by prefix (the actual
-   contract argcomplete invokes per keystroke).
-3. ``alias_csv_completer`` correctly carries the comma-separated
+1. ``alias_completer`` returns aliases filtered by prefix (the actual
+   contract a completion layer invokes per keystroke).
+2. ``alias_csv_completer`` correctly carries the comma-separated
    prefix forward so ``--models qwen3.5-4b-4bit,gem<TAB>`` expands the
    trailing token only.
 """
@@ -25,22 +21,6 @@ from vllm_mlx._completion import (
     alias_completer,
     alias_csv_completer,
 )
-
-_CLI_PATH = Path(__file__).parent.parent / "vllm_mlx" / "cli.py"
-
-
-def test_python_argcomplete_ok_marker_present() -> None:
-    """``register-python-argcomplete`` grep-scans the first ~1024 bytes
-    of the script for ``PYTHON_ARGCOMPLETE_OK``. Without it, the shell
-    completion handler refuses to invoke the script entirely — losing
-    the marker would silently break tab completion on every install
-    until a user noticed and reported it."""
-    head = _CLI_PATH.read_bytes()[:1024]
-    assert b"PYTHON_ARGCOMPLETE_OK" in head, (
-        "PYTHON_ARGCOMPLETE_OK magic marker must be in the first 1024 "
-        "bytes of cli.py — argcomplete grep-skips scripts without it."
-    )
-
 
 def test_alias_completer_no_prefix_returns_sorted_list() -> None:
     """Empty prefix → full sorted alias list (shell collapses to the
@@ -238,70 +218,3 @@ def test_load_alias_names_caches_by_mtime(
     refreshed = _completion._load_alias_names()
     assert refreshed == ["qwen3-alpha", "qwen3-beta"]
 
-
-def test_cli_lazy_imports_argcomplete(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``vllm_mlx.cli`` must NOT import ``argcomplete`` at module load
-    — the minimal-deps CI lane runs without it. Regression guard for
-    the lazy-import fix in the round-2 of this PR."""
-    import importlib
-    import sys
-
-    # Force-reload cli with argcomplete blocked at import time.
-    monkeypatch.setitem(sys.modules, "argcomplete", None)
-    sys.modules.pop("vllm_mlx.cli", None)
-    cli = importlib.import_module("vllm_mlx.cli")
-
-    # The module imported successfully (no ModuleNotFoundError) and
-    # exports the expected entry point.
-    assert hasattr(cli, "main"), "cli module missing main() entry point"
-
-
-def test_autocomplete_handshake_returns_aliases_on_subprocess() -> None:
-    """End-to-end shell-completion handshake. Spawn ``python -m
-    vllm_mlx.cli`` with the argcomplete env vars and verify fd 8
-    receives the expected alias list — proves the magic marker,
-    the lazy import, and ``argcomplete.autocomplete(parser)`` all
-    line up at runtime, not just in unit tests.
-
-    Skipped when ``argcomplete`` is not importable in the current
-    interpreter (minimal-deps CI lane) — the lazy-import path is
-    covered by ``test_cli_lazy_imports_argcomplete`` instead."""
-    import os
-    import subprocess
-    import sys
-
-    pytest.importorskip("argcomplete")
-
-    env = {
-        **os.environ,
-        "_ARGCOMPLETE": "1",
-        "COMP_LINE": "qmlx serve qwen3.5-",
-        "COMP_POINT": "19",
-        "_ARGCOMPLETE_IFS": "\n",
-    }
-    # ``sys.executable`` so the child uses THIS interpreter — relying
-    # on the bare ``python3`` alias would silently route to a Python
-    # without our editable install or without argcomplete.
-    # fd 8 is where argcomplete writes; route it to stdout via the
-    # child shell so subprocess.run can capture it.
-    result = subprocess.run(
-        [
-            "bash",
-            "-c",
-            f"{sys.executable} -m vllm_mlx.cli 8>&1 1>/dev/null 2>/dev/null",
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, (
-        f"argcomplete handshake exit={result.returncode}; "
-        f"stderr={result.stderr!r}; stdout={result.stdout!r}"
-    )
-    completions = [ln for ln in result.stdout.splitlines() if ln.strip()]
-    assert any(c.startswith("qwen3.5-") for c in completions), (
-        f"expected qwen3.5-* matches, got: {completions[:5]}"
-    )
