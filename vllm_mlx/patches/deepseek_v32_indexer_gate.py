@@ -80,6 +80,18 @@ this is fine in production. The model.__call__ wrapper clears each shared
 layer's attribute IMMEDIATELY before the layer runs so stale values from a
 prior forward cannot leak into a fresh one.
 
+Scope: single device only
+-------------------------
+The pipeline-parallel exchange (``mx.distributed.send`` / ``recv_like`` /
+``all_gather``) and the rank/world-size guards that existed only for it
+have been cut. The layer-loop slice (``self.layers[self.start_idx + i]``
+for ``i in range(self.num_layers)``) mirrors upstream's per-shard shape
+and, on a single device (``start_idx == 0``,
+``num_layers == len(self.layers)``), degenerates to the full layer list —
+see the "single-device slice" marker in ``_patched_model_call``. If a
+future backend needs cross-device indexer state, add it as a separate,
+explicitly named feature; do not reintroduce ``mx.distributed`` here.
+
 When upstream mlx_lm lands first-class ``indexer_types`` support, delete this
 module and the import in ``vllm_mlx.utils.tokenizer`` — nothing else needs to
 change.
@@ -431,7 +443,6 @@ def install_deepseek_v32_indexer_gate() -> None:
 
         def _patched_model_call(self, x, cache=None):
             # Lazy import so the patch module doesn't pull mlx at import.
-            import mlx.core as mx
             from mlx_lm.models.base import create_attention_mask
 
             # ``DeepseekV32Model`` (the inner module) doesn't store
@@ -439,115 +450,26 @@ def install_deepseek_v32_indexer_gate() -> None:
             # decoder layer's attention — every layer's
             # ``self_attn.config`` is set by upstream
             # ``DeepseekV32Attention.__init__``.
-            #
-            # The slice is considered "inspectable" when the local
-            # ``self.layers`` list is non-empty and the local
-            # ``start_idx`` points to a real layer in it. An out-of-
-            # range ``start_idx`` is a pre-condition violation
-            # specifically for REAP shards (single-rank, non-REAP
-            # models always have ``start_idx == 0`` and a populated
-            # layer list, so they cannot hit this branch).
-            in_range = (
-                bool(self.layers)
-                and 0 <= self.start_idx < len(self.layers)
-                and self.layers[self.start_idx] is not None
-            )
             types = None
-            if in_range:
-                cfg = getattr(self.layers[self.start_idx].self_attn, "config", None)
+            if self.layers and self.layers[0] is not None:
+                cfg = getattr(self.layers[0].self_attn, "config", None)
                 if cfg is not None:
                     types = getattr(cfg, "indexer_types", None)
 
             if types is None:
-                # Non-REAP path: delegate to upstream verbatim. If
-                # ``in_range`` is False but this is genuinely a non-REAP
-                # model, upstream's own forward will handle the bogus
-                # slice the same way it always has — we are not making
-                # things any worse. We do NOT reach into the REAP path
-                # in this branch.
-                if not in_range:
-                    # Sanity: a non-REAP model with an out-of-range
-                    # slice is operator error. Delegating to upstream
-                    # here matches the prior behavior; we intentionally
-                    # do not raise so legitimate non-REAP edge cases
-                    # are not regressed.
-                    pass
+                # Non-REAP path: delegate to upstream verbatim.
                 return _orig_model_call(self, x, cache)
 
-            # From here on we know we're in a REAP path. Reject any
-            # out-of-range slice for REAP shards explicitly — silently
-            # delegating to upstream would leave the REAP semantic
-            # ambiguous (codex finding #2 on PR #967 round 8).
-            if not in_range:
-                raise ValueError(
-                    "deepseek_v32_indexer_gate: REAP shard start_idx="
-                    f"{self.start_idx} is out of range for local layers "
-                    f"list of length {len(self.layers)}. Each rank's "
-                    "start_idx must point to a real layer in its local "
-                    "self.layers."
-                )
-
-            # Validate the local layer slice before entering the REAP
-            # path: a malformed pipeline shard whose ``num_layers``
-            # extends past ``len(self.layers)`` would crash on
-            # ``self.layers[self.start_idx + i]`` deep inside the loop
-            # with an opaque ``IndexError``. Fail with a clear
-            # actionable error before any forward work happens (codex
-            # finding #1 on PR #967 round 7).
-            if self.start_idx + self.num_layers > len(self.layers):
-                raise ValueError(
-                    "deepseek_v32_indexer_gate: pipeline shard "
-                    f"start_idx={self.start_idx}, num_layers="
-                    f"{self.num_layers} extends past local layer list "
-                    f"length {len(self.layers)}. Each rank's "
-                    "[start_idx, start_idx + num_layers) range must fit "
-                    "entirely within self.layers."
-                )
-
-            # Reject pipeline-parallel shards whose first locally-iterated
-            # layer is ``"shared"``: the REAP reuse contract requires the
-            # most-recent ``"full"`` layer's topk indices, which on such a
-            # shard would have to be communicated from a prior pipeline
-            # rank. The surgical D1 fix here does not implement cross-rank
-            # communication of indexer state, so silently dense-fallback
-            # on the leading shared layers would change inference
-            # semantics relative to the published REAP contract. Fail
-            # clearly instead (codex finding #2 on PR #967 round 6).
-            # Single-rank usage is unaffected because ``_validate_anchor``
-            # already requires ``indexer_types[0] == "full"`` at model
-            # construction, so layer 0 (= start_idx 0) is never shared.
-            if (
-                0 <= self.start_idx < len(self.layers)
-                and self.layers[self.start_idx] is not None
-                and _resolve_mode(types, self.start_idx) == "shared"
-            ):
-                raise ValueError(
-                    "deepseek_v32_indexer_gate: pipeline-parallel shard "
-                    f"starting at layer {self.start_idx} is 'shared' "
-                    "(no local full-layer anchor for the REAP reuse "
-                    "contract). This surgical D1 fix does not implement "
-                    "cross-rank communication of the indexer's "
-                    "topk_indices; running this shard would silently "
-                    "fall back to dense MLA attention and change "
-                    "inference semantics. Re-shard so each rank starts "
-                    "on a 'full' layer, or extend the indexer gate with "
-                    "inter-rank topk communication."
-                )
-
+            # From here on we know we're in a REAP path (single device).
             # Replica of upstream ``DeepseekV32Model.__call__`` with topk
             # threading inserted into the layer loop.
             h = self.embed_tokens(x)
-            pipeline_rank = self.pipeline_rank
-            pipeline_size = self.pipeline_size
 
             if cache is None:
                 cache = [None] * self.num_layers
             mask = create_attention_mask(
                 h, cache[0][0] if cache[0] else None, return_array=True
             )
-
-            if pipeline_rank < pipeline_size - 1:
-                h = mx.distributed.recv_like(h, (pipeline_rank + 1))
 
             # ``last_topk_indices`` is set fresh by each ``"full"``
             # layer's forward in THIS call and consumed by the
@@ -557,31 +479,37 @@ def install_deepseek_v32_indexer_gate() -> None:
             # positions computed at a different query/cache length and
             # applying them to a fresh decode step would be a stale
             # selection (codex finding #1 on PR #967 round 5; supersedes
-            # the round-3 seed attempt). The case where this rank's
-            # iteration window would start with a ``"shared"`` layer
-            # (e.g. a pipeline-parallel slice without a local full-layer
-            # anchor) is rejected by the explicit ``ValueError`` raised
-            # before this point — so when we reach this line, the loop
-            # is guaranteed to encounter a ``"full"`` layer before any
-            # ``"shared"`` layer, and the initial ``None`` value is
-            # never consumed by a shared layer. Cross-rank communication
-            # of the current full layer's topk would be the
-            # architecturally-correct remedy for the rejected case if
-            # ever needed; that is out of scope for the surgical D1 fix
-            # here.
+            # the round-3 seed attempt). ``_validate_anchor`` requires
+            # ``indexer_types[0] == "full"`` at model construction, so
+            # the loop is guaranteed to encounter a ``"full"`` layer
+            # before any ``"shared"`` layer and the initial ``None``
+            # value is never consumed by a shared layer.
             last_topk_indices = None
 
+            # --- Single-device slice (pipeline comms cut) --------------
+            # The iteration below mirrors upstream's per-shard shape
+            # (``self.layers[self.start_idx + i]`` for ``i in
+            # range(self.num_layers)``). On a single device
+            # ``start_idx == 0`` and ``num_layers == len(self.layers)``,
+            # so this degenerates to the full layer list. The
+            # pipeline-parallel exchange (``mx.distributed.send`` /
+            # ``recv_like`` / ``all_gather``) and the rank/world-size
+            # guards that existed only for it have been cut; if a
+            # future backend needs cross-device indexer state, add it as
+            # a separate, explicitly named feature — do not
+            # reintroduce ``mx.distributed`` here.
+            #
             # Cache contract (mirrors upstream DeepseekV3Model.__call__
-            # exactly): ``cache`` is the LOCAL per-rank cache, length
+            # exactly): ``cache`` is the per-layer cache, length
             # ``self.num_layers`` (not the full model's
             # ``num_hidden_layers``). ``cache[i]`` corresponds to
             # ``self.layers[self.start_idx + i]`` — the i-th layer in
-            # THIS rank's slice. Upstream's ``DeepseekV3Model.make_cache``
-            # builds the per-rank slice list and the wrapper's forward
-            # iterates ``enumerate(self.layers[start:end])`` indexing
+            # the iteration. Upstream's ``DeepseekV3Model.make_cache``
+            # builds the slice list and the wrapper's forward iterates
+            # ``enumerate(self.layers[start:end])`` indexing
             # ``cache[e]`` the same way. Do not change ``cache[i]`` to
-            # ``cache[layer_idx]`` — it would mis-index the per-rank
-            # cache list and corrupt KV state across layers.
+            # ``cache[layer_idx]`` — it would mis-index the cache list
+            # and corrupt KV state across layers.
             for i in range(self.num_layers):
                 layer = self.layers[self.start_idx + i]
                 layer_idx = self.start_idx + i
@@ -597,14 +525,6 @@ def install_deepseek_v32_indexer_gate() -> None:
                     indexer = getattr(layer.self_attn, "indexer", None)
                     if indexer is not None:
                         last_topk_indices = getattr(indexer, "_last_topk_indices", None)
-
-            if pipeline_rank != 0:
-                h = mx.distributed.send(h, (pipeline_rank - 1) % pipeline_size)
-                if cache[-1] is not None:
-                    cache[-1][0].keys = mx.depends(cache[-1][0].keys, h)
-
-            if pipeline_size > 1:
-                h = mx.distributed.all_gather(h)[: h.shape[0]]
 
             return self.norm(h)
 
