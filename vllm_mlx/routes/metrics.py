@@ -1209,24 +1209,28 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
-    # ---- Metal memory (best-effort; may be absent on non-Metal hosts) --
+    # ---- Device memory (best-effort; may be absent on hosts without a
+    # GPU backend) --
     # get_stats reports GB rounded — convert back to bytes for the standard
     # Prometheus byte-unit convention. None → 0 via _coerce_number.
+    # Renamed from qmlx_metal_* (item 3: the seam makes the value
+    # backend-shaped, not Metal-shaped — the API shape is what clients
+    # pin).
     for stat_key, metric_name, help_text in (
         (
-            "metal_active_memory_gb",
-            "qmlx_metal_active_memory_bytes",
-            "Active Metal memory in bytes.",
+            "device_active_memory_gb",
+            "qmlx_device_active_memory_bytes",
+            "Active device memory in bytes.",
         ),
         (
-            "metal_peak_memory_gb",
-            "qmlx_metal_peak_memory_bytes",
-            "Peak Metal memory in bytes.",
+            "device_peak_memory_gb",
+            "qmlx_device_peak_memory_bytes",
+            "Peak device memory in bytes.",
         ),
         (
-            "metal_cache_memory_gb",
-            "qmlx_metal_cache_memory_bytes",
-            "Metal allocator cache in bytes.",
+            "device_cache_memory_gb",
+            "qmlx_device_cache_memory_bytes",
+            "Allocator cache in bytes.",
         ),
     ):
         gb = _coerce_number(stats.get(stat_key))
@@ -1442,8 +1446,8 @@ def _render_prometheus(cfg: Any) -> str:
     # process lifetime, so they bypass the sticky-counter accumulator
     # (no cache.clear() path resets them).
     #
-    # ``metal_cap_violations_total`` increments when ``add_request``
-    # rejected a new request because Metal active already crossed the
+    # ``qmlx_metal_cap_violations_total`` increments when ``add_request``
+    # rejected a new request because device active already crossed the
     # ``--gpu-memory-utilization`` soft cap. Pre-fix, MLX's
     # ``set_memory_limit`` silently let the allocator grow past the
     # cap while system RAM remained available, and the only operator-

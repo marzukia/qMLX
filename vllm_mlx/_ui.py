@@ -333,7 +333,7 @@ def render_live_line(stats: dict | None) -> str:
     run = stats.get("num_running", 0)
     wait = stats.get("num_waiting", 0)
     parts.append(f"[dim]run {run} / wait {wait}[/dim]")
-    active_gb = stats.get("metal_active_gb")
+    active_gb = stats.get("device_active_gb")
     if active_gb:
         parts.append(f"[dim]{active_gb:.1f} GB[/dim]")
     uptime = stats.get("uptime_s")
@@ -347,8 +347,13 @@ def status_kv_rows(stats: dict) -> list[tuple[str, str]]:
     source of truth for ``qmlx status`` in BOTH render modes.
 
     Field-by-field mapping is pinned by tests (issue #51 AC6).
+
+    Item 3 (device/backend seam): the memory rows read the ``device``
+    block of the /v1/status payload (renamed from ``metal``) — the
+    banner rows are user-visible API shape, so they follow the
+    rename.
     """
-    metal = stats.get("metal") or {}
+    device = stats.get("device") or {}
     cache = stats.get("cache") or {"enabled": False}
 
     def _opt(v) -> str:
@@ -369,8 +374,8 @@ def status_kv_rows(stats: dict) -> list[tuple[str, str]]:
         ("total_completion_tokens", _opt(stats.get("total_completion_tokens", 0))),
         ("generation_tps", f"{stats.get('generation_tps') or 0.0:.1f}"),
         ("prompt_tps", f"{stats.get('prompt_tps') or 0.0:.1f}"),
-        ("metal_active_gb", _gb(metal.get("active_memory_gb"))),
-        ("metal_peak_gb", _gb(metal.get("peak_memory_gb"))),
+        ("device_active_gb", _gb(device.get("active_memory_gb"))),
+        ("device_peak_gb", _gb(device.get("peak_memory_gb"))),
         ("cache", "enabled" if cache.get("enabled") else "disabled"),
     ]
     return rows

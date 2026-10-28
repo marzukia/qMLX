@@ -343,6 +343,18 @@ def test_capability_flags_parity():
     assert caps_no_sdpa.flash_attention is False
 
 
+def test_os_memory_eviction_capability(monkeypatch):
+    """Item 3: the OS-side memory-eviction capability is declared by
+    the backend (Metal: Darwin only), not by a raw ``sys.platform``
+    check in the call sites."""
+    import vllm_mlx.device.metal as metal_mod
+
+    monkeypatch.setattr(metal_mod.sys, "platform", "darwin")
+    assert MetalBackend(mx=FakeMx()).capabilities().os_memory_eviction is True
+    monkeypatch.setattr(metal_mod.sys, "platform", "linux")
+    assert MetalBackend(mx=FakeMx()).capabilities().os_memory_eviction is False
+
+
 # ---------------------------------------------------------------------------
 # Stream contract — declared single-stream detection (no string-probing
 # by callers)
