@@ -48,7 +48,7 @@ def test_speculative_config_ddtree_preflight_uses_config_overrides(
     )
 
     monkeypatch.setattr(
-        "vllm_mlx.speculative.ddtree.eligibility.have_runtime",
+        "vllm_mlx.spec_decode.ddtree.eligibility.have_runtime",
         lambda: True,
     )
     args = _ddtree_cli_args(
@@ -79,7 +79,7 @@ def test_speculative_config_ddtree_preflight_falls_back_to_alias_defaults(
     )
 
     monkeypatch.setattr(
-        "vllm_mlx.speculative.ddtree.eligibility.have_runtime",
+        "vllm_mlx.spec_decode.ddtree.eligibility.have_runtime",
         lambda: True,
     )
     args = _ddtree_cli_args(speculative_config='{"method":"ddtree"}')
@@ -96,7 +96,7 @@ def test_info_renders_ddtree_block_for_eligible_alias(capsys, monkeypatch) -> No
     from vllm_mlx.cli import info_command
 
     monkeypatch.setattr(
-        "vllm_mlx.speculative.ddtree.eligibility.have_runtime",
+        "vllm_mlx.spec_decode.ddtree.eligibility.have_runtime",
         lambda: True,
     )
     args = type("Args", (), {"model": "qwen3.5-9b-8bit"})()
@@ -174,7 +174,7 @@ class _FakeResult:
 
 
 def _fake_runtime():
-    from vllm_mlx.speculative.ddtree.runtime import DDTreeRuntime
+    from vllm_mlx.spec_decode.ddtree.runtime import DDTreeRuntime
 
     tokenizer = MagicMock()
     tokenizer.apply_chat_template.return_value = "user: 2+2?\nassistant:"
@@ -196,7 +196,7 @@ def _fake_runtime():
 def test_build_app_healthz_models_and_completion() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from vllm_mlx.spec_decode.ddtree.server import _build_app
 
     runtime = _fake_runtime()
     app = _build_app(
@@ -242,7 +242,7 @@ def test_build_app_healthz_models_and_completion() -> None:
 def test_build_app_healthz_works_while_runtime_loads() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from vllm_mlx.spec_decode.ddtree.server import _build_app
 
     future: concurrent.futures.Future = concurrent.futures.Future()
     app = _build_app(
@@ -283,7 +283,7 @@ def test_build_app_honors_api_key_and_model_name() -> None:
     from fastapi.testclient import TestClient
 
     from vllm_mlx.config import get_config, reset_config
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from vllm_mlx.spec_decode.ddtree.server import _build_app
 
     reset_config()
     try:
@@ -350,7 +350,7 @@ def test_build_app_honors_api_key_and_model_name() -> None:
 def test_build_app_runtime_load_failure_is_sanitized() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from vllm_mlx.spec_decode.ddtree.server import _build_app
 
     future: concurrent.futures.Future = concurrent.futures.Future()
     future.set_exception(RuntimeError("secret local path /tmp/model-cache"))
@@ -381,7 +381,7 @@ def test_build_app_runtime_load_failure_is_sanitized() -> None:
 def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.ddtree.server import _build_app
+    from vllm_mlx.spec_decode.ddtree.server import _build_app
 
     app = _build_app(
         runtime=_fake_runtime(),
@@ -457,7 +457,7 @@ def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
 
 
 def test_run_ddtree_server_loads_runtime_on_separate_executor(monkeypatch) -> None:
-    from vllm_mlx.speculative.ddtree import server
+    from vllm_mlx.spec_decode.ddtree import server
 
     class RecordingExecutor:
         def __init__(self) -> None:

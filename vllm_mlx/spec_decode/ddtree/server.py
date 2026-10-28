@@ -5,6 +5,34 @@ This mirrors the DFlash single-user boundary: DDTree mode bypasses
 BatchedEngine and routes generation through the optional external
 ``dtree_mlx`` runtime. The MVP prioritizes a clean end-to-end validation
 surface over breadth of OpenAI features.
+
+Executor ownership
+------------------
+
+This module owns TWO module-level, process-lifetime
+``ThreadPoolExecutor(max_workers=1)`` instances — neither belongs to
+BatchedEngine, the scheduler, or the engine-core step thread:
+
+* ``_ddtree_loader_executor`` — submitted exactly once at boot by
+  :func:`run_ddtree_server` to load the ``dtree_mlx`` runtime in the
+  background so the FastAPI app can come up (and serve ``/healthz``)
+  before the GB-scale model load finishes. The load future is handed
+  to ``_build_app`` and awaited on first use.
+* ``_ddtree_executor`` — every ``dtree_mlx`` generation call runs on
+  this ONE worker (via ``loop.run_in_executor`` under ``_ddtree_lock``).
+  Reason: mlx-lm 0.31.3+ keeps the GPU Stream in thread-local storage,
+  so the external runtime's model + generator must be created and
+  driven from the same thread for the lifetime of the process. A
+  default multi-worker pool would move the generator across threads
+  and trip "There is no Stream(gpu, N) in current thread" mid-stream.
+
+Both are created at import time of this module and drained by the
+explicit ``atexit`` hook below (deterministic shutdown order during
+graceful uvicorn termination). The CLI forks to this server BEFORE
+BatchedEngine is constructed, so the engine's single-step thread never
+coexists with these executors in one process. If a future phase brings
+DDTree inside BatchedEngine, this ownership must be revisited —
+re-audit item from the 2026-10-28 repositioning review.
 """
 
 from __future__ import annotations

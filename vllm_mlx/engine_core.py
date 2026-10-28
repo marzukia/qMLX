@@ -99,7 +99,7 @@ class EngineConfig:
     tool_logits_processor_factory: Any | None = None  # Factory for tool logits bias
     # NOTE: DFlash speculative decoding (issue #264) bypasses the
     # BatchedEngine entirely via a dedicated server module
-    # (``vllm_mlx.speculative.dflash.server``). No engine-side fields
+    # (``vllm_mlx.spec_decode.dflash.server``). No engine-side fields
     # are needed today. If a future phase-2 brings DFlash inside
     # BatchedEngine for B>1 support, add the config fields back here
     # and wire them through ``EngineCore.__init__``.

@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 
 from vllm_mlx.model_aliases import AliasProfile
-from vllm_mlx.speculative.dflash.eligibility import _looks_like_4bit
+from vllm_mlx.spec_decode.dflash.eligibility import _looks_like_4bit
 
 logger = logging.getLogger(__name__)
 _runtime_probe_error: str | None = None

@@ -563,7 +563,7 @@ def main() -> int:
     # (the 27B-8bit target is 28+ GB). Adopt the already-loaded
     # objects via the public injection API; the bench then exercises
     # the same generate() code path production does.
-    from vllm_mlx.speculative.dflash import load_runtime
+    from vllm_mlx.spec_decode.dflash import load_runtime
 
     driver.adopt(
         target=target,

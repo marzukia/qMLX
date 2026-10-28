@@ -246,9 +246,9 @@ def _validate_runtime_contract(runtime: Any) -> None:
     if missing:
         raise TypeError(
             f"runtime is missing required attribute(s) {missing}. "
-            "Expected a vllm_mlx.speculative.dflash.DFlashRuntime instance "
+            "Expected a vllm_mlx.spec_decode.dflash.DFlashRuntime instance "
             "or a compatible shim. See "
-            "vllm_mlx/speculative/dflash/runtime.py for the contract."
+            "vllm_mlx/spec_decode/dflash/runtime.py for the contract."
         )
 
 
@@ -280,7 +280,7 @@ class MlxVlmDFlashDriver:
     + drafter via mlx-vlm's loaders, then exposes
     :meth:`generate` which delegates to ``mlx_vlm.stream_generate``
     with ``draft_model`` and ``draft_kind`` set. The same code path the
-    DFlash server mode uses (see :mod:`vllm_mlx.speculative.dflash.server`).
+    DFlash server mode uses (see :mod:`vllm_mlx.spec_decode.dflash.server`).
     The bench script consumes the wrapper's generator and reads accept-
     rate / draft-len stats from the underlying drafter's
     ``accept_lens`` and ``draft_lens`` lists, which mlx-vlm populates as
@@ -292,13 +292,13 @@ class MlxVlmDFlashDriver:
     mlx-vlm's DFlash path is single-stream (mlx-vlm 0.6.3 has no batched
     DFlash kernel). Callers that need concurrency should serialize
     through an external lock — see
-    :mod:`vllm_mlx.speculative.dflash.server` for the pattern.
+    :mod:`vllm_mlx.spec_decode.dflash.server` for the pattern.
 
     Args:
         target_repo: HF path / local path of the target model. Loaded
             via :func:`mlx_vlm.utils.load`.
         drafter_repo: HF path / local path of the DFlash drafter.
-            Loaded via :func:`vllm_mlx.speculative.dflash.load_runtime`.
+            Loaded via :func:`vllm_mlx.spec_decode.dflash.load_runtime`.
         block_size: Default block size override passed to mlx-vlm's
             ``draft_block_size`` kwarg. Defaults to ``None`` so mlx-vlm
             uses the drafter checkpoint's trained value (typically 16).
@@ -349,7 +349,7 @@ class MlxVlmDFlashDriver:
 
     @property
     def runtime(self) -> Any:
-        """The :class:`vllm_mlx.speculative.dflash.DFlashRuntime` handle."""
+        """The :class:`vllm_mlx.spec_decode.dflash.DFlashRuntime` handle."""
         if self._runtime is None:
             raise RuntimeError("MlxVlmDFlashDriver.load() must be called first")
         return self._runtime
@@ -365,7 +365,7 @@ class MlxVlmDFlashDriver:
         GPU streams in thread-local storage. Loading on thread A and
         generating on thread B will crash. The DFlash server pins both
         to a single-worker executor (see
-        :mod:`vllm_mlx.speculative.dflash.server` for the pattern).
+        :mod:`vllm_mlx.spec_decode.dflash.server` for the pattern).
         """
         if self.loaded:
             return
@@ -374,7 +374,7 @@ class MlxVlmDFlashDriver:
         # of the Stub working.
         from mlx_vlm import load as _mlx_vlm_load
 
-        from vllm_mlx.speculative.dflash import load_runtime
+        from .runtime import load_runtime
 
         logger.info("[dflash.driver] Loading target via mlx-vlm: %s", self.target_repo)
         self._target, self._processor = _mlx_vlm_load(self.target_repo)
@@ -410,9 +410,9 @@ class MlxVlmDFlashDriver:
                 The bench script gets one of these via ``mlx_vlm.load``.
             processor: The matching mlx-vlm processor / tokenizer.
             runtime: A
-                :class:`vllm_mlx.speculative.dflash.DFlashRuntime` — the
+                :class:`vllm_mlx.spec_decode.dflash.DFlashRuntime` — the
                 loaded drafter + kind. Get one from
-                :func:`vllm_mlx.speculative.dflash.load_runtime`.
+                :func:`vllm_mlx.spec_decode.dflash.load_runtime`.
 
         Raises:
             ValueError: If the driver was already loaded or adopted.
