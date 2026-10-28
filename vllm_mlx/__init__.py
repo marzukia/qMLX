@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-qMLX: fast local LLM inference for Apple Silicon.
+qMLX: multi-backend MLX inference engine (Metal, mlx-rocm, mlx-cuda).
 
 A standalone OpenAI-compatible inference server built on Apple's MLX
 framework, mlx-lm for LLMs, and mlx-vlm for vision-language models.

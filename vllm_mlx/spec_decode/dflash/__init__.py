@@ -37,7 +37,7 @@ Public surface
   for the mlx-vlm DFlash bridge in :mod:`.runtime` /
   :mod:`.eligibility`).
 * :func:`load_runtime` / :class:`DFlashRuntime` — the lazy mlx-vlm
-  drafter-bridge handle (``pip install 'qmlx-serve[dflash]'``).
+  drafter-bridge handle (``pip install 'qmlx[dflash]'``).
 * :func:`check` / :class:`DFlashUnavailable` — alias-level eligibility
   gates (declared support, not-MoE, ≥8-bit, drafter declared).
 

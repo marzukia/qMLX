@@ -705,7 +705,7 @@ def run_dflash_server(
     if not have_runtime():
         raise RuntimeError(
             "DFlash server requires mlx-vlm 0.5.0+ — install with "
-            "``pip install 'qmlx-serve[dflash]'``."
+            "``pip install 'qmlx[dflash]'``."
         )
 
     # Belt-and-suspenders eligibility re-check for programmatic callers

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-qMLX: disk KV restore for hybrid MoE models on Apple Silicon — the `qmlx serve` CLI keeps a 122B Qwen model warm on a Mac.
+qMLX: multi-backend MLX inference engine (Metal, mlx-rocm, mlx-cuda) — OpenAI-compatible serving with disk KV restore for hybrid MoE models, speculative decoding, and a 122B Qwen model kept warm on a Mac.
 
 ## Commands
 
@@ -21,6 +21,6 @@ qMLX: disk KV restore for hybrid MoE models on Apple Silicon — the `qmlx serve
 
 ## Gotchas
 
-- Python >=3.10 floor; macOS Metal target only.
+- Python >=3.10 floor; Metal is the reference backend (mlx-rocm/mlx-cuda ride the same device/backend seam).
 - `HF_HUB_CACHE` env var for the model cache.
 - pre-commit runs ruff + mypy.
