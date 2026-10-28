@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-MLX Model wrappers for vLLM.
+MLX model wrappers.
 
 LLM models are loaded directly via mlx-lm (no wrapper needed).
 """

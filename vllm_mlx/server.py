@@ -3,7 +3,8 @@
 Unified OpenAI-compatible API server for qmlx.
 
 This module provides a FastAPI server that exposes an OpenAI-compatible
-API for LLM and MLLM (Multimodal Language Model) inference using MLX on Apple Silicon.
+API for LLM and MLLM (Multimodal Language Model) inference using MLX
+(Metal, mlx-rocm, and mlx-cuda backends).
 
 Supports two modes:
 - Simple mode (default): Maximum throughput for single-user scenarios
@@ -522,7 +523,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="qMLX API",
-    description="OpenAI-compatible API for MLX LLM/MLLM inference on Apple Silicon",
+    description="OpenAI-compatible API for MLX LLM/MLLM inference (Metal, ROCm, CUDA)",
     version="0.6.0",
     lifespan=lifespan,
 )

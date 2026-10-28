@@ -2407,7 +2407,7 @@ async def _create_chat_completion_impl(
                     "%s.supports_guided_generation=False). Falling back "
                     "to unconstrained decoding — schema will NOT be "
                     "enforced. Install with `pip install "
-                    "'qmlx-serve[guided]'` to enable outlines-backed "
+                    "'qmlx[guided]'` to enable outlines-backed "
                     "schema enforcement.",
                     type(engine).__name__,
                 )

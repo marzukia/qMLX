@@ -8,7 +8,7 @@
 ## Install with uv (recommended)
 
 ```bash
-uv tool install qmlx-serve@latest
+uv tool install qmlx@latest
 ```
 
 One command, isolated tool venv, no Python-version juggling — uv finds (or
@@ -19,11 +19,11 @@ installs) the right Python automatically. Upgrade later with
 ## Install with pip
 
 ```bash
-pip install qmlx-serve
+pip install qmlx
 ```
 
 If `python3 --version` reports 3.9 (macOS default), install a newer Python
-first: `brew install python@3.12` then `python3.12 -m pip install qmlx-serve`.
+first: `brew install python@3.12` then `python3.12 -m pip install qmlx`.
 
 ### From source (for development)
 
@@ -39,10 +39,10 @@ The base text-only install is ~460 MB. Vision and other capabilities ship as opt
 
 | Extra | Install | Adds |
 |---|---|---|
-| `vision` | `pip install 'qmlx-serve[vision]'` | mlx-vlm + torch (~322 MB) for the Gemma 4 / Qwen-VL model paths |
-| `chat` | `pip install 'qmlx-serve[chat]'` | Gradio web UI (~150 MB) |
-| `guided` | `pip install 'qmlx-serve[guided]'` | outlines (~80 MB) for schema-constrained JSON |
-| `all` | `pip install 'qmlx-serve[all]'` | Everything above (~1.1 GB) |
+| `vision` | `pip install 'qmlx[vision]'` | mlx-vlm + torch (~322 MB) for the Gemma 4 / Qwen-VL model paths |
+| `chat` | `pip install 'qmlx[chat]'` | Gradio web UI (~150 MB) |
+| `guided` | `pip install 'qmlx[guided]'` | outlines (~80 MB) for schema-constrained JSON |
+| `all` | `pip install 'qmlx[all]'` | Everything above (~1.1 GB) |
 
 ## Verify Installation
 
@@ -94,5 +94,5 @@ Pre-tap it once, then retry:
 brew tap homebrew/core --force   # ~1.3 GB, one-time
 brew tap raullenchai/qmlx
 brew trust raullenchai/qmlx
-brew install qmlx-serve
+brew install qmlx
 ```

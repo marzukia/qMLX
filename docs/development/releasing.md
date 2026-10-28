@@ -1,4 +1,4 @@
-# Releasing qmlx-serve
+# Releasing qmlx
 
 Releases are **manual**. The old automated pipeline (the `auto-release`,
 `publish`, `version-check`, and `release-preflight` workflows, plus the
@@ -33,17 +33,17 @@ push to `main`.
 
    ```bash
    python -m build
-   python -m twine upload dist/qmlx_serve-X.Y.Z*
+   python -m twine upload dist/qmlx-X.Y.Z*
    ```
 
-   You need a PyPI token with upload rights for `qmlx-serve`. Pass it as
+   You need a PyPI token with upload rights for `qmlx`. Pass it as
    `TWINE_USERNAME=__token__ TWINE_PASSWORD=<token>`, or put it in `~/.pypirc`.
    No token is stored on any server; supply it at upload time.
 
 4. **Tag the release:**
 
    ```bash
-   git tag -a vX.Y.Z -m "qmlx-serve X.Y.Z"
+   git tag -a vX.Y.Z -m "qmlx X.Y.Z"
    git push origin main --tags
    ```
 
@@ -53,7 +53,7 @@ push to `main`.
    python scripts/release_smoke.py --version X.Y.Z
    ```
 
-   Installs `qmlx-serve==X.Y.Z` from PyPI into a clean venv and re-imports the
+   Installs `qmlx==X.Y.Z` from PyPI into a clean venv and re-imports the
    release surfaces, confirming the published artifact is actually usable.
 
 ## End-user staleness warning
