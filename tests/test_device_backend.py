@@ -43,6 +43,17 @@ def _real_mx_or_none():
         return None
 
 
+def _metal_available():
+    """Model the seam's availability contract: the built-in Metal
+    backend resolves only when ``mx.metal.is_available()`` (mlx
+    importable AND a Metal device present) — import success alone is
+    not availability (Linux CI imports mlx fine, no Metal)."""
+    mx = _real_mx_or_none()
+    if mx is None:
+        return False
+    return bool(mx.metal.is_available())
+
+
 # ---------------------------------------------------------------------------
 # Fake mlx.core — same API surface the seam uses
 # ---------------------------------------------------------------------------
@@ -415,7 +426,7 @@ def test_get_backend_unavailable_registered_falls_through():
     register_backend(_Dead())
     try:
         b = get_backend()
-        if _real_mx_or_none() is not None:
+        if _metal_available():
             assert isinstance(b, MetalBackend)
         else:
             assert b is None
@@ -427,7 +438,7 @@ def test_get_backend_resolution():
     reset_registry()
     try:
         b = get_backend()
-        if _real_mx_or_none() is not None:
+        if _metal_available():
             assert isinstance(b, MetalBackend)
         else:
             assert b is None
