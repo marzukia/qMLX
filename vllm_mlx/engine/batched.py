@@ -798,6 +798,10 @@ class BatchedEngine(BaseEngine):
             self._is_mllm = False
         else:
             self._is_mllm = force_mllm or is_mllm_model(model_name)
+        # Tracks whether the operator explicitly asked for MLLM (--mllm).
+        # Only explicit requests hard-fail on builds without MLLM serving;
+        # auto-detected VLMs fall back to text serving in start().
+        self._mllm_explicit = bool(force_mllm)
         self._tool_logits_processor_factory = None
 
         self._model = None
@@ -979,8 +983,28 @@ class BatchedEngine(BaseEngine):
         if self._loaded:
             return
 
-        if self._is_mllm:
+        if self._is_mllm and self._mllm_explicit:
             await self._start_mllm()
+        elif self._is_mllm:
+            # Auto-detected as multimodal, but the operator did not ask
+            # for MLLM and this build has no MLLM/vision serving (stripped
+            # in the Qwen-only simplification, #20). Fall back to text-only
+            # serving instead of hard-failing: a vision-capable checkpoint
+            # still serves text fine through the LLM path, and MTP /
+            # spec-decode attach to the inner text model. Dogfood
+            # 2026-10-28: an oQ4e vision-capable model boot hard-failed
+            # on the stripped MLLM stub with no way to serve its text +
+            # MTP path without --text-only.
+            logger.warning(
+                "Model %s is vision-capable but this build has no "
+                "MLLM/vision serving — serving as text-only. Image input "
+                "is unavailable; pass --text-only to silence this, "
+                "--mllm to hard-fail, or use a vision-capable build "
+                "for image input.",
+                self._model_name,
+            )
+            self._is_mllm = False
+            await self._start_llm()
         else:
             await self._start_llm()
 
@@ -990,12 +1014,15 @@ class BatchedEngine(BaseEngine):
     async def _start_mllm(self) -> None:
         """MLLM (vision) serving was removed in the Qwen-only build.
 
-        ``_is_mllm`` is always False for the text-only models this build
-        serves, so ``start()`` never routes here. Kept as a stub so the
-        dispatch in ``start()`` stays structurally intact.
+        Only reachable when the operator explicitly passed ``--mllm``:
+        auto-detected multimodal models fall back to the text path in
+        :meth:`start` instead of raising. Kept as a stub so the dispatch
+        in ``start()`` stays structurally intact.
         """
         raise RuntimeError(
-            "MLLM/vision serving is not available in this text-only build."
+            "MLLM/vision serving is not available in this text-only "
+            "build. Drop --mllm to serve this model as text-only, or "
+            "use a vision-capable build for image input."
         )
 
     async def _start_llm(self) -> None:

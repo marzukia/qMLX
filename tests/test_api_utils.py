@@ -412,6 +412,77 @@ class TestIsMllmModelWeightsPresenceOverride:
         # No index file.
         assert is_mllm_model(str(model_dir)) is True
 
+    # ------------------------------------------------------------------
+    # Single-file checkpoints (no sharded index) — the oQ text-only /
+    # vision-capable conversions ship a lone model.safetensors plus the
+    # base VLM's config.json. The header carries the same authoritative
+    # tensor names as the index weight_map (#78 dogfood 2026-10-28).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_single_file_dir(tmp_path, name, config, tensor_names):
+        import mlx.core as mx
+
+        model_dir = tmp_path / name
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(json.dumps(config))
+        weights = {n: mx.zeros((2, 2)) for n in tensor_names}
+        mx.save_safetensors(str(model_dir / "model.safetensors"), weights)
+        return model_dir
+
+    def test_single_file_no_multimodal_tensors_is_text_only(self, tmp_path):
+        """VLM config + single-file safetensors whose header carries only
+        language tensors → False (text route). The oQ4e dogfood case:
+        config declares the VLM base, weights are language-only."""
+        model_dir = self._make_single_file_dir(
+            tmp_path,
+            "Qwen3.8-27B-oQ4e-textonly",
+            {
+                "model_type": "qwen3_5",
+                "architectures": ["Qwen3_5ForConditionalGeneration"],
+                "vision_config": {"hidden_size": 1152},
+            },
+            [
+                "language_model.model.layers.0.self_attn.q_proj.weight",
+                "language_model.lm_head.weight",
+            ],
+        )
+        assert is_mllm_model(str(model_dir)) is False
+
+    def test_single_file_with_vision_tensors_is_vlm(self, tmp_path):
+        """VLM config + single-file safetensors carrying ``visual.``
+        tensors → True (genuine VLM, header scan finds the tower)."""
+        model_dir = self._make_single_file_dir(
+            tmp_path,
+            "Qwen3.8-27B-oQ4e",
+            {
+                "model_type": "qwen3_5",
+                "architectures": ["Qwen3_5ForConditionalGeneration"],
+                "vision_config": {"hidden_size": 1152},
+            },
+            [
+                "language_model.model.layers.0.self_attn.q_proj.weight",
+                "visual.blocks.0.attn.qkv.weight",
+            ],
+        )
+        assert is_mllm_model(str(model_dir)) is True
+
+    def test_single_file_corrupt_header_falls_back_to_config(self, tmp_path):
+        """Unreadable safetensors header → probe returns None → the
+        config decision stands (True), same as the no-file case."""
+        model_dir = tmp_path / "corrupt-single-file"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["Qwen2VLForConditionalGeneration"],
+                    "vision_config": {"hidden_size": 768},
+                }
+            )
+        )
+        (model_dir / "model.safetensors").write_bytes(b"not a real header at all")
+        assert is_mllm_model(str(model_dir)) is True
+
     def test_unreadable_index_falls_back_to_config(self, tmp_path):
         model_dir = tmp_path / "broken-index"
         model_dir.mkdir()
