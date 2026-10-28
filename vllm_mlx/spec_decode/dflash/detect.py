@@ -10,7 +10,7 @@ same closed-key schema constraint on ``aliases.json``):
   documented in :data:`vllm_mlx.model_aliases._ALLOWED_PROFILE_KEYS`.
   Adding ``dflash_drafter`` would silently fail at load — and the
   existing ``dflash_draft_model`` field is reserved by the original
-  mlx-vlm DFlash bridge (:mod:`vllm_mlx.speculative.dflash`), which
+  mlx-vlm DFlash bridge (:mod:`vllm_mlx.spec_decode.dflash`), which
   carries its own eligibility gates we don't want to disturb. So the
   spec-decode drafter binding lives in a side-registry instead.
 * ``model_type`` is already populated on every HF config and is the

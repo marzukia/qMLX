@@ -8,7 +8,7 @@
 
 ## Setup
 
-- **Drafter**: `vllm_mlx/speculative/suffix_decoding.py` — adaptive suffix-tree, `max_draft=8`, `max_suffix=4`, `min_conf=0.3`.
+- **Drafter**: `vllm_mlx/spec_decode/suffix_decoding.py` — adaptive suffix-tree, `max_draft=8`, `max_suffix=4`, `min_conf=0.3`.
 - **Verify**: single batched forward over `[next, draft₀..draft_{k-1}]`; argmax at each position; accept up to first mismatch; `mlx_cache.trim_prompt_cache(rejected)` for the rejected tail.
 - **Workloads** (6): `chat`, `code_edit`, `tool_loop`, `agent_react`, `json_array`, `summarize` — covers chat regression-floor, high-redundancy edit, repeated tool structure, ReAct agent loop, structured emit, and a low-redundancy summarize control.
 - **Models** (3): one pure-attention 8-bit, one pure-attention 4-bit, one hybrid (DeltaNet) 4-bit.

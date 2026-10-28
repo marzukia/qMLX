@@ -1708,8 +1708,8 @@ def _preflight_ddtree_or_exit(args):
         sys.exit(2)
 
     from .model_aliases import resolve_profile
-    from .speculative.ddtree import DDTreeUnavailable, check
-    from .speculative.ddtree.eligibility import have_runtime, runtime_probe_error
+    from .spec_decode.ddtree import DDTreeUnavailable, check
+    from .spec_decode.ddtree.eligibility import have_runtime, runtime_probe_error
 
     alias_name = getattr(args, "_original_alias", None) or args.model
     profile = resolve_profile(alias_name)
@@ -2002,7 +2002,7 @@ def serve_command(args):
     # hot CLI path.
     _wants_dflash = getattr(args, "enable_dflash", False)
     if _wants_dflash:
-        from .speculative.dflash.eligibility import have_runtime
+        from .spec_decode.dflash.eligibility import have_runtime
 
         if not have_runtime():
             print(
@@ -2385,7 +2385,7 @@ def serve_command(args):
     # aliases.json + checks the module spec); no model load yet.
     if args.enable_dflash:
         from .model_aliases import resolve_profile
-        from .speculative.dflash import DFlashUnavailable, check
+        from .spec_decode.dflash import DFlashUnavailable, check
 
         # ``have_runtime()`` validated at the top-of-function boot-guard
         # tier — see the 0.9.2 dogfood comment near the audio probe.
@@ -2755,7 +2755,7 @@ def serve_command(args):
             )
             sys.exit(2)
         from .model_aliases import resolve_profile
-        from .speculative.dflash.server import run_dflash_server
+        from .spec_decode.dflash.server import run_dflash_server
 
         _alias_name = getattr(args, "_original_alias", None) or args.model
         _profile = resolve_profile(_alias_name)
@@ -2782,7 +2782,7 @@ def serve_command(args):
     # speculative-decode mode, but the MVP runs through the external
     # dtree-mlx runtime rather than BatchedEngine.
     if args.enable_ddtree:
-        from .speculative.ddtree.server import run_ddtree_server
+        from .spec_decode.ddtree.server import run_ddtree_server
 
         _alias_name = getattr(args, "_ddtree_alias_name", None)
         _profile = getattr(args, "_ddtree_profile", None)
@@ -5042,7 +5042,7 @@ def _print_dflash_status(alias: str, profile) -> None:
     present) so a user who tried DFlash and got a vague error can see
     exactly which gate they're tripping.
     """
-    from vllm_mlx.speculative.dflash.eligibility import (
+    from vllm_mlx.spec_decode.dflash.eligibility import (
         _looks_like_4bit,
         have_runtime,
         report,
@@ -5118,8 +5118,8 @@ def _print_dflash_status(alias: str, profile) -> None:
 
 def _print_ddtree_status(alias: str, profile) -> None:
     """Render DDTree status for ``qmlx info <alias>``."""
-    from vllm_mlx.speculative.ddtree.eligibility import have_runtime, report
-    from vllm_mlx.speculative.dflash.eligibility import _looks_like_4bit
+    from vllm_mlx.spec_decode.ddtree.eligibility import have_runtime, report
+    from vllm_mlx.spec_decode.dflash.eligibility import _looks_like_4bit
 
     r = report(profile, alias=alias)
     inner = 60

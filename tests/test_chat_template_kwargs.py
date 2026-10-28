@@ -227,7 +227,7 @@ class TestExtractThinkingFromRequest:
 
 class TestDflashPrecedence:
     """Mirror of the dflash route's branch in
-    ``vllm_mlx/speculative/dflash/server.py`` — kept in sync via the
+    ``vllm_mlx/spec_decode/dflash/server.py`` — kept in sync via the
     shared ``_extract_thinking_from_request`` helper.
     """
 

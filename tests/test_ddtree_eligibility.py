@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for ``vllm_mlx/speculative/ddtree/eligibility.py``."""
+"""Unit tests for ``vllm_mlx/spec_decode/ddtree/eligibility.py``."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from vllm_mlx.model_aliases import AliasProfile
-from vllm_mlx.speculative.ddtree.eligibility import (
+from vllm_mlx.spec_decode.ddtree.eligibility import (
     DDTreeUnavailable,
     check,
     report,
@@ -99,7 +99,7 @@ def test_qwen3_5_9b_4bit_alias_fails_with_4bit_reason() -> None:
 def test_runtime_patches_rope_parameters_without_copying_weights(
     tmp_path, monkeypatch
 ) -> None:
-    from vllm_mlx.speculative.ddtree import runtime
+    from vllm_mlx.spec_decode.ddtree import runtime
 
     source = tmp_path / "source"
     source.mkdir()
@@ -131,7 +131,7 @@ def test_runtime_patches_rope_parameters_without_copying_weights(
 
 
 def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
-    from vllm_mlx.speculative.ddtree import runtime
+    from vllm_mlx.spec_decode.ddtree import runtime
 
     source = tmp_path / "source"
     source.mkdir()
@@ -167,7 +167,7 @@ def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
 def test_runtime_cleans_temp_patch_dir_on_write_failure(tmp_path, monkeypatch) -> None:
     import pytest
 
-    from vllm_mlx.speculative.ddtree import runtime
+    from vllm_mlx.spec_decode.ddtree import runtime
 
     source = tmp_path / "source"
     source.mkdir()
@@ -204,7 +204,7 @@ def test_runtime_cleans_temp_patch_dir_on_write_failure(tmp_path, monkeypatch) -
 def test_eligible_aliases_surfaces_alias_registry_errors(monkeypatch) -> None:
     import pytest
 
-    from vllm_mlx.speculative.ddtree import eligibility
+    from vllm_mlx.spec_decode.ddtree import eligibility
 
     def boom():
         raise RuntimeError("alias registry broken")
@@ -218,7 +218,7 @@ def test_eligible_aliases_surfaces_alias_registry_errors(monkeypatch) -> None:
 def test_runtime_patches_qwen35_split_prefill() -> None:
     import mlx.core as mx
 
-    from vllm_mlx.speculative.ddtree import runtime
+    from vllm_mlx.spec_decode.ddtree import runtime
 
     class Cache:
         offset = 0
