@@ -335,7 +335,7 @@ class TestBatchedEngineGetStats:
         bg = {"generation_tps": 42.0, "prompt_tps": 100.0}
         engine = self._make_engine(
             {
-                "metal_active_memory_gb": 1.0,
+                "device_active_memory_gb": 1.0,
                 "batch_generator": bg,
                 "other_key": "ignored",
             }
@@ -344,19 +344,19 @@ class TestBatchedEngineGetStats:
         stats = engine.get_stats()
 
         assert stats["batch_generator"] == bg
-        assert stats["metal_active_memory_gb"] == 1.0
+        assert stats["device_active_memory_gb"] == 1.0
         # Non-promoted keys must not appear at top level.
         assert "other_key" not in stats
         # Full mllm_stats remains nested for debugging.
         assert stats["mllm_scheduler"]["other_key"] == "ignored"
 
     def test_get_stats_omits_missing_batch_generator(self):
-        engine = self._make_engine({"metal_active_memory_gb": 2.5})
+        engine = self._make_engine({"device_active_memory_gb": 2.5})
 
         stats = engine.get_stats()
 
         assert "batch_generator" not in stats
-        assert stats["metal_active_memory_gb"] == 2.5
+        assert stats["device_active_memory_gb"] == 2.5
 
 
 class TestGuidedGenerationStepThread:

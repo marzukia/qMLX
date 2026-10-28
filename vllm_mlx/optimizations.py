@@ -69,9 +69,26 @@ def get_system_memory_gb() -> float:
     """
     Get actual system memory in GB.
 
+    Item 3 (device/backend seam): the primary source is the seam's
+    ``total_memory_bytes()`` (replaces the darwin-only
+    ``sysctl -n hw.memsize`` probe — on a ported build the backend
+    is the only source). ``sysctl`` stays as the fallback for
+    systems where no GPU backend resolves (e.g. a CPU-only host that
+    still has the OS-level probe).
+
     Returns:
         Total system memory in GB (unified memory on Apple Silicon)
     """
+    try:
+        from vllm_mlx.device import get_backend
+
+        backend = get_backend()
+        if backend is not None:
+            mem_bytes = backend.total_memory_bytes()
+            if mem_bytes > 0:
+                return mem_bytes / (1024**3)
+    except Exception:
+        pass
     try:
         import subprocess
 
@@ -84,29 +101,27 @@ def get_system_memory_gb() -> float:
         mem_bytes = int(result.stdout.strip())
         return mem_bytes / (1024**3)
     except Exception:
-        # Fallback: try to get from MLX device info
-        try:
-            device_info = mx.device_info()
-            if "memory_size" in device_info:
-                return device_info["memory_size"] / (1024**3)
-        except Exception:
-            pass
         return 16.0  # Conservative default
 
 
 def detect_hardware() -> HardwareInfo:
     """
-    Detect Apple Silicon hardware and return info.
+    Detect hardware and return info.
 
-    Memory is detected dynamically from the system.
+    Item 3 (device/backend seam): the chip name comes from the seam's
+    ``device_name()`` (replaces the raw mlx device-info key-dig;
+    ported backends report their own device name). Memory is detected
+    dynamically from the system.
     Other specs (bandwidth, GPU cores) come from known chip profiles.
 
     Returns:
         HardwareInfo with detected hardware specifications
     """
     try:
-        device_info = mx.device_info()
-        device_name = device_info.get("device_name", "")
+        from vllm_mlx.device import get_backend
+
+        backend = get_backend()
+        device_name = backend.device_name() if backend else ""
         actual_memory_gb = get_system_memory_gb()
 
         # Match with known profiles (check longest names first)
@@ -178,14 +193,20 @@ def get_optimization_status() -> dict:
     """
     Get current hardware and MLX status.
 
+    Item 3 (device/backend seam): device identity + memory stats + the
+    flash-attention capability all come through the seam (the
+    capability report is the same ``hasattr`` feature-detection the
+    old code did inline).
+
     Returns:
         dict with hardware info and MLX configuration
     """
+    from vllm_mlx.device import get_backend
+
     hw = detect_hardware()
-    device_info = mx.device_info()
-    flash_available = hasattr(mx, "fast") and hasattr(
-        mx.fast, "scaled_dot_product_attention"
-    )
+    backend = get_backend()
+    caps = backend.capabilities() if backend else None
+    mem = backend.memory_stats() if backend else None
 
     return {
         "hardware": {
@@ -193,15 +214,17 @@ def get_optimization_status() -> dict:
             "total_memory_gb": hw.total_memory_gb,
             "memory_bandwidth_gbs": hw.memory_bandwidth_gbs,
             "gpu_cores": hw.gpu_cores,
-            "device_name": device_info.get("device_name", "Unknown"),
+            "device_name": (backend.device_name() if backend else "") or "Unknown",
         },
         "mlx_memory": {
-            "active_bytes": mx.get_active_memory(),
-            "cache_bytes": mx.get_cache_memory(),
-            "peak_bytes": mx.get_peak_memory(),
+            "active_bytes": mem.active_bytes if mem else 0,
+            "cache_bytes": mem.cache_bytes if mem else 0,
+            "peak_bytes": mem.peak_bytes if mem else 0,
         },
         "mlx_lm_features": {
-            "flash_attention": "built-in" if flash_available else "not available",
+            "flash_attention": (
+                "built-in" if (caps and caps.flash_attention) else "not available"
+            ),
             "metal_kernels": "optimized for Apple Silicon",
             "kv_cache": "managed by mlx-lm",
             "quantization": "4-bit and 8-bit supported",

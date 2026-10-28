@@ -477,7 +477,7 @@ def _run_uvicorn_live(app, args, log_level: str) -> None:
             "generation_tps": bg.get("generation_tps") or 0.0,
             "num_running": stats.get("num_running", 0),
             "num_waiting": stats.get("num_waiting", 0),
-            "metal_active_gb": stats.get("metal_active_memory_gb"),
+            "device_active_gb": stats.get("device_active_memory_gb"),
             "uptime_s": stats.get("uptime_seconds"),
         }
 
@@ -2696,7 +2696,8 @@ def serve_command(args):
         ),
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
         # SchedulerConfig so the admission gate enforces the same cap
-        # that ``mx.set_memory_limit`` only treats as a guideline. The
+        # that the device backend's memory limit only treats as a
+        # guideline. The
         # CLI ↔ Config fidelity audit blocks merges where this kwarg
         # exists on SchedulerConfig but is missing at the construction
         # site — without this line, ``--gpu-memory-utilization 0.45``

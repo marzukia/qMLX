@@ -164,7 +164,8 @@ class EngineCore:
         scheduler_config = self.config.scheduler_config or SchedulerConfig()
         # D-METAL-CAP: propagate the engine-level ``gpu_memory_utilization``
         # to the scheduler so its admission gate can enforce the same cap
-        # that ``mx.set_memory_limit`` only treats as a hint. Skip when the
+        # that the allocator (seam ``enforcement_mode == HINT``) only
+        # treats as a hint. Skip when the
         # caller already wired it explicitly to a non-zero value so unit
         # tests that craft a SchedulerConfig in isolation retain their
         # explicit setting.
@@ -434,7 +435,7 @@ class EngineCore:
           short-circuited when pressure is below its threshold AND
           when the cap is disabled (default ``gpu_memory_utilization
           = 0.0``), so calling this every 16 steps costs one
-          ``mx.get_active_memory()`` and one dict lookup on
+          ``memory_stats()`` and one dict lookup on
           configurations that don't need it.
         - Exceptions from the eviction path (codex round 2 BLOCKING
           #1: e.g. ``memory_aware_cache._evict_lru`` raising under a
@@ -476,14 +477,16 @@ class EngineCore:
             self._idle_event = asyncio.Event()
 
         # Emergency memory pressure threshold — dynamic based on gpu_memory_utilization.
-        # Uses Metal's max recommended working set when available, falling back to
-        # device memory. Applies a 5% gap above the soft limit (capped at 99%).
+        # Uses the backend's recommended working set when available (seam,
+        # item 3), falling back to device memory. Applies a 5% gap above the
+        # soft limit (capped at 99%).
         _gpu_mem_util = self.config.gpu_memory_utilization
         try:
-            _device_info = mx.device_info()
-            _max_recommended = _device_info.get(
-                "max_recommended_working_set_size",
-                _device_info.get("memory_size", 0),
+            from vllm_mlx.device import get_backend
+
+            _backend = get_backend()
+            _max_recommended = (
+                _backend.recommended_working_set_bytes() if _backend else 0
             )
             _device_mem = (
                 _max_recommended if _max_recommended > 0 else 200 * 1024 * 1024 * 1024
@@ -525,14 +528,18 @@ class EngineCore:
                     # Emergency memory pressure check
                     if self._steps_executed % _memory_check_interval == 0:
                         try:
-                            active_mem = mx.get_active_memory()
-                            if active_mem > _memory_pressure_threshold:
-                                mx.clear_cache()
-                                logger.warning(
-                                    f"[Memory pressure] {active_mem / 1e9:.1f}GB > "
-                                    f"{_memory_pressure_threshold / 1e9:.0f}GB threshold, "
-                                    f"forced cache clear"
-                                )
+                            from vllm_mlx.device import get_backend
+
+                            _backend = get_backend()
+                            if _backend is not None:
+                                active_mem = _backend.memory_stats().active_bytes
+                                if active_mem > _memory_pressure_threshold:
+                                    mx.clear_cache()
+                                    logger.warning(
+                                        f"[Memory pressure] {active_mem / 1e9:.1f}GB > "
+                                        f"{_memory_pressure_threshold / 1e9:.0f}GB threshold, "
+                                        f"forced cache clear"
+                                    )
                         except Exception:
                             pass
 

@@ -1102,9 +1102,9 @@ class BatchedEngine(BaseEngine):
         def _set_metal_limits() -> None:
             # Item 3 (device/backend seam): the boot cap reads the
             # recommended working set through the seam instead of
-            # digging ``mx.device_info()`` keys directly. ``None`` from
+            # digging raw device-info keys directly. ``None`` from
             # ``get_backend()`` is the same "no GPU backend" semantics
-            # as the old ``mx.metal.is_available()`` gate.
+            # as the old Metal availability gate.
             from vllm_mlx.device import get_backend
 
             backend = get_backend()
@@ -1134,7 +1134,7 @@ class BatchedEngine(BaseEngine):
         try:
             self._model_load_executor.submit(_set_metal_limits).result()
         except Exception as e:
-            logger.warning(f"Failed to set Metal memory limits: {e}")
+            logger.warning(f"Failed to set device memory limits: {e}")
 
         # Create engine config
         scheduler_config = self._scheduler_config or SchedulerConfig()

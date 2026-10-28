@@ -33,9 +33,9 @@ def mock_engine():
         "num_requests_processed": 42,
         "total_prompt_tokens": 1000,
         "total_completion_tokens": 2000,
-        "metal_active_memory_gb": 8.5,
-        "metal_peak_memory_gb": 12.0,
-        "metal_cache_memory_gb": 3.0,
+        "device_active_memory_gb": 8.5,
+        "device_peak_memory_gb": 12.0,
+        "device_cache_memory_gb": 3.0,
     }
     return engine
 
@@ -387,7 +387,7 @@ class TestHealthRoutes:
             assert data["status"] == "idle"
             assert data["model"] == "test-model"
             assert data["steps_executed"] == 500
-            assert data["metal"]["active_memory_gb"] == 8.5
+            assert data["device"]["active_memory_gb"] == 8.5
             # generation_tps/prompt_tps default to 0 when batch_generator
             # stats are absent (text-only batched engine path).
             assert data["generation_tps"] == 0
