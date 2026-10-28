@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MLLM Benchmark Script for vllm-mlx
+MLLM Benchmark Script for qmlx
 
 Tests Multimodal Language Models with real images of dogs from Wikimedia Commons
 at different resolutions and measures performance metrics.
@@ -210,7 +210,7 @@ def run_benchmark(
     Run full MLLM benchmark across multiple resolutions.
 
     Args:
-        server_url: URL of the vllm-mlx server
+        server_url: URL of the qmlx server
         resolutions: List of (width, height) tuples to test
         warmup_runs: Number of warmup runs before measuring
         image_url: URL of image to use (default: dog from Wikimedia)
@@ -394,7 +394,7 @@ def save_results(results: list[BenchmarkResult], output_path: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MLLM Benchmark for vllm-mlx - Tests with dog images at different resolutions",
+        description="MLLM Benchmark for qmlx - Tests with dog images at different resolutions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -419,7 +419,7 @@ Examples:
         "--server-url",
         type=str,
         default="http://localhost:8000",
-        help="URL of the vllm-mlx server",
+        help="URL of the qmlx server",
     )
     parser.add_argument(
         "--output",

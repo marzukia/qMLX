@@ -2,7 +2,7 @@
 """
 Prompt Lookup Decoding Benchmark.
 
-Connects to a running vllm-mlx server on localhost:8000 and measures
+Connects to a running qmlx server on localhost:8000 and measures
 tokens/sec for prompts that contain repetitive patterns -- the kind
 of output where prompt-lookup speculative decoding should shine.
 

@@ -17,12 +17,11 @@ logger = logging.getLogger(__name__)
 
 # Install the per-layer Indexer gate for REAP-pruned DeepseekV32 configs
 # (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit). The hook is
-# placed HERE (and not only in vllm_mlx.model_runner) because the real
-# `qmlx serve` boot path is:
+# placed HERE because this is the real `qmlx serve` boot path:
 #   cli -> server -> engine.batched._start_llm -> utils.tokenizer.load_model_with_fallback
 #   -> mlx_lm.load -> mlx_lm.utils.load_model
-# None of those import model_runner, so installing the gate there alone
-# missed the production load path (PR #967 wiring bug). Install is
+# (PR #967 originally wired the gate into a module the boot path never
+# imported; living here, it can't be missed.) Install is
 # idempotent (_LOCK + _INSTALLED early-return) and a no-op on configs
 # that don't publish ``indexer_types``.
 from ..patches.deepseek_v32_indexer_gate import (

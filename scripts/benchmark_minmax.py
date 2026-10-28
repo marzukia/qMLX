@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive benchmark for vllm-mlx + MiniMax-M2.5 on M3 Ultra.
+Comprehensive benchmark for qmlx + MiniMax-M2.5 on M3 Ultra.
 
 Measures 6 dimensions that map to our optimization tiers:
   1. TTFT (Time To First Token) — prefill speed
@@ -565,7 +565,7 @@ def print_summary(all_results):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="vllm-mlx MiniMax benchmark")
+    parser = argparse.ArgumentParser(description="qmlx MiniMax benchmark")
     parser.add_argument(
         "--test",
         choices=[
