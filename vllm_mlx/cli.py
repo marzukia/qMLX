@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# PYTHON_ARGCOMPLETE_OK
 # SPDX-License-Identifier: Apache-2.0
 """
 CLI for qmlx (package name: ``vllm_mlx``).
@@ -26,15 +25,6 @@ from vllm_mlx._completion import alias_completer
 # rate-limit + Range-request passthrough. Override with the env var
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
-
-# NOTE: ``argcomplete`` is imported lazily inside ``main()`` instead of
-# at module top. Module-level imports of ``vllm_mlx.cli`` (e.g.
-# ``tests/test_harmony_parsers.py::TestServeLogLevelFlags``) run in the
-# minimal-deps CI lane that doesn't pre-install argcomplete; pulling it
-# at top would surface as ``ModuleNotFoundError`` during test collection.
-# argcomplete is still a required runtime dep in ``pyproject.toml`` so
-# real installs get tab completion out of the box.
-
 
 def _log_level_choice(value: str) -> str:
     """Argparse ``type`` callable: normalize to upper-case so
@@ -2019,8 +2009,9 @@ def serve_command(args):
             )
             sys.exit(1)
 
-    # Interactive auto-upgrade prompt — when serve runs interactively and a
-    # newer release is available, ask once before booting the model. Honors
+    # Non-interactive version check — when serve runs and a newer release
+    # is available, print a one-line notice (never an interactive prompt,
+    # never an auto-upgrade; operator order 10-28). Honors
     # QMLX_DISABLE_VERSION_CHECK, CI=1, and non-TTY stdin. Cached
     # piggy-backs on the existing staleness check's cache (24h TTL).
     from vllm_mlx._version_check import prompt_upgrade_if_available
@@ -5532,100 +5523,6 @@ def upgrade_command(args):
     sys.exit(result.returncode)
 
 
-def telemetry_command(args) -> None:
-    """Manage anonymous usage telemetry — see Issue #236.
-
-    Five actions: ``status`` / ``enable`` / ``disable`` / ``preview`` /
-    ``reset``. Defaults to ``status`` when no action given so users can
-    type ``qmlx telemetry`` and immediately see what's set up.
-    """
-    # Imports kept inside the function so the telemetry package is only
-    # loaded when actually needed — keeps `--help` and unrelated
-    # subcommands cheap.
-    import json
-
-    from vllm_mlx import __version__ as qmlx_version
-    from vllm_mlx.telemetry import (
-        consent_source,
-        get_consent_state,
-        get_or_create_client_id,
-        is_enabled,
-        record_consent,
-        reset_state,
-    )
-    from vllm_mlx.telemetry.schema import sample_preview_payload
-    from vllm_mlx.telemetry.state import client_id_path, consent_path
-
-    action = getattr(args, "telemetry_action", None) or "status"
-    cli_no = getattr(args, "no_telemetry", False)
-
-    if action == "status":
-        state = get_consent_state()
-        print()
-        print(
-            f"  Telemetry: {'ENABLED' if is_enabled(cli_no_telemetry=cli_no) else 'disabled'}"
-        )
-        print(f"  Source:    {consent_source(cli_no_telemetry=cli_no)}")
-        if state is not None:
-            print(
-                f"  Consent:   {state.consent} (recorded {state.prompted_at}, "
-                f"by qmlx {state.prompted_version})"
-            )
-        else:
-            print("  Consent:   never prompted")
-        print(f"  Files:     {consent_path()}")
-        print(f"             {client_id_path()}")
-        print()
-        print("  Subcommands:  enable | disable | preview | reset")
-        print()
-        return
-
-    if action == "enable":
-        record_consent(True, qmlx_version=qmlx_version)
-        # Generate the client_id eagerly so `preview` immediately after
-        # has a real id to show.
-        get_or_create_client_id()
-        print()
-        print("  Telemetry: ENABLED. Thanks for helping us prioritise.")
-        print("  Disable anytime with `qmlx telemetry disable`.")
-        print("  Preview what we'd send: `qmlx telemetry preview`.")
-        print()
-        return
-
-    if action == "disable":
-        record_consent(False, qmlx_version=qmlx_version)
-        print()
-        print("  Telemetry: disabled. No data will be sent.")
-        print("  Re-enable anytime with `qmlx telemetry enable`.")
-        print()
-        return
-
-    if action == "preview":
-        cid = get_or_create_client_id()
-        payload = sample_preview_payload(client_id=cid, qmlx_version=qmlx_version)
-        print()
-        print("  Sample payload (this is exactly the shape we send):")
-        print()
-        print(json.dumps(payload.to_dict(), indent=2))
-        print()
-        if not is_enabled(cli_no_telemetry=cli_no):
-            print("  Telemetry is currently disabled — nothing is actually sent.")
-            print()
-        return
-
-    if action == "reset":
-        reset_state()
-        print()
-        print("  Removed consent + client-id files. Next interactive run re-prompts.")
-        print()
-        return
-
-    # Unknown action — argparse choices=[] would have caught this earlier
-    # in normal flow; defensive guard for future maintainers.
-    print(f"  Unknown telemetry action: {action!r}")
-    sys.exit(1)
-
-
 def main():
     from importlib.metadata import version as pkg_version
 
@@ -5648,12 +5545,6 @@ Examples:
 """,
     )
     parser.add_argument("--version", "-V", action="version", version=f"qmlx {_version}")
-    parser.add_argument(
-        "--no-telemetry",
-        action="store_true",
-        help="Disable anonymous usage telemetry for this run "
-        "(equivalent to QMLX_TELEMETRY=0).",
-    )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
     # Serve command. ``allow_abbrev=False`` blocks unique-prefix matches
@@ -6743,35 +6634,6 @@ Examples:
     )
 
     # Doctor command — pure env-health probe (≤5 s, no model load, no server).
-    # Telemetry subcommand — opt-in anonymous usage data (Issue #236).
-    # See vllm_mlx/telemetry/ for what we collect / don't collect, and
-    # the README "Telemetry" section for the user-facing summary.
-    telemetry_parser = subparsers.add_parser(
-        "telemetry",
-        help="Manage anonymous usage telemetry (opt-in)",
-    )
-    telemetry_subparsers = telemetry_parser.add_subparsers(
-        dest="telemetry_action",
-        help="Telemetry actions",
-    )
-    telemetry_subparsers.add_parser(
-        "status", help="Show whether telemetry is enabled and why"
-    )
-    telemetry_subparsers.add_parser(
-        "enable", help="Opt in to anonymous usage telemetry"
-    )
-    telemetry_subparsers.add_parser(
-        "disable", help="Opt out of anonymous usage telemetry"
-    )
-    telemetry_subparsers.add_parser(
-        "preview",
-        help="Print a sample payload showing exactly what telemetry would send",
-    )
-    telemetry_subparsers.add_parser(
-        "reset",
-        help="Delete the consent + client-id files (next run re-prompts)",
-    )
-
     # Launch subcommand — one-shot bootstrap that patches IDE/agent
     # client configs (Cline, Claude Code, Continue, Cursor) to route
     # at the local qmlx server. See GH issue #566 for motivation.
@@ -6781,204 +6643,7 @@ Examples:
 
     _register_launch(subparsers)
 
-    # Shell tab completion via argcomplete. Must fire before parse_args:
-    # when the shell completion handler invokes us with the
-    # ``_ARGCOMPLETE`` env var set, this function short-circuits before
-    # any heavy import paths or model resolution runs, so the user gets
-    # snappy ``qmlx chat gemma-4-<TAB>`` even on a cold shell.
-    #
-    # ``_action_conflicts`` and ``_seen_non_default_actions`` are
-    # populated by argcomplete inside ``IntrospectiveArgumentParser._
-    # parse_known_args`` — but option completion (``finders.py:_
-    # action_allowed``) reads them before parsing has run on a
-    # subparser, raising ``AttributeError`` on the first Tab. We
-    # pre-walk the parser tree and seed empty containers so completion
-    # works at the very first keystroke. Issue tracked upstream at
-    # kislyuk/argcomplete (no mutex groups → conflict set is just
-    # empty; this is the documented null-init).
-    def _preinit_argcomplete_state(p: argparse.ArgumentParser) -> None:
-        if not hasattr(p, "_action_conflicts"):
-            p._action_conflicts = {}  # type: ignore[attr-defined]
-        if not hasattr(p, "_seen_non_default_actions"):
-            p._seen_non_default_actions = set()  # type: ignore[attr-defined]
-        if not hasattr(p, "active_actions"):
-            p.active_actions = []  # type: ignore[attr-defined]
-        for action in p._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                for sub in action.choices.values():
-                    if isinstance(sub, argparse.ArgumentParser):
-                        _preinit_argcomplete_state(sub)
-
-    _preinit_argcomplete_state(parser)
-    try:
-        import argcomplete
-    except ModuleNotFoundError as exc:
-        # Best-effort: tab completion silently no-ops if argcomplete is
-        # missing. Listed as a required dep in ``pyproject.toml`` so
-        # this path only fires in minimal test envs or stripped images.
-        # Narrow the swallow to the top-level argcomplete package — if a
-        # transitive import inside argcomplete is missing we want that
-        # to surface, not get mistaken for "argcomplete not installed".
-        if exc.name != "argcomplete":
-            raise
-    else:
-        argcomplete.autocomplete(parser)
-
     args = parser.parse_args()
-
-    # First-run consent prompt — fires at most once per machine, only on
-    # interactive subcommands when stdin is a tty. Safe no-op otherwise.
-    # Must run *before* heavy subcommand work so the user sees the
-    # disclosure before any model load logs scroll past.
-    _just_collected_consent = False
-    if getattr(args, "command", None) is not None:
-        from vllm_mlx.telemetry import maybe_prompt_for_consent
-        from vllm_mlx.telemetry.state import set_cli_kill_switch
-
-        # ``--no-telemetry`` is a per-run override; thread it into the
-        # process-level kill switch so every emit site sees it without
-        # having to plumb the flag through every signature.
-        set_cli_kill_switch(getattr(args, "no_telemetry", False))
-
-        _just_collected_consent = maybe_prompt_for_consent(
-            args.command,
-            cli_no_telemetry=getattr(args, "no_telemetry", False),
-        )
-
-    # Telemetry session lifecycle — emit session_start once we know what
-    # subcommand we're dispatching, register an atexit hook for
-    # session_end so the duration covers the whole interactive run
-    # (including ``qmlx chat`` REPLs and ``serve`` processes that
-    # only exit on Ctrl-C). emit.* helpers are individually guarded by
-    # ``is_enabled()`` — when telemetry is off the calls are cheap
-    # no-ops, no payload constructed.
-    #
-    # The ``telemetry`` subcommand itself is excluded: ``telemetry
-    # disable`` / ``reset`` would otherwise queue an event on the way to
-    # turning telemetry OFF — a small but ugly "phone home before
-    # silencing the phone" surprise that codex round 1 caught. ``status``
-    # / ``preview`` / ``enable`` are excluded for consistency; their
-    # observability value is near zero.
-    #
-    # ``_just_collected_consent`` skips the run that JUST collected
-    # first-time opt-in (round 3 codex catch): the disclosure copy
-    # promises "nothing from before this prompt or from a session you
-    # opted out of", and the current invocation's argv was determined
-    # BEFORE the user said yes. The next run starts the contract clean.
-    #
-    # ``_session_models_requested`` is hoisted outside the conditional so
-    # the alias-resolution block below can append to it unconditionally
-    # without a NameError when telemetry was skipped. The closure
-    # passed to ``session_end`` reads the same list, so populate-then-
-    # emit is naturally ordered.
-    #
-    # Round 19 codex catch on the naming: this list captures models
-    # the user's invocation REQUESTED -- the alias passed argparse
-    # validation -- NOT models the loader confirmed it loaded. A
-    # declined auto-pull or a load failure later in the subcommand
-    # handler still leaves the entry here, which the lifecycle event
-    # surfaces verbatim. Phase 2.2 will replace this with confirmed
-    # load events emitted from ``vllm_mlx/engine/loader.py``; until
-    # then, the field semantics is "alias the session was for" and the
-    # helper docstring spells this out.
-    _session_models_requested: list[str] = []
-    if (
-        getattr(args, "command", None) is not None
-        and args.command != "telemetry"
-        and not _just_collected_consent
-    ):
-        import atexit as _atexit
-        import sys as _sys
-        import time as _time
-
-        from vllm_mlx.telemetry import emit as _telemetry_emit
-
-        _session_subcommand = args.command
-        _session_started_at = _time.monotonic()
-        # Round 19 codex catch: extract flag names HERE so raw argv
-        # tokens (which include flag VALUES) never cross into the
-        # telemetry helper signatures. The disclosure promise "values
-        # are never even read" is now literally true at the function-
-        # call boundary.
-        from vllm_mlx.telemetry.redact import (
-            hash_flag_names as _telemetry_extract_flag_names,
-        )
-
-        _session_flag_names = _telemetry_extract_flag_names(_sys.argv[1:])
-        # Round 19 codex NIT: session_start sees an empty IMMUTABLE
-        # snapshot of models_loaded so it does not depend on whether
-        # ``emit.session_start()`` eagerly copies its input. The closure-
-        # captured list keeps mutating until session_end takes its own
-        # snapshot below.
-        _telemetry_emit.session_start(
-            subcommand=_session_subcommand,
-            flag_names=_session_flag_names,
-            models_loaded=(),
-        )
-
-        def _emit_session_end() -> None:
-            try:
-                # Snapshot the closure-captured list to an immutable
-                # tuple so the payload reflects the exact state at this
-                # call (round 19 NIT).
-                _models_snapshot = tuple(_session_models_requested)
-                _telemetry_emit.session_end(
-                    subcommand=_session_subcommand,
-                    duration_seconds=int(_time.monotonic() - _session_started_at),
-                    models_loaded=_models_snapshot,
-                )
-                # Round 5 codex review caught that the atexit handler
-                # for the queue's ``shutdown`` is registered inside
-                # ``session_start`` (LIFO → runs after this handler),
-                # but relying on that ordering is fragile. Force a
-                # synchronous drain here so ``session_end`` actually
-                # lands regardless of atexit ordering quirks. Idempotent
-                # — the queue's own ``shutdown`` will be a no-op when
-                # it runs later.
-                #
-                # ``session_end`` is best-effort by design (round 7
-                # codex catch): the queue's own ``SHUTDOWN_BUDGET_S``
-                # (2 s) caps user-visible exit latency. A slow or
-                # blackholed collector drops the event — that is the
-                # right trade-off, because making the user wait
-                # ~12 s on every ``serve`` Ctrl-C just to file a
-                # better stat is hostile UX.
-                #
-                # Round 19 codex review closed the previous round-17
-                # SIGTERM gap: ``register_session_end_hook`` is wired
-                # below so the FastAPI lifespan shutdown in
-                # ``vllm_mlx.server`` calls this same function on
-                # SIGTERM (systemd / Docker / Kubernetes graceful
-                # stop). The latch inside the emit module makes the
-                # second invocation a no-op so the event lands exactly
-                # once regardless of which path fires first.
-                #
-                # ``_queue is None`` (telemetry was disabled, so
-                # ``session_end`` no-op'd and never instantiated the
-                # singleton) skips ``get_queue()`` — round 7 catch —
-                # otherwise we'd spawn a daemon thread during
-                # interpreter shutdown for nothing.
-                try:
-                    if _telemetry_emit._queue is not None:
-                        _telemetry_emit._queue.shutdown()
-                except BaseException:
-                    pass
-            except BaseException:
-                # atexit handlers are run during interpreter shutdown;
-                # anything that fires here — including a stray
-                # ``KeyboardInterrupt`` or ``SystemExit`` raised inside
-                # redaction / queue code mid-teardown — is purely noise
-                # at this point because the process is already exiting.
-                # Round 9 codex review caught the previous ``Exception``
-                # catch as too narrow for an atexit context.
-                return
-
-        # Register the same callable for both teardown paths. The
-        # latch in ``fire_session_end_hook`` ensures it runs once
-        # regardless of which path (FastAPI lifespan shutdown OR cli
-        # atexit fallback) fires first.
-        _telemetry_emit.register_session_end_hook(_emit_session_end)
-        _atexit.register(_telemetry_emit.fire_session_end_hook)
 
     # Resolve model aliases before dispatch.
     #
@@ -7016,13 +6681,6 @@ Examples:
                 args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
             )
             sys.exit(1)
-        # Round 16 codex catch: record the resolved (or already-canonical)
-        # model so ``session_end`` can report what this invocation loaded.
-        # ``normalize_model_path`` inside the emit helper redacts local
-        # paths to the literal ``<local>`` token, so we don't need to
-        # filter here. Captured after the error-fail path so we never
-        # record a model that failed validation.
-        _session_models_requested.append(args.model)
 
     # --- BEGIN B2: auto-pull confirmation gate -------------------------
     # For subcommands that may trigger a first-time download of a large
@@ -7130,8 +6788,6 @@ Examples:
         jlens_command(args)
     elif args.command == "agents":
         agents_command(args)
-    elif args.command == "telemetry":
-        telemetry_command(args)
     elif args.command == "launch":
         from vllm_mlx.launch.cli import launch_command
 

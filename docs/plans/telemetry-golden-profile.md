@@ -1,5 +1,7 @@
 # Telemetry → Golden Profile design doc
 
+**RETIRED — telemetry subsystem deleted per operator order 10-28 (2026-10-28); kept for history.**
+
 Status: **draft** · Author: raullen + Claude · Date: 2026-06-06
 
 This doc covers Phase 2 of the opt-in telemetry pipeline first sketched

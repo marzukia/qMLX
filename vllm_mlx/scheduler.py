@@ -2478,7 +2478,7 @@ def _install_suffix_decoding(
 
     gb._step = _suffix_step
     gb.next = _suffix_next
-    # Telemetry attached to the BatchGenerator (where the rest of the
+    # Stats attached to the BatchGenerator (where the rest of the
     # engine looks for it) and to gb for direct inspection.
     batch_gen._suffix_stats = _stats
     gb._suffix_stats = _stats

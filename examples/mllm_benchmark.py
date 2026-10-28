@@ -344,6 +344,7 @@ def print_results(results: list[BenchmarkResult]):
             + "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(row)).rstrip()
         )
 
+
     # Summary stats
     total_time = sum(r.time_seconds for r in results)
     total_tokens = sum(r.tokens_generated for r in results)

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # and was consistently truncated mid-write, leaving ``<cache_dir>.new/``
 # orphaned and losing the KV-cache hit on the next launch. The default
 # of 3.5s is the largest value that still leaves enough room under a
-# 5s SIGTERM grace for ``engine.stop()`` + telemetry session_end +
+# 5s SIGTERM grace for ``engine.stop()`` +
 # uvicorn's own teardown to finish before SIGKILL. Override with the
 # ``QMLX_PREFIX_CACHE_SHUTDOWN_BUDGET`` env var (seconds, float;
 # ``0`` disables the deadline and restores the old "flush everything"

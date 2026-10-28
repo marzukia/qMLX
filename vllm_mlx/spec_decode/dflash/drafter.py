@@ -282,7 +282,7 @@ class MlxVlmDFlashDriver:
     with ``draft_model`` and ``draft_kind`` set. The same code path the
     DFlash server mode uses (see :mod:`vllm_mlx.speculative.dflash.server`).
     The bench script consumes the wrapper's generator and reads accept-
-    rate / draft-len telemetry from the underlying drafter's
+    rate / draft-len stats from the underlying drafter's
     ``accept_lens`` and ``draft_lens`` lists, which mlx-vlm populates as
     a side effect of the loop.
 

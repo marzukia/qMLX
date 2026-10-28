@@ -43,12 +43,13 @@ dependencies = [
     # (canonical ref); floor stays 5.0.0 — the vendored HY3 tokenizer path
     # bypasses AutoTokenizer, so the transformers minor is not in the hot path.
     "transformers>=5.0.0,<5.13",
-    "tokenizers>=0.19.0",
     "huggingface-hub>=0.23.0",
     "numpy>=1.24.0",
     # pillow is opt-in via [vision] extras — only MLLM paths touch PIL; mlx-vlm requires it.
-    "tqdm>=4.66.0",
     "pyyaml>=6.0",
+    # requests — belt-and-braces: direct imports exist in the package,
+    # and huggingface-hub also provides it transitively. Kept explicit
+    # so a future huggingface-hub change can't silently drop it.
     "requests>=2.28.0",
     # rich — Rich-grade terminal output for qmlx CLI commands (#51).
     # Pure-Python, no native deps; the CLI's plain-text fallback path
@@ -57,12 +58,7 @@ dependencies = [
     "psutil>=5.9.0",
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
-    "mcp>=1.0.0",
     "jsonschema>=4.0.0",
-    # argcomplete — shell tab completion for the `qmlx` CLI (PYTHON_ARGCOMPLETE_OK
-    # marker in cli.py); required so `qmlx chat <TAB>` works on every install.
-    # >=3.6: fixes TypeError from 3.12's 4th `intermixed` arg in argparse.
-    "argcomplete>=3.6",
     # openai-harmony — official harmony-protocol streaming parser for
     # HarmonyStreamingRouter (gpt-oss tool calls, #513 / cluster #444 #455
     # #468 #480). Soft-imported; legacy state machine is the fallback.
@@ -136,6 +132,16 @@ test = [
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
     "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
+    # tqdm — zero package imports; only tests/evals/gsm8k/gsm8k_eval.py
+    # uses it (eval progress bars). Not a runtime dependency.
+    "tqdm>=4.66.0",
+]
+# MCP (Model Context Protocol) tool-server support — the MCP client in
+# ``vllm_mlx/mcp/client.py`` imports the ``mcp`` SDK lazily inside its
+# connect methods, so core ``qmlx`` works without it. Install
+# ``qmlx-serve[mcp]`` to enable ``--mcp-config``.
+mcp = [
+    "mcp>=1.0.0",
 ]
 dev = [
     # Test runtime — must mirror the `test` extras so "install dev, run pytest"

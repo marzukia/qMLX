@@ -12,7 +12,6 @@
 | `qmlx rm` | Remove a cached model |
 | `qmlx ps` | List running qmlx servers |
 | `qmlx agents` | List, configure, and test agent integrations |
-| `qmlx telemetry` | Manage anonymous usage telemetry (opt-in) |
 | `qmlx upgrade` | Upgrade qmlx (brew / pip / install.sh) |
 | `qmlx version` | Show version number |
 | `qmlx help <cmd>` | Show help for a subcommand |
