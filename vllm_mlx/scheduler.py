@@ -6767,15 +6767,9 @@ class Scheduler:
             backend = get_backend()
             if backend is not None:
                 mem = backend.memory_stats()
-                stats["device_active_memory_gb"] = round(
-                    mem.active_bytes / 1e9, 2
-                )
-                stats["device_peak_memory_gb"] = round(
-                    mem.peak_bytes / 1e9, 2
-                )
-                stats["device_cache_memory_gb"] = round(
-                    mem.cache_bytes / 1e9, 2
-                )
+                stats["device_active_memory_gb"] = round(mem.active_bytes / 1e9, 2)
+                stats["device_peak_memory_gb"] = round(mem.peak_bytes / 1e9, 2)
+                stats["device_cache_memory_gb"] = round(mem.cache_bytes / 1e9, 2)
         except Exception:
             pass
 

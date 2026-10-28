@@ -84,6 +84,7 @@ from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------
 # OS-side memory-eviction capability — routed through the seam
 # ---------------------------------------------------------------------
