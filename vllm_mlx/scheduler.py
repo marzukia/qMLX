@@ -2029,7 +2029,7 @@ def _install_suffix_decoding(
     because chunked-batched verify isn't numerically equivalent to
     step-update on recurrent layers — see SUFFIX_POC_REPORT.md.
     """
-    from .speculative.suffix_decoding import SuffixDecodingDrafter
+    from .spec_decode.suffix_decoding import SuffixDecodingDrafter
 
     if profile is not None and not profile.supports_spec_decode:
         logger.warning(

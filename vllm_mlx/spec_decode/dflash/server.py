@@ -28,6 +28,36 @@ These limitations are deliberate for v1 — the target user is someone
 running ``qmlx serve qwen3.5-27b-8bit --speculative-config
 '{"method":"dflash"}'`` to get a ~2× speedup on code/long-form
 completions on a single Apple Silicon box.
+
+Executor ownership
+------------------
+
+``_dflash_executor`` is a **module-level, process-lifetime**
+``ThreadPoolExecutor(max_workers=1)`` owned by THIS server module — not
+by BatchedEngine, the scheduler, or the engine-core step thread.
+Rationale:
+
+* This server is only reached when the CLI forks to DFlash mode
+  (``serve_command`` in ``vllm_mlx.cli``) BEFORE BatchedEngine is
+  constructed, so the engine's single-step thread never exists in the
+  same process — there is no executor-sharing question with the engine.
+* mlx-lm 0.31.3+ keeps the GPU Stream in thread-local storage; every
+  mlx-vlm call (drafter loading, ``stream_generate``'s ``next``) must
+  therefore execute on ONE thread for the lifetime of the process. A
+  default ``ThreadPoolExecutor`` with N workers would iterate the
+  generator across threads and trip "There is no Stream(gpu, N) in
+  current thread" mid-stream. Pinning to one worker preserves thread
+  affinity and matches the serial-only contract enforced by
+  ``_dflash_lock``.
+* The executor is created at import time of this module and drained via
+  the explicit ``atexit`` hook below (deterministic shutdown order
+  during graceful uvicorn termination). A second ``_build_app`` in the
+  same process (multi-model deployment) would share the same worker —
+  one model can't run while another's generator is mid-step.
+* If a future phase-2 brings DFlash INSIDE BatchedEngine (B>1
+  batched), this executor's ownership must be revisited: the engine
+  owns its step thread, and a server-owned executor would be dead
+  weight. Re-audit item from the 2026-10-28 repositioning review.
 """
 
 from __future__ import annotations

@@ -420,7 +420,7 @@ def test_negative_control_dflash_on_moe_is_caught() -> None:
     (not just the data structure) so a regression that quietly removes
     the MoE check in ``eligibility.check`` fails this test."""
     from vllm_mlx.model_aliases import AliasProfile
-    from vllm_mlx.speculative.dflash import DFlashUnavailable, check
+    from vllm_mlx.spec_decode.dflash import DFlashUnavailable, check
 
     bad = AliasProfile(
         hf_path="fake/MoE-Model",

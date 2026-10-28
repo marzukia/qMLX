@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.speculative.suffix_decoding import (
+from vllm_mlx.spec_decode.suffix_decoding import (
     DraftStats,
     SuffixDecodingDrafter,
 )
@@ -395,7 +395,7 @@ class TestInstallSuffixDecoding:
         from unittest.mock import MagicMock
 
         from vllm_mlx.scheduler import _install_suffix_decoding
-        from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+        from vllm_mlx.spec_decode.suffix_decoding import SuffixDecodingDrafter
 
         bg, gb = self._make_fake_bg()
         # The wrapped next() will call _orig_next() which returns a single

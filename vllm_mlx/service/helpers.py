@@ -1753,7 +1753,7 @@ def _resolve_enable_thinking(request) -> bool | None:
 
     The dflash route does NOT call this helper — it has its own
     closure-scoped ``no_thinking`` and skips the cfg consult. See
-    ``vllm_mlx/speculative/dflash/server.py`` for that path.
+    ``vllm_mlx/spec_decode/dflash/server.py`` for that path.
     """
     cfg = get_config()
     if cfg.no_thinking:
