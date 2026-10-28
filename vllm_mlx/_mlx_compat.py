@@ -118,10 +118,7 @@ def install() -> None:
         # backends declare stream semantics directly instead of
         # string-probing; on Metal the declared answer is the same
         # one-time hardware probe, cached in the backend).
-        if (
-            _default_device_key is not None
-            and repr(device) == _default_device_key
-        ):
+        if _default_device_key is not None and repr(device) == _default_device_key:
             try:
                 return bool(backend.supports_secondary_streams())
             except Exception:
