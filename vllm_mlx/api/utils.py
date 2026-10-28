@@ -963,6 +963,35 @@ _MULTIMODAL_TENSOR_PREFIXES = (
 )
 
 
+def _safetensors_header_names(path: Path) -> set[str] | None:
+    """Read ONLY the safetensors header of ``path`` → its tensor names.
+
+    The header is the u64 little-endian length prefix + JSON metadata
+    (``{tensor_name: {dtype, shape, data_offsets}, …}``) — no tensor
+    data is read, so a multi-GB checkpoint costs a header-sized seek.
+
+    Returns the tensor-name set (``__metadata__`` excluded), or ``None``
+    when the header is missing / oversized / malformed and the caller
+    must fall back to config-based detection.
+    """
+    import struct
+
+    try:
+        with path.open("rb") as fh:
+            raw_len = fh.read(8)
+            if len(raw_len) < 8:
+                return None
+            (header_len,) = struct.unpack("<Q", raw_len)
+            if header_len > _MAX_CONFIG_JSON_BYTES:
+                return None
+            header = json.loads(fh.read(header_len).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, struct.error):
+        return None
+    if not isinstance(header, dict):
+        return None
+    return {k for k in header if k != "__metadata__"}
+
+
 def _local_checkpoint_has_multimodal_weights(model_dir: Path) -> bool | None:
     """Probe a local model dir for actual vision/audio tensor weights.
 
@@ -972,21 +1001,44 @@ def _local_checkpoint_has_multimodal_weights(model_dir: Path) -> bool | None:
         ``mm_projector``, …).
         ``False`` if the index is present, readable, and contains zero
         such tensors — meaning the checkpoint is text-only despite
-        whatever ``config.json`` declares.
-        ``None`` when we can't authoritatively answer (no index file,
-        single-file safetensors, unreadable index). Caller should fall
-        back to the config-based decision rather than flipping it.
+        whatever ``config.json`` declares. Single-file checkpoints
+        (no sharded index) get the same verdict from the safetensors
+        header, which carries the identical tensor names.
+        ``None`` when we can't authoritatively answer (no index file
+        AND no readable safetensors header, unreadable index). Caller
+        should fall back to the config-based decision rather than
+        flipping it.
 
-    The single-file-safetensors branch returns ``None`` rather than
-    parsing the file header ourselves — the cost of a wrong False (text
-    routing for a real VLM → crash later on first image input) is much
-    larger than the cost of a wrong True (current behavior, the bug we
-    want to fix only for the multi-file case Tylast reported in #393).
+    The single-file branch reads only the safetensors header (the
+    u64 length prefix + JSON metadata — no tensor data), so it is the
+    same authoritative source as the index ``weight_map`` scan. #393
+    originally left single-file checkpoints undecided (``None``); that
+    gap resurfaced with oQ text-only conversions, which ship a single
+    ``model.safetensors`` plus the VLM base's ``config.json`` and were
+    misrouted into the MLLM path (#78 dogfood 2026-10-28).
     """
     index_path = model_dir / "model.safetensors.index.json"
     if not index_path.is_file():
-        # No sharded index. Caller must rely on config-based detection.
-        return None
+        # No sharded index — probe single-file checkpoints via the
+        # safetensors header(s). The header carries the same
+        # authoritative tensor names as the index weight_map, so the
+        # False verdict has the same reliability as the sharded path.
+        sf_files = sorted(p for p in model_dir.glob("*.safetensors") if p.is_file())
+        if not sf_files:
+            return None
+        for sf in sf_files:
+            names = _safetensors_header_names(sf)
+            if names is None:
+                # Header unreadable — can't authoritatively decide.
+                return None
+            if any(
+                prefix in name
+                for name in names
+                for prefix in _MULTIMODAL_TENSOR_PREFIXES
+            ):
+                return True
+        # Every header scanned, zero multimodal tensors — text-only.
+        return False
     try:
         if index_path.stat().st_size > _MAX_CONFIG_JSON_BYTES:
             # Unreasonably large index — bail rather than guess.
