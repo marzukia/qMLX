@@ -90,7 +90,7 @@ def test_mlx_vlm_draft_block_signature_matches_0_6_3() -> None:
 
 def test_dflash_runtime_kind_attribute_exists() -> None:
     """Pin ``DFlashRuntime.kind`` — the wrapper reads it for stream_generate."""
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
 
     # Construct a stub runtime (load_runtime hits mlx-vlm, but the
     # dataclass itself is plain).
@@ -160,7 +160,7 @@ def stub_mlx_vlm(monkeypatch: pytest.MonkeyPatch):
     Patches:
       * ``mlx_vlm.load`` — returns (model, processor) tuples
       * ``mlx_vlm.stream_generate`` — records call args, yields fake chunks
-      * ``vllm_mlx.speculative.dflash.load_runtime`` — returns a fake runtime
+      * ``vllm_mlx.spec_decode.dflash.load_runtime`` — returns a fake runtime
 
     Returns a dict with ``calls`` (list of dict, one per stream_generate
     invocation) and ``runtime`` (the fake DFlashRuntime instance), so
@@ -194,13 +194,13 @@ def stub_mlx_vlm(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(mlx_vlm, "stream_generate", fake_stream_generate, raising=True)
 
     # Patch load_runtime in the speculative bridge module.
-    import vllm_mlx.speculative.dflash as bridge
+    import vllm_mlx.spec_decode.dflash as bridge
 
     monkeypatch.setattr(bridge, "load_runtime", lambda repo: runtime, raising=True)
     # Also patch the symbol re-export so ``from ... import load_runtime``
     # inside the driver picks up the fake one.
     monkeypatch.setattr(
-        sys.modules["vllm_mlx.speculative.dflash"],
+        sys.modules["vllm_mlx.spec_decode.dflash"],
         "load_runtime",
         lambda repo: runtime,
         raising=True,

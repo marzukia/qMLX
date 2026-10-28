@@ -6,7 +6,7 @@ Rapid-mlx's ``aliases.json`` enforces a CLOSED-KEY schema
 field on an alias entry raises at JSON-load time. The existing
 ``dflash_draft_model`` field on :class:`AliasProfile` is already
 reserved by the original mlx-vlm DFlash bridge
-(:mod:`vllm_mlx.speculative.dflash`), which carries its OWN eligibility
+(:mod:`vllm_mlx.spec_decode.dflash`), which carries its OWN eligibility
 gates (``supports_dflash`` + 4-bit/MoE rejection) that we don't want to
 disturb for the new spec-decode path.
 

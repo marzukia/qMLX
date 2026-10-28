@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for ``vllm_mlx/speculative/dflash/eligibility.py``.
+"""Unit tests for ``vllm_mlx/spec_decode/dflash/eligibility.py``.
 
 These verify each gate fires in isolation. Integration with the CLI
 and engine is covered separately in ``test_dflash_integration.py``
@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from vllm_mlx.model_aliases import AliasProfile
-from vllm_mlx.speculative.dflash.eligibility import (
+from vllm_mlx.spec_decode.dflash.eligibility import (
     DFlashUnavailable,
     _looks_like_4bit,
     check,

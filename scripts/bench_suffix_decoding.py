@@ -33,7 +33,7 @@ import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models import cache as mlx_cache
 
-from vllm_mlx.speculative.suffix_decoding import SuffixDecodingDrafter
+from vllm_mlx.spec_decode.suffix_decoding import SuffixDecodingDrafter
 
 # ---------- Workloads ------------------------------------------------------
 #

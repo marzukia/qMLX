@@ -34,23 +34,35 @@ Public surface
 * :func:`get_dflash_drafter_path` — resolves the drafter HF path for
   an alias from the side-registry (kept OUT of ``aliases.json`` because
   the closed-key schema reserves :attr:`AliasProfile.dflash_draft_model`
-  for the existing mlx-vlm DFlash bridge — see
-  :mod:`vllm_mlx.speculative.dflash`).
+  for the mlx-vlm DFlash bridge in :mod:`.runtime` /
+  :mod:`.eligibility`).
+* :func:`load_runtime` / :class:`DFlashRuntime` — the lazy mlx-vlm
+  drafter-bridge handle (``pip install 'qmlx-serve[dflash]'``).
+* :func:`check` / :class:`DFlashUnavailable` — alias-level eligibility
+  gates (declared support, not-MoE, ≥8-bit, drafter declared).
 
-Architecture note (vs the mlx-vlm bridge)
------------------------------------------
+Architecture note (two DFlash code paths, one package)
+-----------------------------------------------------
 
-There are **two** DFlash code paths in qmlx and they target different
-runtimes:
+Two DFlash code paths coexist in this package and target different
+runtimes (the former ``vllm_mlx.speculative.dflash`` tree was
+consolidated here in the 2026-10-28 repositioning wave):
 
-* :mod:`vllm_mlx.speculative.dflash` — the original PoC bridge that
-  calls into ``mlx-vlm 0.5.0+``'s built-in drafter loader. Lives next to
-  the SuffixDecoding / prompt-lookup speculative paths and is now driven
-  by ``--speculative-config '{"method":"dflash"}'``.
-* :mod:`vllm_mlx.spec_decode.dflash` (THIS module) — the shared
-  eligibility/counter scaffolding used by the standardized config surface.
-  BatchedEngine DFlash generation remains deferred; production DFlash still
-  uses the single-user bridge above.
+* :mod:`.server` — the dedicated single-user DFlash server (the original
+  PoC bridge) that calls into ``mlx-vlm 0.5.0+``'s built-in drafter
+  loader via :func:`load_runtime`. It is the LIVE serve path: ``qmlx
+  serve <alias> --speculative-config '{"method":"dflash"}'`` forks to
+  :func:`.server.run_dflash_server` in the CLI before BatchedEngine
+  starts. Its single-thread executor is documented in
+  :mod:`.server` (executor ownership: process-lifetime, server-module
+  owned, thread-local GPU-stream affinity).
+* :mod:`.drafter` / :mod:`.verifier` / :mod:`.generator` — the shared
+  eligibility/counter scaffolding used by the standardized config
+  surface. BatchedEngine DFlash generation remains deferred; production
+  DFlash still uses the single-user server above. The engine-integrated
+  :class:`.drafter.MlxVlmDFlashDriver` loads its runtime through the
+  SAME :func:`load_runtime` bridge — the two paths share one
+  mlx-vlm boundary.
 
 Both paths share the lossless contract: byte-identical output to the
 no-spec-decode path (rejection always emits the verify model's pred at
@@ -72,15 +84,28 @@ from .drafter_registry import (
     register_dflash_drafter,
 )
 
+# Consolidated from the former ``vllm_mlx.speculative.dflash`` package
+# (2026-10-28 repositioning): the alias-level eligibility gates and the
+# lazy mlx-vlm runtime bridge. Kept at package level so
+# ``from vllm_mlx.spec_decode.dflash import DFlashUnavailable, check,
+# load_runtime`` works exactly like the old
+# ``from vllm_mlx.speculative.dflash import ...`` did.
+from .eligibility import DFlashUnavailable, check
+from .runtime import DFlashRuntime, load_runtime
+
 __all__ = [
     "DEFAULT_BLOCK_SIZE",
     "DFlashAcceptCounter",
     "DFlashAcceptSnapshot",
     "DFlashEligibility",
+    "DFlashRuntime",
+    "DFlashUnavailable",
+    "check",
     "clear_drafter_registry_for_tests",
     "detect_dflash_eligibility",
     "get_dflash_drafter_path",
     "get_global_counter",
+    "load_runtime",
     "register_dflash_drafter",
     "reset_global_counter_for_tests",
 ]

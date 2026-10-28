@@ -212,7 +212,7 @@ def test_info_dflash_start_with_uses_alias_not_hf_path(capsys, monkeypatch) -> N
     # Force eligibility True at the import site that ``_print_dflash_status``
     # uses, otherwise the start-with hint is suppressed.
     monkeypatch.setattr(
-        "vllm_mlx.speculative.dflash.eligibility.have_runtime",
+        "vllm_mlx.spec_decode.dflash.eligibility.have_runtime",
         lambda: True,
     )
 
@@ -273,8 +273,8 @@ def test_models_listing_renders_dflash_column(capsys) -> None:
 
 def test_build_app_returns_fastapi_app() -> None:
     """The app exposes the three OpenAI-compat routes."""
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -301,8 +301,8 @@ def test_healthz_and_models_routes() -> None:
     exercise without weights."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -339,8 +339,8 @@ def test_chat_completions_rejects_tools() -> None:
     users (model emits free-form text instead of structured tool calls)."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -382,8 +382,8 @@ def test_chat_completions_rejects_empty_messages() -> None:
     """OpenAI-compat parity: empty messages → 400."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -411,8 +411,8 @@ def test_chat_completions_rejects_logprobs() -> None:
     callers think they got logprobs back. Reject with a 400 instead."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -447,8 +447,8 @@ def test_chat_completions_rejects_response_format() -> None:
     mean a JSON-schema request gets free-form text with no surfaced error."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.server import _build_app
 
     runtime = DFlashRuntime(
         drafter=MagicMock(),
@@ -488,8 +488,8 @@ def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: di
     """
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.server import _build_app
 
     captured: dict = {}
 
@@ -598,8 +598,8 @@ def test_stream_completion_surfaces_generator_exception(monkeypatch) -> None:
     in ``_next_chunk`` (was only catching ``StopIteration``)."""
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.speculative.dflash import server as srv
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash import server as srv
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
 
     class _BoomGen:
         """Sync generator that yields once, then raises — mirrors the
@@ -710,7 +710,7 @@ def test_stream_completion_surfaces_constructor_exception(monkeypatch) -> None:
     import asyncio
 
     from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from vllm_mlx.spec_decode.dflash import server as srv
 
     def _exploding_stream_generate(*a, **kw):
         raise RuntimeError("simulated OOM at generator construction")
@@ -758,7 +758,7 @@ def test_stream_completion_reports_length_when_max_tokens_hit(monkeypatch) -> No
     import asyncio
 
     from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from vllm_mlx.spec_decode.dflash import server as srv
 
     class _Chunk:
         text = "x"
@@ -814,7 +814,7 @@ def test_stream_completion_reports_stop_when_eos_lands_at_max_tokens(
     import asyncio
 
     from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from vllm_mlx.spec_decode.dflash import server as srv
 
     class _Chunk:
         text = "done"
@@ -870,7 +870,7 @@ def test_non_stream_completion_reports_length_when_max_tokens_hit(
     import asyncio
 
     from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from vllm_mlx.spec_decode.dflash import server as srv
 
     class _Result:
         text = "xxxx"
@@ -924,7 +924,7 @@ def test_stream_completion_pins_to_dedicated_executor(monkeypatch) -> None:
     import asyncio
 
     from vllm_mlx.api.models import ChatCompletionRequest, Message
-    from vllm_mlx.speculative.dflash import server as srv
+    from vllm_mlx.spec_decode.dflash import server as srv
 
     # Runtime spy on ``_dflash_executor.submit`` — counts the actual
     # submissions during a real ``_stream_completion`` invocation.
@@ -984,13 +984,13 @@ def test_dflashruntime_accept_lens_tolerates_wrong_type(caplog) -> None:
     the isinstance guard added after the round-4 review."""
     import logging
 
-    from vllm_mlx.speculative.dflash.runtime import DFlashRuntime
+    from vllm_mlx.spec_decode.dflash.runtime import DFlashRuntime
 
     drafter = MagicMock()
     drafter.accept_lens = 42  # not a list
     rt = DFlashRuntime(drafter=drafter, kind="dflash", drafter_repo="fake/repo")
 
-    with caplog.at_level(logging.WARNING, logger="vllm_mlx.speculative.dflash.runtime"):
+    with caplog.at_level(logging.WARNING, logger="vllm_mlx.spec_decode.dflash.runtime"):
         rt.reset_accept_lens()
     assert any("unexpected type" in rec.message for rec in caplog.records), (
         "reset_accept_lens should warn (not crash) when accept_lens isn't a list"
@@ -1008,7 +1008,7 @@ def test_dflashruntime_accept_lens_tolerates_wrong_type(caplog) -> None:
 def test_run_dflash_server_raises_when_mlx_vlm_missing(monkeypatch) -> None:
     """When mlx-vlm 0.5.0+ isn't importable, ``run_dflash_server``
     raises with the install hint — not a cryptic ImportError."""
-    from vllm_mlx.speculative.dflash import server as srv
+    from vllm_mlx.spec_decode.dflash import server as srv
 
     monkeypatch.setattr(srv, "have_runtime", lambda: False)
     with pytest.raises(RuntimeError, match=r"qmlx\[dflash\]"):
@@ -1041,7 +1041,7 @@ def test_run_dflash_server_loads_models_on_executor_thread(monkeypatch) -> None:
     """
     import threading
 
-    from vllm_mlx.speculative.dflash import server as srv
+    from vllm_mlx.spec_decode.dflash import server as srv
 
     load_thread: dict[str, str | None] = {"load": None, "load_runtime": None}
 
@@ -1116,7 +1116,7 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
     plausible token counts. Doesn't measure speedup here — the bench
     harness owns that — but does confirm the wiring produces a valid
     OpenAI-compat response."""
-    from vllm_mlx.speculative.dflash.eligibility import have_runtime
+    from vllm_mlx.spec_decode.dflash.eligibility import have_runtime
 
     if not have_runtime():
         pytest.skip("mlx-vlm 0.5.0+ not installed")
@@ -1144,8 +1144,8 @@ def test_dflash_e2e_chat_completion_smoke() -> None:
     from fastapi.testclient import TestClient
     from mlx_vlm import load
 
-    from vllm_mlx.speculative.dflash.runtime import load_runtime
-    from vllm_mlx.speculative.dflash.server import _build_app
+    from vllm_mlx.spec_decode.dflash.runtime import load_runtime
+    from vllm_mlx.spec_decode.dflash.server import _build_app
 
     model, processor = load("mlx-community/Qwen3.5-27B-8bit")
     runtime = load_runtime("z-lab/Qwen3.5-27B-DFlash")

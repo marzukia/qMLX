@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Speculative decoding bundle (R15-P1, task #302).
 
-The legacy n-gram/suffix lookup speculation lives under
-``vllm_mlx.speculative`` (prompt-lookup, suffix-decoding, dflash). This
-package hosts the **vendored** model-side speculative-decode paths that
-are too tightly coupled to a specific architecture to live under the
-neutral ``speculative`` namespace.
+This package hosts ALL of qmlx's speculative-decoding paths — the
+model-side vendored backends plus the mlx-vlm bridge, the dedicated
+single-user servers, and the model-free suffix drafter. The former
+``vllm_mlx.speculative`` package (prompt-lookup, suffix-decoding,
+dflash, ddtree) was consolidated here in the 2026-10-28
+repositioning wave; ``vllm_mlx.speculative`` no longer exists.
 
 Currently bundled:
 
@@ -27,7 +28,22 @@ Currently bundled:
   proposes. The verifier owns the cache write via the
   :func:`vllm_mlx.positioned_kv_cache.positioned_update_and_fetch`
   HELPER (NOT the subclass — the subclass breaks
-  ``mlx_lm.save_prompt_cache``).
+  ``mlx_lm.save_prompt_cache``). Also hosts the dedicated single-user
+  DFlash server (``run_dflash_server``) that the CLI forks to on
+  ``--speculative-config '{"method":"dflash"}'`` — it bypasses
+  BatchedEngine and owns a process-lifetime single-thread executor
+  (documented in the module).
+* :mod:`vllm_mlx.spec_decode.ddtree` — DDTree draft-tree speculative
+  decoding (issue #879), kept behind explicit
+  ``--speculative-config {"method":"ddtree"}`` opt-in and a dedicated
+  single-user server, using the external ``dtree_mlx`` package as the
+  runtime boundary. The CLI forks to ``run_ddtree_server`` the same
+  way it does for DFlash; the server owns two process-lifetime
+  single-thread executors (documented in the module).
+* :mod:`vllm_mlx.spec_decode.suffix_decoding` — SuffixDecoding
+  (NeurIPS 2025, arxiv 2411.04975): adaptive suffix-tree, draft-model-
+  free speculative drafter wired into BatchedEngine's verify loop via
+  the scheduler (``--speculative-config {"method":"suffix"}``).
 * :mod:`vllm_mlx.spec_decode.config` and
   :mod:`vllm_mlx.spec_decode.registry` — vLLM-style
   ``--speculative-config`` parsing plus the small method registry used
@@ -40,4 +56,4 @@ a particular family eligible stay private to the sub-package.
 
 from __future__ import annotations
 
-__all__ = ["config", "dflash", "mtp", "registry"]
+__all__ = ["config", "ddtree", "dflash", "mtp", "registry", "suffix_decoding"]
