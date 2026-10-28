@@ -585,7 +585,7 @@ def main():
     print("     TEST COMPLETE")
     print("=" * 70)
     print("\nTo enable paged cache in production:")
-    print("  vllm-mlx serve <model> --continuous-batching --use-paged-cache")
+    print("  qmlx serve <model> --continuous-batching --use-paged-cache")
     print()
 
 

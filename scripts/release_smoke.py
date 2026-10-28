@@ -76,11 +76,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Modules whose import-time side effects must succeed against a clean
 # install. ``vllm_mlx.scheduler`` was the surface that #408 broke;
-# the others cover every base ``[project.scripts]`` entrypoint
-# (``qmlx``, ``vllm-mlx``, ``vllm-mlx-bench``) plus the server
-# surface that every ``qmlx serve`` invocation imports before
-# binding a port. ``vllm_mlx.gradio_app`` is intentionally excluded —
-# it's the ``vllm-mlx-chat`` entrypoint, which lives behind the
+# the others cover the base ``[project.scripts]`` entrypoint
+# (``qmlx``) plus the server surface that every ``qmlx serve``
+# invocation imports before binding a port.
+# ``vllm_mlx.gradio_app`` is intentionally excluded —
+# it's the ``qmlx-chat`` entrypoint, which lives behind the
 # ``chat`` extra and is allowed to fail-import on the base install.
 IMPORT_TARGETS = (
     "vllm_mlx",

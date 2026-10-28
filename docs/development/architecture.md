@@ -11,8 +11,8 @@
                            │
                            ▼
 ┌──────────────────────────────────────────────────────────┐
-│                      MLXPlatform                          │
-│       (vLLM platform plugin for Apple Silicon)           │
+│                      qMLX Engine                         │
+│   (Scheduler + BatchedEngine - continuous batching)      │
 └──────────────────────────────────────────────────────────┘
                            │
        ┌──────────┬────────┴────────┬──────────┐
