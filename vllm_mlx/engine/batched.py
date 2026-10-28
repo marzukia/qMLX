@@ -1095,28 +1095,37 @@ class BatchedEngine(BaseEngine):
                 executor=self._model_load_executor,
             )
 
-        # Set Metal memory limits on the SAME mlx-step worker that loaded
+        # Set device memory limits on the SAME mlx-step worker that loaded
         # the model. Calling these from the asyncio loop thread would touch
         # MLX from a thread that doesn't own the worker stream and create
         # a stray Stream(gpu, 1) reference (#170).
         def _set_metal_limits() -> None:
-            import mlx.core as mx
+            # Item 3 (device/backend seam): the boot cap reads the
+            # recommended working set through the seam instead of
+            # digging ``mx.device_info()`` keys directly. ``None`` from
+            # ``get_backend()`` is the same "no GPU backend" semantics
+            # as the old ``mx.metal.is_available()`` gate.
+            from vllm_mlx.device import get_backend
 
-            if not mx.metal.is_available():
+            backend = get_backend()
+            if backend is None:
                 return
-            device_info = mx.device_info()
-            max_recommended = device_info.get(
-                "max_recommended_working_set_size",
-                device_info.get("memory_size", 0),
-            )
+            # ``backend.enforcement_mode`` is HINT on Metal (the
+            # allocator treats the cap as a guideline and grows past
+            # it under load — D-METAL-CAP: the scheduler polices the
+            # cap at admission). Setting the cap is still correct on a
+            # HARD backend (the allocator then enforces it itself).
+            max_recommended = backend.recommended_working_set_bytes()
             if max_recommended > 0:
                 soft_limit = int(max_recommended * self._gpu_memory_utilization)
-                mx.set_memory_limit(soft_limit)
+                backend.set_memory_limit(soft_limit)
                 cache_limit = _compute_metal_cache_limit(soft_limit)
-                mx.set_cache_limit(cache_limit)
+                backend.set_cache_limit(cache_limit)
                 pct = self._gpu_memory_utilization * 100
                 logger.info(
-                    f"Metal memory limits set: "
+                    f"Device memory limits set "
+                    f"(backend={backend.kind.value}, "
+                    f"enforcement={backend.enforcement_mode.value}): "
                     f"allocation_limit={soft_limit / 1e9:.1f}GB "
                     f"({pct:.0f}% of {max_recommended / 1e9:.1f}GB), "
                     f"cache_limit={cache_limit / 1e9:.1f}GB"
@@ -2376,14 +2385,14 @@ class BatchedEngine(BaseEngine):
         if self._mllm_scheduler:
             mllm_stats = self._mllm_scheduler.get_stats()
             stats["mllm_scheduler"] = mllm_stats
-            # Promote Metal memory stats + batch_generator throughput to
+            # Promote device memory stats + batch_generator throughput to
             # top-level for /v1/status. Without "batch_generator" forwarded,
             # generation_tps/prompt_tps stay invisible to monitoring even
             # though the underlying counters are populated.
             for key in (
-                "metal_active_memory_gb",
-                "metal_peak_memory_gb",
-                "metal_cache_memory_gb",
+                "device_active_memory_gb",
+                "device_peak_memory_gb",
+                "device_cache_memory_gb",
                 "batch_generator",
             ):
                 if key in mllm_stats:

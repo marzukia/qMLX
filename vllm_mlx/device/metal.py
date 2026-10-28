@@ -28,6 +28,11 @@ seam member                     current call-site expression
                                 ``hasattr(mx, "fast") and hasattr(
                                     mx.fast,
                                     "scaled_dot_product_attention")``
+``capabilities().os_memory_eviction``
+                                ``sys.platform == "darwin"`` (evaluated
+                                at call time — UBC is a macOS
+                                property of the Metal build, not of
+                                the GPU)
 ================================  ======================================
 
 ``enforcement_mode`` is declared ``EnforcementMode.HINT``: Metal treats
@@ -42,6 +47,7 @@ module for injection (tests); otherwise the first use imports
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from vllm_mlx.device.backend import (
@@ -140,6 +146,12 @@ class MetalBackend:
             compile_through=hasattr(mx, "compile"),
             async_eval=hasattr(mx, "async_eval"),
             stream_model=self._stream_model(),
+            # Evaluated lazily (not at construction) so a test that
+            # monkeypatches ``sys.platform`` sees the patched value;
+            # UBC is a macOS property of the Metal build, not of the
+            # GPU. Ported backends (ROCm/CUDA on Linux) declare their
+            # own OS-side eviction story (page-cache / madvise).
+            os_memory_eviction=sys.platform == "darwin",
         )
 
     def default_stream(self) -> Any:

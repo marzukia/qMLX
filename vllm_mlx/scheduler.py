@@ -231,15 +231,16 @@ class SchedulerConfig:
     max_concurrent_requests: int = 256
 
     # D-METAL-CAP: GPU memory utilization cap used for admission-time
-    # enforcement. ``mx.set_memory_limit`` is documented as a guideline —
-    # MLX will quietly grow PAST the limit while system RAM is
-    # available, so the user's ``--gpu-memory-utilization 0.45`` request
-    # is silently violated on big-RAM hosts (a 256 GB M3 Ultra actually
-    # grew Metal active to ~179 GB on a single 32k-prefill before macOS
-    # paged). The scheduler therefore re-enforces the cap in Python at
-    # admission and at the periodic memory-pressure check. ``0.0``
-    # disables the soft check (back-compat default; engines populate
-    # this from ``EngineConfig.gpu_memory_utilization`` via
+    # enforcement. The allocator's memory limit (seam
+    # ``enforcement_mode == HINT``) is documented as a guideline —
+    # the allocator will quietly grow PAST the limit while system RAM
+    # is available, so the user's ``--gpu-memory-utilization 0.45``
+    # request is silently violated on big-RAM hosts (a 256 GB M3 Ultra
+    # actually grew device active to ~179 GB on a single 32k-prefill
+    # before macOS paged). The scheduler therefore re-enforces the cap
+    # in Python at admission and at the periodic memory-pressure check.
+    # ``0.0`` disables the soft check (back-compat default; engines
+    # populate this from ``EngineConfig.gpu_memory_utilization`` via
     # ``BatchedEngine``).
     gpu_memory_utilization: float = 0.0
     # D-METAL-PFX: pressure threshold above which the scheduler
@@ -254,7 +255,7 @@ class SchedulerConfig:
     # KV-cache reservation, in bytes per (prompt+output) token. When
     # ``> 0``, ``_enforce_metal_cap_at_admission`` adds
     # ``(num_prompt_tokens + max_tokens) × kv_bytes_per_token`` to the
-    # current ``mx.get_active_memory`` reading and compares the SUM
+    # current ``memory_stats().active_bytes`` reading and compares the SUM
     # to the cap — so a single large prefill that would have grown
     # active PAST the cap is rejected BEFORE the allocation happens,
     # not just after. Without this, admission compares only current
@@ -3811,21 +3812,25 @@ class Scheduler:
             return None
 
     def _resolve_metal_cap_bytes(self) -> int:
-        """Compute the admission-time Metal cap in bytes (cached after first call).
+        """Compute the admission-time device cap in bytes (cached after first call).
 
-        D-METAL-CAP root cause: ``mx.set_memory_limit`` is documented as
-        a *guideline* — MLX will silently grow past the limit while
+        D-METAL-CAP root cause: the allocator's memory limit is
+        documented as a *guideline* (seam ``enforcement_mode == HINT``
+        on Metal) — MLX will silently grow past the limit while
         system RAM is available. On a 256 GB M3 Ultra with
         ``--gpu-memory-utilization 0.45`` (≈ 115 GB cap) the user saw
         Metal active grow to 179 GB on a single 32k prefill with no
         warning. This helper materializes the same per-device cap the
-        BatchedEngine boot path uses for ``mx.set_memory_limit`` so the
-        scheduler can enforce it at admission with no race against the
-        allocator's leniency window.
+        BatchedEngine boot path sets through the seam so the scheduler
+        can enforce it at admission with no race against the
+        allocator's leniency window. (On a HARD-enforcement backend
+        the allocator polices the cap itself and this admission police
+        becomes redundant — the seam declares the mode; the admission
+        semantics are unchanged here.)
 
         Returns ``0`` when the cap should be considered disabled (the
-        SchedulerConfig default ``gpu_memory_utilization=0.0``, or the
-        Metal device probe failed). Callers MUST treat ``0`` as "do not
+        SchedulerConfig default ``gpu_memory_utilization=0.0``, or no
+        GPU backend resolved). Callers MUST treat ``0`` as "do not
         check" rather than "no headroom".
         """
         if self._metal_cap_bytes_resolved:
@@ -3834,12 +3839,11 @@ class Scheduler:
         util = float(getattr(self.config, "gpu_memory_utilization", 0.0) or 0.0)
         if util > 0.0:
             try:
-                if mx.metal.is_available():
-                    info = mx.device_info()
-                    base = info.get(
-                        "max_recommended_working_set_size",
-                        info.get("memory_size", 0),
-                    )
+                from vllm_mlx.device import get_backend
+
+                backend = get_backend()
+                if backend is not None:
+                    base = backend.recommended_working_set_bytes()
                     if base and base > 0:
                         cap = int(base * util)
             except Exception:
@@ -3849,13 +3853,18 @@ class Scheduler:
         return cap
 
     def _current_metal_active_bytes(self) -> int:
-        """Best-effort snapshot of MLX-reported Metal active memory.
+        """Best-effort snapshot of backend-reported active memory.
 
-        Wrapped in try/except so a non-Metal host (CI, Linux GPU shim,
+        Wrapped in try/except so a host without a GPU backend (CI,
         unit-test fake) doesn't take down the admission path.
         """
         try:
-            return int(mx.get_active_memory())
+            from vllm_mlx.device import get_backend
+
+            backend = get_backend()
+            if backend is None:
+                return 0
+            return int(backend.memory_stats().active_bytes)
         except Exception:
             return 0
 
@@ -4097,8 +4106,9 @@ class Scheduler:
     def _sum_in_flight_kv_bytes(self) -> int:
         """Sum projected KV reservations of WAITING-only requests.
 
-        Codex round 5 BLOCKING #1: ``mx.get_active_memory()`` only
-        reflects the allocator AT THE INSTANT we read it — admitted
+        Codex round 5 BLOCKING #1: the allocator's active-memory reading
+        (``memory_stats().active_bytes``) only reflects the allocator AT
+        THE INSTANT we read it — admitted
         requests that have not yet been picked up by the BatchGenerator
         contribute 0 to ``active`` even though they will allocate KV
         on their first step. Without including their reservations,
@@ -4109,7 +4119,7 @@ class Scheduler:
         Codex round 6 BLOCKING #3: critically, we must EXCLUDE
         ``self.running`` requests — their KV has already been
         allocated by the BatchGenerator and is therefore already
-        counted in ``mx.get_active_memory()``. Including them would
+        counted in ``memory_stats().active_bytes``. Including them would
         double-count and reject all new admits after even ONE
         in-flight large request, when real Metal headroom is fine.
         Only ``self.waiting`` (admitted but never stepped) contains
@@ -4137,7 +4147,7 @@ class Scheduler:
         Runs as the second admission check in ``add_request`` —
         immediately after the concurrent-requests cap and BEFORE any
         tokenization / prefix-cache lookup so the rejection cost is a
-        single ``mx.get_active_memory`` syscall plus a dict lookup.
+        single ``memory_stats()`` call plus a dict lookup.
 
         Two-stage check (codex round 3 BLOCKING #1 closure):
         1. Cheap path — ``active >= cap`` rejects when the allocator
@@ -4241,7 +4251,7 @@ class Scheduler:
         scheduler proactively evicts, INDEPENDENT of ``gpu_memory_utilization``.
 
         R6-H6 root cause: pre-fix the pressure path was gated solely
-        on ``mx.get_active_memory() > fraction × metal_cap``. When
+        on ``active_bytes > fraction × metal_cap``. When
         ``gpu_memory_utilization`` is unset (the default 0.0 — the
         configuration the 0.8.7 dogfood actually ran with),
         ``_resolve_metal_cap_bytes`` returns 0, the function early-
@@ -4287,8 +4297,8 @@ class Scheduler:
 
         Two independent triggers can fire this loop:
 
-        * **D-METAL-PFX (Metal active pressure):** when
-          ``mx.get_active_memory()`` climbs above
+        * **D-METAL-PFX (device active pressure):** when
+          ``memory_stats().active_bytes`` climbs above
           ``metal_pressure_evict_fraction × _resolve_metal_cap_bytes()``.
           Requires ``gpu_memory_utilization > 0`` so the Metal soft cap
           is configured.
@@ -4321,7 +4331,7 @@ class Scheduler:
         metal_cap = self._resolve_metal_cap_bytes()
         cache_self_threshold = self._cache_self_pressure_threshold_bytes()
         # Short-circuit when NEITHER trigger is configured. This keeps
-        # the no-op cost (one ``mx.get_active_memory()`` syscall +
+        # the no-op cost (one ``memory_stats()`` call +
         # one dict lookup) off the path on engines that disabled both
         # the Metal soft cap AND the cache-self trigger (e.g. legacy
         # trie-based PrefixCacheManager engines).
@@ -4466,11 +4476,11 @@ class Scheduler:
                 f"(currently {len(self.requests)} in-flight)"
             )
 
-        # D-METAL-CAP: enforce the gpu_memory_utilization cap that
-        # ``mx.set_memory_limit`` silently let MLX violate on big-RAM
-        # hosts. Raises ``BackpressureError`` so the existing route
-        # plumbing returns 503 + Retry-After instead of marching the
-        # allocator past the operator-configured limit.
+        # D-METAL-CAP: enforce the gpu_memory_utilization cap that the
+        # allocator (``enforcement_mode == HINT``) silently let MLX
+        # violate on big-RAM hosts. Raises ``BackpressureError`` so the
+        # existing route plumbing returns 503 + Retry-After instead of
+        # marching the allocator past the operator-configured limit.
         self._enforce_metal_cap_at_admission(request)
 
         # Tokenize if needed
@@ -6532,12 +6542,16 @@ class Scheduler:
         # Periodically log memory stats for monitoring
         if self._step_count % self._memory_log_interval == 0:
             try:
-                if mx.metal.is_available():
-                    active_gb = mx.get_active_memory() / 1e9
-                    peak_gb = mx.get_peak_memory() / 1e9
-                    cache_gb = mx.get_cache_memory() / 1e9
+                from vllm_mlx.device import get_backend
+
+                backend = get_backend()
+                if backend is not None:
+                    mem = backend.memory_stats()
+                    active_gb = mem.active_bytes / 1e9
+                    peak_gb = mem.peak_bytes / 1e9
+                    cache_gb = mem.cache_bytes / 1e9
                     logger.info(
-                        f"[Metal memory] active={active_gb:.1f}GB "
+                        f"[Device memory] active={active_gb:.1f}GB "
                         f"peak={peak_gb:.1f}GB cache={cache_gb:.1f}GB "
                         f"step={self._step_count} "
                         f"running={len(self.running)} waiting={len(self.waiting)}"
@@ -6746,12 +6760,22 @@ class Scheduler:
             stats["kv_checkpoint"] = _dkc.get_stats()
         except Exception:  # pragma: no cover — defensive
             pass
-        # Include Metal memory stats
+        # Include device memory stats
         try:
-            if mx.metal.is_available():
-                stats["metal_active_memory_gb"] = round(mx.get_active_memory() / 1e9, 2)
-                stats["metal_peak_memory_gb"] = round(mx.get_peak_memory() / 1e9, 2)
-                stats["metal_cache_memory_gb"] = round(mx.get_cache_memory() / 1e9, 2)
+            from vllm_mlx.device import get_backend
+
+            backend = get_backend()
+            if backend is not None:
+                mem = backend.memory_stats()
+                stats["device_active_memory_gb"] = round(
+                    mem.active_bytes / 1e9, 2
+                )
+                stats["device_peak_memory_gb"] = round(
+                    mem.peak_bytes / 1e9, 2
+                )
+                stats["device_cache_memory_gb"] = round(
+                    mem.cache_bytes / 1e9, 2
+                )
         except Exception:
             pass
 

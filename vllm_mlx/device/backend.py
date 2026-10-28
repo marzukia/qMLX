@@ -83,6 +83,15 @@ one instance per backend. Members:
   depends on them — see the stream contract).
 * ``stream_model`` — ``StreamModel.SINGLE_STREAM`` / ``MULTI_STREAM``
   (the thread/stream semantics class).
+* ``os_memory_eviction`` — the backend's OS can actively free
+  OS-side (file-backed / page-cache) memory before a cold restore.
+  Metal: the macOS Unified Buffer Cache (``msync(MS_INVALIDATE)``);
+  ``True`` only on Darwin — the Linux analogue is page-cache /
+  ``madvise`` territory for a ported backend to declare. ``False``
+  (the default) makes the eviction helper a no-op. This is what
+  ``vllm_mlx.runtime.ubc_evict`` gates on (item 3): "free OS-side
+  memory before restore" is a capability, not a ``sys.platform``
+  check.
 
 ``MemoryStats`` (frozen dataclass) — ``active_bytes``, ``peak_bytes``,
 ``cache_bytes`` (bytes).
@@ -188,6 +197,7 @@ class CapabilityFlags:
     compile_through: bool
     async_eval: bool
     stream_model: StreamModel
+    os_memory_eviction: bool = False
 
 
 @runtime_checkable
