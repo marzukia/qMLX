@@ -2997,14 +2997,12 @@ class Scheduler:
 
         stop_tokens = _assemble_stop_tokens(sampling_params, self._get_stop_tokens())
 
-        # mlx-lm 0.31.3+: BatchGenerator captures generation_stream at __init__
-        # via a thread-local Stream; without an explicit stream= the captured
-        # stream is whatever the import-thread had — which on the asyncio loop
-        # thread is unreachable from the mlx-step worker that runs .next(),
-        # so every request fails with "There is no Stream(gpu, 1) in current
-        # thread" (#170 hot path; complements the warmup fix in PR #173).
-        # _create_batch_generator runs on the mlx-step thread so default_stream
-        # here is the worker's stream (our `_init_mlx_step_thread` sets it).
+        # One owner thread per device: BatchGenerator captures its stream
+        # at __init__ from the calling thread (MLX streams are thread-
+        # local). _create_batch_generator runs on the mlx-step owner, so
+        # passing default_stream explicitly pins the generator to the
+        # owner's stream (the one _init_mlx_step_thread adopts) instead
+        # of whatever stream the import thread had.
         bg_kwargs = dict(
             model=self.model,
             max_tokens=sampling_params.max_tokens,

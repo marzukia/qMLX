@@ -9,6 +9,18 @@ This module provides the EngineCore class that coordinates:
 - Output streaming
 
 The design follows vLLM's engine architecture adapted for MLX.
+
+Design: multiplexing, not parallelisation. qMLX targets
+bandwidth-bound devices, so many requests interleave on one stream
+rather than overlapping on several. All model/KV-touching MLX work
+runs on a single owner thread — the ``mlx-step`` worker (see
+``_init_mlx_step_thread``); the asyncio loop only dispatches to it.
+The disk-KV cold-cache restore tier (``runtime/disk_kv_checkpoint.py``)
+is a first-class memory tier: the SSD is the RAM of the second tier,
+and a cache miss reloads a checkpoint instead of re-prefilling. The
+one-owner-thread rule is the conformance contract ported backends
+(``mlx-rocm`` / ``mlx-cuda``) must honour (``vllm_mlx.device.backend``,
+"Stream contract").
 """
 
 import asyncio
@@ -35,31 +47,40 @@ logger = logging.getLogger(__name__)
 def _init_mlx_step_thread() -> None:
     """Create the MLX worker thread's generation stream + default stream.
 
+    Design: one owner thread per device. This worker owns every
+    model/KV-touching MLX op in the process; the asyncio loop only
+    dispatches to it. Bandwidth-bound devices interleave, they do not
+    overlap — a second thread issuing MLX work would contend on stream
+    state rather than share the stream. This rule is the conformance
+    contract ported backends (``mlx-rocm`` / ``mlx-cuda``) honour
+    (``vllm_mlx.device.backend``, "Stream contract").
+
     Runs once when the executor spawns its single worker. Steps:
 
-    1. Create a new stream on this thread. mlx-lm / mlx-vlm both hold a
-       module-level ``generation_stream`` that was created on the import
-       thread (the asyncio loop / main thread); operations queued onto
-       that stream cannot be ``mx.eval``-ed from this worker thread —
-       you get ``RuntimeError: There is no Stream(gpu, N) in current
-       thread.`` (#170, follow-on to #161 / #167).
+    1. Adopt this thread's default stream. MLX streams are thread-local,
+       and mlx-lm / mlx-vlm both hold a module-level
+       ``generation_stream`` created on the import thread (the asyncio
+       loop / main thread); operations queued onto a stream another
+       thread created cannot be ``mx.eval``-ed from here (``RuntimeError:
+       There is no Stream(gpu, N) in current thread.``).
     2. Reassign the module-level ``generation_stream`` in BOTH
        ``mlx_lm.generate`` and ``mlx_vlm.generate`` (Gemma 4 etc. lives
        in the latter, and their ``with mx.stream(generation_stream)``
        blocks otherwise capture the import-thread stream).
-    3. ``mx.set_default_stream(stream)`` — anything that allocates an
-       ``mx.array`` without an explicit stream context (e.g.
+    3. Convergence: anything that allocates an ``mx.array`` without an
+       explicit stream context (e.g.
        ``BatchRotatingKVCache.__init__`` doing ``mx.array(left_padding)``
-       inside ``BatchGenerator._next()``'s prompt cache merge) also
-       lands on a thread-local stream we can eval. ``set_default_stream``
-       is process-wide, but the main thread no longer issues MLX work
-       after warmup is routed here too (PR #173).
+       inside ``BatchGenerator._next()``'s prompt cache merge) lands on
+       this thread's default stream — the one we adopted — so ad-hoc
+       allocations and ``with mx.stream(...)`` blocks converge on a
+       single stream the owner can eval.
     """
-    # mlx-lm 0.31.3+: generation_stream is `mx.new_thread_local_stream` bound
-    # to the THREAD that created it. BatchGenerator captures
-    # `self._stream = stream or generation_stream` at __init__, and any
-    # captured ThreadLocalStream from the import thread fails to eval from
-    # this worker (#170: "There is no Stream(gpu, 1) in current thread.").
+    # MLX streams are thread-local, and mlx-lm's module-level
+    # generation_stream was created on the import thread. BatchGenerator
+    # captures `self._stream = stream or generation_stream` at __init__,
+    # so a stream captured from the import thread cannot be eval'd from
+    # this owner worker ("There is no Stream(gpu, N) in current
+    # thread.").
     #
     # Adopt the worker thread's auto-default stream rather than creating a
     # NEW stream. MLX lazily creates a default stream per-thread on first
@@ -230,11 +251,13 @@ class EngineCore:
         # binds to the running loop. See issue #265.
         self._idle_event: asyncio.Event | None = None
 
-        # Single MLX worker thread that owns the per-thread generation_stream
-        # (created on demand in start(); see _init_mlx_step_thread). All MLX
-        # array operations that touch cached KV state must go through this
-        # executor — the asyncio loop thread does not own a stream and will
-        # raise "There is no Stream(gpu, N) in current thread."
+        # The single mlx-step worker — the owner of all model/KV-touching
+        # MLX work (created on demand in start(); see
+        # _init_mlx_step_thread). Design: one owner thread per device —
+        # bandwidth-bound devices interleave, they do not overlap; the
+        # asyncio loop only dispatches to this executor. MLX streams are
+        # thread-local, so a non-owner thread evaluating the owner's
+        # stream raises "There is no Stream(gpu, N) in current thread."
         self._mlx_executor: concurrent.futures.ThreadPoolExecutor | None = None
         # True when we created the executor in ``start()`` and own its
         # lifecycle; False when the caller supplied an existing executor
@@ -334,10 +357,10 @@ class EngineCore:
             executor: Optional pre-existing single-thread executor (whose
                 worker is the mlx-step thread that already loaded the model).
                 Reusing the same worker keeps every MLX op — model weights,
-                forward passes, cache state — bound to one thread, which is
-                the only configuration that survives mlx-lm 0.31.3+
-                ThreadLocalStream tagging (#170). When None, a fresh
-                executor is created.
+                forward passes, cache state — bound to the single owner
+                thread (the engine's stream contract; see
+                ``vllm_mlx.device.backend``). When None, a fresh executor is
+                created.
         """
         if self._running:
             return
@@ -388,11 +411,13 @@ class EngineCore:
 
         Use this for MLX operations called from the asyncio loop thread
         (or any other thread) that touch arrays whose backing stream lives
-        on the worker — e.g. saving the prefix cache to disk on shutdown.
+        on the owner worker — e.g. saving the prefix cache to disk on
+        shutdown.
 
         Falls back to a direct call if the executor isn't available
-        (engine not started or already stopped); the caller will see the
-        same Stream(gpu, N) error it would have seen pre-fix.
+        (engine not started or already stopped); a non-owner thread
+        evaluating the owner's stream raises
+        "There is no Stream(gpu, N) in current thread."
         """
         executor = self._mlx_executor
         if executor is None:
@@ -460,9 +485,10 @@ class EngineCore:
         """Main engine loop."""
         # The single mlx-step worker thread is created in start() so that
         # _run_on_step_thread() can also reach it from non-loop callers
-        # (e.g. shutdown cache persistence). mlx-lm generation streams are
-        # thread-local, and Qwen3.x RotatingKVCache keeps arrays tagged
-        # with that stream across prefill and decode.
+        # (e.g. shutdown cache persistence). One owner thread per device:
+        # MLX streams are thread-local, and KV caches (e.g. Qwen3.x
+        # RotatingKVCache) keep arrays tagged with the owner's stream
+        # across prefill and decode — only the owner can eval them.
         _executor = self._mlx_executor
         loop = asyncio.get_running_loop()
 
@@ -543,11 +569,10 @@ class EngineCore:
                         # rationale (codex round 1 BLOCKING + NIT).
                         # Codex round 6 BLOCKING #2: eviction touches
                         # cached MLX arrays + calls mx.clear_cache().
-                        # MLX streams are thread-bound (mx.new_stream
-                        # cross-thread crash gotcha), so dispatch onto
-                        # the same single ``mlx-step`` worker that runs
-                        # ``scheduler.step`` rather than executing on
-                        # the asyncio thread.
+                        # One owner thread per device (MLX streams are
+                        # thread-bound), so dispatch onto the same single
+                        # ``mlx-step`` worker that runs ``scheduler.step``
+                        # rather than executing on the asyncio thread.
                         if _executor is not None:
                             await loop.run_in_executor(
                                 _executor, self._run_pressure_evict_tick

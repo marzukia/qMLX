@@ -41,6 +41,24 @@ longer earning its keep).
 - Scheduler with priority queue
 - One engine instance handles both single-request and multi-tenant workloads
 
+### Concurrency model (design ethos)
+
+**One owner thread per device.** `AsyncEngineCore` runs a single
+`mlx-step` worker thread and submits *all* model/KV-touching MLX work
+to it; the asyncio loop only dispatches. Bandwidth-bound devices
+interleave, they do not overlap — the one-owner-thread rule is the
+conformance contract ported backends (`mlx-rocm` / `mlx-cuda`) must
+honour, with stream semantics declared through the device/backend seam
+(`vllm_mlx/device/backend.py`, "Stream contract") rather than probed for
+error strings.
+
+**The disk is the RAM of the second tier.** The disk-KV checkpoint tier
+(`runtime/disk_kv_checkpoint.py`) is the engine's memory tier, not an
+add-on: long-context caches are snapshotted to the SSD at 256-token
+boundaries and restored on a miss instead of re-prefilled (on by
+default). Full write-up: [System Architecture — Design
+ethos](../architecture.md#design-ethos).
+
 ## Paged KV Cache Architecture
 
 ```
