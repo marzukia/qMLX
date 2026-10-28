@@ -423,9 +423,9 @@ def test_decode_step_after_prefill_keeps_in_call_reuse(repro_dir):
 
 
 def test_empty_local_layer_slice_delegates_to_upstream(repro_dir):
-    """Pipeline-parallel layout with an out-of-range ``start_idx``
-    safely delegates to ``_orig_model_call`` instead of crashing with
-    ``IndexError``.
+    """A non-REAP model with a stale (out-of-range) ``start_idx`` — a
+    pipeline-shard artifact — still delegates cleanly to
+    ``_orig_model_call`` instead of crashing with ``IndexError``.
 
     Codex finding #3 on PR #967 round 5: the patched ``Model.__call__``
     used to dereference ``self.layers[self.start_idx]`` unconditionally.
@@ -436,8 +436,10 @@ def test_empty_local_layer_slice_delegates_to_upstream(repro_dir):
     fail. This rewrite monkey-patches ``_orig_model_call`` to a
     sentinel-recording stub and invokes the patched call on a model
     whose ``start_idx`` is out of range, then asserts the sentinel was
-    reached. If the bounds-check guard were removed, the patched call
-    would raise ``IndexError`` BEFORE the sentinel is recorded.
+    reached. After the pipeline-comms cut the wrapper reads the config
+    off the first real layer (``self.layers[0]``) and never touches
+    ``start_idx`` before the non-REAP delegation, so a stale shard
+    attribute cannot crash the delegation path.
     """
     from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
 
@@ -534,70 +536,6 @@ def test_reuse_path_runs_for_run_of_consecutive_shared_layers(repro_dir):
         "finding)."
     )
     assert gate._SHARED_LAYER_DENSE_FALLBACK_COUNT == 0
-
-
-def test_pp_shard_with_oversized_num_layers_raises_clear_error(repro_dir):
-    """Pipeline-parallel shard whose ``num_layers`` extends past the
-    local ``self.layers`` list raises a clear ``ValueError`` before
-    entering the layer loop, instead of a deep opaque ``IndexError``.
-
-    Codex finding #1 on PR #967 round 7: the patched model loop
-    indexes ``self.layers[self.start_idx + i]`` for ``i in
-    range(self.num_layers)`` unconditionally. A malformed shard
-    where ``start_idx + num_layers > len(self.layers)`` would crash
-    deep inside the loop with no actionable error message. Add a
-    pre-loop bounds check.
-    """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
-
-    gate.install_deepseek_v32_indexer_gate()
-    repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
-
-    from mlx_lm.utils import load_model
-
-    model, _cfg = load_model(repro)
-    inner = model.model
-
-    # Simulate a malformed PP shard: start_idx legitimate, but
-    # num_layers exceeds local layer list length.
-    inner.start_idx = 2
-    inner.num_layers = 5  # 2 + 5 = 7 > len(layers)=4
-
-    prompt = mx.array([[1, 2, 3]], dtype=mx.int32)
-    with pytest.raises(ValueError, match="extends past local layer list"):
-        model(prompt)
-
-
-def test_pp_shard_starting_on_shared_layer_raises_clear_error(repro_dir):
-    """Pipeline-parallel shard whose first locally-iterated layer is
-    ``"shared"`` raises a clear ``ValueError`` instead of silently
-    falling back to dense attention.
-
-    Codex finding #2 on PR #967 round 6: previously such a shard
-    would silently take the dense fallback on its leading shared
-    layers, changing inference semantics relative to the published
-    REAP contract. Fail fast with a clear error message instead;
-    cross-rank communication of the current full layer's topk is
-    the architecturally-correct remedy if ever needed, but that's
-    out of scope for the surgical D1 fix.
-    """
-    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
-
-    gate.install_deepseek_v32_indexer_gate()
-    repro = _forge_repro(repro_dir, ["full", "shared", "shared", "shared"])
-
-    from mlx_lm.utils import load_model
-
-    model, _cfg = load_model(repro)
-    inner = model.model
-
-    # Simulate a PP rank that starts mid-model on a shared layer.
-    inner.start_idx = 1
-    inner.num_layers = 3
-
-    prompt = mx.array([[1, 2, 3]], dtype=mx.int32)
-    with pytest.raises(ValueError, match="pipeline-parallel shard"):
-        model(prompt)
 
 
 def test_uninstall_restores_originals_across_module_reload(repro_dir):
