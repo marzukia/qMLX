@@ -2922,3 +2922,64 @@ def test_install_mtp_vendored_uid_reuse_clears_stale_state(monkeypatch):
         f"(got {tokens!r}, expected [2000]). This suggests the "
         "wrapper resumed the OLD generator's queue / iteration state."
     )
+
+
+# ----------------------------------------------------------------------
+# _gather_kv_cache_dtype_inputs — local checkpoint directory support
+# (dogfood 2026-10-28: a local model path is not an HF repo id, so the
+# HF-cache lookup returns None and the MTP eligibility gate hard-rejects
+# a self-contained MTP checkpoint that sits right next to its weights)
+# ----------------------------------------------------------------------
+
+
+def test_gather_kv_cache_dtype_inputs_reads_local_dir_config(tmp_path):
+    """A local checkpoint directory is read in place: the MTP
+    eligibility gate sees ``text_config.mtp_num_hidden_layers`` for
+    ``qmlx serve <local-path>`` with no HF cache round-trip."""
+    import json
+
+    from vllm_mlx.cli import _gather_kv_cache_dtype_inputs
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    cfg = {
+        "model_type": "qwen3_5",
+        "text_config": {"mtp_num_hidden_layers": 1},
+    }
+    (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+    hf_cfg, _ = _gather_kv_cache_dtype_inputs(str(tmp_path))
+    assert hf_cfg is not None
+    assert hf_cfg["model_type"] == "qwen3_5"
+    assert detect_mtp_eligibility(hf_cfg) is MTPEligibility.CHAIN
+
+
+def test_gather_kv_cache_dtype_inputs_local_dir_without_config(tmp_path):
+    """A local directory without config.json degrades to hf_cfg=None
+    (the pre-existing best-effort contract) instead of raising."""
+    from vllm_mlx.cli import _gather_kv_cache_dtype_inputs
+
+    hf_cfg, _ = _gather_kv_cache_dtype_inputs(str(tmp_path))
+    assert hf_cfg is None
+
+
+def test_gather_kv_cache_dtype_inputs_local_dir_root_level_mtp_layers(tmp_path):
+    """Hand-converted checkpoints may carry ``mtp_num_hidden_layers``
+    at the config root — the in-place read must surface that shape
+    too (detect.py documents both placements)."""
+    import json
+
+    from vllm_mlx.cli import _gather_kv_cache_dtype_inputs
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    cfg = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}
+    (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+    hf_cfg, _ = _gather_kv_cache_dtype_inputs(str(tmp_path))
+    assert hf_cfg is not None
+    assert detect_mtp_eligibility(hf_cfg) is MTPEligibility.CHAIN
