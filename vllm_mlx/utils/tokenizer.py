@@ -622,25 +622,31 @@ def _post_load_ubc_evict(model_name: str) -> None:
     on GLM-5.2 / DeepSeek-V3.2 boots. Evicting the mirror via
     ``msync(MS_INVALIDATE)`` releases those pages back to the free pool.
 
-    No-op on non-Darwin platforms (see :mod:`vllm_mlx.runtime.ubc_evict`).
-    The platform gate is at the **TOP** of the function — codex round 1
-    BLOCKING — so Linux/Windows callers don't pay for path resolution
-    (which on a cache-miss could trigger a Hub ``snapshot_download``).
+    No-op when the active backend does not declare the
+    ``os_memory_eviction`` capability (see :mod:`vllm_mlx.runtime.ubc_evict` —
+    the device/backend seam, item 3: "free OS-side memory before
+    restore" is a capability, not a ``sys.platform`` check; on the
+    Metal backend the capability is ``True`` only on Darwin, so
+    behavior is unchanged).
+    The capability gate is at the **TOP** of the function — codex
+    round 1 BLOCKING — so callers on backends without the capability
+    don't pay for path resolution (which on a cache-miss could trigger
+    a Hub ``snapshot_download``).
 
     Wrapped in a broad try/except: a failure here MUST NEVER block a
     model from loading. The eviction is opportunistic memory cleanup,
     not a correctness gate.
     """
-    # Platform gate FIRST — every line below this point is Darwin-only
-    # bookkeeping. Codex round 1 caught that without this early return,
-    # Linux/Windows callers paid for ``_resolve_model_path``, which can
-    # invoke ``huggingface_hub.snapshot_download`` on a cache miss —
+    # Capability gate FIRST — every line below this point is
+    # capability-gated bookkeeping. Codex round 1 caught that without
+    # this early return, callers without the capability paid for
+    # ``_resolve_model_path``, which can invoke
+    # ``huggingface_hub.snapshot_download`` on a cache miss —
     # a potentially expensive side effect inside the load-path
-    # ``finally`` clause for a feature that has no effect on those
-    # platforms.
-    import sys as _sys
+    # ``finally`` clause for a feature that has no effect for them.
+    from ..runtime.ubc_evict import eviction_supported
 
-    if _sys.platform != "darwin":
+    if not eviction_supported():
         return
 
     try:

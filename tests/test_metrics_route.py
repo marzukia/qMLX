@@ -115,9 +115,9 @@ _FULL_STATS = {
     "total_completion_tokens": 5678,
     "steps_executed": 99,
     "uptime_seconds": 42.5,
-    "metal_active_memory_gb": 1.5,
-    "metal_peak_memory_gb": 2.0,
-    "metal_cache_memory_gb": 0.25,
+    "device_active_memory_gb": 1.5,
+    "device_peak_memory_gb": 2.0,
+    "device_cache_memory_gb": 0.25,
     "prefix_cache": {
         "hits": 10,
         "misses": 4,
@@ -147,9 +147,9 @@ def test_metrics_exposes_all_expected_series(metrics_client):
         "qmlx_requests_waiting",
         "qmlx_steps_executed_total",
         "qmlx_uptime_seconds",
-        "qmlx_metal_active_memory_bytes",
-        "qmlx_metal_peak_memory_bytes",
-        "qmlx_metal_cache_memory_bytes",
+        "qmlx_device_active_memory_bytes",
+        "qmlx_device_peak_memory_bytes",
+        "qmlx_device_cache_memory_bytes",
         "qmlx_prefix_cache_hits_total",
         "qmlx_prefix_cache_misses_total",
         "qmlx_prefix_cache_evictions_total",
@@ -175,8 +175,8 @@ def test_metrics_values_match_get_stats(metrics_client):
     assert "qmlx_steps_executed_total 99" in body
     assert "qmlx_uptime_seconds 42.5" in body
     # GB → bytes conversion verified.
-    assert "qmlx_metal_active_memory_bytes 1500000000" in body
-    assert "qmlx_metal_peak_memory_bytes 2000000000" in body
+    assert "qmlx_device_active_memory_bytes 1500000000" in body
+    assert "qmlx_device_peak_memory_bytes 2000000000" in body
     # Prefix-cache pass-through.
     assert "qmlx_prefix_cache_hits_total 10" in body
     assert "qmlx_prefix_cache_misses_total 4" in body
@@ -208,15 +208,15 @@ def test_metrics_handles_none_metal_stats_as_zero(metrics_client):
     explicit zeros instead.
     """
     stats = dict(_FULL_STATS)
-    stats["metal_active_memory_gb"] = None
-    stats["metal_peak_memory_gb"] = None
-    stats["metal_cache_memory_gb"] = None
+    stats["device_active_memory_gb"] = None
+    stats["device_peak_memory_gb"] = None
+    stats["device_cache_memory_gb"] = None
     metrics_client.cfg.engine = _fake_engine(stats)
 
     body = metrics_client.client.get("/metrics").text
-    assert "qmlx_metal_active_memory_bytes 0" in body
-    assert "qmlx_metal_peak_memory_bytes 0" in body
-    assert "qmlx_metal_cache_memory_bytes 0" in body
+    assert "qmlx_device_active_memory_bytes 0" in body
+    assert "qmlx_device_peak_memory_bytes 0" in body
+    assert "qmlx_device_cache_memory_bytes 0" in body
 
 
 def test_metrics_prefers_memory_aware_cache_when_present(metrics_client):

@@ -26,6 +26,19 @@ stream, losing parallel-issue throughput but staying functional. Hardware
 that supports multiple streams gets the original behavior — the probe is
 one-time per device.
 
+Item 3 (device/backend seam): the single-stream *detection* is routed
+through the backend's declared stream semantics —
+``backend.supports_secondary_streams()`` — instead of this module
+string-probing the ``RuntimeError`` itself. Ported backends (ROCm/
+CUDA) declare their stream model directly; on Metal the declared
+answer is the same one-time hardware probe (cached in the backend).
+The monkeypatch itself stays: ``mlx_lm.generate`` captures
+``mx.new_thread_local_stream`` at module-import time, so the symbol
+must still be intercepted. The per-device probe below remains as the
+fallback for non-default devices and for builds where no backend
+resolves. A re-entrancy guard keeps the backend's own probe (which
+calls the patched symbol) from recursing into the wrapper.
+
 This patch must execute *before* any ``import mlx_lm.generate``, since
 that module captures the returned stream at module level. The install
 hook is called at the top of every consumer that imports
@@ -72,6 +85,21 @@ def install() -> None:
     if not hasattr(mx, "new_thread_local_stream"):
         return
 
+    # Item 3 (device/backend seam): stream semantics are declared by the
+    # backend, not string-probed here. ``supports_secondary_streams()``
+    # is the declared single-stream detection contract; on Metal it is
+    # the same one-time hardware probe (cached in the backend), on
+    # ported backends it is a direct declaration.
+    from vllm_mlx.device import get_backend
+
+    backend = get_backend()
+    _default_device_key = None
+    if backend is not None:
+        try:
+            _default_device_key = repr(backend.device())
+        except Exception:
+            _default_device_key = None
+
     original = mx.new_thread_local_stream
 
     # Tri-state cache per device:
@@ -79,9 +107,22 @@ def install() -> None:
     #   True  → original works on this device
     #   False → original is unusable, must fall back to default_stream
     _probe_cache: dict = {}
+    # Re-entrancy guard: the backend's own probe calls
+    # ``mx.new_thread_local_stream`` (this wrapper) internally; the
+    # inner call must return the raw stream so the outer probe can
+    # exercise it — without the guard the two probes recurse.
+    _in_progress: set = set()
 
     def _probe(stream, device) -> bool:
-        """True if `with mx.stream(stream)` can run a trivial op."""
+        # Backend-declared answer for the default device (ported
+        # backends declare stream semantics directly instead of
+        # string-probing; on Metal the declared answer is the same
+        # one-time hardware probe, cached in the backend).
+        if _default_device_key is not None and repr(device) == _default_device_key:
+            try:
+                return bool(backend.supports_secondary_streams())
+            except Exception:
+                pass  # unexpected backend failure → local probe below
         try:
             with mx.stream(stream):
                 # Force evaluation so the stream is actually exercised.
@@ -103,30 +144,39 @@ def install() -> None:
             raise
 
     def patched_new_thread_local_stream(device):
-        cached = _probe_cache.get(repr(device))
+        key = repr(device)
+        cached = _probe_cache.get(key)
         if cached is False:
             return mx.default_stream(device)
         if cached is True:
             return original(device)
-
-        # First call for this device — probe. Log at INFO so that anyone
-        # filing a hardware-shaped bug report has the device family in
-        # their startup output. Future M5+/Apple chip families will land
-        # here first; greppable on "qmlx compat".
-        stream = original(device)
-        if _probe(stream, device):
-            _probe_cache[repr(device)] = True
+        if key in _in_progress:
+            # Re-entrant call (the backend's own probe is running
+            # through this wrapper) — return the raw stream; the outer
+            # probe decides.
+            return original(device)
+        _in_progress.add(key)
+        try:
+            # First call for this device — probe. Log at INFO so that anyone
+            # filing a hardware-shaped bug report has the device family in
+            # their startup output. Future M5+/Apple chip families will land
+            # here first; greppable on "qmlx compat".
+            stream = original(device)
+            if _probe(stream, device):
+                _probe_cache[key] = True
+                logger.info(
+                    "qmlx compat: device %s supports thread-local streams (no shim).",
+                    device,
+                )
+                return stream
+            _probe_cache[key] = False
             logger.info(
-                "qmlx compat: device %s supports thread-local streams (no shim).",
+                "qmlx compat: device %s uses default_stream fallback (#404 M5 path).",
                 device,
             )
-            return stream
-        _probe_cache[repr(device)] = False
-        logger.info(
-            "qmlx compat: device %s uses default_stream fallback (#404 M5 path).",
-            device,
-        )
-        return mx.default_stream(device)
+            return mx.default_stream(device)
+        finally:
+            _in_progress.discard(key)
 
     mx.new_thread_local_stream = patched_new_thread_local_stream
     mx._qmlx_compat_installed = True
