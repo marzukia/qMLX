@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qmlx"
 version = "0.15.1"
-description = "Multi-backend MLX inference engine (Metal, mlx-rocm, mlx-cuda) with OpenAI-compatible serving, disk KV restore for hybrid MoE models, and speculative decoding — keeps a 122B model warm on a Mac."
+description = "Multi-backend MLX inference engine (Metal, mlx-rocm, mlx-cuda) with OpenAI-compatible serving, disk KV restore for hybrid MoE models, and speculative decoding, on a single device/backend seam."
 readme = "README.md"
 license = {text = "MIT AND Apache-2.0"}
 requires-python = ">=3.10"

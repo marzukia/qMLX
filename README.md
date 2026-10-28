@@ -8,9 +8,9 @@
 </div>
 
 <p align="center">
-  <strong>Multi-backend MLX inference engine — Metal, ROCm, CUDA.</strong>
+  <strong>Multi-backend MLX inference engine: Metal, ROCm, CUDA.</strong>
   <br>
-  <em>OpenAI-compatible serving with disk KV restore for hybrid MoE models and speculative decoding. Keeps a 122B model warm on a Mac, and runs the same engine on AMD and NVIDIA.</em>
+  <em>OpenAI-compatible serving with disk KV restore for hybrid MoE models and speculative decoding. The engine targets all three backends through a single device/backend seam; Metal is the reference implementation.</em>
 </p>
 
 <p align="center">
@@ -50,7 +50,7 @@ The result: a follow-up question on a 130,000-token conversation goes from a mul
 
 ## Status
 
-Alpha. Metal is the reference backend — measured on an M3 Ultra (96GB+ unified) with Qwen3.5-122B-A10B; mlx-rocm and mlx-cuda are the next implementations on the same device/backend seam. Qwen-first, and honest about what is built and what is not. Decode slows gradually with context because the dense-attention layers re-read a growing KV each token, but there is no cliff: it stays usable well past 100k tokens on this hardware. Windowed attention to flatten that curve further is on the roadmap.
+Alpha. Metal is the reference backend, measured on an M3 Ultra (96GB+ unified) with Qwen3.5-122B-A10B; mlx-rocm and mlx-cuda are the next implementations on the same device/backend seam. Qwen-first, and honest about what is built and what is not. Decode slows gradually with context because the dense-attention layers re-read a growing KV each token, but there is no cliff: it stays usable well past 100k tokens on this hardware. Windowed attention to flatten that curve further is on the roadmap.
 
 ## Known limitations
 
@@ -108,7 +108,7 @@ These are `--default-*`, so a client can still override any of them per request.
 
 ## Credit
 
-Forked from [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). The base engine, the OpenAI/Anthropic API surface, and the MLX serving path are theirs. qMLX adds the hybrid-aware disk restore, the eviction and metrics work, and the Qwen specialisation. We went a different direction on hybrid attention, too fundamental to reconcile in a PR, hence the fork.
+Forked from [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). The base engine, the OpenAI/Anthropic API surface, and the MLX serving path are theirs. qMLX adds the hybrid-aware disk restore, the eviction and metrics work, and the Qwen model work. We went a different direction on hybrid attention, too fundamental to reconcile in a PR, hence the fork.
 
 ## Notes
 
