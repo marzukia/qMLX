@@ -79,7 +79,7 @@ export QMLX_API_KEY=your-secret
 ## Model name passthrough
 
 Codex sends model names like `gpt-5` or `gpt-5-codex` in the request
-body even when you've configured a different one. Rapid-mlx's route
+body even when you've configured a different one. qMLX's route
 recognises any `gpt-*` / `claude-*` model name as "the loaded engine,
 not a strict alias lookup" — so the request reaches the model you
 actually started the server with, instead of 404'ing on the name
