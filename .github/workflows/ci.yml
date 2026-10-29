@@ -220,6 +220,7 @@ jobs:
             tests/test_suffix_decoding_tier.py \
             tests/test_tempfile_safe.py \
             tests/test_think_scaffold_roundtrip.py \
+            tests/test_think_scaffold_symmetry.py \
             tests/test_tmax_merge_vision.py \
             tests/test_tokenizer_gemma4_hybrid.py \
             tests/test_tool_call_promotion.py \
@@ -237,7 +238,7 @@ jobs:
             tests/test_validate_release_subject.py \
             tests/test_version_check.py \
             tests/test_vibethinker_function_xml.py \
-            tests/test_xfail_audit.py
+            tests/test_xfail_audit.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
@@ -431,10 +432,7 @@ jobs:
             tests/test_tool_param_enforcement.py \
             tests/test_tool_result_content_array.py \
             tests/test_tools_auto_disable_thinking.py \
-            tests/test_truncation_no_synthetic_text.py \
-            tests/test_version_check.py \
-            tests/test_vibethinker_function_xml.py \
-            tests/test_xfail_audit.py
+            tests/test_truncation_no_synthetic_text.py
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

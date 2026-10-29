@@ -34,6 +34,50 @@ at request time on Linux); it is now in the AS list and the Linux job is green e
 (2969 passed, 0 failed). The `ruff check` and `ruff format --check` gates were also RED on
 dev before this PR (see Gates).
 
+## Wave-4 delta (rebase onto `de38dae`, 2026-10-30)
+
+Rebase resolution per the t1009 recheck (tap-lane prerequisite): keep the
+`de3d1f8` ci.yml blob and re-apply base's additions on top of the rebuilt lists.
+The actual conflict (verified via `git merge-tree`): base's old 22-file Linux
+list had two wave-4 files appended at the tail — absent from this blob because
+the census ran on `568c2e8` (pre-wave-4).
+
+| Change | File | Basis |
+|---|---|---|
+| + Linux | `tests/test_max_context_length.py` | base (`de38dae`) addition (#95); 17 passed on 3.11 CI-parity |
+| + Linux | `tests/test_diffusion_shared_mode.py` | base (`de38dae`) addition (#97); 6 passed on 3.11 CI-parity |
+| + Linux | `tests/test_think_scaffold_symmetry.py` | #100 addition, never in base's lists (pre-wire gap); 10 passed on 3.11 CI-parity |
+| unchanged | `tests/test_disk_kv_checkpoint.py` | already AS-wired (148 list); #96 changed its content — first real AS run adjudicates |
+| unchanged | `tests/test_think_scaffold_roundtrip.py` | already Linux-wired; #100 changed its content; green in the full-list run below |
+
+Note: the t1009 recheck's conflict description named `test_version_check.py` /
+`test_vibethinker_function_xml.py` / `test_xfail_audit.py` as base's AS-list
+additions; they are absent from base `de38dae` entirely (they exist only in
+this branch's rebuilt Linux list), so they stay Linux-wired as the census
+classified them (green: 88 / 26 / 2 tests).
+
+Stub-isolation fixes (two wave-4 test files, cross-suite state leak):
+
+- `test_diffusion_shared_mode.py::_restore_mlx_stubs` — restored by key presence
+  (`if name in prev`), but the snapshot dict carries every name (value `None`
+  for modules that were absent), so teardown wrote `sys.modules[name] = None`
+  for all 13 stub names, leaving bare `None` entries in `sys.modules`. Any
+  later mlx-stub suite in the same pytest run then binds attributes to `None`.
+  Now restores by value (`None` -> pop).
+- `test_max_context_length.py::_install_mlx_stubs` — skipped any name present in
+  `sys.modules` (a `None` entry counts as present); the leak above made
+  `mlx_lm.generate` resolve to `None` and the module fixture errored on all
+  17 tests in a full-list run. Now treats a `None` entry as absent and
+  (re)installs a usable stub.
+
+Gates (new lists, CPython 3.11 CI-parity venv, 2026-10-30):
+
+- Full Linux list (141 files): **PASS** — 3002 passed, 125 skipped, 147
+  deselected, 6 xfailed, 0 failed, 0 errors
+- `ruff check` + `ruff format --check` on the two fixed files: **PASS**
+
+Final partition: 141 Linux / 148 AS, 0 overlap, yaml valid.
+
 ## Dead tests removed (hard evidence)
 
 | File | Evidence | Tests |
