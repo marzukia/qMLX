@@ -46,6 +46,7 @@ qmlx serve <model> [options]
 | `--mcp-config` | Path to MCP config file | None |
 | `--paged-cache-block-size` | Tokens per cache block | 64 |
 | `--max-cache-blocks` | Maximum cache blocks | 1000 |
+| `--max-context-length` | Server-side context cap in tokens (prompt + max_tokens). 0 = no cap; the model maximum context length is the limit | 0 |
 | `--max-num-seqs` | Max concurrent sequences | 256 |
 | `--gpu-memory-utilization` | Fraction of device memory for Metal allocation limit (0.0-1.0) | 0.90 |
 | `--default-temperature` | Default temperature when not specified in request | None |
