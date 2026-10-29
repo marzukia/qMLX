@@ -1982,6 +1982,19 @@ def serve_command(args):
     _max_tokens_is_explicit = _arg_max_tokens is not None
     effective_max_tokens = _arg_max_tokens if _arg_max_tokens is not None else 32768
 
+    # Issue #33: ``--max-context-length`` is a token count. A negative
+    # value would make the admission gate reject every request
+    # (``prompt + max_tokens >= 0 > cap``), so fail fast with an
+    # actionable message instead of starting a server that 400s
+    # everything. ``0`` = no cap (model max stays the binding limit).
+    if args.max_context_length < 0:
+        print(
+            "error: --max-context-length must be 0 (no cap) or a "
+            f"positive token count, got {args.max_context_length}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     _normalize_speculative_config_or_exit(args)
 
     # DDTree has an external experimental runtime and its validated target
@@ -2643,6 +2656,12 @@ def serve_command(args):
         use_paged_cache=args.use_paged_cache,
         paged_cache_block_size=args.paged_cache_block_size,
         max_cache_blocks=args.max_cache_blocks,
+        # Server-side context cap (issue #33). ``0`` = no cap, so the
+        # model's own max context length stays the binding limit. The
+        # CLI <-> Config fidelity audit at
+        # scripts/audit_cli_config_fidelity.py blocks merges where this
+        # kwarg is missing at the construction site.
+        max_context_length=args.max_context_length,
         # Chunked prefill
         chunked_prefill_tokens=args.chunked_prefill_tokens,
         # Prefill step size (chunk size). Must be plumbed here — BatchedEngine
@@ -5958,6 +5977,24 @@ Examples:
         type=int,
         default=1000,
         help="Maximum number of cache blocks (default: 1000)",
+    )
+    # Server-side context cap (issue #33). 0 = no cap (the model's own
+    # max context stays the binding limit, preserving pre-#33 behaviour).
+    serve_parser.add_argument(
+        "--max-context-length",
+        type=int,
+        default=0,
+        help="Cap the served context length in tokens "
+        "(prompt + max_tokens); a request above the cap gets HTTP 400 "
+        "context_length_exceeded at admission. 0 = no cap, the model's own "
+        "maximum context length is the limit (default: 0). "
+        "Independent of --max-cache-blocks and composes with it as an AND: "
+        "this is a deterministic per-request token cap (400), while "
+        "--max-cache-blocks is a KV-capacity lever that bounds aggregate "
+        "resident context by max_cache_blocks * paged_cache_block_size and "
+        "drives backpressure/eviction (503), not a 400. When both are set a "
+        "request must clear the token cap AND fit the block budget; this flag "
+        "does not resize the KV cache and vice versa.",
     )
     # Chunked prefill
     serve_parser.add_argument(
