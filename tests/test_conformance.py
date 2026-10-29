@@ -609,6 +609,7 @@ def test_model_identity_guard_fail_closed():
     assert model_identity_matches("A", "B") is False
     assert model_identity_matches(None, "A") is False
     assert model_identity_matches("A", None) is False
+    assert model_identity_matches(None, None) is False
     assert model_identity_matches("", "A") is False
     assert model_identity_matches("A", "") is False
     # str() comparison (the scheduler's original semantics).
