@@ -757,6 +757,32 @@ class DiffusionEngine(BaseEngine):
         self._processor = processor
         self._loaded = True
 
+    def _step_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+        """Return the single mlx-step executor, or raise with a clear
+        message if it has not been initialised yet.
+
+        Every call site is guaranteed non-None at runtime (standalone:
+        created in ``_start_worker_once`` before the worker thread is
+        started; shared: supplied non-None by the caller via
+        ``mlx_executor=``), so the ``RuntimeError`` is a defensive
+        invariant check whose real purpose is to let the type checker
+        narrow ``ThreadPoolExecutor | None`` at the submit sites —
+        runtime behaviour stays identical on the happy path (same
+        submissions, same order, no new exceptions). Post-merge
+        review of PR #85 (fix-owed, 2026-11): the bare
+        ``self._mlx_executor.submit(...)`` at the two ``_worker_loop``
+        call sites tripped mypy ``union-attr`` despite being
+        runtime-safe.
+        """
+        executor = self._mlx_executor
+        if executor is None:
+            raise RuntimeError(
+                "DiffusionEngine has no mlx-step executor — call "
+                "_start_worker_once() (or pass mlx_executor=) before "
+                "submitting MLX work."
+            )
+        return executor
+
     def _worker_loop(self) -> None:
         """Dispatcher — submits every MLX-touching phase to the
         single mlx-step owner thread.
@@ -779,7 +805,7 @@ class DiffusionEngine(BaseEngine):
         kill the worker before any startup signal.
         """
         try:
-            self._mlx_executor.submit(self._load_on_step_thread).result()
+            self._step_executor().submit(self._load_on_step_thread).result()
         except BaseException as e:  # noqa: BLE001 — propagate to caller
             self._load_error = e
             self._ready.set()
@@ -812,7 +838,7 @@ class DiffusionEngine(BaseEngine):
                 # dispatcher blocks here until the job drains so
                 # the done_event / cancel / stuck-flag protocol
                 # below is unchanged.
-                self._mlx_executor.submit(
+                self._step_executor().submit(
                     self._run_generator,
                     prompt,
                     max_tokens,
