@@ -252,7 +252,7 @@ Everything else is automated. `ci.yml` (lint + unit-test matrix) is the single s
 
 ## Tracked SOP improvements
 
-The following items are agreed-good but not yet implemented; tracked in [#320](https://github.com/marzukia/qMLX/issues/320):
+The following items are agreed-good but not yet implemented; tracked in [#320](https://github.com/raullenchai/Rapid-MLX/issues/320) (upstream Rapid-MLX issue, never migrated):
 
 - License-drift check in the supply-chain audit (not yet implemented).
 - GitHub Actions SHA-pinning enforcement when workflows change.
