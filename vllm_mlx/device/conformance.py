@@ -1196,9 +1196,10 @@ def run_conformance(
     """
     if mx is _UNSET:
         try:
-            import mlx.core as mx  # noqa: F811
+            import mlx.core as _mlx
         except Exception:
-            mx = None
+            _mlx = None
+        mx = _mlx
     if backend is _UNSET:
         backend = get_backend()
 
