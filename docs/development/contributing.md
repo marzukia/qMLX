@@ -6,7 +6,7 @@ We welcome contributions to qmlx!
 
 ```bash
 # Clone the repository
-git clone https://github.com/raullenchai/Rapid-MLX.git
+git clone https://github.com/marzukia/qMLX.git
 cd qMLX
 
 # Install with dev dependencies
@@ -113,4 +113,4 @@ qmlx bench qwen3.5-4b-4bit | tee results_m4.txt
 
 ## Questions?
 
-Open an issue at [GitHub Issues](https://github.com/raullenchai/Rapid-MLX/issues).
+Open an issue at [GitHub Issues](https://github.com/marzukia/qMLX/issues).

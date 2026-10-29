@@ -114,14 +114,8 @@ Both must be clean. Do not use `--no-verify` to skip pre-commit hooks. If a hook
 python3.12 -m pytest tests/ \
   --ignore=tests/integrations \
   --ignore=tests/test_event_loop.py \
-  --ignore=tests/test_mllm.py \
-  --ignore=tests/test_mllm_cache.py \
-  --ignore=tests/test_mllm_continuous_batching.py \
-  --ignore=tests/test_video.py \
   -q --no-header --tb=line
 ```
-
-The MLLM / video files need real Qwen3-VL weights and hang locally — the CI matrix covers them.
 
 **Pre-existing flakes** must be **proven** pre-existing by running the test on clean main. The naive `git stash && pytest && git stash pop` pattern leaves work stashed if pytest fails — use a worktree:
 
