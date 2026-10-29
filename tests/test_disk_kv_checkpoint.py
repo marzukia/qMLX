@@ -1285,3 +1285,82 @@ def test_mid_prefill_checkpoint_scenario_32k_interrupt_20k_restore_at_8k(
         f"interrupted at {interrupted_at}, "
         f"restored at offset {result.token_offset}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #11: stale content-index entries on eviction + shorter-prefix fallback
+# ---------------------------------------------------------------------------
+
+
+def test_eviction_forgets_content_index_entry(root: str):
+    """#11 regression: when ``enforce_disk_cap`` unlinks a checkpoint's
+    files, the content-index entry for that checkpoint must be dropped in
+    the same pass. A subsequent lookup must not match the stale key.
+    """
+    idx = _dkc.get_content_index()
+    idx.clear()
+    query = list(range(1, 33))
+    _write_indexed_checkpoint(root, "evict-forget", query)
+    assert tuple(query) in idx._by_key
+
+    # Cap one byte under the on-disk total; low_water=1.0 disables the
+    # drain so exactly one (the only) checkpoint is evicted.
+    rows = _dkc.scan_checkpoints(root)
+    total = sum(s for _, _, s in rows)
+    evicted, _ = _dkc.enforce_disk_cap(
+        root, max_bytes=total - 1, low_water_fraction=1.0
+    )
+    assert evicted == 1
+
+    # The evicted checkpoint's entry is gone from the index — the index
+    # never references evicted files.
+    assert tuple(query) not in idx._by_key
+    # A subsequent lookup does not match the stale key: a genuine miss
+    # (no indexed prefix), not a verify-fail against a deleted blob.
+    assert idx.lookup(query) is None
+
+
+def test_lookup_recovers_surviving_shallow_prefix_after_deep_eviction(root: str):
+    """#11 regression: cap pressure evicts the deep boundary checkpoint
+    while a shared shallow prefix survives on disk. A subsequent lookup
+    must return the surviving shorter prefix (assert the returned boundary
+    and the re-prefill tail length), not None.
+    """
+    idx = _dkc.get_content_index()
+    idx.clear()
+    query = list(range(1, 65))
+    req_hash_shallow = _write_indexed_checkpoint(root, "shallow", query[:32])
+    req_hash_deep = _write_indexed_checkpoint(root, "deep", query)
+    assert tuple(query[:32]) in idx._by_key
+    assert tuple(query) in idx._by_key
+
+    # Make the deep boundary the OLDEST matchable so the eviction order
+    # reclaims it first, and cap just above the shallow's on-disk size so
+    # the pass stops after that single eviction.
+    deep_path = _dkc.checkpoint_path(root, req_hash_deep, 64)
+    shallow_path = _dkc.checkpoint_path(root, req_hash_shallow, 32)
+    rows = _dkc.scan_checkpoints(root)
+    deep_size = next(s for p, _, s in rows if p == deep_path)
+    shallow_size = next(s for p, _, s in rows if p == shallow_path)
+    old = os.path.getmtime(deep_path) - 60.0
+    os.utime(deep_path, (old, old))
+    evicted, remaining = _dkc.enforce_disk_cap(
+        root, max_bytes=shallow_size + 1, low_water_fraction=1.0
+    )
+    assert evicted == 1
+    assert not os.path.exists(deep_path)
+    assert os.path.exists(shallow_path)
+    assert remaining <= shallow_size + 1
+
+    # The index must not reference the evicted deep boundary; the shallow
+    # entry survives (per-checkpoint forget, not a whole-request drop).
+    assert tuple(query) not in idx._by_key
+    assert tuple(query[:32]) in idx._by_key
+
+    # The lookup returns the surviving shorter prefix, not None.
+    loaded = idx.lookup(query)
+    assert loaded is not None
+    # The returned boundary: the shallow checkpoint's offset.
+    assert loaded.token_offset == 32
+    # The re-prefill tail: the query beyond the restored boundary.
+    assert len(query) - loaded.token_offset == 32
