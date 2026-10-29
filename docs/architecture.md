@@ -20,14 +20,15 @@ first-class design commitments follow from that.
 ### Multiplexing, not parallelisation
 
 Many requests **interleave** on one stream; they do not **overlap** on
-several. The engine core (`engine_core.py`) runs a single owner thread —
-the `mlx-step` worker — and *all* model/KV-touching MLX work is
-submitted to it. The asyncio event loop only dispatches: scheduling,
-admission, streaming, and housekeeping happen there, but every forward
-pass, cache mutation, and checkpoint write lands on the owner thread.
-This is a design invariant, not a workaround: a second thread issuing
-MLX work would overlap on stream state rather than interleave, and on a
-bandwidth-bound device that contention costs more than it buys.
+several. The engine core (`engine_core.py`) runs a single owner thread,
+the `mlx-step` worker, and *all* model/KV-touching MLX work is
+submitted to it. The asyncio event loop handles I/O (HTTP and
+streaming) and dispatches; scheduling, admission, and housekeeping run
+on the single owner thread, and every forward pass, cache mutation, and
+checkpoint write lands there too. This is a design invariant, not a
+workaround: a second thread issuing MLX work would overlap on stream
+state rather than interleave, and on a bandwidth-bound device the
+benefit does not cover the cost.
 
 The one-owner-thread rule is also the **conformance contract for ported
 backends**. A backend declares its stream semantics through the
