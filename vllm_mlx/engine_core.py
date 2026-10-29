@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 def _init_mlx_step_thread() -> None:
-    """Create the MLX worker thread's generation stream + default stream.
+    """Create the MLX worker thread's generation stream binding.
 
     Design: one owner thread per device. This worker owns every
     model/KV-touching MLX op in the process; the asyncio loop only
