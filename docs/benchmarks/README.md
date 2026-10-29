@@ -5,17 +5,15 @@ Performance benchmarks for qmlx on Apple Silicon.
 ## Benchmark Types
 
 - [LLM Benchmarks](llm.md) - Text generation performance
-- [Image Benchmarks](image.md) - Image understanding performance
-- [Video Benchmarks](video.md) - Video understanding performance
 
 ## Quick Commands
 
 ```bash
-# Engine comparison benchmark (qmlx vs ollama vs llama-cpp)
-python scripts/benchmark_engines.py --engine qmlx
+# Engine comparison benchmark (qmlx vs ollama)
+python scripts/bench_vs_ollama.py
 
-# Or benchmark every locally available alias at once (dev-only script)
-bash scripts/bench_all_models.sh
+# Or benchmark every model listed for the README at once
+python examples/benchmark_all_models.py
 ```
 
 ## Standalone Test Defaults
@@ -57,4 +55,4 @@ If you have a different Apple Silicon chip, please share your results:
 python scripts/benchmark_engines.py --engine qmlx | tee results.txt
 ```
 
-Open an issue with your results at [GitHub Issues](https://github.com/raullenchai/Rapid-MLX/issues).
+Open an issue with your results at [GitHub Issues](https://github.com/marzukia/qMLX/issues).
