@@ -5985,8 +5985,16 @@ Examples:
         type=int,
         default=0,
         help="Cap the served context length in tokens "
-        "(prompt + max_tokens). 0 = no cap, the model's own "
-        "maximum context length is the limit (default: 0)",
+        "(prompt + max_tokens); a request above the cap gets HTTP 400 "
+        "context_length_exceeded at admission. 0 = no cap, the model's own "
+        "maximum context length is the limit (default: 0). "
+        "Independent of --max-cache-blocks and composes with it as an AND: "
+        "this is a deterministic per-request token cap (400), while "
+        "--max-cache-blocks is a KV-capacity lever that bounds aggregate "
+        "resident context by max_cache_blocks * paged_cache_block_size and "
+        "drives backpressure/eviction (503), not a 400. When both are set a "
+        "request must clear the token cap AND fit the block budget; this flag "
+        "does not resize the KV cache and vice versa.",
     )
     # Chunked prefill
     serve_parser.add_argument(
