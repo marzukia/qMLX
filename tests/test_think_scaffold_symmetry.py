@@ -68,7 +68,7 @@ class _FakeQwenApplicator:
             if self.scaffold_in_history and m["role"] == "assistant" and tcs:
                 scaffold = SCAFFOLD
             out.append(
-                "\n<|im_start|>{0}\n{1}{2}{3}\n".format(
+                "\n<|im_start|>{}\n{}{}{}\n".format(
                     m["role"], scaffold, content, tc_txt
                 )
             )
@@ -105,11 +105,7 @@ class _FakeNonThinkingApplicator:
             content = m.get("content") or ""
             tcs = m.get("tool_calls") or []
             tc_txt = "".join(tc["function"]["name"] for tc in tcs)
-            out.append(
-                "\n{0}\n{1}{2}\n".format(
-                    m["role"], content, tc_txt
-                )
-            )
+            out.append("\n{}\n{}{}\n".format(m["role"], content, tc_txt))
         s = "".join(out)
         if add_generation_prompt:
             s += "\n<|im_start|>assistant\n"
@@ -129,10 +125,7 @@ def test_strip_helper_neutralized_is_noop():
     deletes scaffolds (trailing primer, mid-history, or none)."""
     p_trailing = "\nassistant\n" + SCAFFOLD
     assert _strip_think_scaffold(p_trailing) == p_trailing
-    p_mid = (
-        "\nassistant\n" + SCAFFOLD + "A\n"
-        + "\nassistant\n" + SCAFFOLD + "B"
-    )
+    p_mid = "\nassistant\n" + SCAFFOLD + "A\n" + "\nassistant\n" + SCAFFOLD + "B"
     assert _strip_think_scaffold(p_mid) == p_mid
     p_plain = "\nassistant\nplain"
     assert _strip_think_scaffold(p_plain) == p_plain
@@ -186,9 +179,7 @@ def test_multi_turn_three_turns_stable_through_every_turn():
     prompt is a prefix of the next turn's render."""
     fake = _FakeQwenApplicator()
     msgs = [{"role": "user", "content": "fix the bug"}]
-    prev = apply_chat_template(
-        fake, msgs, enable_thinking=False, model_name="qwen"
-    )
+    prev = apply_chat_template(fake, msgs, enable_thinking=False, model_name="qwen")
     for tool_name, tool_result in [
         ("bash", {"role": "tool", "content": "ok"}),
         ("todowrite", {"role": "tool", "content": "done"}),
@@ -198,9 +189,7 @@ def test_multi_turn_three_turns_stable_through_every_turn():
             tool_result,
             {"role": "user", "content": "step " + tool_name},
         ]
-        cur = apply_chat_template(
-            fake, msgs, enable_thinking=False, model_name="qwen"
-        )
+        cur = apply_chat_template(fake, msgs, enable_thinking=False, model_name="qwen")
         assert cur.startswith(prev), "divergence for " + tool_name
         prev = cur
     # all completed turns scaffolded + terminal primer
@@ -283,9 +272,7 @@ def test_patched_and_unpatched_templates_converge():
         _FakeQwenApplicator(), msgs, enable_thinking=False, model_name="qwen"
     )
     assert patched == unpatched  # converged through the wrapper (the fix)
-    assert _normalize_think_scaffold(unpatched) == _normalize_think_scaffold(
-        patched
-    )
+    assert _normalize_think_scaffold(unpatched) == _normalize_think_scaffold(patched)
     # the converged bytes: every completed turn + the terminal primer
     assert patched.endswith(SCAFFOLD)
     assert patched.count(SCAFFOLD) == 3
@@ -298,19 +285,19 @@ def test_symmetrize_idempotent_across_shapes():
     shape: scaffolded, un-scaffolded, mixed, real-think, no-primer."""
     shapes = [
         "\nassistant\n" + SCAFFOLD,
-        "\nassistant\n" + SCAFFOLD + "A\n"
-        + "\nassistant\n" + SCAFFOLD,
-        "\nassistant\n" + "A\n"
-        + "\nassistant\n" + SCAFFOLD,
-        "\nassistant\n" + "<think>\nreal\n</think>\n\n"
-        + "A" + "\n" + "\nassistant\n" + SCAFFOLD,
+        "\nassistant\n" + SCAFFOLD + "A\n" + "\nassistant\n" + SCAFFOLD,
+        "\nassistant\n" + "A\n" + "\nassistant\n" + SCAFFOLD,
+        "\nassistant\n"
+        + "<think>\nreal\n</think>\n\n"
+        + "A"
+        + "\n"
+        + "\nassistant\n"
+        + SCAFFOLD,
         "\nassistant\n" + "A\n",  # no primer -> no-op
     ]
     for s in shapes:
         once = _symmetrize_think_scaffold(s)
-        assert _symmetrize_think_scaffold(once) == once, (
-            "not idempotent for {!r}".format(s)
-        )
+        assert _symmetrize_think_scaffold(once) == once, f"not idempotent for {s!r}"
 
 
 def test_normalize_equals_symmetrize_since_strip_is_noop():
@@ -318,11 +305,9 @@ def test_normalize_equals_symmetrize_since_strip_is_noop():
     must equal _symmetrize_think_scaffold on every input."""
     shapes = [
         "\nassistant\n" + SCAFFOLD + "A" + SCAFFOLD,
-        "\nassistant\n" + "<think>\nreal\n</think>\n\n"
-        + "A\n",
+        "\nassistant\n" + "<think>\nreal\n</think>\n\n" + "A\n",
         123,
         "\nassistant\nplain",
     ]
     for s in shapes:
         assert _normalize_think_scaffold(s) == _symmetrize_think_scaffold(s)
-
