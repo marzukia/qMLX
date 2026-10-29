@@ -11,11 +11,13 @@ context cap — the on-disk snapshot is reloaded instead of re-prefilled, which
 is the headline 体感 row that unlocks "Mac users can run all day" (82% peak
 RAM reduction at long context + 2.2× parallel-chat throughput).
 
-Design stance: this is the engine's memory tier, not an add-on. The
-in-process radix cache is tier 1 (RAM); the SSD is the RAM of tier 2.
-Cold-cache restore — a resumed session, a shared system prompt, or an
-agent at its context cap reloading a checkpoint instead of re-prefilling
-— is a first-class feature of the engine (see ``docs/architecture.md``,
+Design stance: this is the engine's memory tier, not an add-on. For
+dense models the in-process radix cache is tier 1 (RAM); for the
+flagship hybrid model the in-memory tier is disabled (recurrent state
+cannot be rewound), and the SSD is the reuse tier. Cold-cache restore
+(a resumed session, a shared system prompt, or an agent at its context
+cap reloading a checkpoint instead of re-prefilling) is a first-class
+feature of the engine (see ``docs/architecture.md``,
 "Design ethos").
 
 The design is a deliberate port of LM Studio MLX-engine PR #326's prompt-
