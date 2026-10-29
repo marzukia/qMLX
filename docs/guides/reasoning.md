@@ -25,9 +25,6 @@ Without reasoning parsing, you get the raw output with the tags included. With r
 ```bash
 # For Qwen3 models
 qmlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
-
-# For DeepSeek-R1 models
-qmlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parser deepseek_r1
 ```
 
 ### API Response Format
@@ -128,25 +125,18 @@ print(f"Final answer: {content_text}")
 
 For Qwen3 models that use explicit `<think>` and `</think>` tags.
 
-- Requires **both** opening and closing tags
-- If tags are missing, output is treated as regular content
+- Handles both tags present, closing tag only (think injected in the prompt), and no tags (pure content)
+- Content before `end` is treated as reasoning even when the opening `think` tag is missing
 - Best for: Qwen3-0.6B, Qwen3-4B, Qwen3-8B and similar models
 
 ```bash
 qmlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
 ```
 
-### DeepSeek-R1 Parser (`deepseek_r1`)
-
-For DeepSeek-R1 models that may omit the opening `<think>` tag.
-
-- More lenient than Qwen3 parser
-- Handles cases where `<think>` is implicit
-- Content before `</think>` is treated as reasoning even without `<think>`
-
-```bash
-qmlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parser deepseek_r1
-```
+The `deepseek_r1` parser was removed in the Qwen-only simplification
+(#19). The `qwen3` parser covers the same implicit-think case it was
+for: DeepSeek-R1 distills on a Qwen base emit the same think tags and
+are served with `--reasoning-parser qwen3`.
 
 ## How It Works
 
@@ -271,7 +261,7 @@ curl http://localhost:8000/v1/chat/completions \
 ### Reasoning appears in content
 
 - The model may not be using the expected tag format
-- Try a different parser (`qwen3` vs `deepseek_r1`)
+- Check the raw output: if the model emits no `end` tag at all, the output is pure content — use a model/config that emits think tags
 
 ### Truncated reasoning
 
