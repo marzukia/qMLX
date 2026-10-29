@@ -65,9 +65,9 @@ def test_models_command_renders_hybrid_marker_for_qwen35_moe():
     profiles = list_profiles()
     qwen35_moe = profiles.get("qwen3.5-35b-4bit")
     assert qwen35_moe is not None, "qwen3.5-35b-4bit alias missing — fixture drift"
-    assert (
-        qwen35_moe.is_hybrid
-    ), "qwen3.5-35b-4bit (A3B MoE) should remain is_hybrid=True"
+    assert qwen35_moe.is_hybrid, (
+        "qwen3.5-35b-4bit (A3B MoE) should remain is_hybrid=True"
+    )
 
     matches = [line for line in out.splitlines() if "qwen3.5-35b-4bit " in line]
     assert matches, "no row found for qwen3.5-35b-4bit"
@@ -98,15 +98,15 @@ def test_models_command_renders_parser_for_qwen35_9b():
     row = matches[0]
     profile = list_visible_profiles().get(alias)
     assert profile is not None, f"{alias} alias missing — fixture drift"
-    assert (
-        profile.tool_call_parser or ""
-    ) in row, f"expected tool parser {profile.tool_call_parser!r} in row: {row!r}"
+    assert (profile.tool_call_parser or "") in row, (
+        f"expected tool parser {profile.tool_call_parser!r} in row: {row!r}"
+    )
     tier = profile.suffix_decoding_tier
     if tier in ("unknown", "n/a"):
         # Issue #62: an unbenched tier renders blank, not as data.
-        assert (
-            str(tier) not in row
-        ), f"unbenched tier {tier!r} should render blank: {row!r}"
+        assert str(tier) not in row, (
+            f"unbenched tier {tier!r} should render blank: {row!r}"
+        )
     else:
         assert str(tier) in row, f"expected suffix tier {tier!r} in row: {row!r}"
 
@@ -147,9 +147,9 @@ def test_models_command_renders_blank_for_unset_parsers():
     tools_cell = row[tools_col : reason_col - 1].strip()
     reasoning_cell = row[reason_col : spec_col - 1].strip()
     assert tools_cell == "", f"expected blank Tools cell, got {tools_cell!r}: {row!r}"
-    assert (
-        reasoning_cell == ""
-    ), f"expected blank Reasoning cell, got {reasoning_cell!r}: {row!r}"
+    assert reasoning_cell == "", (
+        f"expected blank Reasoning cell, got {reasoning_cell!r}: {row!r}"
+    )
 
 
 def test_models_command_mentions_chat_pull_serve_in_tip():

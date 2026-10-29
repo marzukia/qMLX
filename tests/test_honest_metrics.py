@@ -248,9 +248,7 @@ def test_disk_restore_no_attempt_counts_neither(monkeypatch):
     hm = HonestMetrics()
     req = _restore_request()
     # Feature disabled → gate returns before the lookup ever runs.
-    Scheduler._maybe_disk_restore(
-        _restore_self(hm, enabled=False), req
-    )
+    Scheduler._maybe_disk_restore(_restore_self(hm, enabled=False), req)
     assert called["lookup"] is False  # no lookup == no attempt
     assert hm.snapshot()["kv_restore_result"] == {"hit": 0, "miss": 0}
 

@@ -180,7 +180,9 @@ class _Screen:
             rng = (
                 range(self.col, self.cols)
                 if mode == 0
-                else range(0, self.col + 1) if mode == 1 else range(self.cols)
+                else range(0, self.col + 1)
+                if mode == 1
+                else range(self.cols)
             )
             for c in rng:
                 self.grid[self.row][c] = ""
@@ -291,8 +293,10 @@ def _run_capture(port: int, duration: float) -> _Capture:
             if not saw_warm and "warming up" in data.decode("utf-8", "replace"):
                 saw_warm = True
                 warm_at = time.monotonic()
-            if saw_warm and warm_at is not None and (
-                time.monotonic() - warm_at > duration
+            if (
+                saw_warm
+                and warm_at is not None
+                and (time.monotonic() - warm_at > duration)
             ):
                 break
         if os.waitpid(pid, os.WNOHANG)[0] != 0:
@@ -340,7 +344,9 @@ def _assert_no_fusion(screens: list[_Screen]) -> None:
     assert not violations, f"strip/log fusion (issue #61 AC1): {violations!r}"
 
 
-@pytest.mark.skipif(not _model_cached(), reason="cached 0.6B model absent (offline dev)")
+@pytest.mark.skipif(
+    not _model_cached(), reason="cached 0.6B model absent (offline dev)"
+)
 def test_serve_live_strip_and_banner_100x30():
     cap = _run_capture(_free_port(), CAPTURE_SECONDS)
     text = cap.text
@@ -370,9 +376,9 @@ def test_serve_live_strip_and_banner_100x30():
     # AC2: at the warming-up moment the compact banner AND the
     # endpoint line must both be on-screen (100x30).
     warm_lines = cap.warm_screen.lines()
-    assert any(
-        "🐆 qMLX" in ln and "Model:" in ln for ln in warm_lines
-    ), f"compact banner not on-screen at warming-up moment: {warm_lines!r}"
+    assert any("🐆 qMLX" in ln and "Model:" in ln for ln in warm_lines), (
+        f"compact banner not on-screen at warming-up moment: {warm_lines!r}"
+    )
     assert any(
         ln.lstrip().startswith("Starting server on http://") for ln in warm_lines
     ), f"endpoint line not on-screen at warming-up moment: {warm_lines!r}"

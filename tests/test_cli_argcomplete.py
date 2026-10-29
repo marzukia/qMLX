@@ -22,6 +22,7 @@ from vllm_mlx._completion import (
     alias_csv_completer,
 )
 
+
 def test_alias_completer_no_prefix_returns_sorted_list() -> None:
     """Empty prefix → full sorted alias list (shell collapses to the
     longest common prefix and re-prompts on second Tab, standard UX)."""
@@ -217,4 +218,3 @@ def test_load_alias_names_caches_by_mtime(
 
     refreshed = _completion._load_alias_names()
     assert refreshed == ["qwen3-alpha", "qwen3-beta"]
-
