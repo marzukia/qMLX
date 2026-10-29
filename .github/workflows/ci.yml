@@ -167,6 +167,7 @@ jobs:
             tests/test_streaming_simulator.py \
             tests/test_streaming_detokenizer.py \
             tests/test_tool_logits.py \
+            tests/test_conformance.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

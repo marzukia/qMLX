@@ -16,9 +16,11 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import struct
 import subprocess
 import sys
+import tempfile
 import types
 from typing import Any
 
@@ -782,6 +784,134 @@ def test_no_backend_resolves_is_fine(monkeypatch):
     assert "no backend resolved" in _detail(r, "seam_contract")
     # The suite still runs (raw API probes).
     assert _status(r, "quantized_kv_roundtrip") == STATUS_PASS
+
+
+def _real_mx():
+    """The real ``mlx.core`` (skip on no-mlx hosts)."""
+    try:
+        import mlx.core as mx
+    except ImportError as e:
+        pytest.skip(f"mlx is not usable on this host ({e})")
+    return mx
+
+
+# ---------------------------------------------------------------------------
+# The disk-KV restore guards (real vllm_mlx guard code)
+# ---------------------------------------------------------------------------
+
+
+def test_quantized_kv_loader_guard_fail_closed():
+    """The fail-closed ``_cache_classes_compatible`` guard: a QuantizedKVCache
+    checkpoint is rejected when ``kv_quantize`` is off; a plain KVCache is
+    always accepted. Backend-agnostic: the guard needs no mlx, so this runs
+    unskipped on no-mlx hosts."""
+    from vllm_mlx.memory_cache import (
+        MemoryCacheConfig,
+        _cache_classes_compatible,
+    )
+
+    cfg = MemoryCacheConfig()  # kv_quantize defaults to False
+    ok, reason = _cache_classes_compatible(["QuantizedKVCache"], cfg)
+    assert ok is False, (
+        "the loader must fail closed: a QuantizedKVCache checkpoint is not "
+        f"loadable when kv_quantize is off, but the guard accepted it "
+        f"(reason={reason!r})"
+    )
+    assert "quantiz" in reason.lower(), (
+        f"the reject reason must name the quantization gap: {reason!r}"
+    )
+    ok_kv, _ = _cache_classes_compatible(["KVCache"], cfg)
+    assert ok_kv is True, "a plain KVCache checkpoint must always be loadable"
+    # A QuantizedKVCache file IS loadable when kv_quantize is on.
+    cfg_on = MemoryCacheConfig(kv_quantize=True)
+    ok_on, _ = _cache_classes_compatible(["QuantizedKVCache"], cfg_on)
+    assert ok_on is True, (
+        "a QuantizedKVCache checkpoint must be loadable when kv_quantize is on"
+    )
+
+
+def test_restore_identity_guard_fail_closed():
+    """The restore identity guard is keyed on model + cache class and fails
+    closed by design (a mismatch rejects the restore; it never silently
+    corrupts output). The model-identity half pins the real
+    ``model_identity_matches`` (the full truth table is covered by
+    test_model_identity_guard_fail_closed); the cache-class half pins the
+    real ``_cache_classes_compatible`` guard. Backend-agnostic: no mlx
+    needed, so this runs unskipped on no-mlx hosts."""
+    from vllm_mlx.memory_cache import MemoryCacheConfig, _cache_classes_compatible
+
+    # (a) MODEL IDENTITY, via the real predicate the scheduler's guard uses:
+    # accept only an exact match; reject on a mismatch or an unknown side.
+    assert model_identity_matches("qwen3-122b", "qwen3-122b") is True
+    assert model_identity_matches("qwen3-122b", "llama-70b") is False
+    assert model_identity_matches(None, "qwen3-122b") is False
+    assert model_identity_matches("qwen3-122b", None) is False
+
+    # (b) CACHE CLASS, the real guard code (fail closed by design).
+    cfg = MemoryCacheConfig()  # kv_quantize defaults to False
+    ok, _ = _cache_classes_compatible(["QuantizedKVCache"], cfg)
+    assert ok is False, (
+        "the cache-class guard must fail closed: a QuantizedKVCache "
+        "checkpoint is rejected when kv_quantize is off"
+    )
+    ok_kv, _ = _cache_classes_compatible(["KVCache"], cfg)
+    assert ok_kv is True, "the cache-class guard must accept a plain KVCache"
+
+
+def test_quantized_kv_loader_detection():
+    """End-to-end ``_safetensors_cache_classes`` class-name detection: the
+    reader must tell a saved QuantizedKVCache checkpoint is quantized
+    (requires real mlx + mlx_lm; skips on no-mlx hosts)."""
+    mx = _real_mx()
+    from mlx_lm.models.cache import QuantizedKVCache, save_prompt_cache
+
+    from vllm_mlx.memory_cache import _safetensors_cache_classes
+
+    if not hasattr(mx, "quantize"):
+        pytest.skip(
+            f"mx.quantize is absent on this device ({mx.default_device()}); a "
+            "QuantizedKVCache cannot be constructed"
+        )
+    qc = QuantizedKVCache()
+    qc.group_size = 32
+    qc.bits = 4
+    qc.keys = mx.quantize(mx.ones((2, 4, 32)), group_size=32, bits=4)
+    qc.values = mx.quantize(mx.ones((2, 4, 32)), group_size=32, bits=4)
+    qc.offset = 8
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "qkv.safetensors")
+        save_prompt_cache(p, [qc])
+        detected = _safetensors_cache_classes(p)
+    assert detected == ["QuantizedKVCache"], (
+        f"the reader cannot detect a QuantizedKVCache checkpoint: "
+        f"detected {detected!r} (expected ['QuantizedKVCache'])"
+    )
+
+
+def test_prompt_cache_on_disk_stores_class_name():
+    """The on-disk safetensors format stores the cache class name so the
+    loader can reconstruct the right class (the format invariant the
+    class-identity round-trip depends on; requires real mlx + mlx_lm; skips
+    on no-mlx hosts)."""
+    mx = _real_mx()
+    from mlx_lm.models.cache import KVCache, save_prompt_cache
+
+    c = KVCache()
+    c.keys = [mx.ones((2, 4, 32))]
+    c.values = [mx.ones((2, 4, 32))]
+    c.offset = 8
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "kv.safetensors")
+        save_prompt_cache(p, [c])
+        with open(p, "rb") as f:
+            header_len = struct.unpack("<Q", f.read(8))[0]
+            header = json.loads(f.read(header_len))
+    meta = header.get("__metadata__", {})
+    assert any(v == "KVCache" for v in meta.values()), (
+        f"the on-disk format must store the cache class name in the "
+        f"metadata so the loader can reconstruct the class; metadata "
+        f"= {meta!r} does not contain 'KVCache'"
+    )
 
 
 # ---------------------------------------------------------------------------
