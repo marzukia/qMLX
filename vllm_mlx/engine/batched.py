@@ -940,13 +940,15 @@ class BatchedEngine(BaseEngine):
     def generate_warmup(self) -> None:
         """Run a minimal forward pass to compile Metal shaders.
 
-        Routes through the MLX step thread so cache arrays touched during
-        warmup carry the step thread's generation_stream. Otherwise models
-        with eagerly-materialized caches (Gemma 4 RotatingKVCache,
-        sliding-window) raise "There is no Stream(gpu, 1) in current thread"
-        on the first request because BatchGenerator.prompt() runs on the
-        step thread but evals state tagged with the main thread's stream
-        (#170, follow-on to #161 / #167).
+        The pass runs on the MLX step thread, the single owner of all
+        model/KV work, so every array and cache touched during warmup
+        belongs to the thread that later generation steps run on.
+        BatchGenerator.prompt() runs on the step thread and evals the
+        warmup state: a warmup done on the asyncio loop thread would tag
+        that state with the loop thread's stream, and models with
+        eagerly-materialized caches (Gemma 4 RotatingKVCache,
+        sliding-window) raise "There is no Stream(gpu, 1) in current
+        thread" on the first request.
         """
         if not self._loaded or self._model is None or self._is_mllm:
             return
@@ -956,11 +958,11 @@ class BatchedEngine(BaseEngine):
             tokens = self._tokenizer.encode("Hi")
 
             def _warmup_forward() -> None:
-                # Allocate input on the step thread so the array is bound to
-                # the worker's generation_stream — main-thread allocation
-                # poisons every downstream op with a stream the worker can't
-                # eval (#170 hot path on mlx-lm 0.31.3+ where streams are
-                # ThreadLocalStream).
+                # Allocate the input on the step thread: array allocation
+                # binds to the owning thread's stream, and a main-thread
+                # allocation would leave every downstream op on a stream
+                # the worker cannot eval. All warmup MLX work stays on
+                # the single owning thread.
                 input_ids = mx.array([tokens])
                 out = self._model(input_ids)
                 mx.eval(out)
@@ -1040,15 +1042,14 @@ class BatchedEngine(BaseEngine):
         if "qwen3" in self._model_name.lower() or "Qwen3" in self._model_name:
             tokenizer_config["eos_token"] = "<|im_end|>"
 
-        # Load model on the future MLX step worker thread (#170).
-        # mlx-lm 0.31.3+ binds module-level `generation_stream` and any
-        # auto-default stream to the thread that triggers them. If the model
-        # weights, quantization tables, or `mx.compile`-cached graphs are
-        # touched on the asyncio loop thread first, every later eval on the
-        # step worker hits "There is no Stream(gpu, 1) in current thread."
-        # Spinning the step worker BEFORE model load — and reusing the same
-        # worker for AsyncEngineCore via the model_load_executor handoff —
-        # keeps every MLX op on a single owning thread.
+        # Load the model on the future MLX step worker thread.
+        # The worker spins up BEFORE model load, and the same worker is
+        # reused for AsyncEngineCore via the model_load_executor handoff;
+        # this keeps every MLX op on a single owning thread. A second
+        # thread issuing MLX work would overlap on stream state rather
+        # than interleave, so weights, quantization tables, and
+        # `mx.compile`-cached graphs are all created on the worker
+        # instead of the asyncio loop thread.
         self._model_load_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="mlx-step",
