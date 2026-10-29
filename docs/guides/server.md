@@ -31,7 +31,7 @@ qmlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 | `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
 | `--api-key` | API key for authentication | None |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
-| `--timeout` | Request timeout in seconds | 300 |
+| `--timeout` | Request timeout in seconds | 1800 |
 | `--continuous-batching` | Accepted for back-compat (continuous batching is always on) | on |
 | `--use-paged-cache` | Enable paged KV cache | False |
 | `--cache-memory-mb` | Cache memory limit in MB | Auto |
@@ -41,7 +41,7 @@ qmlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 | `--default-top-p` | Default top_p when not specified | None |
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
-| `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
+| `--reasoning-parser` | Reasoning parser (`qwen3`). Auto-detected; explicit flag overrides. | auto |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
 
@@ -495,27 +495,21 @@ Per-request fields in `requests`:
 Enable OpenAI-compatible tool calling with `--enable-auto-tool-choice`:
 
 ```bash
-qmlx serve mlx-community/Devstral-Small-2507-4bit \
+qmlx serve devstral-24b-4bit \
   --enable-auto-tool-choice \
-  --tool-call-parser mistral
+  --tool-call-parser hermes
 ```
 
 Use the `--tool-call-parser` option to select the parser for your model:
 
 | Parser | Models |
 |--------|--------|
-| `auto` | Auto-detect (tries all parsers) |
-| `mistral` | Mistral, Devstral |
+| `hermes` | Hermes, NousResearch, Qwen3-Coder |
+| `nous` | NousResearch (alias of `hermes`) |
 | `qwen` | Qwen, Qwen3 |
-| `llama` | Llama 3.x, 4.x |
-| `hermes` | Hermes, NousResearch |
-| `deepseek` | DeepSeek V3, R1 |
-| `kimi` | Kimi K2, Moonshot |
-| `granite` | IBM Granite 3.x, 4.x |
-| `nemotron` | NVIDIA Nemotron |
-| `xlam` | Salesforce xLAM |
-| `functionary` | MeetKai Functionary |
-| `glm47` | GLM-4.7, GLM-4.7-Flash |
+| `qwen3` | Qwen3 (alias of `qwen`) |
+| `qwen3_coder` | Qwen3-Coder (alias of `hermes`) |
+| `qwen3_xml` | Qwen3 XML format |
 
 ```python
 response = client.chat.completions.create(
@@ -544,17 +538,18 @@ See [Tool Calling Guide](tool-calling.md) for full documentation.
 
 ## Reasoning Models
 
-For models that show their thinking process (Qwen3, DeepSeek-R1), use `--reasoning-parser` to separate reasoning from the final answer:
+For models that show their thinking process, use `--reasoning-parser` to separate reasoning from the final answer. `qwen3` is the registered reasoning parser:
 
 ```bash
 # Qwen3 models
 qmlx serve mlx-community/Qwen3-8B-4bit --reasoning-parser qwen3
 
-# DeepSeek-R1 models
-qmlx serve mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit --reasoning-parser deepseek_r1
+# DeepSeek-R1 models (no registered reasoning parser for this alias;
+# the model emits think blocks into content)
+qmlx serve deepseek-r1-32b-4bit
 ```
 
-The API response includes a `reasoning` field with the model's thought process:
+The API response includes a `reasoning_content` field with the model's thought process:
 
 ```python
 response = client.chat.completions.create(
@@ -562,7 +557,7 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "What is 17 × 23?"}]
 )
 
-print(response.choices[0].message.reasoning)  # Step-by-step thinking
+print(response.choices[0].message.reasoning_content)  # Step-by-step thinking
 print(response.choices[0].message.content)    # Final answer
 ```
 
@@ -571,8 +566,8 @@ For streaming, reasoning chunks arrive first, followed by content chunks:
 ```python
 for chunk in stream:
     delta = chunk.choices[0].delta
-    if delta.reasoning:
-        print(f"[Thinking] {delta.reasoning}")
+    if delta.reasoning_content:
+        print(f"[Thinking] {delta.reasoning_content}")
     if delta.content:
         print(delta.content, end="")
 ```
@@ -706,7 +701,7 @@ Create `/etc/systemd/system/qmlx.service`:
 
 ```ini
 [Unit]
-Description=vLLM-MLX Server
+Description=qMLX Server
 After=network.target
 
 [Service]

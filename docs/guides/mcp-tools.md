@@ -224,7 +224,7 @@ python examples/mcp_chat.py
 
 ## Supported Tool Formats
 
-qmlx supports 12 tool call parsers covering all major model families. See [Tool Calling](tool-calling.md) for the full list of parsers, aliases, and examples.
+qmlx ships the tool call parsers listed in [Tool Calling](tool-calling.md); the parser is auto-detected from the model name and an explicit `--tool-call-parser` overrides it.
 
 ## Security
 

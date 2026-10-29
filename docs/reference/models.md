@@ -1,18 +1,21 @@
 # Supported Models
 
-qMLX serves Qwen-family text models. Any compatible quant from
+qMLX serves LLMs from
 [mlx-community on HuggingFace](https://huggingface.co/mlx-community/models)
-can be served by its full repo id; the aliases below cover the tuned
-defaults. Run `qmlx models` for the full alias list shipped with your build.
+(any compatible quant by its full repo id) plus local model paths; the
+aliases below cover the tuned defaults - Qwen-family first, but the
+alias list spans many families (Gemma, Mistral, Phi, DeepSeek, GPT-OSS,
+and more). Run `qmlx models` for the full alias list shipped with your
+build.
 
-## Qwen language models
+## Qwen language models (tuned defaults)
 
 | Model Family | Sizes | Quantization |
 |--------------|-------|--------------|
 | Qwen2 / Qwen3 | 0.5B to 72B (incl. 30B-A3B MoE) | Various |
 | Qwen3-Coder | 30B | 4-bit |
 | Qwen3.5 | 4B, 9B, 27B | 4-bit, 8-bit |
-| Qwen3.6 | 27B, 35B-A3B, Coder | 4-bit, 8-bit |
+| Qwen3.6 | 27B, 35B-A3B | 4-bit, 8-bit |
 
 ### Recommended models
 
@@ -39,6 +42,6 @@ qmlx serve /path/to/local/model
 ## Finding models
 
 Filter mlx-community models by:
-- **Family**: `Qwen`
-- **Size**: `1B`, `3B`, `7B`, `8B`, `30B`
-- **Quantization**: `4bit`, `8bit`, `bf16`
+- **Family**: `Qwen`, `Gemma`, `Mistral`, `Phi`, `DeepSeek`, `GPT-OSS`, …
+- **Size**: `1B`, `3B`, `7B`, `8B`, `30B`, …
+- **Quantization**: `4bit`, `6bit`, `8bit`, `2bit`, `bf16`, `mxfp4`

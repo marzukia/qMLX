@@ -1,15 +1,15 @@
 # Tool Calling
 
-qmlx supports OpenAI-compatible tool calling (function calling) with automatic parsing for many popular model families.
+qmlx supports OpenAI-compatible tool calling (function calling). The parser is auto-detected from the model name; pin it explicitly with `--tool-call-parser`.
 
 ## Quick Start
 
 Enable tool calling by adding the `--enable-auto-tool-choice` flag when starting the server:
 
 ```bash
-qmlx serve mlx-community/Devstral-Small-2507-4bit \
+qmlx serve devstral-24b-4bit \
   --enable-auto-tool-choice \
-  --tool-call-parser mistral
+  --tool-call-parser hermes
 ```
 
 Then use tools with the standard OpenAI API:
@@ -47,36 +47,20 @@ if response.choices[0].message.tool_calls:
 
 ## Supported Parsers
 
-Use `--tool-call-parser` to select a parser for your model family:
+The parser is auto-detected from the model name: the `hermes` parser
+for Qwen3.x, Mistral/Devstral and most other chat models (none for
+Qwen3.6). The `qwen` parser is explicit-only; pin it with
+`--tool-call-parser qwen`:
 
 | Parser | Aliases | Models | Format |
 |--------|---------|--------|--------|
-| `auto` | | Any model | Auto-detects format (tries all parsers) |
-| `mistral` | | Mistral, Devstral | `[TOOL_CALLS]` JSON array |
-| `qwen` | `qwen3` | Qwen, Qwen3 | `<tool_call>` XML or `[Calling tool:]` |
-| `llama` | `llama3`, `llama4` | Llama 3.x, 4.x | `<function=name>` tags |
-| `hermes` | `nous` | Hermes, NousResearch | `<tool_call>` JSON in XML |
-| `deepseek` | `deepseek_v3`, `deepseek_r1` | DeepSeek V3, R1 | Unicode delimiters |
-| `kimi` | `kimi_k2`, `moonshot` | Kimi K2, Moonshot | `<\|tool_call_begin\|>` tokens |
-| `granite` | `granite3` | IBM Granite 3.x, 4.x | `<\|tool_call\|>` or `<tool_call>` |
-| `nemotron` | `nemotron3` | NVIDIA Nemotron | `<tool_call><function=...><parameter=...>` |
-| `xlam` | | Salesforce xLAM | JSON with `tool_calls` array |
-| `functionary` | `meetkai` | MeetKai Functionary | Multiple function blocks |
-| `glm47` | `glm4` | GLM-4.7, GLM-4.7-Flash | `<tool_call>` with `<arg_key>`/`<arg_value>` XML |
+| `hermes` | `nous`, `qwen3_coder` | Hermes, NousResearch, Qwen3-Coder, Mistral, Devstral | `<tool_call></tool_call>` JSON |
+| `qwen` | `qwen3`, `qwen3_xml` | Qwen, Qwen3 | `<tool_call></tool_call>` JSON in XML |
+The non-Qwen tool parsers were removed in the Qwen-only simplification (#19);
+models from those families that still ship tool-call templates are
+served through the `hermes` parser where the wire shape matches.
 
 ## Model Examples
-
-### Mistral / Devstral
-
-```bash
-# Devstral Small (optimized for coding and tool use)
-qmlx serve mlx-community/Devstral-Small-2507-4bit \
-  --enable-auto-tool-choice --tool-call-parser mistral
-
-# Mistral Instruct
-qmlx serve mlx-community/Mistral-7B-Instruct-v0.3-4bit \
-  --enable-auto-tool-choice --tool-call-parser mistral
-```
 
 ### Qwen
 
@@ -86,78 +70,28 @@ qmlx serve mlx-community/Qwen3-4B-4bit \
   --enable-auto-tool-choice --tool-call-parser qwen
 ```
 
-### Llama
+### Mistral / Devstral
 
 ```bash
-# Llama 3.2
-qmlx serve mlx-community/Llama-3.2-3B-Instruct-4bit \
-  --enable-auto-tool-choice --tool-call-parser llama
+# Devstral (optimized for coding and tool use)
+qmlx serve devstral-24b-4bit \
+  --enable-auto-tool-choice --tool-call-parser hermes
 ```
 
-### DeepSeek
+### Qwen3-Coder
 
 ```bash
-# DeepSeek V3
-qmlx serve mlx-community/DeepSeek-V3-0324-4bit \
-  --enable-auto-tool-choice --tool-call-parser deepseek
+qmlx serve qwen3-coder-30b-4bit \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder
 ```
 
-### IBM Granite
+## Auto-Detection
 
-```bash
-# Granite 4.0
-qmlx serve mlx-community/granite-4.0-tiny-preview-4bit \
-  --enable-auto-tool-choice --tool-call-parser granite
-```
-
-### NVIDIA Nemotron
-
-```bash
-# Nemotron 3 Nano
-qmlx serve mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-MLX-6Bit \
-  --enable-auto-tool-choice --tool-call-parser nemotron
-```
-
-### GLM-4.7
-
-```bash
-# GLM-4.7 Flash
-qmlx serve lmstudio-community/GLM-4.7-Flash-MLX-8bit \
-  --enable-auto-tool-choice --tool-call-parser glm47
-```
-
-### Kimi K2
-
-```bash
-# Kimi K2
-qmlx serve mlx-community/Kimi-K2-Instruct-4bit \
-  --enable-auto-tool-choice --tool-call-parser kimi
-```
-
-### Salesforce xLAM
-
-```bash
-# xLAM
-qmlx serve mlx-community/xLAM-2-fc-r-4bit \
-  --enable-auto-tool-choice --tool-call-parser xlam
-```
-
-## Auto Parser
-
-If you're not sure which parser to use, the `auto` parser tries to detect the format automatically:
-
-```bash
-qmlx serve mlx-community/Qwen3-4B-4bit \
-  --enable-auto-tool-choice --tool-call-parser auto
-```
-
-The auto parser tries formats in this order:
-1. Mistral (`[TOOL_CALLS]`)
-2. Qwen bracket (`[Calling tool:]`)
-3. Nemotron (`<tool_call><function=...><parameter=...>`)
-4. Qwen/Hermes XML (`<tool_call>{...}</tool_call>`)
-5. Llama (`<function=name>{...}</function>`)
-6. Raw JSON
+If you don't pin `--tool-call-parser`, the engine auto-detects the
+parser from the model name: `hermes` for Qwen3.x, Mistral/Devstral
+and most other chat models, none for Qwen3.6. The `qwen` parser is
+not auto-assigned; pin it with `--tool-call-parser qwen`. Run
+`qmlx info` to see the config a model resolves to.
 
 ## Streaming Tool Calls
 

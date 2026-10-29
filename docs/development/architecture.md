@@ -4,9 +4,9 @@
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                     vLLM API Layer                        │
-│  (OpenAI-compatible: chat, completions, embeddings,      │
-│   audio, tools, MCP, reasoning)                          │
+│                     API Layer                            │
+│  (OpenAI-compatible: chat, completions, responses,       │
+│   Anthropic, tools, MCP, reasoning)                     │
 └──────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -15,14 +15,14 @@
 │   (Scheduler + BatchedEngine - continuous batching)      │
 └──────────────────────────────────────────────────────────┘
                            │
-       ┌──────────┬────────┴────────┬──────────┐
-       ▼          ▼                 ▼          ▼
-┌───────────┐┌───────────┐┌─────────────┐┌──────────────┐
-│  mlx-lm   ││  mlx-vlm  ││  mlx-audio  ││mlx-embeddings│
-│  (LLM)    ││  (Vision) ││  (STT/TTS)  ││ (Embeddings) │
-└───────────┘└───────────┘└─────────────┘└──────────────┘
-       │          │                 │          │
-       └──────────┴────────┬────────┴──────────┘
+        ┌──────────────────┴──────────────────┐
+        ▼                                     ▼
+┌─────────────────┐                 ┌─────────────────┐
+│     mlx-lm      │                 │     mlx-vlm     │
+│     (LLM)       │                 │     (Vision)    │
+└─────────────────┘                 └─────────────────┘
+        │                                     │
+        └──────────────────┬──────────────────┘
                            ▼
 ┌──────────────────────────────────────────────────────────┐
 │                         MLX                               │
@@ -115,11 +115,12 @@ vllm_mlx/
 │   ├── models.py         # Pydantic models
 │   ├── utils.py          # Shared utilities
 │   ├── streaming.py      # Streaming JSON encoder
-│   └── tool_calling.py   # Tool call parsing
-├── audio/
-│   ├── processor.py      # Audio preprocessing
-│   ├── stt.py            # Speech-to-Text
-│   └── tts.py            # Text-to-Speech
+│   ├── tool_calling.py   # Tool call parsing
+│   ├── guided.py         # Structured output (json_schema_to_pydantic)
+│   └── anthropic_adapter.py, responses_adapter.py
+├── device/
+│   ├── backend.py        # Device/backend seam spec
+│   └── metal.py          # Metal backend (reference implementation)
 ├── engine/
 │   ├── base.py           # BaseEngine ABC
 │   └── batched.py        # BatchedEngine (continuous batching)
@@ -129,44 +130,44 @@ vllm_mlx/
 │   ├── executor.py       # Tool execution
 │   ├── security.py       # Command validation
 │   ├── tools.py          # Tool sandbox
+│   ├── types.py          # MCP type definitions
 │   └── manager.py        # Server management
-├── models/
-│   └── mllm.py           # MLXMultimodalLM
-├── tool_parsers/         # Tool call parsers (12 formats)
-├── reasoning_parsers/    # Reasoning parsers (qwen3, deepseek_r1)
-├── server.py             # FastAPI server
+├── models/               # Model package (registry and alias plumbing)
+├── tool_parsers/         # Tool call parsers (6 registered names: hermes, nous, qwen, qwen3, qwen3_coder, qwen3_xml)
+├── reasoning/            # Reasoning parser registry (qwen3 registered; base + harmony stop helpers)
+├── server.py             # FastAPI app factory
 ├── engine_core.py        # AsyncEngineCore
 ├── scheduler.py          # LLM request scheduler
-├── mllm_scheduler.py     # MLLM request scheduler
-├── mllm_batch_generator.py # MLLM batch generation
 ├── paged_cache.py        # Paged KV cache
 ├── prefix_cache.py       # Prefix cache manager
 ├── output_collector.py   # Request output collector
-├── model_registry.py     # Model detection & registry
+├── runtime/
+│   ├── model_registry.py # Model detection & registry
+│   └── disk_kv_checkpoint.py # Disk KV restore
 └── cli.py                # CLI commands
 ```
 
 ## Request Flow
 
 1. **API Request** → FastAPI endpoint (auth, rate limit)
-2. **Engine Selection** → Simple or Batched based on config
+2. **Engine** → BatchedEngine (single engine, continuous batching)
 3. **Template Application** → Chat template formatting (with tool definitions if enabled)
-4. **Generation** → mlx-lm, mlx-vlm, mlx-audio, or mlx-embeddings
+4. **Generation** → mlx-lm (text; Metal reference backend)
 5. **Post-processing** → Tool call parsing, reasoning extraction
 6. **Streaming** → SSE response chunks
 7. **Caching** → KV cache storage for reuse
 
 ## Hardware Detection
 
-qmlx auto-detects Apple Silicon:
+qmlx auto-detects the device through the backend seam:
 - Chip name (M1, M2, M3, M4)
 - Total memory
-- Neural engine cores
+- Memory bandwidth (GB/s)
 - GPU cores
 
 ```python
-from vllm_mlx.hardware import get_hardware_info
+from vllm_mlx.optimizations import detect_hardware
 
-hw = get_hardware_info()
+hw = detect_hardware()
 print(f"{hw.chip_name} ({hw.total_memory_gb:.0f} GB)")
 ```
