@@ -270,11 +270,11 @@ The streaming detokenizer is **not currently viable** for per-request usage due 
 ## Running Benchmarks
 
 ```bash
-# Basic benchmark — engine comparison harness
-python scripts/benchmark_engines.py --engine qmlx
+# Basic benchmark — engine comparison harness (qmlx vs ollama)
+python scripts/bench_vs_ollama.py
 
 # Save results
-python scripts/benchmark_engines.py --engine qmlx --output results.json
+python scripts/bench_vs_ollama.py --output-dir reports/benchmarks/my-run
 
 # Continuous batching test
 python tests/test_continuous_batching.py
