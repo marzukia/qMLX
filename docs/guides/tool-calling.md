@@ -47,14 +47,15 @@ if response.choices[0].message.tool_calls:
 
 ## Supported Parsers
 
-The parser is auto-detected from the model name (the `hermes` parser
-for Mistral/Devstral and most chat models, the `qwen` parser for
-Qwen-family models); pin it explicitly with `--tool-call-parser`:
+The parser is auto-detected from the model name: the `hermes` parser
+for Qwen3.x, Mistral/Devstral and most other chat models (none for
+Qwen3.6). The `qwen` parser is explicit-only; pin it with
+`--tool-call-parser qwen`:
 
 | Parser | Aliases | Models | Format |
 |--------|---------|--------|--------|
-| `hermes` | `nous`, `qwen3_coder` | Hermes, NousResearch, Qwen3-Coder, Mistral, Devstral | `
-`
+| `hermes` | `nous`, `qwen3_coder` | Hermes, NousResearch, Qwen3-Coder, Mistral, Devstral | `<tool_call></tool_call>` JSON |
+| `qwen` | `qwen3`, `qwen3_xml` | Qwen, Qwen3 | `<tool_call></tool_call>` JSON in XML |
 The non-Qwen tool parsers were removed in the Qwen-only simplification (#19);
 models from those families that still ship tool-call templates are
 served through the `hermes` parser where the wire shape matches.
@@ -87,9 +88,10 @@ qmlx serve qwen3-coder-30b-4bit \
 ## Auto-Detection
 
 If you don't pin `--tool-call-parser`, the engine auto-detects the
-parser from the model name (`hermes` for Mistral/Devstral and most
-chat models, `qwen` for Qwen-family models). Run `qmlx info` to see
-the config a model resolves to.
+parser from the model name: `hermes` for Qwen3.x, Mistral/Devstral
+and most other chat models, none for Qwen3.6. The `qwen` parser is
+not auto-assigned; pin it with `--tool-call-parser qwen`. Run
+`qmlx info` to see the config a model resolves to.
 
 ## Streaming Tool Calls
 
