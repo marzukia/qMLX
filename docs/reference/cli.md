@@ -130,7 +130,7 @@ curl http://localhost:8000/v1/models \
 
 Spawn (or attach to) a server and start an interactive REPL with a model. This
 is a terminal chat — not a web UI. (For the Gradio web UI, install the optional
-`[chat]` extra: `pip install 'qmlx-serve[chat]'`.)
+`[chat]` extra: `pip install 'qmlx[chat]'`.)
 
 ### Usage
 

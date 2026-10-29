@@ -3,7 +3,7 @@
 Paged KV Cache Manager for qmlx.
 
 This module implements block-based paged KV cache management following vLLM's
-architecture (vllm/v1/core/block_pool.py), adapted for MLX on Apple Silicon.
+architecture (vllm/v1/core/block_pool.py), adapted for MLX.
 
 Key components:
 - KVCacheBlock: Metadata for each cache block with doubly linked list pointers

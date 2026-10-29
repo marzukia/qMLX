@@ -273,7 +273,7 @@ agents:
     script: tests/integrations/test_langchain.py
     skip_for_smoke: false
     # Same diffusiongemma model-quality issue as anthropic_sdk. LangChain's
-    # structured-output subtest also requires qmlx-serve[guided], which this
+    # structured-output subtest also requires qmlx[guided], which this
     # validation environment intentionally does not install.
     skip_for_models:
       - mlx-community/diffusiongemma-26B-A4B-it-4bit

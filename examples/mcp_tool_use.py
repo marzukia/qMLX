@@ -7,7 +7,7 @@ This example demonstrates how to use MCP (Model Context Protocol) tools
 with the qmlx server.
 
 Prerequisites:
-1. Install MCP support: pip install qmlx-serve[mcp]
+1. Install MCP support: pip install qmlx[mcp]
 2. Create mcp.json config (see example below)
 3. Start server with MCP: qmlx serve <model> --mcp-config mcp.json
 

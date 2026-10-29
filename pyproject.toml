@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "qmlx-serve"
+name = "qmlx"
 version = "0.15.1"
-description = "Disk KV restore for hybrid MoE models on Apple Silicon. A Qwen-specialised fork of qMLX that keeps a 122B model warm on a Mac."
+description = "Multi-backend MLX inference engine (Metal, mlx-rocm, mlx-cuda) with OpenAI-compatible serving, disk KV restore for hybrid MoE models, and speculative decoding, on a single device/backend seam."
 readme = "README.md"
 license = {text = "MIT AND Apache-2.0"}
 requires-python = ">=3.10"
@@ -21,6 +21,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -93,7 +94,7 @@ mirror = [
     "boto3>=1.34.0",
 ]
 # Interactive TUI (`qmlx tui`, `qmlx chat --tui`) — issue #51 phase 4.
-# Opt-in: `pip install 'qmlx-serve[tui]'`. Base install keeps the CLI
+# Opt-in: `pip install 'qmlx[tui]'`. Base install keeps the CLI
 # working with zero TUI deps (plain `qmlx tui` prints a one-line hint).
 tui = [
     "textual>=0.50.0,<1.0",
@@ -139,7 +140,7 @@ test = [
 # MCP (Model Context Protocol) tool-server support — the MCP client in
 # ``vllm_mlx/mcp/client.py`` imports the ``mcp`` SDK lazily inside its
 # connect methods, so core ``qmlx`` works without it. Install
-# ``qmlx-serve[mcp]`` to enable ``--mcp-config``.
+# ``qmlx[mcp]`` to enable ``--mcp-config``.
 mcp = [
     "mcp>=1.0.0",
 ]

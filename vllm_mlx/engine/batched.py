@@ -2490,7 +2490,7 @@ class BatchedEngine(BaseEngine):
         if not self.supports_guided_generation:
             raise RuntimeError(
                 "Guided generation not available. "
-                "Install with: pip install 'qmlx-serve[guided]'"
+                "Install with: pip install 'qmlx[guided]'"
             )
 
         if not self._loaded:
