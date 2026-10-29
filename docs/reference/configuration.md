@@ -49,7 +49,7 @@
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--reasoning-parser` | Parser for reasoning models (`qwen3`, `deepseek_r1`) | None |
+| `--reasoning-parser` | Parser for reasoning models (`qwen3`) | None |
 
 ### Speculative Decoding Options
 
@@ -152,9 +152,9 @@ qmlx serve mlx-community/Qwen3-0.6B-8bit \
 ### With Tool Calling
 
 ```bash
-qmlx serve mlx-community/Devstral-Small-2507-4bit \
+qmlx serve devstral-24b-4bit \
   --enable-auto-tool-choice \
-  --tool-call-parser mistral \
+  --tool-call-parser hermes \
   --continuous-batching
 ```
 

@@ -50,9 +50,9 @@ qmlx serve <model> [options]
 | `--gpu-memory-utilization` | Fraction of device memory for Metal allocation limit (0.0-1.0) | 0.90 |
 | `--default-temperature` | Default temperature when not specified in request | None |
 | `--default-top-p` | Default top_p when not specified in request | None |
-| `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
+| `--reasoning-parser` | Reasoning parser (`qwen3`). Auto-detected; explicit flag overrides. | auto |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
-| `--tool-call-parser` | Tool call parser (e.g. `hermes`, `llama`, `deepseek`, `deepseek_v31`, `glm47`, `gemma4`, `minimax`, `kimi`, `harmony`, `qwen3_coder_xml`). Auto-detected from the model name; explicit flag overrides. | auto |
+| `--tool-call-parser` | Tool call parser (`hermes`, `nous`, `qwen`, `qwen3`, `qwen3_coder`, `qwen3_xml`). Auto-detected from the model name; explicit flag overrides. | auto |
 
 ### Examples
 
@@ -72,8 +72,9 @@ qmlx serve qwen3.5-9b-4bit --mcp-config mcp.json
 # Reasoning model — parser is auto-detected, but you can pin it
 qmlx serve qwen3.5-9b-4bit --reasoning-parser qwen3
 
-# DeepSeek reasoning model
-qmlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
+# DeepSeek reasoning model (no registered reasoning parser for this alias;
+# the model emits think blocks into content)
+qmlx serve deepseek-r1-8b-4bit
 
 # Tool calling with Mistral/Devstral
 qmlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser hermes

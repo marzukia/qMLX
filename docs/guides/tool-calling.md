@@ -1,15 +1,15 @@
 # Tool Calling
 
-qmlx supports OpenAI-compatible tool calling (function calling) with automatic parsing for many popular model families.
+qmlx supports OpenAI-compatible tool calling (function calling). The parser is auto-detected from the model name; pin it explicitly with `--tool-call-parser`.
 
 ## Quick Start
 
 Enable tool calling by adding the `--enable-auto-tool-choice` flag when starting the server:
 
 ```bash
-qmlx serve mlx-community/Devstral-Small-2507-4bit \
+qmlx serve devstral-24b-4bit \
   --enable-auto-tool-choice \
-  --tool-call-parser mistral
+  --tool-call-parser hermes
 ```
 
 Then use tools with the standard OpenAI API:
