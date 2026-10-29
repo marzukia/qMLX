@@ -1305,10 +1305,24 @@ def load_model(
             f"Loading model with DiffusionEngine "
             f"(modality=text-diffusion): {_diffusion_hf_path}"
         )
+        # Standalone-default contract (qMLX #85 finding 3 follow-up):
+        # this modality dispatch is if/else and the shipped ``main()``
+        # calls ``load_model`` exactly once (a single ``--model``), so
+        # each server process hosts ONE engine. When it is the diffusion
+        # lane there is no AR lane running in the same process, so the
+        # ``DiffusionEngine`` creates and owns its own single-threaded
+        # ``mlx-step`` owner thread (``mlx_executor=None``). Shared mode
+        # (pass the AR lane's owner-thread executor as
+        # ``mlx_executor=``) is wired but intentionally not activated
+        # here: there is no live caller that runs both lanes. If a
+        # two-lane server mode is added, resolve the AR lane's
+        # ``engine_core`` owner-thread executor at this point and pass
+        # it so the diffusion lane time-slices behind AR work.
         _engine = DiffusionEngine(
             model_name=_diffusion_hf_path,
             max_tokens=max_tokens,
             scheduler_config=scheduler_config,
+            mlx_executor=None,
         )
         # Eager load — server lifespan's startup_event runs ``await
         # _engine.start()`` like it does for BatchedEngine, but the
