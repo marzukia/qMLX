@@ -874,53 +874,156 @@ def _looks_like_hy3(model_name: str) -> bool:
     return bool(_HY3_MODEL_NAME_RE.search(model_name))
 
 
-# Round-trip cache stability (F-thinkscaffold): when ``enable_thinking`` is
-# False the chat template appends an empty ``<think>\n\n</think>\n\n`` to the
-# GENERATION prompt (Qwen3.5 template, add_generation_prompt branch). That empty
-# scaffold lands in the KV checkpoint. But when the SAME assistant turn is later
-# re-rendered as history inside a multi-turn tool conversation, the template does
-# NOT reproduce the scaffold (verified on real captured payloads: 180/181
-# completed assistant tool-turns render as ``<|im_start|>assistant\n<tool_call>``
-# with no scaffold). So the checkpoint (scaffold) diverges from the next turn's
-# prefix (no scaffold) at the start of that turn, forcing a full cold re-prefill
-# on every tool turn. The identical empty scaffold also shows up mid-history,
-# wrapped around completed think-less assistant tool-call turns, and a tail-only
-# strip never touched those, so a checkpoint render and a later restore render
-# could still diverge there. Fix: strip EVERY occurrence of the exact empty
-# scaffold from the rendered prompt, not just a trailing one, so both sides
-# normalise identically. Only matches the exact empty-think scaffold: it is a
-# no-op when thinking is enabled (that path ends with an OPEN ``<think>\n``),
-# leaves a real ``<think>...content...</think>`` block untouched, and is a
-# no-op for the plain-text fallback.
+# Round-trip cache stability (F-thinkscaffold, symmetric since #50): when
+# ``enable_thinking`` is False the chat template appends an empty
+# ``\nthink\n\n/think\n\n`` to the GENERATION prompt (Qwen3.5 template,
+# add_generation_prompt branch). That empty scaffold lands in the KV checkpoint.
+# But when the SAME assistant turn is later re-rendered as history inside a
+# multi-turn conversation, the template's history guard
+# (``preserve_thinking is undefined or preserve_thinking is true or
+# loop.index0 > ns.last_query_index``) takes the else branch because
+# ``preserve_thinking`` is effectively False (derived from
+# ``enable_thinking=False``), and the scaffold is OMITTED. So the checkpoint
+# (scaffold) diverges from the next turn's prefix (no scaffold) at exactly the
+# assistant boundary, forcing a full cold re-prefill of the whole conversation
+# on every follow-up turn (issue #50; ~27 s/turn measured on a 27B model).
+#
+# #30/#31 stripped EVERY occurrence of the exact empty scaffold from the
+# rendered prompt so both sides normalised to the scaffold-free form; that kept
+# the mid-history bytes matching but deleted the TERMINAL primer (the
+# runaway-``think``: a bare ``\nassistant\n`` tail made the model open its
+# own ``\nthink\n`` and run to max_tokens, ~23 min), which #45 papered over
+# with tail-preserve only. Tail-preserve keeps turn N's cached primer but turn
+# N+1 re-renders that same turn without it, so the assistant boundary of every
+# completed turn still diverged (issue #50).
+#
+# The round-trip-stable fix makes the empty-scaffold treatment SYMMETRIC for
+# the whole conversation: ``_strip_think_scaffold`` is neutralised (early
+# return, the verified workaround from issue #50) and
+# ``_symmetrize_think_scaffold`` re-inserts the exact empty scaffold at every
+# completed assistant turn the template omitted it from, so EVERY completed
+# assistant turn AND the terminal generation-tail primer carry it. A cached
+# prefix and the next turn's prefix are then byte-identical through every
+# completed assistant turn. Only the exact empty-think scaffold is handled: a
+# real ``<think>\n...content...</think>\n...`` block is a different string
+# and is never touched, and for templates that emit no primer (non-thinking
+# models, or the TypeError-retry fallbacks) the normalisation is a no-op, so no
+# spurious scaffold is added or removed.
 _GEN_THINK_SCAFFOLD = "<think>\n\n</think>\n\n"
+_THINK_OPEN = "<think>\n"
+_THINK_CLOSE = "</think>\n"
+_ASSISTANT_TAG = "<|im_start|>assistant\n"  # Qwen-style turn tag
 
 
 def _strip_think_scaffold(prompt: str, preserve_trailing: bool = False) -> str:
-    """Remove empty ``<think>\n\n</think>\n\n`` scaffolds from a rendered prompt.
+    """Return the rendered prompt UNCHANGED (neutralised in #50).
 
-    By default EVERY occurrence is removed. The mid-history cache-key
-    normalisation from #30/#31 depends on that: a checkpoint render (scaffold
-    present) and a later restore render (scaffold absent) must normalise to the
-    same bytes or the KV prefix diverges.
+    Historically this stripped every occurrence of the exact empty
+    ``\nthink\n\n/think\n\n`` scaffold (the #30/#31 global strip), optionally
+    preserving the trailing GENERATION-tail primer when ``preserve_trailing``
+    was True (the #45 runaway-``think`` fix). That asymmetry - strip the
+    mid-history scaffold, keep the trailing one - is exactly what left turn N's
+    cached primer divergent from turn N+1's re-rendered history at the
+    assistant boundary (issue #50: every follow-up turn cold-prefilled the
+    whole conversation).
 
-    When ``preserve_trailing`` is True and the prompt ends with the exact empty
-    scaffold, that FINAL occurrence is kept while all earlier (mid-history) ones
-    are still stripped. The trailing scaffold is the generation-tail primer the
-    Qwen3.5 template emits for ``add_generation_prompt=True`` +
-    ``enable_thinking=False``. It signals "thinking is already done, emit the
-    answer / tool_call now". The blind global strip (#30/#31) deleted it too,
-    leaving the prompt bare at ``<|im_start|>assistant\n``; a Qwen3.5 thinking
-    model then opened its OWN ``<think>`` and never closed it, running to
-    max_tokens (~23 min). Preserving only the terminal primer fixes the runaway
-    while leaving the mid-history normalisation byte-identical to the global
-    strip.
+    The verified workaround (issue #50) neutralised this helper (early
+    ``return prompt``) and moved the round-trip normalisation to
+    ``_symmetrize_think_scaffold``, which keeps the scaffold on BOTH sides of
+    every completed assistant turn boundary (the terminal primer included)
+    instead of stripping it from one side. Kept, signature and all, so existing
+    call sites and tests that import it keep working; the ``preserve_trailing``
+    argument is retained for compatibility and ignored.
+    """
+    del preserve_trailing  # retained for signature compatibility (#50)
+    return prompt
+
+
+def _symmetrize_think_scaffold(prompt: str, assume_primer: bool = False) -> str:
+    """Re-insert the empty ``\nthink\n\n/think\n\n`` scaffold at every completed
+    assistant turn the template omitted it from (issue #50).
+
+    The Qwen3.5 ``add_generation_prompt=True`` + ``enable_thinking=False``
+    generation tail carries the empty scaffold (the generation primer:
+    "thinking is already done, emit the answer / tool_call now" - its removal
+    is what caused the runaway-``think`` that #45's tail-preserve fixed). The
+    SAME turn re-rendered as history in a follow-up request takes the
+    template's ``preserve_thinking``-False else branch and omits it, so the KV
+    checkpoint (scaffold) diverges from the next turn's prefix (no scaffold)
+    at the assistant boundary and the whole conversation is cold-prefilled
+    again.
+
+    This normaliser makes the scaffold treatment SYMMETRIC for the whole
+    conversation: the pass runs when the rendered prompt carries the
+    template's empty-scaffold signal (the generation primer or a mid-history
+    scaffold) OR when the caller asserts the template emits the primer
+    (``assume_primer=True``, set by ``apply_chat_template`` for
+    ``enable_thinking=False`` renders - the restore-side render of #50
+    carries no scaffold at all, so the string signal alone is not enough).
+    It only touches prompts containing the Qwen-style
+    ``|im_start|assistant\n`` turn tag (the scaffold itself is
+    Qwen-specific), so every other template family passes through
+    byte-identical. For each piece after an assistant turn tag:
+
+    * the template's preserve branch already emitted the scaffold -> left
+      untouched (no double scaffold);
+    * the piece starts with a REAL (non-empty) ``\nthink\n...\n/think\n...``
+      block -> left untouched (the thinking-enabled generation side carries no
+      empty scaffold before real thinking);
+    * otherwise (the ``preserve_thinking=False`` else branch - the bug) -> the
+      scaffold is inserted at the turn start, byte-matching the generation
+      primer. The final piece obeys the same rule: the generation primer
+      already starts with the scaffold and is therefore left untouched, while
+      a completed turn rendered with ``add_generation_prompt=False`` gets the
+      scaffold inserted.
+
+    The normalisation is stateless and idempotent: a checkpoint-time render
+    and a later restore render of the same conversation normalise to the same
+    bytes through every completed assistant turn, which is the
+    round-trip-stability invariant the KV restore relies on (#45/#50).
     """
     if not isinstance(prompt, str):
         return prompt
-    if preserve_trailing and prompt.endswith(_GEN_THINK_SCAFFOLD):
-        head = prompt[: -len(_GEN_THINK_SCAFFOLD)]
-        return head.replace(_GEN_THINK_SCAFFOLD, "") + _GEN_THINK_SCAFFOLD
-    return prompt.replace(_GEN_THINK_SCAFFOLD, "")
+    if not (assume_primer or _GEN_THINK_SCAFFOLD in prompt):
+        return prompt
+    if _ASSISTANT_TAG not in prompt:
+        return prompt
+    parts = prompt.split(_ASSISTANT_TAG)
+    out = [parts[0]]
+    for piece in parts[1:]:
+        if piece.startswith(_GEN_THINK_SCAFFOLD):
+            # The template's preserve branch already emitted the scaffold.
+            out.append(_ASSISTANT_TAG + piece)
+            continue
+        if piece.startswith(_THINK_OPEN):
+            close = piece.find(_THINK_CLOSE, len(_THINK_OPEN))
+            if close != -1 and piece[len(_THINK_OPEN) : close].strip():
+                # Real (non-empty) thinking block: leave untouched.
+                out.append(_ASSISTANT_TAG + piece)
+                continue
+        out.append(_ASSISTANT_TAG + _GEN_THINK_SCAFFOLD + piece)
+    return "".join(out)
+
+
+def _normalize_think_scaffold(
+    prompt: str,
+    preserve_trailing: bool = False,
+    assume_primer: bool = False,
+) -> str:
+    """Round-trip-stable think-scaffold normalisation for a rendered prompt.
+
+    Runs the (neutralised, #50) ``_strip_think_scaffold`` pass followed by
+    ``_symmetrize_think_scaffold``. Net effect: for a template that emits the
+    empty-think generation primer, every completed assistant turn AND the
+    terminal primer carry the exact empty scaffold (byte-matching the KV
+    checkpoint, issue #50); for every other template the prompt is returned
+    unchanged. Idempotent: normalising twice yields the same bytes as
+    normalising once.
+    """
+    return _symmetrize_think_scaffold(
+        _strip_think_scaffold(prompt, preserve_trailing=preserve_trailing),
+        assume_primer=assume_primer,
+    )
 
 
 def apply_chat_template(
@@ -1025,11 +1128,14 @@ def apply_chat_template(
     if enable_thinking is None:
         enable_thinking = "coder" not in model_name.lower()
 
-    # Preserve the generation-tail empty-think primer (see
-    # ``_strip_think_scaffold``) only when this render is an
-    # ``add_generation_prompt=True`` (always, below) + ``enable_thinking=False``
-    # generation prompt. Mid-history empty scaffolds are still stripped so the
-    # #30/#31 cache-key normalisation is unchanged.
+    # Think-scaffold normalisation (#30/#31, symmetric since #50): when this
+    # render is an ``add_generation_prompt=True`` (always, below) +
+    # ``enable_thinking=False`` generation prompt, the template's trailing
+    # empty-think primer is the runaway-``think`` guard. ``preserve_trailing``
+    # is retained for that historical contract; the actual normalisation runs
+    # in ``_normalize_think_scaffold`` at each render site below, which keeps
+    # the scaffold on both sides of every completed assistant turn boundary
+    # (the round-trip-stability invariant, #45/#50).
     preserve_trailing = enable_thinking is False
 
     template_kwargs: dict = {
@@ -1064,9 +1170,10 @@ def apply_chat_template(
         template_kwargs.setdefault("reasoning_effort", "low")
 
     try:
-        return _strip_think_scaffold(
+        return _normalize_think_scaffold(
             template_applicator.apply_chat_template(messages, **template_kwargs),
             preserve_trailing=preserve_trailing,
+            assume_primer=preserve_trailing,
         )
     except TypeError as e:
         # Step 1: retry without enable_thinking (many templates don't support it).
@@ -1079,9 +1186,10 @@ def apply_chat_template(
         logger.debug("Chat template TypeError, retrying without enable_thinking: %s", e)
         template_kwargs.pop("enable_thinking", None)
         try:
-            return _strip_think_scaffold(
+            return _normalize_think_scaffold(
                 template_applicator.apply_chat_template(messages, **template_kwargs),
                 preserve_trailing=preserve_trailing,
+                assume_primer=False,
             )
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
@@ -1143,7 +1251,8 @@ def apply_chat_template(
                     injected, **template_kwargs
                 )
 
-        return _strip_think_scaffold(
+        return _normalize_think_scaffold(
             template_applicator.apply_chat_template(messages, **template_kwargs),
             preserve_trailing=preserve_trailing,
+            assume_primer=preserve_trailing,
         )

@@ -11,23 +11,35 @@ The identical empty scaffold can also appear MID-history, wrapped around a
 completed think-less assistant tool-call turn (observed live as
 ``kv_restore_divergence deep miss`` where the cached render carried the
 scaffold and the incoming render did not). A tail-only strip never touched
-those, so the fix strips EVERY occurrence of the exact empty scaffold from the
-rendered prompt. Real ``<think>...content...</think>`` blocks are a different
+those, so the #45 tail-only strip never resolved it. Since #50 the
+treatment is SYMMETRIC: ``_strip_think_scaffold`` is neutralised (no-op)
+and ``_symmetrize_think_scaffold`` keeps the scaffold on both sides of
+every completed assistant turn boundary (the terminal primer included)—
+checkpoint-time and restore-time renders normalise to byte-identical
+prefixes through every turn. Real ``<think>...content...</think>`` blocks are a different
 string and must never be touched.
 """
 
 from vllm_mlx.utils.chat_template import (
     _GEN_THINK_SCAFFOLD,
+    _normalize_think_scaffold,
     _strip_think_scaffold,
+    _symmetrize_think_scaffold,
     apply_chat_template,
 )
 
 SCAFFOLD = _GEN_THINK_SCAFFOLD  # "<think>\n\n</think>\n\n"
 
 
-def test_strip_helper_removes_trailing_scaffold():
+def test_strip_helper_neutralised_keeps_trailing_scaffold():
+    """#50: the strip pass is neutralised (early ``return prompt``)— the
+    trailing generation-tail primer is no longer removed, and the
+    symmetriser leaves an already-emitted scaffold untouched (no double
+    scaffold)."""
     p = "<|im_start|>assistant\n" + SCAFFOLD
-    assert _strip_think_scaffold(p) == "<|im_start|>assistant\n"
+    assert _strip_think_scaffold(p) == p
+    assert _strip_think_scaffold(p, preserve_trailing=True) == p
+    assert _normalize_think_scaffold(p, assume_primer=True) == p
 
 
 def test_strip_helper_noop_without_scaffold():
@@ -39,12 +51,14 @@ def test_strip_helper_noop_without_scaffold():
     assert _strip_think_scaffold(q) == q
 
 
-def test_strip_helper_removes_mid_history_scaffold():
-    """The empty scaffold wrapped around a completed think-less assistant
-    tool-call turn, with more turns after it, must be stripped too. This is
-    the exact shape of the observed live divergence (cached_next carried
+def test_symmetrize_keeps_emitted_mid_history_scaffold_and_inserts_missing():
+    """The exact shape of the observed live divergence (cached_next carried
     ``<think>\\n\\n</think>\\n\\n<tool_call>...``, incoming_next started at
-    ``<tool_call>...``)."""
+    ``<tool_call>...``): the scaffold the template already emitted around a
+    completed think-less assistant tool-call turn is KEPT (no double
+    scaffold), while a completed assistant turn the template omitted it from
+    (the ``preserve_thinking=False`` else branch— the #50 bug) gets it
+    inserted at the turn start, byte-matching the generation primer."""
     p = (
         "<|im_start|>user\nfix the bug<|im_end|>\n"
         "<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>\n"
@@ -54,17 +68,25 @@ def test_strip_helper_removes_mid_history_scaffold():
     )
     expected = (
         "<|im_start|>user\nfix the bug<|im_end|>\n"
-        "<|im_start|>assistant\n<tool_call>\n"
+        "<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>\n"
         "<function=todowrite>...</function>\n</tool_call><|im_end|>\n"
         "<|im_start|>tool\nok<|im_end|>\n"
-        "<|im_start|>assistant\ndone<|im_end|>\n"
+        "<|im_start|>assistant\n" + SCAFFOLD + "done<|im_end|>\n"
     )
-    assert _strip_think_scaffold(p) == expected
+    assert _symmetrize_think_scaffold(p, assume_primer=True) == expected
 
 
-def test_strip_helper_removes_all_occurrences():
-    p = "<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>a</tool_call>" + SCAFFOLD
-    assert _strip_think_scaffold(p) == "<|im_start|>assistant\n<tool_call>a</tool_call>"
+def test_symmetrize_all_boundaries_carry_scaffold_and_idempotent():
+    """Every completed assistant boundary ends up carrying exactly one
+    emitted/inserted scaffold, and normalising twice yields the same bytes
+    as normalising once (the stateless idempotence the KV restore relies
+    on, #45/#50)."""
+    at = "<|im_start|>assistant\n"
+    p = at + SCAFFOLD + "<tool_call>a</tool_call>\n" + at + SCAFFOLD
+    once = _normalize_think_scaffold(p, assume_primer=True)
+    assert once == p
+    assert once.count(SCAFFOLD) == 2
+    assert _normalize_think_scaffold(once, assume_primer=True) == once
 
 
 def test_strip_helper_preserves_real_reasoning_block():
@@ -80,7 +102,10 @@ def test_strip_helper_preserves_real_reasoning_block():
 def test_renders_differing_only_by_scaffold_normalize_identically():
     """The divergence-prevention property: a checkpoint-time render that
     contains the empty scaffold and a restore-time render that omits it must
-    normalize to the SAME final string, so the token prefix cannot diverge."""
+    normalise to the SAME final string, so the token prefix cannot diverge.
+    Since #50 the normalisation is symmetric— the scaffold is kept on the
+    one side and inserted on the other, at every completed assistant
+    boundary (not stripped from one side)."""
     prefix = "<|im_start|>user\nfix the bug<|im_end|>\n<|im_start|>assistant\n"
     suffix = (
         "<tool_call>\n<function=todowrite>...</function>\n</tool_call><|im_end|>\n"
@@ -88,10 +113,14 @@ def test_renders_differing_only_by_scaffold_normalize_identically():
     )
     with_scaffold = prefix + SCAFFOLD + suffix
     without_scaffold = prefix + suffix
-    assert _strip_think_scaffold(with_scaffold) == _strip_think_scaffold(
-        without_scaffold
-    )
-    assert _strip_think_scaffold(with_scaffold) == without_scaffold
+    norm_with = _normalize_think_scaffold(with_scaffold, assume_primer=True)
+    norm_without = _normalize_think_scaffold(without_scaffold, assume_primer=True)
+    assert norm_with == norm_without
+    # converged on the symmetric form: the scaffold sits at the assistant
+    # boundary in BOTH renders, and the terminal generation-tail primer is
+    # present (the runaway-``think`` guard survives, #45).
+    assert norm_with.count(SCAFFOLD) == 2
+    assert norm_with.endswith("<|im_start|>assistant\n" + SCAFFOLD)
 
 
 class _FakeQwenApplicator:
@@ -190,21 +219,20 @@ def test_roundtrip_generation_matches_history_render():
     hist = apply_chat_template(
         fake, base + [asst], enable_thinking=False, model_name="qwen"
     )
-    # The generation tail now carries the empty-think primer (runaway fix), while
-    # the completed assistant turn re-rendered as history does NOT. So the two
-    # renders share the pre-primer prefix but intentionally differ at the primer
-    # boundary. That one-turn cold re-prefill is the accepted cost of preventing
-    # the runaway (correctness over the #30/#31 tail optimisation); the
-    # mid-history normalisation itself is unaffected.
+    # The generation tail carries the empty-think primer (runaway fix) and,
+    # since #50, the completed assistant turn re-rendered as history carries
+    # the SAME scaffold (symmetrised into the preserve_thinking=False else
+    # branch). The two renders therefore agree byte-for-byte at the primer
+    # boundary— no cold re-prefill on the follow-up turn (#50).
     assert gen_prompt.endswith(SCAFFOLD)
     base_prefix = gen_prompt[: -len(SCAFFOLD)]
     assert hist.startswith(base_prefix), (
         "history render diverges from the generation prompt BEFORE the primer:\n"
         f"gen : {base_prefix[-40:]!r}\nhist: {hist[len(base_prefix) - 40 : len(base_prefix) + 20]!r}"
     )
-    # the divergence is exactly the primer: history continues into the tool_call,
-    # it does not repeat the empty scaffold at that point.
-    assert not hist[len(base_prefix) :].startswith(SCAFFOLD)
+    # the boundary now AGREES: the history render carries the same
+    # empty-think scaffold the checkpoint cached (symmetric treatment, #50).
+    assert hist[len(base_prefix) :].startswith(SCAFFOLD)
 
 
 def test_scaffolded_and_scaffold_free_history_renders_converge():
@@ -233,8 +261,9 @@ def test_scaffolded_and_scaffold_free_history_renders_converge():
         "renders differing only by the mid-history empty scaffold did not "
         f"normalize identically:\nwith   : {with_scaffold!r}\nwithout: {without_scaffold!r}"
     )
-    # mid-history empty scaffolds are gone; only the single trailing generation
-    # primer remains (the runaway fix), so the cache-key normalisation invariant
-    # #30/#31 still holds while the primer survives.
-    assert with_scaffold.count(SCAFFOLD) == 1
+    # symmetric treatment (#50): both renders carry the scaffold at the
+    # completed assistant boundary AND the trailing generation primer—
+    # byte-identical through every turn, so the KV restore can match the
+    # checkpoint prefix (the runaway-``think`` guard survives, #45).
+    assert with_scaffold.count(SCAFFOLD) == 2
     assert with_scaffold.endswith(SCAFFOLD)
