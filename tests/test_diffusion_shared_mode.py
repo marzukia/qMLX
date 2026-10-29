@@ -32,7 +32,6 @@ from typing import Any
 
 import pytest
 
-
 # ----------------------------------------------------------------------
 # Stub installation (no-mlx host)
 # ----------------------------------------------------------------------
@@ -211,21 +210,16 @@ class TestStandaloneDefault:
         engine._step_executor().submit(lambda: None).result()
         threads = list(engine._mlx_executor._threads)  # type: ignore[attr-defined]
         assert len(threads) == 1, (
-            f"standalone mode must own exactly one mlx-step thread; saw "
-            f"{len(threads)}"
+            f"standalone mode must own exactly one mlx-step thread; saw {len(threads)}"
         )
         assert all(t.name.startswith("mlx-step") for t in threads), (
-            f"self-owned executor thread misnamed: "
-            f"{[t.name for t in threads]}"
+            f"self-owned executor thread misnamed: {[t.name for t in threads]}"
         )
 
     def test_load_and_generation_run_on_the_owned_thread(
         self, mlx_stubs: dict[str, Any]
     ) -> None:
-        from vllm_mlx.runtime.diffusion_lane import (
-            DiffusionEngine,
-            DiffusionGenerationConfig,
-        )
+        from vllm_mlx.runtime.diffusion_lane import DiffusionEngine
 
         engine = DiffusionEngine(model_name="x/y")
         engine._load_blocking()
@@ -344,9 +338,7 @@ class TestSharedMode:
 
 
 class TestBackwardCompat:
-    def test_one_arg_load_runner_still_works(
-        self, mlx_stubs: dict[str, Any]
-    ) -> None:
+    def test_one_arg_load_runner_still_works(self, mlx_stubs: dict[str, Any]) -> None:
         import inspect
 
         from vllm_mlx.runtime.diffusion_lane import load_runner
