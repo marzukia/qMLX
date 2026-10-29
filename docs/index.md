@@ -1,17 +1,17 @@
-# vLLM-MLX Documentation
+# qMLX Documentation
 
-**Apple Silicon MLX Backend for vLLM** - GPU-accelerated Qwen text inference on Mac
+**Multi-backend MLX inference engine** - OpenAI-compatible serving for hybrid MoE models. Metal is the reference backend; mlx-rocm and mlx-cuda ride the same device/backend seam.
 
-## What is vLLM-MLX?
+## What is qMLX?
 
-qmlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
+qMLX is an MLX inference engine that serves LLMs through an OpenAI-compatible API, built on:
 
 - **[MLX](https://github.com/ml-explore/mlx)**: Apple's ML framework with unified memory and Metal kernels
 - **[mlx-lm](https://github.com/ml-explore/mlx-lm)**: Optimized LLM inference with KV cache and quantization
 
 ## Key Features
 
-- **Native GPU acceleration** on Apple Silicon (M1, M2, M3, M4)
+- **Metal acceleration** on Apple Silicon (M1, M2, M3, M4) - current platform support
 - **OpenAI API compatible** - drop-in replacement for OpenAI client
 - **MCP Tool Calling** - integrate external tools via Model Context Protocol
 - **Paged KV Cache** - memory-efficient caching with prefix sharing
@@ -47,7 +47,7 @@ qmlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 
 ## Requirements
 
-- macOS on Apple Silicon (M1/M2/M3/M4)
+- macOS on Apple Silicon (M1/M2/M3/M4) - Metal is the reference backend; other backends are in progress
 - Python 3.10+
 - 8GB+ RAM recommended
 

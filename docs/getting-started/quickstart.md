@@ -75,7 +75,7 @@ A browser-based chat UI ships in the optional `[chat]` extra:
 
 ```bash
 pip install 'qmlx[chat]'
-# Then launch — see `qmlx help` for the UI entry point in your install.
+qmlx-chat   # Gradio web UI (console script from the [chat] extra)
 ```
 
 ## Reasoning Models
