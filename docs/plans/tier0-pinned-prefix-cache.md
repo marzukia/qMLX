@@ -3,7 +3,7 @@
 **Status**: Planned
 **Target**: MiniMax-M2.5-MLX-4bit on M3 Ultra 256GB (serving OpenClaw)
 **Branch**: `feat-minimax-parser`
-**Baseline**: See [README benchmark section](../../README.md#baseline-benchmark--minimax-m25-on-m3-ultra)
+**Baseline**: See [evals/results/baseline_benchmark.json](../../evals/results/baseline_benchmark.json) (MiniMax-M2.5-MLX-4bit on M3 Ultra 256GB, 2026-02-24)
 
 ## Context
 
