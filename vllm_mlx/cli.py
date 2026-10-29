@@ -2001,7 +2001,7 @@ def serve_command(args):
     #   - tool/reasoning parsers auto-configured
     #   - CORS allow-origin warning printed
     # so the operator saw five INFO lines and a banner before the
-    # actionable ``Install with: pip install 'qmlx-serve[dflash]'`` line,
+    # actionable ``Install with: pip install 'qmlx[dflash]'`` line,
     # matching Diego's earlier ``[embeddings]`` regression shape exactly.
     # Hoist the cheap ``have_runtime()`` probe to the same boot-guard tier
     # as the other extras so the error lands FIRST. ``importlib.util.
@@ -2016,7 +2016,7 @@ def serve_command(args):
                 "\n  Error: DFlash speculative decoding "
                 '(``--speculative-config \'{"method":"dflash"}\'``) requires '
                 "mlx-vlm 0.5.0+ for the DFlash drafter hooks. Install with: "
-                "``pip install 'qmlx-serve[dflash]'``.\n"
+                "``pip install 'qmlx[dflash]'``.\n"
             )
             sys.exit(1)
 
@@ -3739,7 +3739,7 @@ def _tui_hint_or_exit() -> None:
     try:
         import textual  # noqa: F401
     except Exception:  # noqa: BLE001 — any import failure = extra missing
-        print("TUI extra not installed — run: pip install 'qmlx-serve[tui]'")
+        print("TUI extra not installed. Run: pip install 'qmlx[tui]'")
         sys.exit(1)
 
 
@@ -5207,7 +5207,7 @@ def _print_dflash_status(alias: str, profile) -> None:
         ),
         (
             "mlx-vlm 0.5.0+",
-            _yes(have_runtime(), "installed", "missing (need qmlx-serve[dflash])"),
+            _yes(have_runtime(), "installed", "missing (need qmlx[dflash])"),
         ),
     ]
 
@@ -5544,7 +5544,7 @@ def main():
         _version = "dev"
 
     parser = argparse.ArgumentParser(
-        description="qMLX: AI inference for Apple Silicon",
+        description="qMLX: multi-backend MLX inference engine (Metal, ROCm, CUDA)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
@@ -5830,7 +5830,7 @@ Examples:
         help=(
             "vLLM-style speculative decoding JSON config. This frontend "
             "parses method/model/num_speculative_tokens now. DFlash "
-            "requires the qmlx-serve[dflash] extra and is available with "
+            "requires the qmlx[dflash] extra and is available with "
             '\'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
             '\'{"method":"mtp","num_speculative_tokens":3,'

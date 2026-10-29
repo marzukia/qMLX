@@ -74,7 +74,7 @@ print(message.content[0].text)
 A browser-based chat UI ships in the optional `[chat]` extra:
 
 ```bash
-pip install 'qmlx-serve[chat]'
+pip install 'qmlx[chat]'
 # Then launch — see `qmlx help` for the UI entry point in your install.
 ```
 

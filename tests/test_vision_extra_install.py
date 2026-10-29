@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Regression tests for L-07 (``qmlx-serve[vision]`` extra wiring) and
+"""Regression tests for L-07 (``qmlx[vision]`` extra wiring) and
 L-07-B (Gemma 4 fresh-install regression from 0.10.0).
 
 Pre-fix probe (Kai r2, 0.8.0): a fresh-venv ``pip install qmlx==0.8.0``
@@ -7,7 +7,7 @@ did not pull ``mlx-vlm``, and hitting a VL route 500'd with
 ``ModuleNotFoundError: No module named 'mlx_vlm'``. Fix: declare
 ``mlx-vlm`` under ``[project.optional-dependencies].vision`` (NOT core,
 to save ~322 MB for text-only users). README quickstart documents
-``pip install 'qmlx-serve[vision]'``.
+``pip install 'qmlx[vision]'``.
 
 0.10.0 regression (Layer A "+13 Gemma 4 aliases"): a fresh-venv
 ``pip install qmlx==0.10.0 && qmlx serve gemma-4-12b-4bit``
@@ -109,7 +109,7 @@ def _split_spec(spec: str) -> tuple[str, str]:
 
 def test_vision_extra_exists() -> None:
     """``[project.optional-dependencies].vision`` MUST be declared so
-    ``pip install 'qmlx-serve[vision]'`` resolves. The README quickstart
+    ``pip install 'qmlx[vision]'`` resolves. The README quickstart
     documents this exact invocation — its disappearance would be a
     documentation-vs-code drift."""
     py = _load_pyproject()
@@ -117,7 +117,7 @@ def test_vision_extra_exists() -> None:
     assert "vision" in extras, (
         f"`[vision]` extra missing from pyproject. Available extras: "
         f"{sorted(extras)!r}. README quickstart references "
-        f"`pip install 'qmlx-serve[vision]'` and would 404 without this."
+        f"`pip install 'qmlx[vision]'` and would 404 without this."
     )
 
 
@@ -188,7 +188,7 @@ def test_mlx_vlm_not_in_core_dependencies() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# README quickstart references `pip install 'qmlx-serve[vision]'`. The
+# README quickstart references `pip install 'qmlx[vision]'`. The
 # docs-code drift would silently break the documented opt-in path.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -213,7 +213,7 @@ def test_readme_quickstart_mentions_vision_extra() -> None:
         ("qmlx" in line and "[vision]" in line) for line in text.splitlines()
     )
     assert has_vision_install, (
-        "README.md no longer documents `pip install 'qmlx-serve[vision]'`. "
+        "README.md no longer documents `pip install 'qmlx[vision]'`. "
         "Users hitting a VL route now get a bare 500 with no install hint "
         "(L-07 — Kai r2 probe surfaced this on fresh-venv 0.8.0 installs)."
     )
@@ -221,14 +221,14 @@ def test_readme_quickstart_mentions_vision_extra() -> None:
 
 # ──────────────────────────────────────────────────────────────────────
 # Self-consistency: the ``all`` extra (advertised as union-of-everything)
-# also pulls mlx-vlm. Otherwise ``pip install 'qmlx-serve[all]'`` silently
+# also pulls mlx-vlm. Otherwise ``pip install 'qmlx[all]'`` silently
 # skips vision and we get the L-07 failure mode under a different name.
 # ──────────────────────────────────────────────────────────────────────
 
 
 def test_all_extra_includes_mlx_vlm() -> None:
     """``[all]`` is documented as the union of vision + chat + embeddings.
-    A user who installs ``qmlx-serve[all]`` expecting "everything"
+    A user who installs ``qmlx[all]`` expecting "everything"
     must NOT discover at request-time that mlx-vlm isn't there."""
     py = _load_pyproject()
     all_specs = _extra_specs(py, "all")
