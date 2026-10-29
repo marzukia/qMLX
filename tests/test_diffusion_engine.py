@@ -3448,3 +3448,183 @@ class TestEosTokenIdAliasingWorkaround:
             "engine failed to load when generation_config has a scalar "
             "eos_token_id; the workaround must tolerate non-list cases"
         )
+
+
+class TestSerializedMultiplexing:
+    """PR #85 contract pin (diffusion lane demoted to serialized
+    multiplexing — post-merge review fix-owed):
+
+      (a) EVERY MLX op — model load AND every ``_run_generator`` —
+          runs on the single mlx-step executor thread (a
+          ``ThreadPoolExecutor(max_workers=1, thread_name_prefix="
+          mlx-step")`` created in ``_start_worker_once``); the
+          persistent ``qmlx-diffusion-worker`` thread is a pure
+          dispatcher that blocks on ``future.result()`` and never
+          touches MLX itself;
+      (b) two diffusion jobs run one at a time on that thread.
+    """
+
+    def test_all_mlx_work_runs_on_the_single_mlx_step_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import queue as _queue
+
+        _install_mlx_vlm_mock(monkeypatch)
+
+        captured: dict[str, int | None] = {"load": None, "generator": None}
+        mlx_vlm_utils = sys.modules["mlx_vlm.utils"]
+        real_load = mlx_vlm_utils.load  # type: ignore[attr-defined]
+
+        def _load_tracking(hf_path: str) -> tuple[Any, Any]:
+            captured["load"] = threading.get_ident()
+            return real_load(hf_path)
+
+        mlx_vlm_utils.load = _load_tracking  # type: ignore[attr-defined]
+
+        diff_mod = sys.modules["mlx_vlm.generate.diffusion"]
+
+        def _stream_tracking(*_a: Any, **_k: Any) -> Iterator[FakeGenerationResult]:
+            captured["generator"] = threading.get_ident()
+            yield FakeGenerationResult(text="x", finish_reason="stop")
+
+        diff_mod.stream_diffusion_generate = _stream_tracking  # type: ignore[attr-defined]
+
+        from vllm_mlx.runtime.diffusion_lane import (
+            DiffusionEngine,
+            DiffusionGenerationConfig,
+        )
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        # Standalone mode: the engine owns the single-threaded
+        # mlx-step pool created in _start_worker_once.
+        assert engine._owns_mlx_executor is True
+        executor = engine._mlx_executor
+        assert executor is not None
+        executor_threads = list(executor._threads)  # type: ignore[attr-defined]
+        assert len(executor_threads) == 1, (
+            f"expected exactly one mlx-step owner thread; saw "
+            f"{len(executor_threads)} — the single-thread invariant "
+            "of the serialized-multiplexing contract is broken"
+        )
+        assert all(t.name.startswith("mlx-step") for t in executor_threads), (
+            f"executor thread misnamed: {[t.name for t in executor_threads]} — "
+            "the owner thread must keep the 'mlx-step' prefix so the "
+            "owner-thread stream binding contract is identifiable"
+        )
+        executor_ident = executor_threads[0].ident
+
+        # The dispatcher is the persistent qmlx-diffusion-worker
+        # thread — a DIFFERENT thread from the executor's owner.
+        dispatcher = engine._worker
+        assert dispatcher is not None and dispatcher.is_alive() is True
+        assert dispatcher.name == "qmlx-diffusion-worker"
+        assert dispatcher.ident != executor_ident
+
+        # Model load ran on the executor thread, NOT the dispatcher.
+        assert captured["load"] is not None
+        assert captured["load"] == executor_ident, (
+            f"model load ran on thread {captured['load']}; expected the "
+            f"mlx-step executor thread {executor_ident} — the dispatcher "
+            "must never touch MLX"
+        )
+        assert captured["load"] != dispatcher.ident
+
+        # Every _run_generator run lands on the SAME single thread.
+        thread_q: _queue.Queue[Any] = _queue.Queue()
+        cancel_event = threading.Event()
+        done_event = threading.Event()
+        engine._jobs.put(
+            (
+                "prompt",
+                16,
+                DiffusionGenerationConfig(),
+                thread_q,
+                cancel_event,
+                done_event,
+            )
+        )
+        assert done_event.wait(5.0), "worker never drained the test job"
+        assert captured["generator"] is not None
+        assert captured["generator"] == executor_ident, (
+            f"_run_generator ran on thread {captured['generator']}; "
+            f"expected the mlx-step executor thread {executor_ident} — "
+            "all MLX work must time-slice on the single owner thread"
+        )
+        assert captured["generator"] != dispatcher.ident
+
+    def test_two_diffusion_jobs_run_one_at_a_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Push two jobs straight onto the worker's job queue (bypassing
+        # the request-level asyncio lock) and record each fake
+        # generator's start/finish monotonic timestamps. On the single
+        # mlx-step executor thread the dispatcher blocks on
+        # ``future.result()`` between jobs, so the intervals MUST not
+        # overlap — this pins serialization at the executor, not just
+        # at the asyncio lock.
+        import queue as _queue
+        import time as _time
+
+        _install_mlx_vlm_mock(monkeypatch, stream_yields=[])
+        diff_mod = sys.modules["mlx_vlm.generate.diffusion"]
+
+        intervals: list[tuple[float, float]] = []
+        intervals_lock = threading.Lock()
+
+        def _timed_stream(*_a: Any, **_k: Any) -> Iterator[FakeGenerationResult]:
+            start = _time.monotonic()
+            # Hold the job alive long enough that a missing
+            # single-thread serialization would let job 2's interval
+            # start before job 1's ends.
+            _time.sleep(0.05)
+            yield FakeGenerationResult(text="x", diffusion_block_complete=True)
+            _time.sleep(0.05)
+            with intervals_lock:
+                intervals.append((start, _time.monotonic()))
+            yield FakeGenerationResult(text="", finish_reason="stop")
+
+        diff_mod.stream_diffusion_generate = _timed_stream  # type: ignore[attr-defined]
+
+        from vllm_mlx.runtime.diffusion_lane import (
+            DiffusionEngine,
+            DiffusionGenerationConfig,
+        )
+
+        engine = DiffusionEngine(model_name="x/y")
+        engine._load_blocking()
+
+        done_events: list[threading.Event] = []
+        for i in range(2):
+            thread_q: _queue.Queue[Any] = _queue.Queue()
+            cancel_event = threading.Event()
+            done_event = threading.Event()
+            engine._jobs.put(
+                (
+                    f"job{i}",
+                    16,
+                    DiffusionGenerationConfig(),
+                    thread_q,
+                    cancel_event,
+                    done_event,
+                )
+            )
+            done_events.append(done_event)
+
+        for done in done_events:
+            assert done.wait(10.0), "worker never drained a queued job"
+        assert len(intervals) == 2, (
+            f"expected 2 timed generator runs; saw {len(intervals)} — a "
+            "job never actually executed"
+        )
+
+        first, second = sorted(intervals)
+        assert first[1] <= second[0], (
+            f"diffusion job intervals overlapped: job A "
+            f"[{first[0]:.4f}, {first[1]:.4f}] vs job B "
+            f"[{second[0]:.4f}, {second[1]:.4f}] — two "
+            "stream_diffusion_generate calls were alive on the "
+            "executor at the same time; the single mlx-step thread "
+            "must run jobs one at a time"
+        )
