@@ -3,7 +3,7 @@
 qMLX serves LLMs from
 [mlx-community on HuggingFace](https://huggingface.co/mlx-community/models)
 (any compatible quant by its full repo id) plus local model paths; the
-aliases below cover the tuned defaults — Qwen-family first, but the
+aliases below cover the tuned defaults - Qwen-family first, but the
 alias list spans many families (Gemma, Mistral, Phi, DeepSeek, GPT-OSS,
 and more). Run `qmlx models` for the full alias list shipped with your
 build.
@@ -15,7 +15,7 @@ build.
 | Qwen2 / Qwen3 | 0.5B to 72B (incl. 30B-A3B MoE) | Various |
 | Qwen3-Coder | 30B | 4-bit |
 | Qwen3.5 | 4B, 9B, 27B | 4-bit, 8-bit |
-| Qwen3.6 | 27B, 35B-A3B, Coder | 4-bit, 8-bit |
+| Qwen3.6 | 27B, 35B-A3B | 4-bit, 8-bit |
 
 ### Recommended models
 
