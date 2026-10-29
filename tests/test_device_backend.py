@@ -199,7 +199,7 @@ def test_package_imports_without_mlx():
     import vllm_mlx.device  # noqa: F401  (this machine has no mlx)
 
     pkg = importlib.resources.files("vllm_mlx.device")
-    for name in ("__init__.py", "backend.py", "metal.py"):
+    for name in ("__init__.py", "backend.py", "metal.py", "conformance.py"):
         tree = ast.parse(pkg.joinpath(name).read_text())
         for node in tree.body:
             if isinstance(node, ast.Import):

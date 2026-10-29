@@ -29,17 +29,27 @@ from vllm_mlx.device.backend import (
     register_backend,
     reset_registry,
 )
+from vllm_mlx.device.conformance import (
+    CheckResult,
+    ConformanceReport,
+    documented_gap_names,
+    run_conformance,
+)
 from vllm_mlx.device.metal import MetalBackend
 
 __all__ = [
     "Backend",
     "BackendKind",
     "CapabilityFlags",
+    "CheckResult",
+    "ConformanceReport",
     "EnforcementMode",
     "MemoryStats",
     "MetalBackend",
     "StreamModel",
+    "documented_gap_names",
     "get_backend",
     "register_backend",
     "reset_registry",
+    "run_conformance",
 ]
