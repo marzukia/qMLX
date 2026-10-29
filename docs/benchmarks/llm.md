@@ -3,7 +3,7 @@
 ## Running LLM Benchmarks
 
 ```bash
-python scripts/benchmark_engines.py --engine qmlx --runs 5
+python scripts/bench_vs_ollama.py --runs 5
 ```
 
 ## Results (M4 Max, 128GB)
@@ -78,7 +78,7 @@ Average speedup: 1.79x
 
 ### DFlash (M3 Ultra, 512GB) — Qwen3.6-35B-A3B-8bit
 
-Community benchmark contributed by [@moc375](https://github.com/moc375) in [#472](https://github.com/raullenchai/Rapid-MLX/issues/472).
+Community benchmark contributed by [@moc375](https://github.com/moc375) in upstream issue [#472](https://github.com/raullenchai/Rapid-MLX/issues/472).
 Model: `Qwen3.6-35B-A3B-8bit` (8-bit, group_size=64). Comparison vs the
 no-spec-decode baseline on the same hardware.
 
@@ -270,11 +270,11 @@ The streaming detokenizer is **not currently viable** for per-request usage due 
 ## Running Benchmarks
 
 ```bash
-# Basic benchmark — engine comparison harness
-python scripts/benchmark_engines.py --engine qmlx
+# Basic benchmark — engine comparison harness (qmlx vs ollama)
+python scripts/bench_vs_ollama.py
 
 # Save results
-python scripts/benchmark_engines.py --engine qmlx --output results.json
+python scripts/bench_vs_ollama.py --output-dir reports/benchmarks/my-run
 
 # Continuous batching test
 python tests/test_continuous_batching.py

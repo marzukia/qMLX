@@ -91,7 +91,7 @@ see [Testing Methodology](#testing-methodology).
 - **CrewAI** (Framework) — `OPENAI_API_BASE=http://localhost:8000/v1`
 - **AutoGen** (Framework) — `base_url="http://localhost:8000/v1"` in `llm_config`
 - **LlamaIndex** (Framework) — `OpenAI(api_base="http://localhost:8000/v1")`
-- **Cline** (IDE Extension) — Provider: OpenAI Compatible, Base URL: `http://localhost:8000/v1` ([known issues](https://github.com/raullenchai/Rapid-MLX/issues/47#issuecomment-4410012225))
+- **Cline** (IDE Extension), Provider: OpenAI Compatible, Base URL: `http://localhost:8000/v1` ([known issues](https://github.com/raullenchai/Rapid-MLX/issues/47#issuecomment-4410012225))
 - **Open Interpreter** (CLI) — `OPENAI_API_BASE=http://localhost:8000/v1 interpreter`
 - **Dify** (Platform) — Add custom OpenAI provider at `http://localhost:8000/v1`
 - **n8n AI Nodes** (Automation) — Node config: Base URL `http://localhost:8000/v1`
@@ -146,7 +146,7 @@ To contribute a compatibility report for a new client:
 | Structured output | `response_format: {"type": "json_object"}` produces valid JSON |
 | System prompt | System message influences model behavior |
 
-5. **Report results** in the [issue #47
+5. **Report results** in the [upstream issue #47
    thread](https://github.com/raullenchai/Rapid-MLX/issues/47) with:
    - Client name and version
    - Model used

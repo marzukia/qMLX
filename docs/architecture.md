@@ -14,7 +14,7 @@ Design principles:
 
 ```
 vllm_mlx/
-├── server.py                  # App factory + model loading + CLI (1047 lines)
+├── server.py                  # App factory + model loading + CLI
 │
 ├── config/                    # ServerConfig singleton
 │   └── server_config.py
@@ -28,7 +28,7 @@ vllm_mlx/
 │   ├── completions.py         # /v1/completions
 │   ├── anthropic.py           # /v1/messages (Anthropic API)
 │   ├── health.py              # /health, /v1/cache/*, /v1/status
-│   ├── models.py, embeddings.py, audio.py, mcp_routes.py
+│   ├── models.py, responses.py, metrics.py, mcp_routes.py
 │
 ├── engine/                    # Engine abstraction
 │   ├── base.py                # BaseEngine ABC, GenerationOutput
@@ -36,13 +36,13 @@ vllm_mlx/
 │
 ├── engine_core.py             # AsyncEngineCore (event loop + thread executor)
 ├── scheduler.py               # Scheduler (request queue + batch management)
+├── device/                    # Device/backend seam (Metal reference; mlx-rocm/mlx-cuda ported builds)
 │
-├── reasoning/                 # 7 reasoning parsers (Qwen3, DeepSeek, MiniMax, etc.)
-├── tool_parsers/              # 20+ tool call parsers
-├── agents/                    # 12 agent profiles (YAML)
+├── reasoning/                 # Reasoning parser registry (qwen3 registered; base + harmony stop helpers)
+├── tool_parsers/              # Tool call parsers (6 registered names: hermes, nous, qwen, qwen3, qwen3_coder, qwen3_xml)
+├── agents/                    # 10 agent profiles (YAML)
 ├── runtime/                   # Model registry, cache persistence
 ├── middleware/                # Auth, rate limiting
-├── doctor/                    # User self-diagnostic
 │
 ├── domain/                    # Domain types
 │   └── events.py              # StreamEvent (seam between PostProcessor and SSE)
@@ -50,10 +50,9 @@ vllm_mlx/
 └── mcp/                       # MCP tool integration
 
 scripts/                       # Dev-only (NOT shipped with pip)
-├── dev_test.py                # Unified test entry point
+├── dev_test.py                # Unified test entry point (lint, audit, unit, stress, soak, cross-model tiers)
 ├── stress_test.py             # 8-scenario stress test
-├── agent_soak_test.py         # 10-min agent soak test
-└── cross_model_stress.py      # Multi-model validation
+└── agent_soak_test.py         # 10-min agent soak test
 
 tests/                         # pytest unit tests (2100+)
 ```

@@ -75,7 +75,7 @@ A browser-based chat UI ships in the optional `[chat]` extra:
 
 ```bash
 pip install 'qmlx[chat]'
-# Then launch — see `qmlx help` for the UI entry point in your install.
+qmlx-chat   # Gradio web UI (console script from the [chat] extra)
 ```
 
 ## Reasoning Models
@@ -99,8 +99,9 @@ print(response.choices[0].message.reasoning_content)  # thinking trace
 
 ## Tool Calling
 
-Tool/function calling is on by default for supported model families (Qwen3.x,
-GLM-4.7, GPT-OSS, Llama, Mistral, etc.) — the right parser is auto-detected:
+Tool/function calling is on by default for the model families
+with an auto-configured parser (Qwen3.x, Mistral/Devstral, Magistral, Gemma,
+and Qwen-based derivatives) — the `hermes` parser is auto-detected:
 
 ```bash
 qmlx serve qwen3.5-9b-4bit --port 8000
