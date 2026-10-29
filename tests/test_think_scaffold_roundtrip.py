@@ -26,16 +26,16 @@ SCAFFOLD = _GEN_THINK_SCAFFOLD  # "<think>\n\n</think>\n\n"
 
 
 def test_strip_helper_removes_trailing_scaffold():
-    p = "<|im_start|>assistant\n" + SCAFFOLD
-    assert _strip_think_scaffold(p) == "<|im_start|>assistant\n"
+    p = "<<|im_start|>assistant\n" + SCAFFOLD
+    assert _strip_think_scaffold(p) == "<<|im_start|>assistant\n"
 
 
 def test_strip_helper_noop_without_scaffold():
     # thinking-enabled generation ends with an OPEN think tag, must be untouched
-    p = "<|im_start|>assistant\n<think>\n"
+    p = "<<|im_start|>assistant\n<think>\n"
     assert _strip_think_scaffold(p) == p
     # plain text, no think at all
-    q = "<|im_start|>assistant\nhello"
+    q = "<<|im_start|>assistant\nhello"
     assert _strip_think_scaffold(q) == q
 
 
@@ -46,31 +46,31 @@ def test_strip_helper_removes_mid_history_scaffold():
     ``<think>\\n\\n</think>\\n\\n<tool_call>...``, incoming_next started at
     ``<tool_call>...``)."""
     p = (
-        "<|im_start|>user\nfix the bug<|im_end|>\n"
-        "<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>\n"
+        "<<|im_start|>user\nfix the bug<|im_end|>\n"
+        "<<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>\n"
         "<function=todowrite>...</function>\n</tool_call><|im_end|>\n"
-        "<|im_start|>tool\nok<|im_end|>\n"
-        "<|im_start|>assistant\ndone<|im_end|>\n"
+        "<<|im_start|>tool\nok<|im_end|>\n"
+        "<<|im_start|>assistant\ndone<|im_end|>\n"
     )
     expected = (
-        "<|im_start|>user\nfix the bug<|im_end|>\n"
-        "<|im_start|>assistant\n<tool_call>\n"
+        "<<|im_start|>user\nfix the bug<|im_end|>\n"
+        "<<|im_start|>assistant\n<tool_call>\n"
         "<function=todowrite>...</function>\n</tool_call><|im_end|>\n"
-        "<|im_start|>tool\nok<|im_end|>\n"
-        "<|im_start|>assistant\ndone<|im_end|>\n"
+        "<<|im_start|>tool\nok<|im_end|>\n"
+        "<<|im_start|>assistant\ndone<|im_end|>\n"
     )
     assert _strip_think_scaffold(p) == expected
 
 
 def test_strip_helper_removes_all_occurrences():
-    p = "<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>a</tool_call>" + SCAFFOLD
-    assert _strip_think_scaffold(p) == "<|im_start|>assistant\n<tool_call>a</tool_call>"
+    p = "<<|im_start|>assistant\n" + SCAFFOLD + "<tool_call>a</tool_call>" + SCAFFOLD
+    assert _strip_think_scaffold(p) == "<<|im_start|>assistant\n<tool_call>a</tool_call>"
 
 
 def test_strip_helper_preserves_real_reasoning_block():
     """A non-empty think block is a different string and must NOT be stripped."""
     p = (
-        "<|im_start|>assistant\n"
+        "<<|im_start|>assistant\n"
         "<think>\nreal reasoning about the bug\n</think>\n\n"
         "<tool_call>bash</tool_call><|im_end|>\n"
     )
@@ -81,10 +81,10 @@ def test_renders_differing_only_by_scaffold_normalize_identically():
     """The divergence-prevention property: a checkpoint-time render that
     contains the empty scaffold and a restore-time render that omits it must
     normalize to the SAME final string, so the token prefix cannot diverge."""
-    prefix = "<|im_start|>user\nfix the bug<|im_end|>\n<|im_start|>assistant\n"
+    prefix = "<<|im_start|>user\nfix the bug<|im_end|>\n<<|im_start|>assistant\n"
     suffix = (
         "<tool_call>\n<function=todowrite>...</function>\n</tool_call><|im_end|>\n"
-        "<|im_start|>tool\nok<|im_end|>\n<|im_start|>assistant\n"
+        "<<|im_start|>tool\nok<|im_end|>\n<<|im_start|>assistant\n"
     )
     with_scaffold = prefix + SCAFFOLD + suffix
     without_scaffold = prefix + suffix
@@ -123,13 +123,13 @@ class _FakeQwenApplicator:
             if self.scaffold_in_history and m["role"] == "assistant" and tcs:
                 scaffold = "<think>\n\n</think>\n\n"
             out.append(
-                "<|im_start|>{}\n{}{}{}<|im_end|>\n".format(
+                "<<|im_start|>{}\n{}{}{}<|im_end|>\n".format(
                     m["role"], scaffold, content, tc_txt
                 )
             )
         s = "".join(out)
         if add_generation_prompt:
-            s += "<|im_start|>assistant\n"
+            s += "<<|im_start|>assistant\n"
             if enable_thinking is False:
                 s += "<think>\n\n</think>\n\n"  # the asymmetric scaffold
         return s
@@ -144,7 +144,7 @@ def test_generation_prompt_keeps_primer_when_thinking_disabled():
     add_generation_prompt=True the Qwen3.5 template ends the prompt with the
     empty-think primer. That primer tells the model thinking is already done, so
     it emits the answer / tool_call immediately. The blind global strip (#30/#31)
-    deleted it, leaving the prompt bare at ``<|im_start|>assistant\n``; the model
+    deleted it, leaving the prompt bare at ``<<|im_start|>assistant\n``; the model
     then opened its own <think> and ran to max_tokens (~23 min). The primer must
     survive on the generation tail."""
     msgs = [{"role": "user", "content": "fix the bug"}]
@@ -167,7 +167,7 @@ def test_generation_prompt_thinking_enabled_has_no_primer():
         _FakeQwenApplicator(), msgs, enable_thinking=True, model_name="qwen"
     )
     assert SCAFFOLD not in gen
-    assert gen.endswith("<|im_start|>assistant\n")
+    assert gen.endswith("<<|im_start|>assistant\n")
 
 
 def test_roundtrip_generation_matches_history_render():

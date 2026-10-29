@@ -905,13 +905,14 @@ def _looks_like_hy3(model_name: str) -> bool:
 # assistant turn AND the terminal generation-tail primer carry it. A cached
 # prefix and the next turn's prefix are then byte-identical through every
 # completed assistant turn. Only the exact empty-think scaffold is handled: a
-# real ``\nthink\n...content...\n/think\n...`` block is a different string
+# real ``<think>\n...content...</think>\n...`` block is a different string
 # and is never touched, and for templates that emit no primer (non-thinking
 # models, or the TypeError-retry fallbacks) the normalisation is a no-op, so no
 # spurious scaffold is added or removed.
-_GEN_THINK_SCAFFOLD = "\nthink\n\n/think\n\n"
-_THINK_OPEN = "\nthink\n"
-_THINK_CLOSE = "\n/think\n"
+_GEN_THINK_SCAFFOLD = "<think>\n\n</think>\n\n"
+_THINK_OPEN = "<think>\n"
+_THINK_CLOSE = "</think>\n"
+_ASSISTANT_TAG = "<|im_start|>assistant\n"  # Qwen-style turn tag
 
 
 def _strip_think_scaffold(prompt: str, preserve_trailing: bool = False) -> str:
@@ -938,7 +939,7 @@ def _strip_think_scaffold(prompt: str, preserve_trailing: bool = False) -> str:
     return prompt
 
 
-def _symmetrize_think_scaffold(prompt: str) -> str:
+def _symmetrize_think_scaffold(prompt: str, assume_primer: bool = False) -> str:
     """Re-insert the empty ``\nthink\n\n/think\n\n`` scaffold at every completed
     assistant turn the template omitted it from (issue #50).
 
@@ -953,66 +954,62 @@ def _symmetrize_think_scaffold(prompt: str) -> str:
     again.
 
     This normaliser makes the scaffold treatment SYMMETRIC for the whole
-    conversation: when the rendered prompt ends with the exact empty scaffold
-    (the empirical signal that this template emits the primer), every completed
-    assistant turn is normalised to carry exactly one scaffold:
+    conversation: the pass runs when the rendered prompt carries the
+    template's empty-scaffold signal (the generation primer or a mid-history
+    scaffold) OR when the caller asserts the template emits the primer
+    (``assume_primer=True``, set by ``apply_chat_template`` for
+    ``enable_thinking=False`` renders - the restore-side render of #50
+    carries no scaffold at all, so the string signal alone is not enough).
+    It only touches prompts containing the Qwen-style
+    ``|im_start|assistant\n`` turn tag (the scaffold itself is
+    Qwen-specific), so every other template family passes through
+    byte-identical. For each piece after an assistant turn tag:
 
-    * the template's preserve branch already emitted it -> left untouched (no
-      double scaffold);
-    * the turn starts with a REAL (non-empty) ``\nthink\n...\n/think\n...`` block
-      -> left untouched (the thinking-enabled generation side carries no empty
-      scaffold before real thinking);
+    * the template's preserve branch already emitted the scaffold -> left
+      untouched (no double scaffold);
+    * the piece starts with a REAL (non-empty) ``\nthink\n...\n/think\n...``
+      block -> left untouched (the thinking-enabled generation side carries no
+      empty scaffold before real thinking);
     * otherwise (the ``preserve_thinking=False`` else branch - the bug) -> the
       scaffold is inserted at the turn start, byte-matching the generation
-      primer.
+      primer. The final piece obeys the same rule: the generation primer
+      already starts with the scaffold and is therefore left untouched, while
+      a completed turn rendered with ``add_generation_prompt=False`` gets the
+      scaffold inserted.
 
-    The terminal primer itself is never modified (it is the final turn and is
-    excluded from the pass). When the template emits no primer (non-thinking
-    models, or a template that rejects the ``enable_thinking`` kwarg and fell
-    through to a retry), the prompt does not end with the scaffold and this is
-    a no-op - no spurious scaffold is added or removed. The normalisation is
-    stateless and idempotent: a checkpoint-time render and a later restore
-    render of the same conversation normalise to the same bytes through every
-    completed assistant turn, which is the round-trip-stability invariant the
-    KV restore relies on (#45/#50).
+    The normalisation is stateless and idempotent: a checkpoint-time render
+    and a later restore render of the same conversation normalise to the same
+    bytes through every completed assistant turn, which is the
+    round-trip-stability invariant the KV restore relies on (#45/#50).
     """
-    if not isinstance(prompt, str) or not prompt.endswith(_GEN_THINK_SCAFFOLD):
+    if not isinstance(prompt, str):
         return prompt
-    head = prompt[: -len(_GEN_THINK_SCAFFOLD)]
-    last_nl = head.rfind("\n")
-    if last_nl == -1:
+    if not (assume_primer or _GEN_THINK_SCAFFOLD in prompt):
         return prompt
-    first_nl = head.rfind("\n", 0, last_nl)
-    # The assistant turn-start marker is the final line of the pre-scaffold
-    # head (e.g. ``\nassistant\n``): from the newline before it (if any) to
-    # the trailing newline. When there is no leading newline the marker is the
-    # whole head up to the trailing newline.
-    marker = head[0 : last_nl + 1] if first_nl == -1 else head[first_nl : last_nl + 1]
-    if not marker.strip():
+    if _ASSISTANT_TAG not in prompt:
         return prompt
-    parts = prompt.split(marker)
-    if len(parts) <= 2:
-        # Only the generation tail (no completed assistant turn): the primer is
-        # already present and there is nothing to symmetrise.
-        return prompt
+    parts = prompt.split(_ASSISTANT_TAG)
     out = [parts[0]]
-    for piece in parts[1:-1]:
+    for piece in parts[1:]:
         if piece.startswith(_GEN_THINK_SCAFFOLD):
             # The template's preserve branch already emitted the scaffold.
-            out.append(marker + piece)
+            out.append(_ASSISTANT_TAG + piece)
             continue
         if piece.startswith(_THINK_OPEN):
-            close = piece.find(_THINK_CLOSE)
+            close = piece.find(_THINK_CLOSE, len(_THINK_OPEN))
             if close != -1 and piece[len(_THINK_OPEN) : close].strip():
                 # Real (non-empty) thinking block: leave untouched.
-                out.append(marker + piece)
+                out.append(_ASSISTANT_TAG + piece)
                 continue
-        out.append(marker + _GEN_THINK_SCAFFOLD + piece)
-    out.append(marker + parts[-1])
+        out.append(_ASSISTANT_TAG + _GEN_THINK_SCAFFOLD + piece)
     return "".join(out)
 
 
-def _normalize_think_scaffold(prompt: str, preserve_trailing: bool = False) -> str:
+def _normalize_think_scaffold(
+    prompt: str,
+    preserve_trailing: bool = False,
+    assume_primer: bool = False,
+) -> str:
     """Round-trip-stable think-scaffold normalisation for a rendered prompt.
 
     Runs the (neutralised, #50) ``_strip_think_scaffold`` pass followed by
@@ -1024,7 +1021,8 @@ def _normalize_think_scaffold(prompt: str, preserve_trailing: bool = False) -> s
     normalising once.
     """
     return _symmetrize_think_scaffold(
-        _strip_think_scaffold(prompt, preserve_trailing=preserve_trailing)
+        _strip_think_scaffold(prompt, preserve_trailing=preserve_trailing),
+        assume_primer=assume_primer,
     )
 
 
@@ -1175,6 +1173,7 @@ def apply_chat_template(
         return _normalize_think_scaffold(
             template_applicator.apply_chat_template(messages, **template_kwargs),
             preserve_trailing=preserve_trailing,
+            assume_primer=preserve_trailing,
         )
     except TypeError as e:
         # Step 1: retry without enable_thinking (many templates don't support it).
@@ -1190,6 +1189,7 @@ def apply_chat_template(
             return _normalize_think_scaffold(
                 template_applicator.apply_chat_template(messages, **template_kwargs),
                 preserve_trailing=preserve_trailing,
+                assume_primer=False,
             )
         except TypeError as e2:
             # Second failure. Only drop ``reasoning_effort`` when the error
@@ -1254,4 +1254,5 @@ def apply_chat_template(
         return _normalize_think_scaffold(
             template_applicator.apply_chat_template(messages, **template_kwargs),
             preserve_trailing=preserve_trailing,
+            assume_primer=preserve_trailing,
         )
