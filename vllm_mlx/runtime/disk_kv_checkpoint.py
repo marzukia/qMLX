@@ -2023,7 +2023,16 @@ def enforce_disk_cap(
     Returns ``(num_evicted, bytes_remaining)`` for the caller's log line.
     ``max_bytes`` defaults to :func:`resolve_max_disk_bytes`; pass ``0``
     to skip the cap (escape hatch — operators on a big disk who don't
-    want eviction at all). NaN-safe: any non-finite float is clamped to
+    want eviction at all).
+
+    Each evicted checkpoint's content-index entry is dropped in the same
+    pass (per ``(req_hash, token_offset)``, via
+    :meth:`DiskCheckpointIndex.forget_entry`) so the index never references
+    evicted files (#11) — otherwise the next turn would radix-match the
+    stale deep key, fail the re-verify against the gone files, and lose
+    the chance to restore a surviving shorter prefix.
+
+    NaN-safe: any non-finite float is clamped to
     the default.
     """
     if max_bytes is None:
@@ -2118,6 +2127,26 @@ def enforce_disk_cap(
                 os.unlink(tok_blob)
             except OSError:
                 pass
+            # Index forget (#11): the on-disk artifacts are gone, so the
+            # content index must not keep pointing at them — a stale entry
+            # would make the next turn radix-match an evicted deep key and
+            # burn a verify round-trip (or, before the lookup fallback, a
+            # whole cold prefill) where a surviving shorter prefix restores
+            # fine. Per (req_hash, offset) only: other offsets of the same
+            # request keep their entries. Best-effort: an index failure must
+            # not abort eviction (a stale entry is invalidated by the lookup
+            # re-verify anyway). Uses the _CONTENT_INDEX global directly (no
+            # lazy construction); the index lock is taken under _DISK_LOCK,
+            # the legal outer-to-inner nesting per the module LOCK ORDERING
+            # note (same as the write-path index hand-off).
+            if parsed is not None and _CONTENT_INDEX is not None:
+                try:
+                    _CONTENT_INDEX.forget_entry(parsed[0], parsed[1])
+                except Exception as e:  # pragma: no cover — best-effort
+                    logger.warning(
+                        f"[disk_kv_checkpoint] content-index forget failed "
+                        f"for {path!r}: {e}"
+                    )
             total -= size
             evicted += 1
             # Best-effort prune of the parent directory if the eviction
@@ -2417,6 +2446,36 @@ class DiskCheckpointIndex:
                     del self._by_key[key]
             return len(doomed)
 
+    def forget_entry(self, req_hash: str, token_offset: int) -> int:
+        """Drop every indexed entry for one ``(req_hash, token_offset)`` pair.
+
+        The per-checkpoint sibling of :meth:`forget_request`. Called from
+        :func:`enforce_disk_cap` when a checkpoint's on-disk artifacts are
+        unlinked, so the index never references evicted files (#11). The
+        granularity matters: eviction unlinks ONE checkpoint, not the request
+        directory, so other offsets of the same request keep their entries
+        (a :meth:`forget_request`-wide drop would strand a surviving sibling).
+        Both media buckets of the pair are dropped: the on-disk artifacts are
+        keyed by ``(req_hash, offset)`` only, so any bucket pointing at them
+        is stale once they are gone.
+
+        In-memory only; takes just the index lock (a legal outer-to-inner
+        nesting under the caller's ``_DISK_LOCK`` per the module LOCK
+        ORDERING note). Returns the number of entries dropped.
+        """
+        with self._lock:
+            doomed: list[tuple[tuple[int, ...], str]] = [
+                (k, mk)
+                for k, bucket in self._by_key.items()
+                for mk, ref in bucket.items()
+                if ref.req_hash == req_hash and ref.token_offset == token_offset
+            ]
+            for key, mk in doomed:
+                del self._by_key[key][mk]
+                if not self._by_key[key]:
+                    del self._by_key[key]
+            return len(doomed)
+
     def clear(self) -> None:
         """Reset the map (test hook / reindex)."""
         with self._lock:
@@ -2511,6 +2570,19 @@ class DiskCheckpointIndex:
 
         The hot path is unchanged: when the longest prefix verifies, this
         returns exactly that ``LoadedCheckpoint``, byte-for-byte as before.
+
+        Floor (the lowest prefix the fallback will restore): the walk goes
+        down to the SHORTEST indexed prefix that is a true prefix of the
+        query — there is no fixed token floor. Any verified prefix, however
+        short, strictly reduces the re-prefill work, and the disk load cost
+        is a constant of the restore path (it does not scale with prefix
+        length), so no prefix length is a net loss once it verifies. The
+        lookup returns None only when the index holds no true prefix of the
+        query at all (every candidate walked and evicted, or none matched),
+        which is a genuine miss: the scheduler cold-prefills. (Issue #11:
+        this fallback is what lets a turn whose deep boundary was evicted
+        under cap pressure still restore a surviving shared shallow prefix
+        and re-prefill only the tail.)
 
         Lock discipline: each iteration re-resolves the in-memory ref under
         the index lock and releases it before any disk work (verify / load /
