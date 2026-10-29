@@ -1706,14 +1706,31 @@ DiffusionRunner = DiffusionEngine
 explicit at the call site."""
 
 
-def load_runner(hf_path: str) -> DiffusionEngine:
+def load_runner(
+    hf_path: str,
+    mlx_executor: concurrent.futures.ThreadPoolExecutor | None = None,
+) -> DiffusionEngine:
     """Construct and load a ``DiffusionEngine`` for ``hf_path``.
 
     Synchronous — calls into mlx-vlm's blocking loader. Async callers
     should ``await asyncio.to_thread(load_runner, hf_path)`` instead
     of calling this directly from the event loop.
+
+    ``mlx_executor`` (optional, default ``None`` = standalone):
+
+    * ``None`` (standalone, the current shipped default): the engine
+      creates and owns its own single-threaded ``mlx-step`` owner
+      thread. This is correct whenever the process hosts ONLY the
+      diffusion lane (one engine per server instance — see the
+      ``server.load_model`` modality dispatch).
+    * Caller-provided (shared with the AR lane): pass the AR lane's
+      single ``mlx-step`` owner thread executor
+      (``engine_core._init_mlx_step_thread``). The diffusion engine
+      then time-slices on that SAME thread behind AR work and does
+      NOT own its lifecycle (it never ``shutdown`` a caller-provided
+      executor) — the serialized-multiplexing contract from PR #85.
     """
-    engine = DiffusionEngine(model_name=hf_path)
+    engine = DiffusionEngine(model_name=hf_path, mlx_executor=mlx_executor)
     engine._load_blocking()  # noqa: SLF001 — module-internal helper
     return engine
 
