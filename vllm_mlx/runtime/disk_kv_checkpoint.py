@@ -374,6 +374,19 @@ def _is_attention_layer(class_name: str) -> bool:
     return class_name in ATTENTION_CACHE_CLASSES
 
 
+def model_identity_matches(run_model: Any, checkpoint_model: Any) -> bool:
+    """Fail-closed model identity check (restore identity guard (a2)).
+
+    A checkpoint is usable only when the running model name and the
+    checkpoint's recorded model name are both present and equal. If
+    either side is unknown (``None`` / empty / non-string), we cannot
+    vouch for identity, so we reject — never an unknown-identity pass.
+    """
+    if not run_model or not checkpoint_model:
+        return False
+    return str(run_model) == str(checkpoint_model)
+
+
 # ---------------------------------------------------------------------------
 # Chain refcounts (guard eviction from orphaning a base with live descendants)
 # ---------------------------------------------------------------------------
