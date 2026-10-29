@@ -261,7 +261,7 @@ curl http://localhost:8000/v1/chat/completions \
 ### Reasoning appears in content
 
 - The model may not be using the expected tag format
-- Check the raw output: if the model emits no `end` tag at all, the output is pure content — use a model/config that emits think tags
+- Check the raw output: if the model emits no `end` tag at all, the output is pure content - use a model/config that emits think tags
 
 ### Truncated reasoning
 
