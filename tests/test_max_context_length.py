@@ -23,18 +23,103 @@ Coverage:
    just the three stub shapes. This is the t981 critical guard: the
    engine stores its config only as the private ``_scheduler_config``,
    so a stub-only suite passed while production was dead.
+
+Runs on any machine without mlx: the real ``mlx`` / ``mlx_lm``
+packages are stubbed into ``sys.modules`` for the duration of this
+module's tests (saved and restored, no ``conftest`` pollution) so
+``vllm_mlx.scheduler`` / ``vllm_mlx.engine`` import on a no-mlx host.
+On an Apple-Silicon host the stubs transparently shadow the real
+packages while this module's tests run, then the real modules win
+again on teardown.
 """
 
 from __future__ import annotations
 
 import ast
+import importlib.machinery
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+# ----------------------------------------------------------------------
+# mlx stubs (no-mlx host; save/restore ``sys.modules``, no conftest)
+# ----------------------------------------------------------------------
+
+_MLX_STUB_NAMES = (
+    "mlx",
+    "mlx.core",
+    "mlx_lm",
+    "mlx_lm.generate",
+    "mlx_lm.sample_utils",
+    "mlx_lm.tokenizer_utils",
+    "mlx_lm.models",
+    "mlx_lm.models.cache",
+)
+
+
+def _install_mlx_stubs() -> None:
+    """Install the minimal ``mlx`` / ``mlx_lm`` surface the module-level
+    import chain of ``vllm_mlx.scheduler`` / ``vllm_mlx.engine`` binds:
+    ``import mlx.core as mx`` (the ``_mlx_compat`` shim is a no-op
+    because ``mx.new_thread_local_stream`` is absent) and the three
+    ``mlx_lm`` symbols ``scheduler.py`` imports. Nothing else is
+    stubbed; the tests never execute model code."""
+    for name in _MLX_STUB_NAMES:
+        if name in sys.modules:
+            continue
+        module = types.ModuleType(name)
+        # A real ``__spec__`` so ``importlib.util.find_spec`` (e.g.
+        # transformers' ``is_mlx_available`` probe) does not raise
+        # ``ValueError: mlx.__spec__ is None`` for the stub.
+        module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
+        sys.modules[name] = module
+        parent_name, _, child_name = name.rpartition(".")
+        if parent_name and parent_name in sys.modules:
+            setattr(sys.modules[parent_name], child_name, module)
+
+    sys.modules["mlx_lm.generate"].BatchGenerator = type("BatchGenerator", (), {})  # type: ignore[attr-defined]
+    sys.modules["mlx_lm.sample_utils"].make_logits_processors = (  # type: ignore[attr-defined]
+        lambda *args, **kwargs: []
+    )
+    sys.modules["mlx_lm.sample_utils"].make_sampler = (  # type: ignore[attr-defined]
+        lambda *args, **kwargs: object()
+    )
+    sys.modules["mlx_lm.tokenizer_utils"].NaiveStreamingDetokenizer = (  # type: ignore[attr-defined]
+        type("NaiveStreamingDetokenizer", (), {})
+    )
+    # ``vllm_mlx.utils.mamba_cache`` (imported by the scheduler) binds
+    # ``MambaCache`` from here at module level.
+    sys.modules["mlx_lm.models.cache"].MambaCache = (  # type: ignore[attr-defined]
+        type("MambaCache", (), {})
+    )
+
+
+def _restore_mlx_stubs(saved: dict[str, object]) -> None:
+    for name in _MLX_STUB_NAMES:
+        prev = saved.get(name)
+        if prev is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = prev  # type: ignore[assignment]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def mlx_stubs() -> None:
+    """Stub ``mlx`` / ``mlx_lm`` into ``sys.modules`` for this module's
+    tests and restore the previous state on teardown, so the
+    ``vllm_mlx.scheduler`` / ``vllm_mlx.engine`` imports inside the
+    tests resolve on a no-mlx host. Real mlx wins again on hosts that
+    have it (the stubs only shadow it while these tests run)."""
+    saved = {name: sys.modules.get(name) for name in _MLX_STUB_NAMES}
+    _install_mlx_stubs()
+    yield
+    _restore_mlx_stubs(saved)
 
 
 # ---------------------------------------------------------------------------
