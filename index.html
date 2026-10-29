@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>qMLX: keep a hybrid 122B warm on a Mac</title>
-  <meta name="description" content="Disk KV restore for hybrid MoE models on Apple Silicon. A 130,000-token follow-up drops from a multi-minute cold prefill to a sub-second restore. A Qwen-specialised fork of Rapid-MLX." />
+  <title>qMLX: keep a hybrid MoE warm on Apple Silicon</title>
+  <meta name="description" content="Multi-backend MLX inference engine with OpenAI-compatible serving for hybrid MoE models. Disk KV restore turns a multi-minute cold prefill on a 130,000-token conversation into a sub-second restore. Metal is the reference backend; mlx-rocm and mlx-cuda ride the same device/backend seam." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://qmlx.mrzk.io/" />
-  <meta property="og:title" content="qMLX: keep a hybrid 122B warm on a Mac" />
-  <meta property="og:description" content="Disk KV restore for hybrid MoE models on Apple Silicon. Cold prefill on a 130k-token conversation goes from minutes to a sub-second restore." />
+  <meta property="og:title" content="qMLX: keep a hybrid MoE warm on Apple Silicon" />
+  <meta property="og:description" content="Multi-backend MLX inference engine for hybrid MoE models. A 130k-token follow-up goes from a multi-minute cold prefill to a sub-second restore via disk KV restore." />
   <meta property="og:image" content="https://qmlx.mrzk.io/og-image.png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:image" content="https://qmlx.mrzk.io/og-image.png" />
-  <meta name="twitter:title" content="qMLX: keep a hybrid 122B warm on a Mac" />
-  <meta name="twitter:description" content="Disk KV restore for hybrid MoE models on Apple Silicon. Cold prefill goes from minutes to a sub-second restore." />
+  <meta name="twitter:title" content="qMLX: keep a hybrid MoE warm on Apple Silicon" />
+  <meta name="twitter:description" content="Multi-backend MLX inference engine for hybrid MoE models. Cold prefill goes from minutes to a sub-second restore via disk KV restore." />
   <meta name="author" content="Andryo Marzuki" />
   <link rel="canonical" href="https://qmlx.mrzk.io/" />
   <link rel="icon" href="qmlx-favicon.png" type="image/png" />
@@ -38,9 +38,9 @@
         "@type": "SoftwareApplication",
         "name": "qMLX",
         "url": "https://qmlx.mrzk.io",
-        "description": "Disk KV restore for hybrid MoE models on Apple Silicon. A Qwen-specialised fork of Rapid-MLX that keeps a 122B model warm on a Mac.",
+        "description": "Multi-backend MLX inference engine with OpenAI-compatible serving for hybrid MoE models. Metal is the reference backend; mlx-rocm and mlx-cuda ride the same device/backend seam. Disk KV restore keeps a hybrid MoE warm.",
         "applicationCategory": "DeveloperApplication",
-        "operatingSystem": "macOS",
+        "operatingSystem": ["macOS", "Linux"],
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
         "author": { "@id": "https://mrzk.io/#person" },
         "isBasedOn": "https://github.com/raullenchai/Rapid-MLX",
@@ -195,8 +195,8 @@
 <section class="hero">
   <div class="hero-inner">
     <div class="hero-text">
-      <h1 class="hero-headline" aria-label="Keep a hybrid 122B warm."><span class="hero-rotator" aria-hidden="true">Keep a hybrid 122B&nbsp;warm.</span></h1>
-      <p class="hero-sub">Disk KV restore for hybrid MoE models on Apple Silicon. A follow-up on a 130,000-token conversation drops from a multi-minute cold prefill to a sub-second restore.</p>
+      <h1 class="hero-headline" aria-label="Keep a hybrid MoE warm."><span class="hero-rotator" aria-hidden="true">Keep a hybrid MoE&nbsp;warm.</span></h1>
+      <p class="hero-sub">A multi-backend MLX inference engine for hybrid MoE models. OpenAI-compatible serving, disk KV restore, and a follow-up on a 130,000-token conversation that drops from a multi-minute cold prefill to a sub-second restore.</p>
       <div class="hero-install">
         <code class="install-pill">uv add qmlx-serve</code>
         <button class="copy-btn" onclick="copyInstall(this)" aria-label="Copy install command">
@@ -213,15 +213,15 @@
         </a>
       </div>
       <div class="hero-chips">
-        <span class="chip">Qwen3.5-122B-A10B</span>
-        <span class="chip">M3 Ultra</span>
+        <span class="chip">Hybrid MoE</span>
+        <span class="chip">Apple Silicon</span>
         <span class="chip">OpenAI + Anthropic API</span>
         <span class="chip">MIT + Apache-2.0</span>
       </div>
     </div>
     <figure class="hero-chart fade-in">
       <img src="chart-ab-cache.svg" alt="Cold prefill versus warm disk restore on a repeated 32k prompt" loading="eager" />
-      <figcaption>Repeated 32k prompt on an M3 Ultra: 88s cold prefill against a 0.64s warm restore.</figcaption>
+      <figcaption>Repeated 32k prompt on a 96 GB Apple Silicon machine: 88s cold prefill against a 0.64s warm restore.</figcaption>
     </figure>
   </div>
 </section>
@@ -229,7 +229,7 @@
 <section class="stats-band">
   <div class="section-inner">
     <h2 class="section-title">The cache is the whole game.</h2>
-    <p class="section-sub">Qwen3.5-122B is hybrid: roughly 75% of its layers are recurrent DeltaNet, which cannot be rewound, so an in-memory prefix cache can never reuse them. qMLX drops the in-memory tier entirely and checkpoints the KV to SSD instead. Disk KV restore is not a fallback here, it is the only cache.</p>
+    <p class="section-sub">Hybrid large-MoE models are roughly 75% recurrent DeltaNet layers, which cannot be rewound, so an in-memory prefix cache can never reuse them. qMLX drops the in-memory tier entirely and checkpoints the KV to SSD instead. Disk KV restore is not a fallback here, it is the only cache.</p>
     <div class="stats-grid">
       <div class="stat">
         <span class="stat-num">137&times;</span>
@@ -253,7 +253,7 @@
     <p class="section-sub">Drop-in OpenAI and Anthropic APIs, the same surface as upstream Rapid-MLX. One flag turns the disk cache on.</p>
     <div class="serve-body">
       <div class="serve-code">
-<pre><span class="cmd">qmlx serve</span> mlx-community/Qwen3.5-122B-A10B-4bit \
+<pre><span class="cmd">qmlx serve</span> &lt;HF_MODEL_ID&gt; \
   <span class="flag">--text-only</span> --host 0.0.0.0 --port 8095 \
   --max-num-seqs 1 \
   <span class="flag">--enable-prefix-cache</span> --kv-disk-checkpoint-interval 256
@@ -311,8 +311,8 @@
       <div class="feature-item reveal">
         <svg class="feature-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 2l7 4v8l-7 4-7-4V6z"/><path d="M10 2v16"/></svg>
         <div>
-          <strong>Qwen-first, and honest about it</strong>
-          <p>Runs Qwen3.5-122B-A10B on an M3 Ultra with 96GB of unified memory. Decode slows gradually with context but there is no cliff, so it stays usable well past 100k tokens. Windowed attention to flatten that curve further is on the roadmap.</p>
+          <strong>Multi-backend, and honest about it</strong>
+          <p>Metal is the reference backend, measured on a 96 GB Apple Silicon machine; mlx-rocm and mlx-cuda ride the same device/backend seam. Decode slows gradually with context but there is no cliff, so a hybrid large-MoE model stays usable well past 100k tokens. Windowed attention to flatten that curve further is on the roadmap.</p>
         </div>
       </div>
 
@@ -340,7 +340,7 @@
       <a href="https://mrzk.io" target="_blank" rel="noopener">Blog</a>
       <a href="https://charted.mrzk.io" target="_blank" rel="noopener">charted</a>
     </nav>
-    <p class="footer-copy" style="max-width: 60ch; line-height: 1.7;">Thanks to <a href="https://github.com/raullenchai/Rapid-MLX" target="_blank" rel="noopener">raullenchai</a> for Rapid-MLX. The base engine, the OpenAI and Anthropic API surface, and the MLX serving path are theirs. qMLX adds the hybrid-aware disk restore, the eviction and metrics work, and the Qwen specialisation.</p>
+    <p class="footer-copy" style="max-width: 60ch; line-height: 1.7;">Thanks to <a href="https://github.com/raullenchai/Rapid-MLX" target="_blank" rel="noopener">raullenchai</a> for Rapid-MLX. The base engine, the OpenAI and Anthropic API surface, and the MLX serving path are theirs. qMLX adds the hybrid-aware disk restore, the eviction and metrics work, and the multi-backend device seam.</p>
     <p class="footer-copy">Forked from <a href="https://github.com/raullenchai/Rapid-MLX" target="_blank" rel="noopener">Rapid-MLX</a> &middot; MIT AND Apache-2.0 &middot; Built by <a href="https://mrzk.io" target="_blank" rel="noopener">Andryo Marzuki</a></p>
   </div>
 </footer>
@@ -365,7 +365,7 @@ document.querySelectorAll('.reveal').forEach(function(el) { io.observe(el); });
   var host = document.querySelector('.hero-rotator');
   if (!host) return;
   var phrases = [
-    'Keep a hybrid 122B warm.',
+    'Keep a hybrid MoE warm.',
     'Cold prefill, gone.',
     'A 130k restore, sub-second.',
     'Long context, still fast.'
