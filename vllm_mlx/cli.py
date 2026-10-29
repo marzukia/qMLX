@@ -3738,7 +3738,7 @@ def _tui_hint_or_exit() -> None:
     try:
         import textual  # noqa: F401
     except Exception:  # noqa: BLE001 — any import failure = extra missing
-        print("TUI extra not installed — run: pip install 'qmlx[tui]'")
+        print("TUI extra not installed. Run: pip install 'qmlx[tui]'")
         sys.exit(1)
 
 
