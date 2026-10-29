@@ -13,7 +13,7 @@ The design follows vLLM's engine architecture adapted for MLX.
 Design: multiplexing, not parallelisation. qMLX targets
 bandwidth-bound devices, so many requests interleave on one stream
 rather than overlapping on several. All model/KV-touching MLX work
-runs on a single owner thread — the ``mlx-step`` worker (see
+runs on a single owner thread, the ``mlx-step`` worker (see
 ``_init_mlx_step_thread``); the asyncio loop only dispatches to it.
 The disk-KV cold-cache restore tier (``runtime/disk_kv_checkpoint.py``)
 is a first-class memory tier: the SSD is the RAM of the second tier,
@@ -50,7 +50,7 @@ def _init_mlx_step_thread() -> None:
     Design: one owner thread per device. This worker owns every
     model/KV-touching MLX op in the process; the asyncio loop only
     dispatches to it. Bandwidth-bound devices interleave, they do not
-    overlap — a second thread issuing MLX work would contend on stream
+    overlap: a second thread issuing MLX work would contend on stream
     state rather than share the stream. This rule is the conformance
     contract ported backends (``mlx-rocm`` / ``mlx-cuda``) honour
     (``vllm_mlx.device.backend``, "Stream contract").
@@ -71,7 +71,7 @@ def _init_mlx_step_thread() -> None:
        explicit stream context (e.g.
        ``BatchRotatingKVCache.__init__`` doing ``mx.array(left_padding)``
        inside ``BatchGenerator._next()``'s prompt cache merge) lands on
-       this thread's default stream — the one we adopted — so ad-hoc
+       this thread's default stream, the one we adopted, so ad-hoc
        allocations and ``with mx.stream(...)`` blocks converge on a
        single stream the owner can eval.
     """
@@ -251,9 +251,9 @@ class EngineCore:
         # binds to the running loop. See issue #265.
         self._idle_event: asyncio.Event | None = None
 
-        # The single mlx-step worker — the owner of all model/KV-touching
+        # The single mlx-step worker, the owner of all model/KV-touching
         # MLX work (created on demand in start(); see
-        # _init_mlx_step_thread). Design: one owner thread per device —
+        # _init_mlx_step_thread). Design: one owner thread per device:
         # bandwidth-bound devices interleave, they do not overlap; the
         # asyncio loop only dispatches to this executor. MLX streams are
         # thread-local, so a non-owner thread evaluating the owner's
@@ -356,8 +356,8 @@ class EngineCore:
         Args:
             executor: Optional pre-existing single-thread executor (whose
                 worker is the mlx-step thread that already loaded the model).
-                Reusing the same worker keeps every MLX op — model weights,
-                forward passes, cache state — bound to the single owner
+                Reusing the same worker keeps every MLX op (model weights,
+                forward passes, cache state) bound to the single owner
                 thread (the engine's stream contract; see
                 ``vllm_mlx.device.backend``). When None, a fresh executor is
                 created.
@@ -411,7 +411,7 @@ class EngineCore:
 
         Use this for MLX operations called from the asyncio loop thread
         (or any other thread) that touch arrays whose backing stream lives
-        on the owner worker — e.g. saving the prefix cache to disk on
+        on the owner worker, e.g. saving the prefix cache to disk on
         shutdown.
 
         Falls back to a direct call if the executor isn't available
@@ -488,7 +488,7 @@ class EngineCore:
         # (e.g. shutdown cache persistence). One owner thread per device:
         # MLX streams are thread-local, and KV caches (e.g. Qwen3.x
         # RotatingKVCache) keep arrays tagged with the owner's stream
-        # across prefill and decode — only the owner can eval them.
+        # across prefill and decode: only the owner can eval them.
         _executor = self._mlx_executor
         loop = asyncio.get_running_loop()
 

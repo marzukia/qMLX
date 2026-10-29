@@ -35,7 +35,7 @@ backends**. A backend declares its stream semantics through the
 device/backend seam (`vllm_mlx/device/backend.py`, "Stream contract")
 instead of the engine probing for error strings, and it must honour the
 owner-thread rule (or declare a multi-stream model the engine can
-schedule around) — pinned by the backend conformance tests.
+schedule around), pinned by the backend conformance tests.
 
 ### Cold-cache restore is the memory tier
 
