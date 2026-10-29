@@ -136,9 +136,7 @@ class _StubEngine:
 
         self._model = _Model()
         if model_max is not None:
-            self._model.args = type(
-                "Args", (), {"max_position_embeddings": model_max}
-            )
+            self._model.args = type("Args", (), {"max_position_embeddings": model_max})
         if server_cap is None:
             return
         if config_shape == "scheduler":
@@ -159,25 +157,23 @@ class _StubEngine:
 def test_server_cap_resolves_via_scheduler_config():
     from vllm_mlx.service.helpers import get_server_context_cap
 
-    engine = _StubEngine(model_max=500_000, server_cap=196_608, config_shape="scheduler")
+    engine = _StubEngine(
+        model_max=500_000, server_cap=196_608, config_shape="scheduler"
+    )
     assert get_server_context_cap(engine) == 196_608
 
 
 def test_server_cap_resolves_via_direct_scheduler_config():
     from vllm_mlx.service.helpers import get_server_context_cap
 
-    engine = _StubEngine(
-        model_max=500_000, server_cap=196_608, config_shape="direct"
-    )
+    engine = _StubEngine(model_max=500_000, server_cap=196_608, config_shape="direct")
     assert get_server_context_cap(engine) == 196_608
 
 
 def test_server_cap_resolves_via_engine_config_holder():
     from vllm_mlx.service.helpers import get_server_context_cap
 
-    engine = _StubEngine(
-        model_max=500_000, server_cap=196_608, config_shape="holder"
-    )
+    engine = _StubEngine(model_max=500_000, server_cap=196_608, config_shape="holder")
     assert get_server_context_cap(engine) == 196_608
 
 
@@ -227,8 +223,9 @@ def test_enforce_over_server_cap_raises_400():
     assert detail["error"]["code"] == "context_length_exceeded"
     # The operator cap is the binding limit, so the message must say
     # so — the client should not mistake this for a model limit.
-    assert "This server's maximum context length is 200000 tokens" in (
-        detail["error"]["message"]
+    assert (
+        "This server's maximum context length is 200000 tokens"
+        in (detail["error"]["message"])
     )
 
 
@@ -246,15 +243,17 @@ def test_enforce_server_cap_equal_to_or_above_model_max_uses_model_max():
         enforce_context_length(engine, 40_000, max_tokens=20_000)
     detail = excinfo.value.detail
     assert detail["error"]["code"] == "context_length_exceeded"
-    assert "This model's maximum context length is 50000 tokens" in (
-        detail["error"]["message"]
+    assert (
+        "This model's maximum context length is 50000 tokens"
+        in (detail["error"]["message"])
     )
     # Cap above model max.
     engine = _StubEngine(model_max=50_000, server_cap=200_000)
     with pytest.raises(HTTPException) as excinfo:
         enforce_context_length(engine, 40_000, max_tokens=20_000)
-    assert "This model's maximum context length is 50000 tokens" in (
-        excinfo.value.detail["error"]["message"]
+    assert (
+        "This model's maximum context length is 50000 tokens"
+        in (excinfo.value.detail["error"]["message"])
     )
 
 
