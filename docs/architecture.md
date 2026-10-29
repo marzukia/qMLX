@@ -10,6 +10,53 @@ Design principles:
 2. **mlx-lm version agnostic** — the public API is stable across versions.
 3. **Per-request parsers** — reasoning + tool-call parsers are instantiated per request, never shared.
 
+## Design ethos
+
+qMLX is an engine layer for the MLX ecosystem on three backends: Apple
+Metal (today), `mlx-rocm`, and `mlx-cuda` (ported builds). The target
+machines are **bandwidth-bound and memory-constrained**, and two
+first-class design commitments follow from that.
+
+### Multiplexing, not parallelisation
+
+Many requests **interleave** on one stream; they do not **overlap** on
+several. The engine core (`engine_core.py`) runs a single owner thread,
+the `mlx-step` worker, and *all* model/KV-touching MLX work is
+submitted to it. The asyncio event loop handles I/O (HTTP and
+streaming) and dispatches; scheduling, admission, and housekeeping run
+on the single owner thread, and every forward pass, cache mutation, and
+checkpoint write lands there too. This is a design invariant, not a
+workaround: a second thread issuing MLX work would overlap on stream
+state rather than interleave, and on a bandwidth-bound device the
+benefit does not cover the cost.
+
+The one-owner-thread rule is also the **conformance contract for ported
+backends**. A backend declares its stream semantics through the
+device/backend seam (`vllm_mlx/device/backend.py`, "Stream contract")
+instead of the engine probing for error strings, and it must honour the
+owner-thread rule (or declare a multi-stream model the engine can
+schedule around), pinned by the backend conformance tests.
+
+### Cold-cache restore is the memory tier
+
+The KV cache has two tiers, and the disk is not an add-on to the RAM
+tier: it *is* the RAM of the second tier.
+
+1. **Tier 1 (RAM)**: the in-process prefix cache (hot, shared
+   system-prompt blocks, deduplicated and reference-counted). It
+   applies to dense models; for the flagship hybrid model it is
+   disabled, because recurrent state cannot be rewound to an earlier
+   position, so an in-memory entry that contains those layers is
+   dropped.
+2. **Tier 2 (SSD)**: the disk-KV checkpoint tier
+   (`runtime/disk_kv_checkpoint.py`), which for the hybrid model is the
+   entire cache: long-context caches are snapshotted at 256-token
+   boundaries and, on a miss, the checkpoint is **restored instead of
+   re-prefilled**. A resumed session, a shared system prompt, or an
+   agent at its context cap reads its cache back from the SSD;
+   restore-on-miss is on by default. This is the feature that makes
+   long-context serving viable on machines with limited RAM.
+
 ## Module Map
 
 ```
