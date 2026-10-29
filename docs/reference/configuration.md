@@ -18,13 +18,13 @@
 |--------|-------------|---------|
 | `--api-key` | API key for authentication | None |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | `0` |
-| `--timeout` | Request timeout in seconds | `300` |
+| `--timeout` | Request timeout in seconds | `1800` |
 
 ### Batching Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--continuous-batching` | Enable batching | `false` |
+| `--continuous-batching` | Accepted for back-compat (continuous batching is always on) | `true` |
 | `--stream-interval` | Tokens per stream chunk | `1` |
 | `--max-num-seqs` | Max concurrent sequences | `256` |
 
