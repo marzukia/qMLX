@@ -40,18 +40,22 @@ schedule around) — pinned by the backend conformance tests.
 ### Cold-cache restore is the memory tier
 
 The KV cache has two tiers, and the disk is not an add-on to the RAM
-tier — it *is* the RAM of the second tier:
+tier: it *is* the RAM of the second tier.
 
-1. **Tier 1 (RAM)** — the in-process prefix cache: hot, shared
-   system-prompt blocks, deduplicated and reference-counted.
-2. **Tier 2 (SSD)** — the disk-KV checkpoint tier
-   (`runtime/disk_kv_checkpoint.py`): long-context caches are
-   snapshotted at 256-token boundaries and, on a miss, the checkpoint is
-   **restored instead of re-prefilled**. A resumed session, a shared
-   system prompt, or an agent walking up to its context cap reads its
-   cache back from the SSD; restore-on-miss is on by default. This is
-   the headline feature that makes long-context serving viable on
-   machines with limited RAM.
+1. **Tier 1 (RAM)**: the in-process prefix cache (hot, shared
+   system-prompt blocks, deduplicated and reference-counted). It
+   applies to dense models; for the flagship hybrid model it is
+   disabled, because recurrent state cannot be rewound to an earlier
+   position, so an in-memory entry that contains those layers is
+   dropped.
+2. **Tier 2 (SSD)**: the disk-KV checkpoint tier
+   (`runtime/disk_kv_checkpoint.py`), which for the hybrid model is the
+   entire cache: long-context caches are snapshotted at 256-token
+   boundaries and, on a miss, the checkpoint is **restored instead of
+   re-prefilled**. A resumed session, a shared system prompt, or an
+   agent at its context cap reads its cache back from the SSD;
+   restore-on-miss is on by default. This is the feature that makes
+   long-context serving viable on machines with limited RAM.
 
 ## Module Map
 
