@@ -114,6 +114,7 @@ jobs:
             tests/test_validate_release_subject.py \
             tests/test_check_gha_pinning.py \
             tests/test_check_mlx_upstream_calls.py \
+            tests/test_conformance.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
