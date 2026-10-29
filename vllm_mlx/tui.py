@@ -25,7 +25,7 @@ from textual.widgets import Footer, Header, Input, Label, Log
 
 #: One-line hint printed (and the exit code returned) when the ``tui``
 #: extra is missing — pinned by tests (AC9).
-TUI_INSTALL_HINT = "TUI extra not installed — run: pip install 'qmlx[tui]'"
+TUI_INSTALL_HINT = "TUI extra not installed. Run: pip install 'qmlx[tui]'"
 
 #: Empty-state starter prompts (issue #63.3): the Log used to sit at
 #: ~20 blank rows until the first message. These are example prompts
