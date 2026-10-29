@@ -70,7 +70,7 @@ Three Cloudflare-attached surfaces in production today:
   reverse-proxy. Custom domain via the Workers Custom Domains API
   (OAuth grants workers-only, no zone:dns:edit needed).
 - **`chat.rapidmlx.com`** — static splash + vendored BCG, served via
-  cloudflared tunnel from M3 Ultra (NOT a Worker).
+  cloudflared tunnel from the Apple Silicon machine (NOT a Worker).
 
 **Decision: do NOT fold telemetry into `rapidserver`.** Different
 security postures (share-tunnel intentionally sees client IP to
@@ -404,7 +404,7 @@ reviewer can grep the binary's actual wire shape without strace.
    (which model? which chat frontend? did the tunnel die?). Out of
    Phase 2 scope but `subcommand="share"` already covers the basic
    counter; per-share details land later.
-6. **Where does the dev-box cron live?** M3 Ultra is the natural home
+6. **Where does the dev-box cron live?** The Apple Silicon box is the natural home
    (already running tunnels). One launchd plist + a 30-line bash
    script. Bus factor: doc the recipe in `docs/runbooks/`.
 

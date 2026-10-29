@@ -50,7 +50,7 @@ Tape-based SSM rollback for MTP speculative decoding is **ALREADY IMPLEMENTED** 
 
 ### Memory Comparison
 
-| Approach | Size per Layer | K=3 Total (122B) |
+| Approach | Size per Layer | K=3 Total (hybrid MoE) |
 |----------|---------------|------------------|
 | Full Snapshot | ~50 MB | ~50 MB |
 | Tape (KB-scale) | ~10 KB | ~10 KB |
@@ -139,7 +139,7 @@ Before enabling K>1 in production:
       `QMLX_RUN_HEAVY_TESTS=1 python -m pytest tests/test_mtp_real_weights.py`
       and `python bench/bench_mtp_k3.py --model ... --sidecar ...`
       (G1/G2/G3 on real hybrid weights)
-- [ ] Performance benchmark (K=1 vs K=3 speedup) on the 122B target
+- [ ] Performance benchmark (K=1 vs K=3 speedup) on the hybrid MoE target
 - [ ] Rollback to production K=1 if gate fails
 
 ## Expected Impact
@@ -153,8 +153,8 @@ Before enabling K>1 in production:
 ## Next Steps
 
 1. **Run the real-weights gates** on host-a (9B) and
-   host-a (122B) and record G1–G3 results here.
-2. **Benchmark speedup** vs K=1 baseline on the 122B target.
+   host-a (hybrid MoE) and record G1–G3 results here.
+2. **Benchmark speedup** vs K=1 baseline on the hybrid MoE target.
 3. **Enable K>1** in production if the real-weights gate passes.
 
 ## References
