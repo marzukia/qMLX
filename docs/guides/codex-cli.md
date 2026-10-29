@@ -182,4 +182,4 @@ prompt; the second run is non-interactive.
 - [Server setup](server.md)
 - [Tool calling](tool-calling.md)
 - [Reasoning models](reasoning.md)
-- Issue [#549](https://github.com/raullenchai/Rapid-MLX/issues/549) — the request that drove this integration
+- Issue [#549](https://github.com/marzukia/qMLX/issues/549) — the request that drove this integration
