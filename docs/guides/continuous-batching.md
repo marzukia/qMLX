@@ -34,7 +34,7 @@ qmlx serve qwen3.5-4b-4bit --use-paged-cache
 ### Concurrency model
 - One owner thread per device: all model/KV work runs on a single
   `mlx-step` worker thread; the asyncio loop only dispatches
-- Bandwidth-bound devices interleave, they do not overlap — concurrent
+- Bandwidth-bound devices interleave, they do not overlap: concurrent
   requests share one stream instead of running in parallel
 - The disk-KV checkpoint tier is the engine's memory tier: the SSD is
   the RAM of the second tier, so long-context KV reuse does not
