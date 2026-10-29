@@ -52,7 +52,7 @@ Results will vary on different Apple Silicon chips.
 If you have a different Apple Silicon chip, please share your results:
 
 ```bash
-python scripts/benchmark_engines.py --engine qmlx | tee results.txt
+python scripts/bench_vs_ollama.py | tee results.txt
 ```
 
 Open an issue with your results at [GitHub Issues](https://github.com/marzukia/qMLX/issues).
