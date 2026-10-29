@@ -5736,7 +5736,7 @@ class Scheduler:
             # either side is unknown we cannot vouch for identity, so we reject.
             run_model = getattr(self, "_model_name", None)
             ckpt_model = (loaded.metadata or {}).get("model_name")
-            if not ckpt_model or not run_model or str(ckpt_model) != str(run_model):
+            if not _dkc.model_identity_matches(run_model, ckpt_model):
                 _dkc.record_restore_reject("model_identity_mismatch")
                 logger.info(
                     "[kv_restore] request=%s REJECT reason=model_identity_mismatch "
