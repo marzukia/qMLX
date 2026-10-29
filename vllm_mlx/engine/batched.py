@@ -837,6 +837,21 @@ class BatchedEngine(BaseEngine):
         """Check if this is a multimodal model."""
         return self._is_mllm
 
+    @property
+    def scheduler_config(self) -> Any:
+        """Read-only access to the operator's ``SchedulerConfig``.
+
+        The engine stores the config only as the private
+        ``_scheduler_config``; this property is the public seam the
+        admission-time context-cap resolver (:func:`
+        vllm_mlx.service.helpers.get_server_context_cap`) and the
+        metrics route probe. ``None`` when the engine was constructed
+        without an explicit config (``SchedulerConfig()`` defaults are
+        applied lazily at use sites, matching the ``check_admission``
+        cold-start fallback).
+        """
+        return self._scheduler_config
+
     def check_admission(self) -> None:
         """Atomic admission gate that *reserves* a slot on success.
 

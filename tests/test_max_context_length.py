@@ -18,6 +18,11 @@ Coverage:
    ``context_length_exceeded``; under the cap it passes; with the
    flag absent (``0``) the model max stays the binding limit
    (pre-#33 behaviour preserved).
+6. Real ``BatchedEngine`` — the cap resolves against the LIVE serve
+   shape (the engine ``get_engine()`` hands to the gated routes), not
+   just the three stub shapes. This is the t981 critical guard: the
+   engine stores its config only as the private ``_scheduler_config``,
+   so a stub-only suite passed while production was dead.
 """
 
 from __future__ import annotations
@@ -378,3 +383,116 @@ def test_repair_gate_respects_server_cap():
         )
         is True
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. Real BatchedEngine — the live serve shape (t981 critical guard)
+#
+# The 13 tests above use stub engine shapes that happen to match the
+# config shapes ``get_server_context_cap`` probes. The production
+# ``BatchedEngine`` (what ``get_engine()`` hands to the chat / anthropic
+# / responses / completions routes) stores its config ONLY as the
+# private ``_scheduler_config`` — none of the original three probes
+# matched it, so the cap resolved ``None`` and the 400 gate never fired
+# in a real ``qmlx serve``. These tests construct the REAL engine (cheap
+# on a no-mlx host: ``BatchedEngine.__init__`` only sets attributes and
+# runs the local ``is_mllm_model`` probe — no model load, no mlx import,
+# no network) and pin the cap against that shape. A model name that does
+# not resolve to a local config.json directory keeps ``is_mllm_model``
+# on the substring path, so construction stays fast and deterministic.
+# ---------------------------------------------------------------------------
+
+
+_REAL_ENGINE_MODEL_NAME = "qmlx-test-model"
+
+
+def _real_batched_engine(max_context_length: int | None):
+    """Construct a REAL ``BatchedEngine`` (not a stub) with an optional
+    ``SchedulerConfig.max_context_length`` cap. ``None`` = the flag
+    absent (a bare engine, ``_scheduler_config`` is ``None``)."""
+    from vllm_mlx.engine.batched import BatchedEngine
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    if max_context_length is None:
+        return BatchedEngine(_REAL_ENGINE_MODEL_NAME)
+    return BatchedEngine(
+        _REAL_ENGINE_MODEL_NAME,
+        scheduler_config=SchedulerConfig(max_context_length=max_context_length),
+    )
+
+
+def test_real_batched_engine_exposes_scheduler_config_property():
+    """The public ``scheduler_config`` seam returns the config the engine
+    actually stores (``_scheduler_config``), so a cap set at construction
+    is reachable. ``None`` when the engine was built without one."""
+    capped = _real_batched_engine(8000)
+    assert type(capped.scheduler_config).__name__ == "SchedulerConfig"
+    assert capped.scheduler_config.max_context_length == 8000
+    assert capped.scheduler_config is capped._scheduler_config
+    assert _real_batched_engine(None).scheduler_config is None
+
+
+def test_real_batched_engine_cap_resolves_and_gate_fires():
+    """t981 critical guard: against the REAL ``BatchedEngine``, the cap
+    resolves to the configured value and the 400 gate fires for a
+    prompt + max_tokens over it.
+
+    ``get_model_max_context`` falls through to the 4_194_304-token
+    fallback for an unloaded engine, so a modest cap (8000) is the
+    binding limit and the message keeps the operator-cap wording.
+    """
+    from fastapi import HTTPException
+
+    from vllm_mlx.service.helpers import (
+        enforce_context_length,
+        get_server_context_cap,
+    )
+
+    engine = _real_batched_engine(8000)
+    assert get_server_context_cap(engine) == 8000
+
+    # 5000 prompt + 5000 completion = 10000 > 8000 cap (well below the
+    # 4_194_304 fallback model max) — the gate must fire.
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length(engine, 5000, max_tokens=5000)
+    assert excinfo.value.status_code == 400
+    detail = excinfo.value.detail
+    assert detail["error"]["code"] == "context_length_exceeded"
+    # The operator cap (not the fallback model max) is the binding limit.
+    assert (
+        "This server's maximum context length is 8000 tokens"
+        in (detail["error"]["message"])
+    )
+
+    # Under the cap the same-shape request passes: 5000 + 2000 = 7000
+    # <= 8000.
+    enforce_context_length(engine, 5000, max_tokens=2000)
+
+    # Exact boundary: 5000 + 3000 = 8000 <= 8000 passes.
+    enforce_context_length(engine, 5000, max_tokens=3000)
+
+
+def test_real_batched_engine_no_cap_preserves_pre_33():
+    """A real engine built without the flag resolves the cap to ``None``
+    (``_scheduler_config`` is ``None``), so the model max stays the
+    binding limit — pre-#33 behaviour, even on the live shape."""
+    from vllm_mlx.service.helpers import get_server_context_cap
+
+    assert get_server_context_cap(_real_batched_engine(None)) is None
+
+
+def test_real_batched_engine_via_private_fallback():
+    """Robustness: even an engine object that predates the public
+    ``scheduler_config`` property (config reachable only via the private
+    ``_scheduler_config``) still resolves the cap, matching the
+    metrics-route probe. A bare object with only ``_scheduler_config``
+    set exercises that fallback path."""
+    from vllm_mlx.scheduler import SchedulerConfig
+    from vllm_mlx.service.helpers import get_server_context_cap
+
+    class _BareEngine:
+        # No public ``scheduler_config`` attribute — only the private
+        # one the live BatchedEngine stores the config under.
+        _scheduler_config = SchedulerConfig(max_context_length=196_608)
+
+    assert get_server_context_cap(_BareEngine()) == 196_608

@@ -3967,12 +3967,21 @@ def get_server_context_cap(engine) -> int | None:
     ``max_position_embeddings``. ``0`` is the "no cap" sentinel, so this
     returns ``None`` unless the operator set a positive cap.
 
-    Resolution probes the scheduler config through the three shapes an
-    engine object may expose: ``engine.scheduler.config`` (EngineCore),
-    ``engine.scheduler_config`` (standalone constructions), and
-    ``engine.config.scheduler_config`` (EngineConfig holders). Engines
-    without a scheduler config (test stubs, MLLM) return ``None`` — the
-    model max stays the binding limit, i.e. pre-#33 behaviour.
+    Resolution probes the scheduler config through the shapes an engine
+    object may expose, in preference order:
+
+    * ``engine.scheduler_config`` / ``engine._scheduler_config`` — the
+      **live** ``BatchedEngine`` shape. The engine stores its config
+      only as the private ``_scheduler_config``; the public
+      ``scheduler_config`` property (added in this round) is the
+      preferred seam, with a direct ``_scheduler_config`` fallback so a
+      bare object that predates the property still resolves.
+    * ``engine.scheduler.config`` (standalone EngineCore shapes).
+    * ``engine.config.scheduler_config`` (EngineConfig holders).
+
+    Engines without a scheduler config (test stubs, MLLM) return
+    ``None`` — the model max stays the binding limit, i.e. pre-#33
+    behaviour.
 
     The check is deliberately a direct token comparison at admission
     rather than a translation into paged-KV block counts: the block size
@@ -3983,14 +3992,22 @@ def get_server_context_cap(engine) -> int | None:
     """
 
     candidates = []
+    # The live BatchedEngine (what get_engine() hands to the gated
+    # routes) stores its config only as ``_scheduler_config``. Probe the
+    # public ``scheduler_config`` seam first and fall back to the
+    # private attribute — matching the metrics route. Without this the
+    # operator cap resolved to None and the 400 gate never fired in a
+    # real serve (issue #33, t981 critical finding).
+    direct = getattr(engine, "scheduler_config", None) or getattr(
+        engine, "_scheduler_config", None
+    )
+    if direct is not None:
+        candidates.append(direct)
     scheduler = getattr(engine, "scheduler", None)
     if scheduler is not None:
         config = getattr(scheduler, "config", None)
         if config is not None:
             candidates.append(config)
-    direct = getattr(engine, "scheduler_config", None)
-    if direct is not None:
-        candidates.append(direct)
     holder = getattr(engine, "config", None)
     if holder is not None:
         nested = getattr(holder, "scheduler_config", None)
