@@ -3959,6 +3959,55 @@ def get_model_max_context(engine) -> int:
     return _FALLBACK_MAX_CONTEXT_TOKENS
 
 
+def get_server_context_cap(engine) -> int | None:
+    """Return the operator-configured context cap (tokens) for ``engine``.
+
+    Issue #33: ``--max-context-length`` (``SchedulerConfig.max_context_length``)
+    lets an operator cap the served context length below the model's own
+    ``max_position_embeddings``. ``0`` is the "no cap" sentinel, so this
+    returns ``None`` unless the operator set a positive cap.
+
+    Resolution probes the scheduler config through the three shapes an
+    engine object may expose: ``engine.scheduler.config`` (EngineCore),
+    ``engine.scheduler_config`` (standalone constructions), and
+    ``engine.config.scheduler_config`` (EngineConfig holders). Engines
+    without a scheduler config (test stubs, MLLM) return ``None`` — the
+    model max stays the binding limit, i.e. pre-#33 behaviour.
+
+    The check is deliberately a direct token comparison at admission
+    rather than a translation into paged-KV block counts: the block size
+    is an internal implementation detail that is not exposed on the CLI
+    or in status output, so a block-count translation would force
+    operators to know it and would silently change meaning if the block
+    size default changes.
+    """
+
+    candidates = []
+    scheduler = getattr(engine, "scheduler", None)
+    if scheduler is not None:
+        config = getattr(scheduler, "config", None)
+        if config is not None:
+            candidates.append(config)
+    direct = getattr(engine, "scheduler_config", None)
+    if direct is not None:
+        candidates.append(direct)
+    holder = getattr(engine, "config", None)
+    if holder is not None:
+        nested = getattr(holder, "scheduler_config", None)
+        if nested is not None:
+            candidates.append(nested)
+
+    for config in candidates:
+        raw = getattr(config, "max_context_length", 0)
+        try:
+            cap = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if cap > 0:
+            return cap
+    return None
+
+
 def count_prompt_tokens(engine, prompt) -> int:
     """Return the integer prompt-token count under ``engine``'s tokenizer.
 
@@ -4032,7 +4081,12 @@ def enforce_context_length(
     own error is shaped the same way — ``context_length_exceeded``
     fires when ``prompt + completion > model max``.
     """
-    max_context = get_model_max_context(engine)
+    model_max = get_model_max_context(engine)
+    server_cap = get_server_context_cap(engine)
+    # Issue #33: the operator's ``--max-context-length`` cap binds
+    # BELOW the model max. ``min`` keeps the model max as the
+    # ceiling when no cap is set (pre-#33 behaviour preserved).
+    max_context = min(model_max, server_cap) if server_cap else model_max
     completion = int(max_tokens) if max_tokens else 0
     requested_total = int(prompt_tokens) + max(0, completion)
     if requested_total <= max_context:
@@ -4040,13 +4094,23 @@ def enforce_context_length(
 
     # Format the message in the OpenAI shape so SDKs can branch on the
     # ``code`` field. The exception handler in ``vllm_mlx/server.py``
-    # wraps the ``detail`` payload back into the OpenAI envelope.
-    detail = (
-        f"This model's maximum context length is {max_context} tokens. "
-        f"However, you requested {requested_total} tokens "
-        f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
-        "Please reduce the length of the messages or completion."
-    )
+    # wraps the ``detail`` payload back into the OpenAI envelope. When
+    # the operator cap (not the model max) is the binding limit, say so
+    # so the client can distinguish "server config" from "model limit".
+    if server_cap and server_cap < model_max:
+        detail = (
+            f"This server's maximum context length is {max_context} tokens. "
+            f"However, you requested {requested_total} tokens "
+            f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
+            "Please reduce the length of the messages or completion."
+        )
+    else:
+        detail = (
+            f"This model's maximum context length is {max_context} tokens. "
+            f"However, you requested {requested_total} tokens "
+            f"({int(prompt_tokens)} prompt + {max(0, completion)} completion). "
+            "Please reduce the length of the messages or completion."
+        )
     raise HTTPException(
         status_code=400,
         detail={
@@ -4301,7 +4365,14 @@ def repair_messages_fit_context(
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
         return True
-    max_context = get_model_max_context(engine)
+    # Issue #33: the repair prompt is a NEW admission, so it must be
+    # judged against the same effective limit (model max MIN
+    # ``--max-context-length``) as the initial request gate — using
+    # the bare model max here would let a cap-bound repair retry
+    # through and fail mid-generation.
+    model_max = get_model_max_context(engine)
+    server_cap = get_server_context_cap(engine)
+    max_context = min(model_max, server_cap) if server_cap else model_max
     completion = int(max_tokens) if max_tokens else 0
     requested_total = int(prompt_tokens) + max(0, completion)
     return requested_total <= max_context

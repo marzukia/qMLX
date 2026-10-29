@@ -164,6 +164,15 @@ class SchedulerConfig:
     paged_cache_block_size: int = 64  # Tokens per block
     max_cache_blocks: int = 1000  # Maximum number of cache blocks
 
+    # Server-side context cap in tokens (issue #33). ``0`` (default) is
+    # "no cap" so the model's own ``max_position_embeddings`` remains
+    # the binding limit, preserving pre-#33 behaviour. When > 0 the
+    # admission gate in ``vllm_mlx.service.helpers`` rejects any
+    # request whose ``prompt + max_tokens`` exceeds the smaller of the
+    # model max and this value, with HTTP 400
+    # ``context_length_exceeded`` errors.
+    max_context_length: int = 0
+
     # Chunked prefill: max tokens to prefill per scheduler step (0 = disabled)
     # When enabled, large prompts are split into chunks so that active
     # generation requests are not starved during long prefills.
