@@ -245,6 +245,11 @@ def test_dequant_matches_quantized_matmul_real_mlx():
     must match the original ``nn.QuantizedLinear`` matmul within bf16
     rounding (max abs diff < 1e-2) on fixed inputs."""
     mx = pytest.importorskip("mlx.core")
+    # This host's mlx build exposes the module-level ``repeat`` but
+    # not the Array method (the one ``_dequantize_mtp_linears``
+    # calls); guard both so the test SKIPS instead of red-ing.
+    if not hasattr(mx, "repeat") or not hasattr(mx.array([0.0]), "repeat"):
+        pytest.skip("mlx too old: no array.repeat")
     import mlx.nn as nn
 
     from vllm_mlx.spec_decode.mtp.qwen3_5_inject import _dequantize_mtp_linears
