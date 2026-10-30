@@ -208,11 +208,26 @@ class TestOptimizedDetokenizer:
         reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): no _detokenizer_class attr - wave-4 engine drift (green on main 10-29); strict=False",
     )
     def test_tokenizer_wrapper_has_optimized_detokenizer(self, tokenizer_wrapper):
-        """Verify TokenizerWrapper has optimized detokenizer class."""
-        assert hasattr(tokenizer_wrapper, "_detokenizer_class")
+        """Verify TokenizerWrapper hands out the optimized BPE streaming
+        detokenizer for Qwen (a BPE model).
+
+        Asserts on the stable public API (``wrapper.detokenizer``) rather
+        than mlx-lm internals: mlx-lm 0.32.0 (2026-10-01) replaced the
+        private ``_detokenizer_class`` attribute (which stored the
+        selected detokenizer class) with a prebuilt ``_detokenizer``
+        instance — built once because constructing the token map is
+        expensive — so the old private-attr assertion broke under
+        ``mlx-lm>=0.31.3`` with no upper cap (macOS CI, run 40048463278).
+        The ``isinstance`` check below covers both shapes: 0.31.x returns
+        a fresh instance of the selected class, 0.32.x returns a copy of
+        the prebuilt one, and both are ``BPEStreamingDetokenizer`` for
+        Qwen's BPE decoder.
+        """
         assert hasattr(tokenizer_wrapper, "detokenizer")
-        # Qwen uses BPE tokenizer
-        assert tokenizer_wrapper._detokenizer_class == BPEStreamingDetokenizer
+        # Qwen uses a BPE tokenizer, so the wrapper must select the
+        # optimized BPE streaming detokenizer, not the naive fallback.
+        detok = tokenizer_wrapper.detokenizer
+        assert isinstance(detok, BPEStreamingDetokenizer)
 
     def test_optimized_detokenizer_correctness(self, tokenizer_wrapper):
         """Verify optimized detokenizer produces correct output."""

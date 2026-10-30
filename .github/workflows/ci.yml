@@ -145,6 +145,7 @@ jobs:
             tests/test_diffusion_shared_mode.py \
             tests/test_disk_space_check.py \
             tests/test_download_gate.py \
+            tests/test_doctor.py \
             tests/test_envelope_field_extraction.py \
             tests/test_exception_handlers.py \
             tests/test_guided.py \
@@ -153,6 +154,7 @@ jobs:
             tests/test_hy3_chat_template_default.py \
             tests/test_image_url_must_be_object.py \
             tests/test_kv_cache_dtype.py \
+            tests/test_local_model.py \
             tests/test_launch_cli.py \
             tests/test_legacy_functions_field.py \
             tests/test_log_namespace_rebrand.py \
@@ -187,6 +189,7 @@ jobs:
             tests/test_postprocessor.py \
             tests/test_prefix_cache.py \
             tests/test_prefix_cache_persistence.py \
+            tests/test_pull_local.py \
             tests/test_pull_summary.py \
             tests/test_r10_scrub_validation_bundle.py \
             tests/test_r12_4_strict_json_schema_helpers.py \
@@ -437,6 +440,7 @@ jobs:
             tests/test_tool_result_content_array.py \
             tests/test_tools_auto_disable_thinking.py \
             tests/test_truncation_no_synthetic_text.py \
+            tests/test_vision_kv_e2e_wiring.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

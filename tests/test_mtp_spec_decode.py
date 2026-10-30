@@ -2198,3 +2198,95 @@ def test_generator_k3_seeded_temp_seed_zero_is_valid():
         "seed=0 stream equals the unseeded (seed=None) path — seed=0 "
         "was dropped by a falsy check"
     )
+
+
+# ----------------------------------------------------------------------
+# Issue #58: MTP seeded contract — key the XTC draws at verify
+# positions i > 0.
+#
+# #55 wired the per-request key stream for the position-0 XTC draws
+# (draft step + shared verify position 0). The verify positions i > 0
+# kept the legacy path — ``draw=None`` → upstream ``apply_xtc`` → a
+# fresh ``mx.random.uniform(0, 1)`` from the process-global PRNG — so
+# two same-seed runs could diverge (the XTC accept/reject at i > 0
+# flipped with the global draw). This issue keys those draws to the
+# same per-request stream; ``seed=None`` stays bit-for-bit
+# pre-change (``draw=None`` → the upstream global-draw path).
+# ----------------------------------------------------------------------
+
+
+def _k3_xtc_seeded_stream(seed, max_tokens=8, temp=0.7):
+    """Run a fixed_k=3 temp>0 XTC stream with the given seed and
+    return the flat (tok, from_draft) emission list.
+
+    Issue #58 verify parameters: temp=0.7, xtc_probability=0.5,
+    max_k=3, fixed_k=3 (seed=42 in the determinism test). The
+    ``xtc_probability=0.5`` gate fires on half the draws, so the
+    XTC accept/reject at every verify position (i > 0 included) is
+    a genuine function of the draw.
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    # Same soft-logit layout as ``_k3_seeded_stream`` — disjoint
+    # backbone / MTP favorites so the verify accept walk sees a real
+    # p_target(draft) << p_draft(draft) mismatch.
+    backbone = [(0, 0.5)] + [(t, 0.5) for t in range(21, 29)]
+    mtp = [(t, 0.9) for t in range(31, 38)]
+    model = _SeededMockModel(backbone, mtp)
+    counter = MTPAcceptCounter()
+    prompt = mx.array([1], dtype=mx.uint32)
+    return [
+        (int(tok), from_draft)
+        for tok, _lp, from_draft in mtp_generate_step(
+            prompt,
+            model,
+            max_tokens=max_tokens,
+            temp=temp,
+            accept_counter=counter,
+            max_k=3,
+            fixed_k=3,
+            seed=seed,
+            xtc_probability=0.5,
+        )
+    ]
+
+
+def test_generator_k3_xtc_seeded_temp_determinism():
+    """Issue #58 repro: with seed + temp>0 + xtc_probability>0, two
+    ``mtp_generate_step`` runs with the same seed must produce a
+    byte-identical token stream — including the XTC accept/reject
+    at verify positions i > 0, which pre-fix drew from the
+    process-global PRNG. A different seed must (almost surely)
+    diverge, proving the seed reaches the i > 0 XTC draws."""
+    s1 = _k3_xtc_seeded_stream(42)
+    s2 = _k3_xtc_seeded_stream(42)
+    assert s1, "seeded XTC stream empty — generator produced no tokens"
+    assert s1 == s2, (
+        f"same seed must give identical streams (issue #58 repro):\n"
+        f"first:  {s1}\nsecond: {s2}"
+    )
+    s3 = _k3_xtc_seeded_stream(7)
+    assert s3 != s1, (
+        f"different seed should (almost surely) diverge, but got the "
+        f"identical stream {s1} — the seed is not reaching the i>0 "
+        "XTC draws"
+    )
+
+
+def test_generator_k3_xtc_seeded_draws_do_not_touch_global_state():
+    """The i > 0 XTC draws must come from the per-request key stream,
+    not the global PRNG: interleaving an unseeded XTC run (which
+    consumes global state — its i > 0 draws go through upstream
+    ``apply_xtc``'s ``mx.random.uniform``) between two seeded runs
+    must not disturb the seeded stream. Pre-fix, the second seeded
+    run read the advanced global state at i > 0 and diverged."""
+    s1 = _k3_xtc_seeded_stream(42)
+    s2 = _k3_xtc_seeded_stream(None)  # unseeded, consumes global state
+    assert s2, "unseeded XTC stream empty"
+    s3 = _k3_xtc_seeded_stream(42)
+    assert s3 == s1, (
+        f"unseeded run between two seeded runs changed the seeded "
+        f"stream: before {s1} after {s3} — the i>0 XTC draws still "
+        "touch the global PRNG"
+    )

@@ -2,7 +2,7 @@
 """
 Vision-tower merge tool for Tmax (Qwen3.5 multimodal) MLX snapshots.
 
-Inverse of the removed vision-strip script: takes a text-only (or
+Inverse of ``scripts/tmax_strip_vision.py``: takes a text-only (or
 vision-stripped) MLX snapshot plus an HF base that carries the vision
 tower, and merges the vision-tower tensors + the multimodal config
 entries back into the snapshot so ``mlx_lm`` can load it as a
