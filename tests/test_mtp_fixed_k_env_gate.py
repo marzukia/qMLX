@@ -150,7 +150,7 @@ def _mlx_stubs(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _install_and_first_step(monkeypatch, caplog, env, max_k=3):
+def _install_and_first_step(monkeypatch, caplog, env, max_k=3, *, step=True):
     from vllm_mlx import scheduler
     from vllm_mlx.spec_decode.mtp import generator as gen_mod
 
@@ -209,8 +209,9 @@ def _install_and_first_step(monkeypatch, caplog, env, max_k=3):
 
     with caplog.at_level(logging.INFO):
         assert scheduler._install_mtp_vendored(batch_gen, model, max_k=max_k) is True
-        batch_gen._generation_batch._step()
-    return captured, caplog
+        if step:
+            batch_gen._generation_batch._step()
+    return captured, caplog, batch_gen
 
 
 # ----------------------------------------------------------------------
@@ -219,12 +220,12 @@ def _install_and_first_step(monkeypatch, caplog, env, max_k=3):
 def test_unset_env_has_no_fixed_k_kwarg(_mlx_stubs, monkeypatch, caplog):
     """Unset QMLX_MTP_FIXED_K -> the kwarg is ABSENT from the step
     call (behaviour identical to pre-#111, not merely None)."""
-    captured, _ = _install_and_first_step(monkeypatch, caplog, env={})
+    captured, _, _ = _install_and_first_step(monkeypatch, caplog, env={})
     assert "fixed_k" not in captured
 
 
 def test_set_env_forwards_fixed_k(_mlx_stubs, monkeypatch, caplog):
-    captured, caplog = _install_and_first_step(
+    captured, caplog, _ = _install_and_first_step(
         monkeypatch, caplog, env={"QMLX_MTP_FIXED_K": "2"}
     )
     assert captured["fixed_k"] == 2
@@ -232,14 +233,14 @@ def test_set_env_forwards_fixed_k(_mlx_stubs, monkeypatch, caplog):
 
 
 def test_padded_env_value_is_stripped(_mlx_stubs, monkeypatch, caplog):
-    captured, _ = _install_and_first_step(
+    captured, _, _ = _install_and_first_step(
         monkeypatch, caplog, env={"QMLX_MTP_FIXED_K": "  3  "}
     )
     assert captured["fixed_k"] == 3
 
 
 def test_empty_env_string_means_unset(_mlx_stubs, monkeypatch, caplog):
-    captured, _ = _install_and_first_step(
+    captured, _, _ = _install_and_first_step(
         monkeypatch, caplog, env={"QMLX_MTP_FIXED_K": ""}
     )
     assert "fixed_k" not in captured
@@ -280,6 +281,7 @@ def _install_only(monkeypatch, caplog, env, max_k=3):
         ("3", 2, r"QMLX_MTP_FIXED_K=3 must lie in \[0, max_k=2\]"),
         ("-1", 3, r"QMLX_MTP_FIXED_K=-1 must lie in \[0, max_k=3\]"),
         ("abc", 3, r"QMLX_MTP_FIXED_K must be an integer, got 'abc'"),
+        ("1.5", 3, r"QMLX_MTP_FIXED_K must be an integer, got '1.5'"),
     ],
 )
 def test_boot_validation_rejects_bad_values(
@@ -310,6 +312,30 @@ def test_unset_env_boot_is_quiet(_mlx_stubs, monkeypatch, caplog):
     ok, caplog = _install_only(monkeypatch, caplog, {})
     assert ok is True
     assert "fixed depth pinned" not in caplog.text
+
+
+# ----------------------------------------------------------------------
+# 2b. Step-time env re-parse: the per-step fallback (config pin
+#     absent) raises the SAME actionable message as the boot gate.
+#     The first-call construction try/except catches it, disables
+#     MTP for the uid, and falls back to plain decode — so the
+#     message surfaces in the construction-failed warning.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("bad_val", ["abc", "1.5"])
+def test_step_parse_non_integer_env_is_actionable(
+    _mlx_stubs, monkeypatch, caplog, bad_val
+):
+    """A value that becomes non-integer between boot and the first
+    step fails that step's env re-parse with the actionable 'must be
+    an integer' message (not a bare ``int()`` ValueError), then
+    falls back to plain decode for the request."""
+    _, _, batch_gen = _install_and_first_step(
+        monkeypatch, caplog, env={"QMLX_MTP_FIXED_K": "2"}, step=False
+    )
+    monkeypatch.setenv("QMLX_MTP_FIXED_K", bad_val)
+    y, lps = batch_gen._generation_batch._step()
+    assert f"QMLX_MTP_FIXED_K must be an integer, got {bad_val!r}" in caplog.text
+    assert y == [0]
 
 
 # ----------------------------------------------------------------------

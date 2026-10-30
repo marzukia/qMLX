@@ -1792,7 +1792,12 @@ def _install_mtp_vendored(
                 _fixed_k_raw = os.environ.get("QMLX_MTP_FIXED_K", "").strip()
                 _mtp_fixed_k = fixed_k
                 if _mtp_fixed_k is None and _fixed_k_raw:
-                    _mtp_fixed_k = int(_fixed_k_raw)
+                    try:
+                        _mtp_fixed_k = int(_fixed_k_raw)
+                    except ValueError as _e:
+                        raise ValueError(
+                            f"QMLX_MTP_FIXED_K must be an integer, got {_fixed_k_raw!r}"
+                        ) from _e
                 _mtp_fixed_k_extra = (
                     {"fixed_k": _mtp_fixed_k} if _mtp_fixed_k is not None else {}
                 )
