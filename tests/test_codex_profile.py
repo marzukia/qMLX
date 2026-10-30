@@ -7,7 +7,12 @@ catches refactor-time breakage of `qmlx agents codex --setup`.
 """
 
 import pytest
-import tomllib
+
+# Python 3.10 (CI matrix floor) has no tomllib; tomli is the stand-in.
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 from vllm_mlx.agents import get_profile, list_profiles
 

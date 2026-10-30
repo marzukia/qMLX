@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   lint:
@@ -88,35 +88,159 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers requests
+          # CI matrix floor is 3.10; tomllib is 3.11+ (test_codex_profile.py).
+          pip install "tomli; python_version < '3.11'"
 
       - name: Run unit tests (no MLX required)
         # NOTE: tests in this list MUST not import mlx / mlx_lm at module
         # load time — Linux CI doesn't have MLX (it's Apple-Silicon only).
         # Tests that need mlx live in the test-apple-silicon job below.
+        # List rebuilt 2026-10-30 from the full 303-file test census
+        # (docs/plans/ci-test-coverage-2026-10-30.md): every Linux-runnable
+        # file that is green under CI-parity deps.
         run: |
           pytest \
-            tests/test_mcp_security.py \
-            tests/test_structured_output.py \
-            tests/test_reasoning_parser.py \
-            tests/test_tool_parsers.py \
-            tests/test_streaming_json_encoder.py \
-            tests/test_native_tool_format.py \
-            tests/test_prefix_cache.py \
-            tests/test_api_models.py \
-            tests/test_api_utils.py \
-            tests/test_request.py \
-            tests/test_anthropic_models.py \
+            tests/integrations/test_agents_matrix.py \
+            tests/integrations/test_frameworks_matrix.py \
+            tests/integrations/test_hermes.py \
+            tests/integrations/test_langchain.py \
+            tests/integrations/test_librechat_docker.py \
+            tests/integrations/test_openwebui.py \
+            tests/parsers/regressions/test_issue_447_gemma4_thought_marker_leak.py \
+            tests/parsers/regressions/test_issue_448_hermes_function_prefix_leak.py \
+            tests/parsers/regressions/test_issue_455_harmony_commentary_tool_channel.py \
+            tests/parsers/regressions/test_issue_468_tool_choice_required_harmony_compound.py \
+            tests/parsers/regressions/test_issue_513_harmony_streamable_parser.py \
+            tests/parsers/test_infra_smoke.py \
+            tests/test_agent_query_context_skip.py \
+            tests/test_agent_test_runner_refresh_config.py \
+            tests/test_alias_hybrid_classification.py \
+            tests/test_alias_recommended_sampling.py \
             tests/test_anthropic_adapter.py \
-            tests/test_tool_calling.py \
-            tests/test_tool_injection.py \
-            tests/test_streaming_latency.py \
-            tests/test_streaming_newlines.py \
-            tests/test_validate_release_subject.py \
+            tests/test_anthropic_models.py \
+            tests/test_anthropic_think_leak_r12_m1b.py \
+            tests/test_anthropic_tool_choice_validation.py \
+            tests/test_api_models.py \
+            tests/test_bench_vs_ollama.py \
+            tests/test_chat_n_must_equal_1.py \
+            tests/test_chat_template_marker_sanitize.py \
+            tests/test_chat_template_sidecar.py \
             tests/test_check_gha_pinning.py \
             tests/test_check_mlx_upstream_calls.py \
+            tests/test_cli_argcomplete.py \
+            tests/test_cli_chat.py \
+            tests/test_cli_info.py \
+            tests/test_cli_jlens.py \
+            tests/test_cli_models.py \
+            tests/test_codex_profile.py \
             tests/test_conformance.py \
-            tests/test_max_context_length.py \
+            tests/test_content_block_strict_types.py \
+            tests/test_ddtree_integration.py \
+            tests/test_deep_nest_dos.py \
+            tests/test_device_backend.py \
+            tests/test_dflash_eligibility.py \
+            tests/test_dflash_integration.py \
+            tests/test_dflash_spec_decode.py \
+            tests/test_diffusion_engine.py \
             tests/test_diffusion_shared_mode.py \
+            tests/test_disk_space_check.py \
+            tests/test_download_gate.py \
+            tests/test_envelope_field_extraction.py \
+            tests/test_exception_handlers.py \
+            tests/test_guided.py \
+            tests/test_help_fuzzy.py \
+            tests/test_hermes_harness_contract.py \
+            tests/test_hy3_chat_template_default.py \
+            tests/test_image_url_must_be_object.py \
+            tests/test_kv_cache_dtype.py \
+            tests/test_launch_cli.py \
+            tests/test_legacy_functions_field.py \
+            tests/test_log_namespace_rebrand.py \
+            tests/test_max_context_length.py \
+            tests/test_max_generation_tokens_ceiling.py \
+            tests/test_mcp_config_discovery.py \
+            tests/test_mcp_security.py \
+            tests/test_media_digest.py \
+            tests/test_memory_cache.py \
+            tests/test_memory_capacity_check.py \
+            tests/test_mirror_pull.py \
+            tests/test_mirror_to_r2.py \
+            tests/test_mlx_compat.py \
+            tests/test_models_command_layout.py \
+            tests/test_mtp_gemma4_assistant_inject.py \
+            tests/test_mtp_lossless.py \
+            tests/test_mtp_real_weights.py \
+            tests/test_mtp_spec_decode.py \
+            tests/test_mtp_stream_contract.py \
+            tests/test_mxfp4_moe_guardrail.py \
+            tests/test_native_tool_format.py \
+            tests/test_no_pydantic_error_leak.py \
+            tests/test_openai_tool_choice_validation.py \
+            tests/test_output_router.py \
+            tests/test_packaging_data_files.py \
+            tests/test_paged_cache.py \
+            tests/test_paged_cache_benefits.py \
+            tests/test_paged_cache_real_inference.py \
+            tests/test_parallel_tool_calls.py \
+            tests/test_param_validation_r5e.py \
+            tests/test_param_validation_r7b.py \
+            tests/test_postprocessor.py \
+            tests/test_prefix_cache.py \
+            tests/test_prefix_cache_persistence.py \
+            tests/test_pull_summary.py \
+            tests/test_r10_scrub_validation_bundle.py \
+            tests/test_r12_4_strict_json_schema_helpers.py \
+            tests/test_reasoning_parser.py \
+            tests/test_release_check_m3_port_thread.py \
+            tests/test_release_check_random.py \
+            tests/test_request.py \
+            tests/test_response_format_streaming_fence_strip.py \
+            tests/test_response_format_strict_types.py \
+            tests/test_responses_adapter.py \
+            tests/test_responses_input_default_type.py \
+            tests/test_rm_command.py \
+            tests/test_sanitize_output.py \
+            tests/test_scheduler_disk_kv_hook.py \
+            tests/test_server.py \
+            tests/test_signal_observability.py \
+            tests/test_speculative_config.py \
+            tests/test_stream_forced_tool_reasoning.py \
+            tests/test_streaming.py \
+            tests/test_streaming_detokenizer_bpe.py \
+            tests/test_streaming_json_encoder.py \
+            tests/test_streaming_latency.py \
+            tests/test_streaming_newlines.py \
+            tests/test_streaming_reasoning_split_r8c.py \
+            tests/test_streaming_reasoning_with_structured_output.py \
+            tests/test_streaming_simulator.py \
+            tests/test_streaming_think_router.py \
+            tests/test_streaming_tool_filter.py \
+            tests/test_stress_test_stream_usage.py \
+            tests/test_structured_output.py \
+            tests/test_submit_gitignore.py \
+            tests/test_suffix_bench_methodology.py \
+            tests/test_suffix_decoding_tier.py \
+            tests/test_tempfile_safe.py \
+            tests/test_think_scaffold_roundtrip.py \
+            tests/test_think_scaffold_symmetry.py \
+            tests/test_tmax_merge_vision.py \
+            tests/test_tokenizer_gemma4_hybrid.py \
+            tests/test_tool_call_promotion.py \
+            tests/test_tool_calling.py \
+            tests/test_tool_injection.py \
+            tests/test_tool_logits.py \
+            tests/test_tool_logits_schema_guards.py \
+            tests/test_tool_param_enforcement_f141a.py \
+            tests/test_tool_parser_coverage.py \
+            tests/test_tool_parser_wire_formats.py \
+            tests/test_tool_parsers.py \
+            tests/test_tui_extra_gate.py \
+            tests/test_tui_workers_pin.py \
+            tests/test_upgrade_cli.py \
+            tests/test_validate_release_subject.py \
+            tests/test_version_check.py \
+            tests/test_vibethinker_function_xml.py \
+            tests/test_xfail_audit.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \
@@ -147,6 +271,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[vision]"
           pip install pytest pytest-asyncio
+          # test-only dep: test_metrics_route parses /metrics output via the
+          # prometheus_client parser; production code deliberately avoids it.
+          pip install prometheus-client
 
       - name: Verify Apple Silicon
         run: |
@@ -158,19 +285,158 @@ jobs:
         # test_llm.py, test_deltanet_snapshot.py went with it.
         # test_memory_cache exercises mlx-importing code paths so it
         # lives here, not in the Linux test-matrix job.
+        # List rebuilt 2026-10-30 (docs/plans/ci-test-coverage-2026-10-30.md):
+        # every file whose import closure needs mlx (direct or transitive)
+        # plus files that only fail on Linux for mlx/AS-provided deps.
+        # tests/integrations/test_{anthropic_sdk,pydantic_ai_full,smolagents_full}.py
+        # are script-style gauntlets (zero pytest functions; need their SDKs
+        # and a live server) — run via `make release-check-m3`, not this gate.
         run: |
           pytest \
-            tests/test_server.py \
-            tests/test_paged_cache.py \
-            tests/test_memory_cache.py \
-            tests/test_optimizations.py \
+            tests/test_447_stream_tool_choice_auto.py \
+            tests/test_anthropic_output_config.py \
+            tests/test_anthropic_route_auth.py \
+            tests/test_anthropic_route_streaming.py \
+            tests/test_anthropic_route_thinking_gate.py \
+            tests/test_anthropic_spec_polish_bundle.py \
+            tests/test_anthropic_stop_sequences.py \
+            tests/test_anthropic_stream_finalize.py \
+            tests/test_anthropic_stream_reasoning.py \
+            tests/test_anthropic_streaming_reasoning.py \
+            tests/test_anthropic_tool_param_validation.py \
+            tests/test_anthropic_tool_usage_d.py \
+            tests/test_anthropic_tool_validation_scope.py \
+            tests/test_api_utils.py \
+            tests/test_api_validation_bundle.py \
+            tests/test_batched_engine_chat_template.py \
+            tests/test_batched_engine_mllm_fallback.py \
+            tests/test_batched_engine_output_router.py \
+            tests/test_batched_engine_tool_call_normalization.py \
             tests/test_batching.py \
+            tests/test_batching_deterministic.py \
+            tests/test_body_receive_timeout.py \
+            tests/test_cache_routes.py \
+            tests/test_cancelled_requests_metric.py \
+            tests/test_capabilities_field.py \
+            tests/test_casual_chat_auto_disable_thinking.py \
+            tests/test_chat_logprobs_channel_routing.py \
+            tests/test_chat_route_forced_tool_prefix.py \
+            tests/test_chat_route_forced_tool_prefix_wiring.py \
+            tests/test_chat_route_tool_choice_enforcement.py \
+            tests/test_chat_route_tool_tag_leak.py \
+            tests/test_chat_streaming_guided.py \
+            tests/test_chat_streaming_no_reasoning_alias.py \
+            tests/test_chat_streaming_spec.py \
+            tests/test_chat_template_kwargs.py \
+            tests/test_chat_template_tool_call_arguments.py \
+            tests/test_clean_error_messages.py \
+            tests/test_cli_config_fidelity.py \
+            tests/test_cloud_router.py \
+            tests/test_completions_log_redaction.py \
+            tests/test_completions_response_format_json_schema.py \
+            tests/test_completions_response_format_logprobs.py \
+            tests/test_completions_spec_parity.py \
+            tests/test_config_and_middleware.py \
+            tests/test_context_length_exceeded.py \
+            tests/test_context_overflow_400.py \
             tests/test_continuous_batching.py \
-            tests/test_streaming_simulator.py \
+            tests/test_cors_env_configurable.py \
+            tests/test_cors_lockdown_response_shape.py \
+            tests/test_d_anthro_validation.py \
+            tests/test_ddtree_eligibility.py \
+            tests/test_deepseek_v32_indexer_gate.py \
+            tests/test_dense_sampler_fastpath.py \
+            tests/test_dequantize_cache.py \
+            tests/test_dflash_adapter_signature.py \
+            tests/test_disconnect_counter_prod_shape.py \
+            tests/test_disconnect_guard_aborts_scheduler.py \
+            tests/test_disk_kv_checkpoint.py \
+            tests/test_enable_thinking_prompt_accounting.py \
+            tests/test_enable_thinking_warning_header.py \
+            tests/test_engine_router_non_stream.py \
+            tests/test_engine_step_thread.py \
+            tests/test_generation_config_loader.py \
+            tests/test_harmony_stop_final_channel_only.py \
+            tests/test_healthz_perf_budget.py \
+            tests/test_honest_metrics.py \
+            tests/test_idle_event_wakeup.py \
+            tests/test_image_aware_cache_keys.py \
+            tests/test_image_block_requires_vision_model.py \
+            tests/test_internal_route_auth.py \
+            tests/test_kv_cache_dtype_metrics.py \
+            tests/test_kv_cache_position_ids.py \
+            tests/test_lone_surrogate_validator.py \
+            tests/test_max_tokens_resolver.py \
+            tests/test_memory_stability.py \
+            tests/test_metal_cap_enforcement.py \
+            tests/test_metal_error_recovery.py \
+            tests/test_metrics_route.py \
+            tests/test_modality_field.py \
+            tests/test_model_auto_config.py \
+            tests/test_model_registry.py \
+            tests/test_mtp_cli_wiring.py \
+            tests/test_mtp_inject_and_install.py \
+            tests/test_mtp_state_release.py \
+            tests/test_mtp_tape_rollback.py \
+            tests/test_optimizations.py \
+            tests/test_orphan_tool_validation.py \
+            tests/test_paged_cache_real_model.py \
+            tests/test_paired_compat.py \
+            tests/test_per_request_thinking_budget.py \
+            tests/test_prefix_boundary_path_parity.py \
+            tests/test_probe_fastpath.py \
+            tests/test_r12_4_strict_json_schema_constraint_matrix.py \
+            tests/test_r12_h06_repair_context_guard.py \
+            tests/test_r12_m3_responses_stream_leading_items_order.py \
+            tests/test_r12_reasoning_sanitizer_required.py \
+            tests/test_r15_routes_stability_batch.py \
+            tests/test_ready_banner_timing.py \
+            tests/test_reasoning_content_null_rescue.py \
+            tests/test_reasoning_effort_translation.py \
+            tests/test_reasoning_parser_truncation_finalize.py \
+            tests/test_request_body_size_limit.py \
+            tests/test_request_cancellation.py \
+            tests/test_response_format_json_schema_strict.py \
+            tests/test_responses_591_followups.py \
+            tests/test_responses_budget_exhaust_streaming.py \
+            tests/test_responses_bundle.py \
+            tests/test_responses_chat_template_kwargs.py \
+            tests/test_responses_engine_failure_envelope.py \
+            tests/test_responses_param_validation.py \
+            tests/test_responses_route.py \
+            tests/test_responses_sse_event_order.py \
+            tests/test_route_engine_contract.py \
+            tests/test_routes.py \
+            tests/test_routes_cached_tokens.py \
+            tests/test_routes_models.py \
+            tests/test_routes_models_effective_parsers.py \
+            tests/test_rst_mid_sse_zombie_kv.py \
+            tests/test_runtime_cache_path.py \
+            tests/test_sampler_fast_path.py \
+            tests/test_sampling_param_finite_range.py \
+            tests/test_sampling_params_passthrough.py \
+            tests/test_sampling_validation.py \
+            tests/test_scheduler_stop_decoder_surface.py \
+            tests/test_seed_reproducibility.py \
+            tests/test_serve_listen_fd.py \
+            tests/test_serve_port_collision.py \
+            tests/test_server_api_key_env_fallback.py \
+            tests/test_server_auth_ordering.py \
+            tests/test_server_load_model_order.py \
+            tests/test_server_utils.py \
+            tests/test_sse_keepalive.py \
+            tests/test_stop_matcher_completions.py \
+            tests/test_stop_string_enforcement.py \
+            tests/test_stream_include_usage_honored.py \
             tests/test_streaming_detokenizer.py \
-            tests/test_tool_logits.py \
-            tests/test_conformance.py \
-            tests/test_diffusion_engine.py \
+            tests/test_streaming_pipeline_integration.py \
+            tests/test_suffix_decoding.py \
+            tests/test_text_only_media_gate.py \
+            tests/test_tool_choice_enforcement.py \
+            tests/test_tool_param_enforcement.py \
+            tests/test_tool_result_content_array.py \
+            tests/test_tools_auto_disable_thinking.py \
+            tests/test_truncation_no_synthetic_text.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

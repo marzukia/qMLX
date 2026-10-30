@@ -26,6 +26,7 @@ from vllm_mlx._completion import alias_completer
 # (set to an empty string to disable the mirror and force HF Hub).
 MIRROR_DEFAULT = "https://models.rapidmlx.com"
 
+
 def _log_level_choice(value: str) -> str:
     """Argparse ``type`` callable: normalize to upper-case so
     ``--log-level info`` is accepted as ``INFO``. Named (not a lambda)
@@ -709,9 +710,9 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         ui.panel(
             "Error: Insufficient disk space",
             [
-                "[bold]Model size:[/] " f"{model_size_gb:>7.1f} GB",
-                "[bold]Free space:[/] " f"{available_gb:>7.1f} GB  ({probe})",
-                "[bold]Need to free:[/] " f"{need_to_free_gb:>7.1f} GB",
+                f"[bold]Model size:[/] {model_size_gb:>7.1f} GB",
+                f"[bold]Free space:[/] {available_gb:>7.1f} GB  ({probe})",
+                f"[bold]Need to free:[/] {need_to_free_gb:>7.1f} GB",
                 "",
                 "Suggestions:",
                 "  - Free disk space, or set HF_HOME to a drive with more room",
@@ -1087,11 +1088,11 @@ def _check_memory_capacity(model_name: str) -> None:
         plain_lines += [
             "  !! Memory pressure warning: "
             "this model is likely too large for your hardware.",
-            "  Continuing may trigger a macOS kernel panic " "(see issue #324).",
+            "  Continuing may trigger a macOS kernel panic (see issue #324).",
         ]
     else:
         plain_lines.append(
-            "  Memory pressure note: " "this model uses a large fraction of system RAM."
+            "  Memory pressure note: this model uses a large fraction of system RAM."
         )
     plain_lines += [
         "",
@@ -1118,8 +1119,7 @@ def _check_memory_capacity(model_name: str) -> None:
         ]
     else:
         plain_lines.append(
-            "  If you see crashes or kernel panics, try: "
-            "--gpu-memory-utilization 0.85"
+            "  If you see crashes or kernel panics, try: --gpu-memory-utilization 0.85"
         )
     plain_lines.append("")
 
@@ -1130,8 +1130,7 @@ def _check_memory_capacity(model_name: str) -> None:
             "this model is likely too large for your hardware."
         )
         body.append(
-            "[dim]Continuing may trigger a macOS kernel panic "
-            "(see issue #324).[/dim]"
+            "[dim]Continuing may trigger a macOS kernel panic (see issue #324).[/dim]"
         )
     else:
         body.append(
@@ -1162,7 +1161,7 @@ def _check_memory_capacity(model_name: str) -> None:
         ]
     else:
         body.append(
-            "If you see crashes or kernel panics, try: " "--gpu-memory-utilization 0.85"
+            "If you see crashes or kernel panics, try: --gpu-memory-utilization 0.85"
         )
     ui.panel(
         "Memory pressure",
@@ -1853,8 +1852,7 @@ def _render_config_dump(
     if getattr(args, "spec_decode", "none") == "mtp":
         dump(
             "MTP",
-            f"enabled via --speculative-config, "
-            f"max_k={getattr(args, 'mtp_max_k', 1)}",
+            f"enabled via --speculative-config, max_k={getattr(args, 'mtp_max_k', 1)}",
         )
         # Native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990. The
         # config-only entrypoint is ``--speculative-config
@@ -2805,9 +2803,9 @@ def serve_command(args):
         _profile = resolve_profile(_alias_name)
         # The eligibility check at top of serve_command guarantees this
         # passes — assert to be defensive against future refactors.
-        assert (
-            _profile is not None and _profile.supports_dflash
-        ), f"DFlash profile invariant violated for {_alias_name!r}"
+        assert _profile is not None and _profile.supports_dflash, (
+            f"DFlash profile invariant violated for {_alias_name!r}"
+        )
         # The vLLM-style surface uses ``model`` for the drafter override.
         run_dflash_server(
             main_model_repo=_profile.hf_path,
@@ -2832,9 +2830,9 @@ def serve_command(args):
         _profile = getattr(args, "_ddtree_profile", None)
         if _alias_name is None or _profile is None:
             _alias_name, _profile = _preflight_ddtree_or_exit(args)
-        assert (
-            _profile is not None and _profile.supports_ddtree
-        ), f"DDTree profile invariant violated for {_alias_name!r}"
+        assert _profile is not None and _profile.supports_ddtree, (
+            f"DDTree profile invariant violated for {_alias_name!r}"
+        )
         assert _profile.ddtree_draft_model is not None
         assert _profile.ddtree_speculative_tokens is not None
         assert _profile.ddtree_tree_budget is not None
