@@ -71,6 +71,7 @@ class MTPAcceptSnapshot:
     attempts: int
     accepts: int
     tokens_saved: int
+    prefix_lengths: tuple[int, ...] = ()  # #107
 
     @property
     def accept_ratio(self) -> float:
@@ -128,6 +129,25 @@ class MTPAcceptCounter:
         self._attempts = 0
         self._accepts = 0
         self._tokens_saved = 0
+        self._prefix = [0] * 6
+
+    def record_prefix(self, accepted: int) -> None:
+        """Record how many of this round's 5 draft positions were accepted.
+
+        #107: the per-round accepted count is the raw material for the
+        MTP prefix-length distribution (``qmlx_spec_decode_prefix_len``)
+        — the generator already knows it at the record point, so the
+        distribution rides the counter's existing lock and is rendered
+        from the same snapshot.
+
+        ``accepted`` is clamped to ``[0, 5]``: a chain can never
+        accept more than its 5 draft positions, and a negative count
+        is a caller bug we absorb rather than corrupt the
+        distribution with.
+        """
+        pos = min(5, max(0, int(accepted)))
+        with self._lock:
+            self._prefix[pos] += 1
 
     # ---- recording side --------------------------------------------------
 
@@ -185,7 +205,19 @@ class MTPAcceptCounter:
                 attempts=self._attempts,
                 accepts=self._accepts,
                 tokens_saved=self._tokens_saved,
+                prefix_lengths=tuple(self._prefix),
             )
+
+    @property
+    def prefix_lengths(self) -> tuple[int, ...]:
+        """#107: per-round accepted-count distribution — length 6,
+        bucket ``i`` = rounds with exactly ``i`` accepted draft
+        positions (0 = round where the first draft was rejected,
+        5 = full-K round). Same lock, so a concurrent
+        :meth:`record_prefix` lands fully before or fully after the
+        read."""
+        with self._lock:
+            return tuple(self._prefix)
 
     # ---- test-only -------------------------------------------------------
 
@@ -201,6 +233,7 @@ class MTPAcceptCounter:
             self._attempts = 0
             self._accepts = 0
             self._tokens_saved = 0
+            self._prefix = [0] * 6
 
 
 # ---------------------------------------------------------------------------

@@ -412,6 +412,13 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     * ``qmlx_spec_decode_tokens_saved_total`` — Cumulative bonus
       tokens emitted from draft acceptance. Equals ``accepts`` for
       chain MTP; tree MTP would let this exceed ``accepts``.
+    * ``qmlx_spec_decode_prefix_len`` — #107: one counter per bucket
+      ``prefix_len=0..5`` — MTP rounds with exactly that many
+      accepted draft positions. The per-round accepted-count
+      distribution behind ``accept_ratio``; sum over buckets =
+      rounds recorded. Mass at 0-1 says the EV controller should
+      lower K, mass at the top bucket says it has headroom to
+      raise it.
     * ``qmlx_spec_decode_accept_ratio`` — ``accepts / attempts``
       as a gauge (0.0 when attempts==0, never NaN). The lossless
       contract surface — dashboards alert on this dropping below 0.80
@@ -542,6 +549,34 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             labels=common_labels,
         )
     )
+
+    # #107: prefix-length distribution — how many of the round's K
+    # draft positions were actually accepted. The accept_ratio gauge
+    # averages this away; the distribution is what shows whether the
+    # EV controller should raise K (mass at the top bucket = chain
+    # headroom) or lower it (mass at 0-1 = drafts rejected up front,
+    # wasting verify passes). One counter per bucket len=0..5, from
+    # the same lock-guarded snapshot as the counters above (no sticky
+    # accumulator — the counter is process-monotonic).
+    prefix = getattr(snapshot, "prefix_lengths", None)
+    if prefix:
+        for _i in range(6):
+            out.extend(
+                _fmt_metric(
+                    "qmlx_spec_decode_prefix_len",
+                    "counter",
+                    (
+                        "MTP rounds with exactly prefix_len accepted "
+                        "draft positions (0 = round where the first "
+                        "draft was rejected). The per-round accepted-"
+                        "count distribution behind qmlx_spec_decode_"
+                        "accept_ratio; sum over buckets = rounds "
+                        "recorded."
+                    ),
+                    int(prefix[_i]),
+                    labels={**common_labels, "prefix_len": str(_i)},
+                )
+            )
 
     # 0.9.13 PR-B controller-side counters. Read directly from the
     # DepthController registry so a K=0 park round is observable even

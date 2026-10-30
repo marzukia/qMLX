@@ -136,3 +136,5 @@ kv_checkpoints/
 
 # Ruff cache
 .ruff_cache/
+.git-objstore/
+.packtmp/

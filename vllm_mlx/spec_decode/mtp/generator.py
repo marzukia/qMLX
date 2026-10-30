@@ -977,6 +977,10 @@ def mtp_generate_step(
 
             round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
             _record_round(k_len, round_wall_ms, accepts_for_record)
+            # #107: per-round accepted-count distribution for the
+            # qmlx_spec_decode_prefix_len metric — same accepted_count
+            # the EOS holdout caps for emission.
+            accept_counter.record_prefix(accepted_count)
 
             # Emit the accepted drafts (capped at EOS position when set).
             for i in range(accepted_count):
