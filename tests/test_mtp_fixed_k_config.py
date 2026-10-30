@@ -15,8 +15,8 @@ Pinned here:
 2. ``SchedulerConfig.mtp_fixed_k`` -> ``_install_mtp_vendored`` ->
    the step-call kwarg; the config pin takes precedence over the
    #111 ``QMLX_MTP_FIXED_K`` env gate (which becomes the fallback).
-3. Boot validation covers the config pin: ``1 <= fixed_k <= max_k``
-   with an actionable error, not mid-stream.
+3. Boot validation covers the config pin: ``0 <= fixed_k <= max_k``
+   (0 = park every round) with an actionable error, not mid-stream.
 4. The k_len ACTUALLY RUN under ``disable_auto_k`` +
    ``num_speculative_tokens=N`` (N=2): one mtp_forward per round —
    chain-of-1, not chain-of-2 (this issue is a step-counter catch,
@@ -295,15 +295,37 @@ def test_no_pin_no_kwarg(_mlx_stubs, monkeypatch, caplog):
 def test_config_pin_boot_validation(_mlx_stubs, monkeypatch, caplog):
     import pytest as _pt
 
-    with _pt.raises(ValueError, match=r"mtp_fixed_k=4 must lie in \[1, max_k=3\]"):
+    with _pt.raises(ValueError, match=r"mtp_fixed_k=4 must lie in \[0, max_k=3\]"):
         _install_step(monkeypatch, caplog, env={}, fixed_k=4)
 
 
 def test_env_gate_boot_validation_still_names_env(_mlx_stubs, monkeypatch, caplog):
     import pytest as _pt
 
-    with _pt.raises(ValueError, match=r"QMLX_MTP_FIXED_K=4 must lie in \[1, max_k=3\]"):
+    with _pt.raises(ValueError, match=r"QMLX_MTP_FIXED_K=4 must lie in \[0, max_k=3\]"):
         _install_step(monkeypatch, caplog, env={"QMLX_MTP_FIXED_K": "4"})
+
+
+def test_config_pin_zero_parks_every_round_at_boot(_mlx_stubs, monkeypatch, caplog):
+    """fixed_k=0 (park every round) passes boot validation and reaches
+    the step call — the generator's [0, max_k] contract (per #53) is
+    the upper-bound gate; the runtime park branch is K=0."""
+    captured, caplog = _install_step(monkeypatch, caplog, env={}, fixed_k=0)
+    assert captured["fixed_k"] == 0
+    assert "fixed depth pinned: mtp_fixed_k=0" in caplog.text
+
+
+def test_env_gate_zero_passes_boot_validation(_mlx_stubs, monkeypatch, caplog):
+    captured, caplog = _install_step(monkeypatch, caplog, env={"QMLX_MTP_FIXED_K": "0"})
+    assert captured["fixed_k"] == 0
+    assert "fixed depth pinned: QMLX_MTP_FIXED_K=0" in caplog.text
+
+
+def test_config_pin_negative_still_rejected_at_boot(_mlx_stubs, monkeypatch, caplog):
+    import pytest as _pt
+
+    with _pt.raises(ValueError, match=r"mtp_fixed_k=-1 must lie in \[0, max_k=3\]"):
+        _install_step(monkeypatch, caplog, env={}, fixed_k=-1)
 
 
 # ----------------------------------------------------------------------

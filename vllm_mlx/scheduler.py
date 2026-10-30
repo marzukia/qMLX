@@ -2015,7 +2015,7 @@ def _install_mtp_vendored(
     # #111/#112: the fixed depth (explicit config pin per #112,
     # QMLX_MTP_FIXED_K env stopgap per #111) is validated at BOOT
     # (construction time), not mid-stream — reusing the #53
-    # construction-time contract: a fixed_k outside [1, max_k] fails
+    # construction-time contract: a fixed_k outside [0, max_k] fails
     # here with an actionable error rather than on the first
     # request's generator build. The config pin takes precedence;
     # the env gate is the fallback when no pin is configured.
@@ -2039,8 +2039,8 @@ def _install_mtp_vendored(
             if _fixed_k_source == "QMLX_MTP_FIXED_K"
             else "mtp_fixed_k"
         )
-        if not 1 <= _fixed_k_boot <= max_k:
-            raise ValueError(f"{_name}={_fixed_k_boot} must lie in [1, max_k={max_k}]")
+        if not 0 <= _fixed_k_boot <= max_k:
+            raise ValueError(f"{_name}={_fixed_k_boot} must lie in [0, max_k={max_k}]")
         logger.info(
             "[MTP-vendored] fixed depth pinned: %s=%d (source: %s; "
             "EV controller bypassed; unset = controller behaviour).",

@@ -16,7 +16,7 @@ Pinned here:
 
 1. Unset env = no ``fixed_k`` kwarg on the step call (behaviour
    identical to pre-#111); set env forwards the value.
-2. ``1 <= QMLX_MTP_FIXED_K <= max_k`` is validated at BOOT
+2. ``0 <= QMLX_MTP_FIXED_K <= max_k`` is validated at BOOT
    (install time) with an actionable error — a bad value fails at
    construction, not mid-stream (#53 contract).
 3. The #53 generator construction-time contract still holds
@@ -271,15 +271,14 @@ def _install_only(monkeypatch, caplog, env, max_k=3):
 
 
 # ----------------------------------------------------------------------
-# 2. Boot validation: 1 <= QMLX_MTP_FIXED_K <= max_k
+# 2. Boot validation: 0 <= QMLX_MTP_FIXED_K <= max_k
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "env_val, max_k, match",
     [
-        ("0", 3, r"QMLX_MTP_FIXED_K=0 must lie in \[1, max_k=3\]"),
-        ("4", 3, r"QMLX_MTP_FIXED_K=4 must lie in \[1, max_k=3\]"),
-        ("3", 2, r"QMLX_MTP_FIXED_K=3 must lie in \[1, max_k=2\]"),
-        ("-1", 3, r"QMLX_MTP_FIXED_K=-1 must lie in \[1, max_k=3\]"),
+        ("4", 3, r"QMLX_MTP_FIXED_K=4 must lie in \[0, max_k=3\]"),
+        ("3", 2, r"QMLX_MTP_FIXED_K=3 must lie in \[0, max_k=2\]"),
+        ("-1", 3, r"QMLX_MTP_FIXED_K=-1 must lie in \[0, max_k=3\]"),
         ("abc", 3, r"QMLX_MTP_FIXED_K must be an integer, got 'abc'"),
     ],
 )
@@ -294,7 +293,7 @@ def test_boot_validation_rejects_bad_values(
         _install_only(monkeypatch, caplog, {"QMLX_MTP_FIXED_K": env_val}, max_k)
 
 
-@pytest.mark.parametrize("env_val, max_k", [("2", 3), ("3", 3), ("1", 5)])
+@pytest.mark.parametrize("env_val, max_k", [("0", 3), ("2", 3), ("3", 3), ("1", 5)])
 def test_boot_validation_accepts_in_range(
     _mlx_stubs, monkeypatch, caplog, env_val, max_k
 ):
