@@ -2476,6 +2476,10 @@ def serve_command(args):
         _gpu_mem = getattr(args, "gpu_memory_utilization", _GPU_MEM_DEFAULT)
         if _gpu_mem is not None and abs(_gpu_mem - _GPU_MEM_DEFAULT) > 1e-6:
             _dflash_ignored.append("--gpu-memory-utilization")
+        if getattr(args, "metal_residency_gb", None) is not None:
+            _dflash_ignored.append("--metal-residency-gb")
+        if getattr(args, "wired_limit_gb", None) is not None:
+            _dflash_ignored.append("--wired-limit-gb")
         if getattr(args, "enable_auto_tool_choice", False):
             _dflash_ignored.append("--enable-auto-tool-choice")
         if getattr(args, "tool_call_parser", None):
@@ -2506,6 +2510,10 @@ def serve_command(args):
         _gpu_mem = getattr(args, "gpu_memory_utilization", _GPU_MEM_DEFAULT)
         if _gpu_mem is not None and abs(_gpu_mem - _GPU_MEM_DEFAULT) > 1e-6:
             _ddtree_ignored.append("--gpu-memory-utilization")
+        if getattr(args, "metal_residency_gb", None) is not None:
+            _ddtree_ignored.append("--metal-residency-gb")
+        if getattr(args, "wired_limit_gb", None) is not None:
+            _ddtree_ignored.append("--wired-limit-gb")
         if getattr(args, "enable_auto_tool_choice", False):
             _ddtree_ignored.append("--enable-auto-tool-choice")
         if getattr(args, "tool_call_parser", None):
@@ -2912,6 +2920,8 @@ def serve_command(args):
             force_mllm=args.mllm,
             force_text=args.no_mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
+            metal_residency_gb=args.metal_residency_gb,
+            wired_limit_gb=args.wired_limit_gb,
             cloud_model=args.cloud_model,
             cloud_threshold=args.cloud_threshold,
             cloud_api_base=args.cloud_api_base,
@@ -6051,6 +6061,48 @@ Examples:
         help="Fraction of device memory for Metal allocation limit and emergency "
         "cache clear threshold (0.0-1.0, default: 0.90). Increase to 0.95 for "
         "large models (200GB+) that need more memory headroom.",
+    )
+    serve_parser.add_argument(
+        "--metal-residency-gb",
+        type=float,
+        default=None,
+        help="Decouple the Metal weight-residency hint from the "
+        "--gpu-memory-utilization admission cap (16GB Apple Silicon; "
+        "MTPLX --allow-swap equivalent). When unset (default) the "
+        "residency hint equals the admission cap (util x working set): "
+        "a model whose weights fit under the cap stays FULLY resident, "
+        "so on a 16GB Mac a ~10.4GB model OOMs 8K prefill at util 1.0 "
+        "(weights + prefill peak exceed the working set) while at "
+        "util 0.90 the D-METAL-CAP gate rejects every request "
+        "(weights >= cap). Set this BELOW the weight size (e.g. "
+        "--metal-residency-gb 9.5 --gpu-memory-utilization 1.0) to "
+        "allow partial weight residency — weights page out while the "
+        "admission cap stays at util x working set. Must be <= "
+        "--gpu-memory-utilization x working set (validated at startup).",
+    )
+    serve_parser.add_argument(
+        "--wired-limit-gb",
+        type=float,
+        default=None,
+        help="Per-process GPU WIRED (resident) limit in GB — "
+        "ENFORCEMENT, not a hint (16GB Apple Silicon; the MTPLX "
+        "process-wired-limit mechanism). --metal-residency-gb is an "
+        "advisory allocator hint: the Metal allocator treats it as "
+        "decorative for the wired working set, so a ~10.4GB weight "
+        "set stays fully wired at 9.5G AND 8.0G and the first "
+        "generation-step eval OOMs "
+        "(kIOGPUCommandBufferCallbackErrorOutOfMemory). Above the "
+        "wired limit the OS pages weight memory out to RAM/swap "
+        "(lazy re-wire on the next submit — the MTPLX "
+        "--allow-swap survival mechanism: 9.99GB active under a "
+        "12.17GB peak at a 12GB budget). Set at or below the weight "
+        "size (e.g. --wired-limit-gb 8.0 with "
+        "--gpu-memory-utilization 1.0). Must be > 0 (validated at "
+        "startup); clamped to the system max recommended working "
+        "set (MLX refuses a wired limit above it — a refused limit "
+        "wires nothing). Default None = no wired limit (no behavior "
+        "change). Metal-first: ignored with a warning on backends "
+        "without a wired-limit API.",
     )
     # Paged cache options (experimental)
     serve_parser.add_argument(
