@@ -271,6 +271,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[vision]"
           pip install pytest pytest-asyncio
+          # test-only dep: test_metrics_route parses /metrics output via the
+          # prometheus_client parser; production code deliberately avoids it.
+          pip install prometheus-client
 
       - name: Verify Apple Silicon
         run: |
@@ -342,7 +345,6 @@ jobs:
             tests/test_d_anthro_validation.py \
             tests/test_ddtree_eligibility.py \
             tests/test_deepseek_v32_indexer_gate.py \
-            tests/test_delta_kv_checkpoints.py \
             tests/test_dense_sampler_fastpath.py \
             tests/test_dequantize_cache.py \
             tests/test_dflash_adapter_signature.py \

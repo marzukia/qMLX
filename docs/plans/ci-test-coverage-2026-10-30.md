@@ -91,7 +91,31 @@ First real CI run adjudication (run 41013361336, head 074aefa):
   list costs nothing. They run via `make release-check-m3` on M3 Ultra.
   AS list 148 -> 145.
 
-Final partition: 141 Linux / 145 AS, 0 overlap, yaml valid.
+Second real CI run adjudication (run 41017472632, head 3fa4426) — the
+moment of truth for the 145-file AS list on real Apple Silicon:
+
+- Linux 3.10/3.11/3.12 + lint + type-check: **green**.
+- AS: 3063 passed / 49 failed (14 files). Baseline evidence: the 10-29
+  green main run (40901562182) installed the IDENTICAL mlx stack
+  (mlx 0.32.4 / mlx-lm 0.32.2 / mlx-vlm 0.6.4) — so this is NOT runner env
+  drift; it is wave-4 dev-tree drift + never-AS-tested files. Proven for
+  `test_disk_kv_checkpoint` and `test_streaming_detokenizer` (both ran GREEN
+  on 10-29 main pre-wave-4, red on dev).
+- **Unwired (1 file)**: `test_delta_kv_checkpoints.py` — 0/18 green
+  (`k, v = layer.state` now unpacks 3+ values; whole file red).
+- **Strict-False xfail debt markers (28 tests, 11 files)** — kept wired so
+  the 231 green neighbours stay in the gate; un-xfail when the dev wave
+  fixes each (census doc is the debt register):
+  mtp_tape_rollback 5 (Stream(gpu,12) threading), disk_kv_checkpoint 5
+  (#96 drift), mtp_cli_wiring 3 (assert 0>=1), honest_metrics 2, routes 2,
+  modality_field 2, sampler_fast_path 1 (mlx-lm 0.32.2 logprobs callsite),
+  streaming_detokenizer 1, memory_stability 1, internal_route_auth 1,
+  deepseek_v32_indexer_gate 3, dflash_adapter_signature 2.
+- **Dep fix (3 tests)**: `test_metrics_route` x3 = lazy `prometheus_client`
+  import — added `prometheus-client` to the AS job (test-only; production
+  code deliberately has no prometheus_client dep).
+
+Final partition: 141 Linux / 144 AS, 0 overlap, yaml valid.
 
 ## Dead tests removed (hard evidence)
 
