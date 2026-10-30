@@ -19,6 +19,10 @@ seam member                     current call-site expression
                                     mx.device_info().get("memory_size",
                                     0))``
 ``set_memory_limit(n)``           ``mx.set_memory_limit(n)``
+``set_wired_limit(n)``            ``mx.set_wired_limit(n)``
+                                  (fallback ``mx.metal.set_wired_limit(n)``
+                                  on older MLX — the deprecated name,
+                                  same fallback MTPLX uses)
 ``set_cache_limit(n)``            ``mx.set_cache_limit(n)``
 ``memory_stats()``                ``mx.get_active_memory()`` /
                                 ``mx.get_peak_memory()`` /
@@ -118,6 +122,39 @@ class MetalBackend:
         """Parity: ``mx.set_memory_limit(n)`` (HINT — see class
         ``enforcement_mode``)."""
         self._mx_().set_memory_limit(limit_bytes)
+
+    def set_wired_limit(self, limit_bytes: int) -> None:
+        """Per-process GPU wired (resident) cap — the separate axis
+        behind ``--wired-limit-gb`` (carbon parity journal D23.1).
+
+        Unlike ``set_memory_limit`` (an allocation budget the HINT
+        allocator treats as a guideline and overgrows — the 16GB
+        OOM failure), the wired limit bounds the RESIDENT (wired)
+        GPU pool: above it, the OS pages weight memory out to
+        RAM/swap and it re-establishes lazily on the next submit
+        (the partial-weight-residency mechanism MTPLX uses to run a
+        ~10GB model on a 16GB Mac). MLX refuses a limit above the
+        system's ``max_recommended_working_set_size`` (a refused
+        limit wires nothing), so callers clamp first.
+
+        Parity: ``mx.set_wired_limit(n)`` — prefers the top-level
+        API; falls back to the deprecated ``mx.metal.set_wired_limit``
+        on older MLX builds (same fallback MTPLX uses).
+
+        Raises:
+            AttributeError: neither API is present (ported build
+                without a wired-limit concept).
+        """
+        mx = self._mx_()
+        setter = getattr(mx, "set_wired_limit", None)
+        if not callable(setter):
+            metal = getattr(mx, "metal", None)
+            metal_setter = getattr(metal, "set_wired_limit", None)
+            if not callable(metal_setter):
+                raise AttributeError("mlx wired-limit API unavailable")
+            metal_setter(limit_bytes)
+            return
+        setter(limit_bytes)
 
     def set_cache_limit(self, limit_bytes: int) -> None:
         """Parity: ``mx.set_cache_limit(n)``."""

@@ -137,6 +137,7 @@ class FakeMx:
         self._tls_api = new_thread_local_stream_api
         self._memory_limit = None
         self._cache_limit = None
+        self._wired_limit = None
         if new_thread_local_stream_api:
             self.new_thread_local_stream = self._new_thread_local_stream
         if fast_kernels:
@@ -181,6 +182,9 @@ class FakeMx:
 
     def set_memory_limit(self, n):
         self._memory_limit = n
+
+    def set_wired_limit(self, n):
+        self._wired_limit = n
 
     def set_cache_limit(self, n):
         self._cache_limit = n
@@ -285,6 +289,16 @@ def test_memory_limit_parity():
     b.set_cache_limit(5678)
     assert mx._memory_limit == 1234
     assert mx._cache_limit == 5678
+
+
+def test_wired_limit_parity():
+    """D23.1: the per-process GPU wired (resident) cap routes to
+    ``mx.set_wired_limit`` exactly (the MTPLX survival mechanism —
+    see ``test_wired_limit.py``)."""
+    mx = FakeMx()
+    b = MetalBackend(mx=mx)
+    b.set_wired_limit(9876)
+    assert mx._wired_limit == 9876
 
 
 def test_enforcement_mode_declared():
@@ -493,3 +507,7 @@ def test_parity_against_real_mlx():
     assert caps.quantized_kv == (hasattr(mx, "quantize") and hasattr(mx, "dequantize"))
     assert caps.compile_through == hasattr(mx, "compile")
     assert caps.async_eval == hasattr(mx, "async_eval")
+    # D23.1: the wired-limit setter routes to the live device (a 1 GiB
+    # limit is safely under any real machine's maximum — no clamp).
+    if hasattr(mx, "set_wired_limit"):
+        b.set_wired_limit(1 * 2**30)
