@@ -394,6 +394,7 @@ def test_serve_local_path_sets_offline_pin(
     args.model = str(model_dir)
     args.max_tokens = None
     args.watchdog_ppid = None
+    args.max_context_length = 0
 
     with (
         patch.object(cli, "_ensure_model_downloaded", side_effect=_stop),
@@ -424,6 +425,7 @@ def test_serve_local_path_bad_dir_exits_before_load(
     args.model = str(bad)
     args.max_tokens = None
     args.watchdog_ppid = None
+    args.max_context_length = 0
 
     with (
         patch(

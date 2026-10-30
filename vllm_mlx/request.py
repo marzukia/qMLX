@@ -170,6 +170,11 @@ class Request:
     # spec (consumed by the diffusion scheduler path).
     has_tools: bool = False
 
+    # Prompt-integrity hint (issue #56): lossy prompt transforms must be
+    # skipped for this request; vision requests carry their media key so
+    # a changed image never reuses stale KV.
+    requires_prompt_integrity: bool = False
+
     # Paged cache fields (for BlockAwarePrefixCache)
     block_table: Optional["BlockTable"] = None  # Block table for paged cache
     shared_prefix_blocks: int = 0  # Number of shared prefix blocks
