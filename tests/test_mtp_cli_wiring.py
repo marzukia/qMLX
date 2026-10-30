@@ -1425,7 +1425,7 @@ def _make_batch_gen_with_gb():
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): assert 0>=1 - MTP vendored gate fail-closed (codex round-A #1)",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): assert 0>=1 - MTP vendored gate fail-closed (codex round-A #1); strict=False",
 )
 def test_install_mtp_vendored_gate_fails_closed_on_missing_request_metadata(
     monkeypatch,
@@ -2127,7 +2127,7 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): assert 0>=1 - MTP non-greedy mid-stream fallback (codex round-L #3)",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): assert 0>=1 - MTP non-greedy mid-stream fallback (codex round-L #3); strict=False",
 )
 def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(
     monkeypatch,
@@ -2325,7 +2325,7 @@ def test_install_mtp_vendored_logits_processors_mid_stream_falls_back_to_orig_st
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): assert 0>=1 - MTP non-greedy soft-fallthrough (codex round-L #3)",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): assert 0>=1 - MTP non-greedy soft-fallthrough (codex round-L #3); strict=False",
 )
 def test_install_mtp_vendored_non_greedy_before_state_soft_fallthrough(monkeypatch):
     """Companion to round-H BLOCKING #2: when the request starts

@@ -431,7 +431,7 @@ def test_route_renders_prefill_kind_and_match(metrics_client):
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): kv-restore hit/miss route drift vs wave-4 disk-kv changes",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): kv-restore hit/miss route drift vs wave-4 disk-kv changes; strict=False",
 )
 def test_route_renders_kv_restore_hit_miss(metrics_client):
     metrics_client.cfg.engine = _fake_engine(
@@ -446,7 +446,7 @@ def test_route_renders_kv_restore_hit_miss(metrics_client):
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): kv-restore counter drift vs wave-4 disk-kv changes",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): kv-restore counter drift vs wave-4 disk-kv changes; strict=False",
 )
 def test_kv_restore_counter_sticky(metrics_client):
     """qmlx_kv_restore_total never decreases across a source reset."""

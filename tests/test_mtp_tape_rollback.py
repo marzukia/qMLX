@@ -494,7 +494,7 @@ class _FakeSSMModel:
 @pytest.mark.parametrize("accepted_count", [0, 1, 2, 3])
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): 'no Stream(gpu,12) in current thread' - MLX stream threading vs wave-4 engine change",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): 'no Stream(gpu,12) in current thread' - MLX stream threading vs wave-4 engine change; strict=False",
 )
 def test_k3_tape_rollback_position_audit(accepted_count):
     """Run one K=3 verify round against the fake-SSM target with the
@@ -578,7 +578,7 @@ def test_k3_tape_rollback_position_audit(accepted_count):
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): 'no Stream(gpu,12) in current thread' - MLX stream threading vs wave-4 engine change",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): 'no Stream(gpu,12) in current thread' - MLX stream threading vs wave-4 engine change; strict=False",
 )
 def test_k3_tape_invariant_fires_on_misrecorded_tape():
     """If a layer's chunk-split recorded the WRONG tape depth, the

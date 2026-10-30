@@ -115,6 +115,35 @@ moment of truth for the 145-file AS list on real Apple Silicon:
   import — added `prometheus-client` to the AS job (test-only; production
   code deliberately has no prometheus_client dep).
 
+Third real CI run adjudication (run 41019928986, head aa56e23):
+
+- AS suite fully green: 3063 passed / 0 failed (round-2 drift cleared:
+  18 unwired via test_delta_kv_checkpoints, 28 marked as debt, 3 fixed
+  by the prometheus-client dep).
+- **AS job exit 127 (latent list bug)**: the rebuilt AS file list was
+  missing the trailing backslash after
+  `tests/test_truncation_no_synthetic_text.py`, so the
+  `-v --tb=short -m "not slow" -k "not Integration"` flag lines ran as a
+  separate command (`-v`: command not found, exit 127). Latent because
+  while pytest itself was red (round 2, 49 failures) the step aborted
+  before reaching the flags. Fixed: backslash restored, flags apply as
+  designed.
+- **test-matrix 3.12 red (3.10/3.11 cancelled by fail-fast, same list)**:
+  the #320 gate `test_xfail_audit.py::test_every_xfail_is_justified` —
+  every non-strict xfail must justify itself with a `reason=` containing
+  the substring `strict=False`. All 28 debt markers now carry
+  `; strict=False` in the reason.
+- **Marker narrowed (1)**: `test_cache_info_does_not_leak_operator_path`
+  — round-3 AS shows only the `qmlx` needle fails (3 sibling needles
+  xpass); marker moved from the whole parametrized test onto the `qmlx`
+  param via `pytest.param(marks=...)`, so the register no longer mutes 3
+  passing cases.
+- **xpass note (pre-existing, untouched)**:
+  `TestDeterministicConcurrentRequests` carries a class-level non-strict
+  xfail from 165aaa8 (PR #306); `test_concurrent_same_prompt` xpasses on
+  AS, green under the non-strict marker. Dev-lane decision, not part of
+  this CI-gate PR.
+
 Final partition: 141 Linux / 144 AS, 0 overlap, yaml valid.
 
 ## Dead tests removed (hard evidence)

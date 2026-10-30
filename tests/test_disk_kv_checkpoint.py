@@ -174,7 +174,7 @@ def test_roundtrip_bf16_kv_cache_byte_identical(root: str):
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift ('int has no len'); green on main 10-29 pre-#96",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift ('int has no len'); green on main 10-29 pre-#96; strict=False",
 )
 def test_roundtrip_int4_quantized_kv_cache(root: str):
     """Write a QuantizedKVCache to disk, reload, assert state matches.
@@ -945,7 +945,7 @@ def test_lookup_falls_back_to_shorter_valid_prefix_when_longest_corrupt(root: st
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift (corrupt-checkpoint quarantine path); green on main 10-29 pre-#96",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift (corrupt-checkpoint quarantine path); green on main 10-29 pre-#96; strict=False",
 )
 def test_lookup_quarantines_corrupt_checkpoint(root: str):
     """After a lookup hits a HARD-corrupt longest checkpoint, that checkpoint
@@ -996,7 +996,7 @@ def _corrupt_tokens_blob_hard(root: str, req_hash: str, offset: int) -> str:
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift (corrupt-checkpoint lookup); green on main 10-29 pre-#96",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift (corrupt-checkpoint lookup); green on main 10-29 pre-#96; strict=False",
 )
 def test_lookup_returns_none_when_longest_and_fallback_both_corrupt(root: str):
     """Verify-on-fallback contract.
@@ -1026,7 +1026,7 @@ def test_lookup_returns_none_when_longest_and_fallback_both_corrupt(root: str):
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift (transient-failure soft-evict)",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift (transient-failure soft-evict); strict=False",
 )
 def test_transient_load_failure_soft_evicts_without_renaming(root: str, monkeypatch):
     """A TRANSIENT failure (``load_checkpoint`` returns None, e.g. a momentary
@@ -1065,7 +1065,7 @@ def test_transient_load_failure_soft_evicts_without_renaming(root: str, monkeypa
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift (transient-failure soft-evict)",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): #96 wave-4 disk-kv drift (transient-failure soft-evict); strict=False",
 )
 def test_transient_verify_io_error_soft_evicts_without_renaming(root: str):
     """A TRANSIENT verify failure classified ``io_error`` (a truncated / short

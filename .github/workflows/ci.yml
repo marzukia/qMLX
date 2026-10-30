@@ -436,7 +436,7 @@ jobs:
             tests/test_tool_param_enforcement.py \
             tests/test_tool_result_content_array.py \
             tests/test_tools_auto_disable_thinking.py \
-            tests/test_truncation_no_synthetic_text.py
+            tests/test_truncation_no_synthetic_text.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

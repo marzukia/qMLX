@@ -205,7 +205,7 @@ class TestOptimizedDetokenizer:
 
     @pytest.mark.xfail(
         strict=False,
-        reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): no _detokenizer_class attr - wave-4 engine drift (green on main 10-29)",
+        reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): no _detokenizer_class attr - wave-4 engine drift (green on main 10-29); strict=False",
     )
     def test_tokenizer_wrapper_has_optimized_detokenizer(self, tokenizer_wrapper):
         """Verify TokenizerWrapper has optimized detokenizer class."""

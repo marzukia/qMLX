@@ -215,7 +215,7 @@ class TestIncrementalCacheEval:
     @patch("vllm_mlx.scheduler.mx")
     @pytest.mark.xfail(
         strict=False,
-        reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): eager-eval in extraction path vs wave-4 engine change",
+        reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): eager-eval in extraction path vs wave-4 engine change; strict=False",
     )
     def test_no_eager_eval_in_extraction_path(self, mock_mx):
         """Verify mx.eval(mx.array(0)) is NOT called during cache extraction."""

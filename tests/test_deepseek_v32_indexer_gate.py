@@ -210,7 +210,7 @@ def test_upstream_without_gate_fails_with_missing_indexer_keys(monkeypatch, repr
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): mixed full/shared gate config drift",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): mixed full/shared gate config drift; strict=False",
 )
 def test_gate_loads_mixed_full_shared_config(repro_dir):
     """4-layer ``["full","shared","full","shared"]`` config loads cleanly,
@@ -367,7 +367,7 @@ def test_gate_rejects_all_shared_indexer_types(repro_dir):
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): indexer reuse-path drift vs wave-4 scheduler change",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): indexer reuse-path drift vs wave-4 scheduler change; strict=False",
 )
 def test_decode_step_after_prefill_keeps_in_call_reuse(repro_dir):
     """Across forward calls (prefill → decode), the per-call topk reuse
@@ -499,7 +499,7 @@ def test_empty_local_layer_slice_delegates_to_upstream(repro_dir):
 
 @pytest.mark.xfail(
     strict=False,
-    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): indexer reuse-path drift vs wave-4 scheduler change",
+    reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): indexer reuse-path drift vs wave-4 scheduler change; strict=False",
 )
 def test_reuse_path_runs_for_run_of_consecutive_shared_layers(repro_dir):
     """Layout with multiple consecutive shared layers after one full

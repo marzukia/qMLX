@@ -672,7 +672,7 @@ class TestModelsRoutes:
 
     @pytest.mark.xfail(
         strict=False,
-        reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): recommended_sampling None - alias data drift vs wave-4",
+        reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): recommended_sampling None - alias data drift vs wave-4; strict=False",
     )
     def test_retrieve_known_alias_surfaces_recommended_sampling(self):
         """An alias whose ``AliasProfile`` carries ``recommended_sampling``
@@ -886,7 +886,7 @@ class TestModelsRoutes:
 
     @pytest.mark.xfail(
         strict=False,
-        reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): diffusion alias modality drift vs wave-4 diffusion lane",
+        reason="dev-debt (first-AS adjudication run 41017472632, 2026-10-30): diffusion alias modality drift vs wave-4 diffusion lane; strict=False",
     )
     def test_diffusion_alias_keeps_text_diffusion_modality(self):
         """Counterpart to F-067: the text-diffusion routing
