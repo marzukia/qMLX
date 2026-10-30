@@ -2476,6 +2476,8 @@ def serve_command(args):
         _gpu_mem = getattr(args, "gpu_memory_utilization", _GPU_MEM_DEFAULT)
         if _gpu_mem is not None and abs(_gpu_mem - _GPU_MEM_DEFAULT) > 1e-6:
             _dflash_ignored.append("--gpu-memory-utilization")
+        if getattr(args, "metal_residency_gb", None) is not None:
+            _dflash_ignored.append("--metal-residency-gb")
         if getattr(args, "enable_auto_tool_choice", False):
             _dflash_ignored.append("--enable-auto-tool-choice")
         if getattr(args, "tool_call_parser", None):
@@ -2506,6 +2508,8 @@ def serve_command(args):
         _gpu_mem = getattr(args, "gpu_memory_utilization", _GPU_MEM_DEFAULT)
         if _gpu_mem is not None and abs(_gpu_mem - _GPU_MEM_DEFAULT) > 1e-6:
             _ddtree_ignored.append("--gpu-memory-utilization")
+        if getattr(args, "metal_residency_gb", None) is not None:
+            _ddtree_ignored.append("--metal-residency-gb")
         if getattr(args, "enable_auto_tool_choice", False):
             _ddtree_ignored.append("--enable-auto-tool-choice")
         if getattr(args, "tool_call_parser", None):
@@ -2912,6 +2916,7 @@ def serve_command(args):
             force_mllm=args.mllm,
             force_text=args.no_mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
+            metal_residency_gb=args.metal_residency_gb,
             cloud_model=args.cloud_model,
             cloud_threshold=args.cloud_threshold,
             cloud_api_base=args.cloud_api_base,
@@ -6051,6 +6056,24 @@ Examples:
         help="Fraction of device memory for Metal allocation limit and emergency "
         "cache clear threshold (0.0-1.0, default: 0.90). Increase to 0.95 for "
         "large models (200GB+) that need more memory headroom.",
+    )
+    serve_parser.add_argument(
+        "--metal-residency-gb",
+        type=float,
+        default=None,
+        help="Decouple the Metal weight-residency hint from the "
+        "--gpu-memory-utilization admission cap (16GB Apple Silicon; "
+        "MTPLX --allow-swap equivalent). When unset (default) the "
+        "residency hint equals the admission cap (util x working set): "
+        "a model whose weights fit under the cap stays FULLY resident, "
+        "so on a 16GB Mac a ~10.4GB model OOMs 8K prefill at util 1.0 "
+        "(weights + prefill peak exceed the working set) while at "
+        "util 0.90 the D-METAL-CAP gate rejects every request "
+        "(weights >= cap). Set this BELOW the weight size (e.g. "
+        "--metal-residency-gb 9.5 --gpu-memory-utilization 1.0) to "
+        "allow partial weight residency — weights page out while the "
+        "admission cap stays at util x working set. Must be <= "
+        "--gpu-memory-utilization x working set (validated at startup).",
     )
     # Paged cache options (experimental)
     serve_parser.add_argument(

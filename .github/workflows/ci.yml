@@ -373,6 +373,7 @@ jobs:
             tests/test_memory_stability.py \
             tests/test_metal_cap_enforcement.py \
             tests/test_metal_error_recovery.py \
+            tests/test_metal_residency_decouple.py \
             tests/test_metrics_route.py \
             tests/test_modality_field.py \
             tests/test_model_auto_config.py \
