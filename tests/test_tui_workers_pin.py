@@ -264,11 +264,7 @@ def test_headless_screenshot_no_tofu(tmp_path):
     assert screenshot.exists()
     text = screenshot.read_text(encoding="utf-8")
     tofu = sorted(
-        {
-            ch
-            for ch in text
-            if ord(ch) > 127 and not (0x2500 <= ord(ch) <= 0x259F)
-        }
+        {ch for ch in text if ord(ch) > 127 and not (0x2500 <= ord(ch) <= 0x259F)}
     )
     assert tofu == [], f"tofu candidates in 100x30 screenshot: {tofu!r}"
     # Strip density pin (issue #63.4): the alias, never the HF repo id.
@@ -280,7 +276,9 @@ def test_status_line_uses_alias_not_hf_path():
     """Strip shape (issue #63.4): the alias the operator launched with,
     never the full HF repo id from /v1/status, and a lighter layout
     (no run count / uptime; tok/s only while generating)."""
-    assert _tui._status_line(None, "qwen3.5-4b-4bit") == "qmlx | qwen3.5-4b-4bit | offline"
+    assert (
+        _tui._status_line(None, "qwen3.5-4b-4bit") == "qmlx | qwen3.5-4b-4bit | offline"
+    )
     stats = {
         "model": "mlx-community/Qwen3.5-4B-MLX-4bit",
         "status": "running",

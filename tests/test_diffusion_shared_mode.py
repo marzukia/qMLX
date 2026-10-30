@@ -127,6 +127,7 @@ def _install_mlx_stubs(stubs: dict[str, Any]) -> None:
 
 
 def _restore_mlx_stubs(stubs: dict[str, Any]) -> None:
+    prev = stubs["_prev"]
     for name in (
         "mlx",
         "mlx.core",
@@ -142,11 +143,16 @@ def _restore_mlx_stubs(stubs: dict[str, Any]) -> None:
         "mlx_vlm.generate.diffusion",
         "mlx_vlm.generate.common",
     ):
-        prev = stubs["_prev"]
-        if name in prev:
-            sys.modules[name] = prev[name]
-        else:
+        # Key-presence is not enough: the snapshot carries every name
+        # (with a None value for modules that were absent), and a failed
+        # import can also leave a bare None entry behind. Restoring by
+        # value (None -> pop) keeps sys.modules free of None entries, or
+        # later mlx-stub suites in the same pytest run bind to None.
+        prior = prev.get(name)
+        if prior is None:
             sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = prior
 
 
 @pytest.fixture(scope="module")

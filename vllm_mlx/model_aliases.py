@@ -323,6 +323,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     tier = value.get("suffix_decoding_tier", "unknown")
     if not isinstance(tier, str):
         raise ValueError(f"alias {alias!r}: suffix_decoding_tier must be a string")
+
     # Strict bool coercion — bare ``bool(...)`` treats the string
     # ``"false"`` as True and silently flips a careful maintainer's
     # intent. Validate the JSON type explicitly so a typo in
@@ -581,9 +582,7 @@ def list_visible_profiles() -> dict[str, AliasProfile]:
     list is filtered.
     """
     return {
-        alias: profile
-        for alias, profile in _load().items()
-        if is_qwen3_alias(alias)
+        alias: profile for alias, profile in _load().items() if is_qwen3_alias(alias)
     }
 
 
