@@ -412,6 +412,13 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     * ``qmlx_spec_decode_tokens_saved_total`` — Cumulative bonus
       tokens emitted from draft acceptance. Equals ``accepts`` for
       chain MTP; tree MTP would let this exceed ``accepts``.
+    * ``qmlx_spec_decode_prefix_len`` — #107: one counter per bucket
+      ``prefix_len=0..5`` — MTP rounds with exactly that many
+      accepted draft positions. The per-round accepted-count
+      distribution behind ``accept_ratio``; sum over buckets =
+      rounds recorded. Mass at 0-1 says the EV controller should
+      lower K, mass at the top bucket says it has headroom to
+      raise it.
     * ``qmlx_spec_decode_accept_ratio`` — ``accepts / attempts``
       as a gauge (0.0 when attempts==0, never NaN). The lossless
       contract surface — dashboards alert on this dropping below 0.80
@@ -543,6 +550,34 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
         )
     )
 
+    # #107: prefix-length distribution — how many of the round's K
+    # draft positions were actually accepted. The accept_ratio gauge
+    # averages this away; the distribution is what shows whether the
+    # EV controller should raise K (mass at the top bucket = chain
+    # headroom) or lower it (mass at 0-1 = drafts rejected up front,
+    # wasting verify passes). One counter per bucket len=0..5, from
+    # the same lock-guarded snapshot as the counters above (no sticky
+    # accumulator — the counter is process-monotonic).
+    prefix = getattr(snapshot, "prefix_lengths", None)
+    if prefix:
+        for _i in range(6):
+            out.extend(
+                _fmt_metric(
+                    "qmlx_spec_decode_prefix_len",
+                    "counter",
+                    (
+                        "MTP rounds with exactly prefix_len accepted "
+                        "draft positions (0 = round where the first "
+                        "draft was rejected). The per-round accepted-"
+                        "count distribution behind qmlx_spec_decode_"
+                        "accept_ratio; sum over buckets = rounds "
+                        "recorded."
+                    ),
+                    int(prefix[_i]),
+                    labels={**common_labels, "prefix_len": str(_i)},
+                )
+            )
+
     # 0.9.13 PR-B controller-side counters. Read directly from the
     # DepthController registry so a K=0 park round is observable even
     # when it does NOT touch the drafter (drafter-side counters would
@@ -552,11 +587,14 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     try:
         from ..spec_decode.mtp.draft_k_controller_v2 import (
             sum_across_controllers,
+            sum_cost_model,
         )
 
         round_total, park_total, k_hist = sum_across_controllers()
+        cost_ewma = sum_cost_model()
     except Exception:  # noqa: BLE001
         round_total, park_total, k_hist = 0, 0, {}
+        cost_ewma = {}
 
     out.extend(
         _fmt_metric(
@@ -629,6 +667,33 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             labels=common_labels,
         )
     )
+
+    # #109: per-K round wall-time gauge. The auto-K controller's
+    # CostModel already tracks a per-depth EWMA of verify-round wall
+    # time; surface it as-is (merge at render time — no per-round
+    # allocation on the hot path). The series is ABSENT when MTP is
+    # off (no rounds observed -> empty merge, no zero-emission rows)
+    # and k=0 (the plain-decode reference) appears as soon as any
+    # round exists. One gauge per sampled depth, labelled k=N.
+    for depth in sorted(cost_ewma.keys()):
+        out.extend(
+            _fmt_metric(
+                "qmlx_spec_decode_round_wall_ms",
+                "gauge",
+                (
+                    "EWMA wall-clock milliseconds for a full MTP "
+                    "verify round at draft depth k (k=0 = plain-"
+                    "decode reference round; k=N = round that "
+                    "drafts N tokens). Learned by the auto-K "
+                    "controller's CostModel; merged at render time "
+                    "across registered controllers (max per depth — "
+                    "the slowest model dominates a shared pipeline). "
+                    "Absent when MTP is off."
+                ),
+                round(cost_ewma[depth], 3),
+                labels={**common_labels, "k": str(int(depth))},
+            )
+        )
     return out
 
 

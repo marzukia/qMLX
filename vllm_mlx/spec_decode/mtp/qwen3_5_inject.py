@@ -49,6 +49,7 @@ mlx-community/Qwen3.5-9B-4bit + mlx-community/Qwen3.5-9B-MTP-4bit
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +207,89 @@ def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
         if c.exists():
             return c
     return None
+
+
+def _has_unsanitized_conv1d(model: Any) -> bool:
+    """Mirror mlx-lm qwen3_5 ``sanitize``'s double-shift precondition.
+
+    stock sanitize shifts all 1-D norm weights by +1.0 only when at
+    least one conv1d is stored raw-HF (``shape[-1] != 1``). Check
+    the same condition on the loaded model — against the full outer model,
+    since sanitize saw every weight (incl. the vision tower) when it
+    ran at load time.
+    """
+    for mod in model.modules():
+        if "Conv" not in type(mod).__name__:
+            continue
+        w = getattr(mod, "weight", None)
+        if w is None or len(w.shape) != 3:
+            continue
+        if w.shape[-1] != 1:
+            return True
+    return False
+
+
+def _dequantize_mtp_linears(mtp: Any) -> int:
+    """#108 diagnostic (QMLX_MTP_DEQUANT=1): replace QuantizedLinear
+    submodules of the MTP module with bf16 Linears.
+
+    A/B probe for draft-quantisation error as an acceptance limiter.
+    Result: NEGATIVE (85 rounds, mixed greedy + temp 1, same
+    checkpoint) — the quantised draft head matches the quantised
+    backbone BETTER (overall accept 50-51% quant vs 44.2% bf16) and
+    the bf16 MTP linears cost +665 MB, slowing draft passes. The
+    "quantise MTP to match the base" design is correct; do NOT
+    enable by default.
+
+    The MTP linears in the probe checkpoint are standard mlx quant
+    (bits=4, group_size=64, affine scales+biases per group; the "8"
+    in the packed shapes is U32s per group, not the group size). mlx
+    0.32 has no ``nn.dequantize``, so this unpacks the U32 nibbles
+    itself — weight ``j`` of a group at nibble ``j`` (matching mlx's
+    quantized-matmul kernel) — then applies the per-group affine
+    term.
+    """
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    shifts = (mx.arange(8) * 4).astype(mx.uint32)
+    replaced = 0
+
+    def _dequant_one(mod: Any) -> nn.Linear:
+        w = mod.weight
+        out, k_packed = w.shape[0], w.shape[1]
+        s, b = mod.scales, mod.biases
+        in_dim = k_packed * 8
+        gs = in_dim // int(s.shape[-1])
+        q = ((w[:, :, None] >> shifts) & 0xF).reshape(out, -1).astype(mx.float32)
+        sr = (
+            s.reshape(out, -1, 1).astype(mx.float32).repeat(gs, axis=2).reshape(out, -1)
+        )
+        br = (
+            b.reshape(out, -1, 1).astype(mx.float32).repeat(gs, axis=2).reshape(out, -1)
+        )
+        new = nn.Linear(in_dim, out)
+        new.weight = (q * sr + br).astype(mx.bfloat16)
+        return new
+
+    def _walk(parent: Any) -> None:
+        nonlocal replaced
+        for cname in list(parent.children()):  # names, not (name, module)
+            child = getattr(parent, cname, None)
+            if child is None:
+                continue
+            if (
+                type(child).__name__ == "QuantizedLinear"
+                and child.weight.dtype == mx.uint32
+            ):
+                setattr(parent, cname, _dequant_one(child))
+                replaced += 1
+            else:
+                _walk(child)
+
+    _walk(mtp)
+    mx.eval(mtp.parameters())
+    return replaced
 
 
 def _fix_mtp_norm_double_shift(model: Any) -> None:
@@ -610,7 +694,22 @@ def inject_mtp_support(
     # corrupts normalization. Run this ONLY after confirming the model is
     # a real MTP checkpoint (num_mtp_layers >= 1) so a rejected/non-MTP
     # model is never mutated.
-    _fix_mtp_norm_double_shift(inner)
+    #
+    # mlx-lm >= 0.32 gates the sanitize shift on has_unsanitized_conv1d
+    # (conv1d stored raw-HF, shape[-1] != 1) and strips mtp.* keys before
+    # shifting. A checkpoint whose conv1d is already MLX-layout was never
+    # double-shifted, and the mean>1.5 test alone misfires there: the
+    # trained q/k_norms of the upper half of a Qwen3.5 hybrid sit at mean
+    # ~1.5-1.7 legitimately and would be corrupted to ~0.5-0.7, breaking
+    # MTP draft/target alignment (acceptance ~0). Gate on the actual
+    # shift condition instead of running the fixup unconditionally.
+    if _has_unsanitized_conv1d(model):
+        _fix_mtp_norm_double_shift(inner)
+    else:
+        logger.info(
+            "[mtp.inject] conv1d already MLX-layout; sanitize applied no "
+            "norm shift, skipping double-shift fixup."
+        )
 
     # --- Step 3 (early): Load MTP weights + infer config if auto-detecting ---
     # When model_repo is provided, load weights BEFORE building the MTP
@@ -751,6 +850,16 @@ def inject_mtp_support(
             weights_source,
             f" (+{len(extra)} extra key(s) ignored)" if extra else "",
         )
+        # --- Step 3b (diagnostic, #108): QMLX_MTP_DEQUANT=1 dequantises
+        # the oQ4e MTP linears to bf16 — A/B for draft-quantization
+        # error as an acceptance limiter. Default off (negative result).
+        if os.environ.get("QMLX_MTP_DEQUANT", "").lower() in ("1", "true", "yes"):
+            _n_dq = _dequantize_mtp_linears(mtp)
+            logger.info(
+                "[mtp.inject] QMLX_MTP_DEQUANT: dequantised %d MTP linears "
+                "to bf16 (acceptance A/B).",
+                _n_dq,
+            )
     else:
         # No sidecar and no auto-detected weights.
         if not allow_random_init:

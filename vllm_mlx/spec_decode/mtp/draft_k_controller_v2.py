@@ -713,3 +713,31 @@ def sum_across_controllers() -> tuple[int, int, dict[int, int]]:
             for k, count in ctrl.k_histogram.items():
                 hist[k] = hist.get(k, 0) + count
         return round_total, park_total, hist
+
+
+def sum_cost_model() -> dict[int, float]:
+    """Merge the per-draft-depth EWMA round cost across all registered
+    controllers. Called by the /metrics renderer (``qmlx_spec_decode_
+    round_wall_ms{k=N}``, #109) so a multi-model process reports one
+    gauge per draft depth.
+
+    Merge policy: per depth, the MAX EWMA across controllers. Round
+    wall times are per-model wall clocks, not additive (different
+    targets, not sequential work), so the slowest model dominates a
+    shared pipeline — max is the honest representative value.
+
+    Returns a fresh dict so rendering can iterate it outside the
+    registry lock (same shape contract as
+    :func:`sum_across_controllers`). Empty when no controller has
+    sampled any depth — the renderer then omits the series entirely
+    (metric absent when MTP is off; k=0 appears as soon as any round
+    exists). No per-round allocation: the merge happens at render
+    time, never in ``CostModel.observe`` / ``DepthController.record``.
+    """
+    with _lock:
+        merged: dict[int, float] = {}
+        for ctrl in _controllers.values():
+            for depth, ewma in ctrl.cost._ewma.items():
+                if depth not in merged or ewma > merged[depth]:
+                    merged[depth] = ewma
+        return merged

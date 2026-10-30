@@ -737,6 +737,11 @@ def mtp_generate_step(
     else:
         # ``disable_auto_k`` keeps the pre-0.9.13 fixed-K=1 A/B-bench
         # behavior — no controller, no chain-of-K, verbatim chain-of-1.
+        # #112 (option 2): this is INTENTIONAL chain-of-1 bench mode,
+        # NOT "controller off, fixed depth = max_k" — the configured
+        # depth (``max_k``) is deliberately dropped and K=1 runs every
+        # round. Pinning the configured depth is ``fixed_k`` (validated
+        # per #53, exposed via the speculative config / mtp_fixed_k).
         max_k_effective = 1
         _controller = None
 
@@ -975,6 +980,10 @@ def mtp_generate_step(
 
             round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
             _record_round(k_len, round_wall_ms, accepts_for_record)
+            # #107: per-round accepted-count distribution for the
+            # qmlx_spec_decode_prefix_len metric — same accepted_count
+            # the EOS holdout caps for emission.
+            accept_counter.record_prefix(accepted_count)
 
             # Emit the accepted drafts (capped at EOS position when set).
             for i in range(accepted_count):
