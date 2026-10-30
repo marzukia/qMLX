@@ -587,11 +587,14 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     try:
         from ..spec_decode.mtp.draft_k_controller_v2 import (
             sum_across_controllers,
+            sum_cost_model,
         )
 
         round_total, park_total, k_hist = sum_across_controllers()
+        cost_ewma = sum_cost_model()
     except Exception:  # noqa: BLE001
         round_total, park_total, k_hist = 0, 0, {}
+        cost_ewma = {}
 
     out.extend(
         _fmt_metric(
@@ -664,6 +667,33 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             labels=common_labels,
         )
     )
+
+    # #109: per-K round wall-time gauge. The auto-K controller's
+    # CostModel already tracks a per-depth EWMA of verify-round wall
+    # time; surface it as-is (merge at render time — no per-round
+    # allocation on the hot path). The series is ABSENT when MTP is
+    # off (no rounds observed -> empty merge, no zero-emission rows)
+    # and k=0 (the plain-decode reference) appears as soon as any
+    # round exists. One gauge per sampled depth, labelled k=N.
+    for depth in sorted(cost_ewma.keys()):
+        out.extend(
+            _fmt_metric(
+                "qmlx_spec_decode_round_wall_ms",
+                "gauge",
+                (
+                    "EWMA wall-clock milliseconds for a full MTP "
+                    "verify round at draft depth k (k=0 = plain-"
+                    "decode reference round; k=N = round that "
+                    "drafts N tokens). Learned by the auto-K "
+                    "controller's CostModel; merged at render time "
+                    "across registered controllers (max per depth — "
+                    "the slowest model dominates a shared pipeline). "
+                    "Absent when MTP is off."
+                ),
+                round(cost_ewma[depth], 3),
+                labels={**common_labels, "k": str(int(depth))},
+            )
+        )
     return out
 
 
