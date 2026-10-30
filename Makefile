@@ -84,7 +84,7 @@ release-smoke:
 # .github/workflows/release-preflight.yml. This target covers what CI
 # cannot — every gate that boots a real server.
 #
-# Time budget: ~15-20 minutes on M3 Ultra with weights warm-cached
+# Time budget: ~15-20 minutes on a 96 GB Apple Silicon machine with weights warm-cached
 # (default model is qwen3.5-9b-4bit; smaller floor like qwen3.5-4b-4bit
 # is too unreliable on multi-turn-tool / pydantic_ai tests).
 # Cost: zero (your own machine + your own electricity).

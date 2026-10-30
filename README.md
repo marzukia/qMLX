@@ -24,11 +24,11 @@
 
 ## Why this exists
 
-Qwen3.5-122B-A10B is a hybrid: about 75% of its layers are DeltaNet (recurrent, linear-attention) and 25% are full attention. The recurrent state cannot be rewound to an earlier position, so a standard in-memory prefix cache drops every entry that contains those layers. On this model it missed 100% of the time (zero in-memory hits against 109 disk hits in a normal window), so we removed it. There is no in-memory prefix cache; disk is the only reuse tier.
+The gated-DeltaNet Qwen models are hybrids: about 75% of their layers are GatedDeltaNet (recurrent, linear-attention), 25% full attention. The recurrent state cannot be rewound to an earlier position, so a standard in-memory prefix cache drops every entry that contains those layers. On those models it missed 100% of the time (zero in-memory hits against 109 disk hits in a normal window), so we removed it. There is no in-memory prefix cache; disk is the only reuse tier.
 
 So the only thing that keeps the model warm is disk KV restore: checkpoint the attention KV to SSD, page it back on the next turn. It is not a fallback here, it is the entire cache. qMLX is that subsystem built properly, plus the fixes needed to make it hold on real agentic-coding traffic.
 
-The result: a follow-up question on a 130,000-token conversation goes from a multi-minute cold prefill to a sub-second restore. Measured on an M3 Ultra, a repeated 32k prompt drops from 88 seconds of prefill to 0.64 seconds, 137x faster.
+The result: a follow-up question on a 130,000-token conversation goes from a multi-minute cold prefill to a sub-second restore. Measured on a 96 GB Apple Silicon machine, a repeated 32k prompt drops from 88 seconds of prefill to 0.64 seconds, 137x faster.
 
 ## What is in it
 
@@ -42,15 +42,15 @@ The result: a follow-up question on a 130,000-token conversation goes from a mul
 - **Backends behind a seam.** Metal is the reference implementation (optimised for Apple Silicon and unified memory); mlx-rocm and mlx-cuda ride the same device/backend seam. No abstraction tax on the hot path.
 - **Hybrid attention and DeltaNet are first-class.** Recurrent state cannot be trimmed like a KV block, so the cache path branches on it explicitly instead of pretending it is KV-only.
 - **SSD cache streaming is a first-class tier, not a fallback.** Unified memory is scarce. Reusable context lives on NVMe and streams back, rather than being hoarded in RAM.
-- **Specialise for the models you run.** Qwen-first. Breadth is a cost, not a feature.
+- **Specialise for the models you run.** Qwen-first: the 3.5, 3.6 and 3.8 line, with qwen 4 and qwen-next support, specifically the gated-DeltaNet hybrids. Breadth is a cost, not a feature.
 - **Honest about the concurrency profile.** Single-user, `--max-num-seqs 1`. A component that earns zero hits gets deleted, not tuned.
 - **Correctness beats cleverness on the cache path.** A wrong restore does not throw, it corrupts. Verify the token blob byte-for-byte, quarantine bad checkpoints, prove changes on real traffic.
-- **Measure on the real box.** Numbers come from an M3 Ultra with real models, not CI that cannot load a 122B.
+- **Measure on the real box.** Numbers come from a 96 GB Apple Silicon machine with real models, not CI that cannot load the gated-DeltaNet Qwens.
 - **Lean by default.** Minimal dependencies, no cruft.
 
 ## Status
 
-Alpha. Metal is the reference backend, measured on an M3 Ultra (96GB+ unified) with Qwen3.5-122B-A10B; mlx-rocm and mlx-cuda are the next implementations on the same device/backend seam. Qwen-first, and honest about what is built and what is not. Decode slows gradually with context because the dense-attention layers re-read a growing KV each token, but there is no cliff: it stays usable well past 100k tokens on this hardware. Windowed attention to flatten that curve further is on the roadmap.
+Alpha. Metal is the reference backend, measured on a 96GB+ unified Apple Silicon machine with the gated-DeltaNet Qwens; mlx-rocm and mlx-cuda are the next implementations on the same device/backend seam. Qwen-first, and honest about what is built and what is not. Decode slows gradually with context because the dense-attention layers re-read a growing KV each token, but there is no cliff: it stays usable well past 100k tokens on this hardware. Windowed attention to flatten that curve further is on the roadmap.
 
 ## Known limitations
 
@@ -75,7 +75,7 @@ pip install -e .
 ## Serving
 
 ```sh
-qmlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
+qmlx serve mlx-community/Qwen3.5-9B-4bit \
   --text-only --host 0.0.0.0 --port 8095 --max-num-seqs 1 \
   --enable-prefix-cache --kv-disk-checkpoint-interval 256
 ```
@@ -95,7 +95,7 @@ Checkpoints live under `~/.cache/qmlx/kv_checkpoints/`. The store grows to the c
 
 ## Recommended sampling
 
-Qwen3.5-122B-A10B ships a `generation_config` of temperature 0.6, top_p 0.95, top_k 20, but no repetition penalty (it defaults to 1.0). With no penalty the model can loop on long generations. Add these server defaults for Qwen's recommended thinking-mode profile plus a mild repetition penalty:
+Qwen3.5 ships a `generation_config` of temperature 0.6, top_p 0.95, top_k 20, but no repetition penalty (it defaults to 1.0). With no penalty the model can loop on long generations. Add these server defaults for Qwen's recommended thinking-mode profile plus a mild repetition penalty:
 
 ```sh
   --default-temperature 0.6 \

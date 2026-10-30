@@ -1,6 +1,6 @@
 # Contributing to qMLX
 
-qMLX is a small, focused fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Its scope is deliberately narrow: disk KV checkpoint and restore for hybrid recurrent plus attention MoE models (Qwen3.5-122B-A10B first), honest phase-split metrics, and the eviction and divergence-logging work that supports them. Contributions that fit that scope are welcome. General qMLX features, new model families, and broad serving improvements are better sent upstream.
+qMLX is a small, focused fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Its scope is deliberately narrow: disk KV checkpoint and restore for the gated-DeltaNet Qwen models (3.5/3.6/3.8 line, with qwen 4 and qwen-next support), honest phase-split metrics, and the eviction and divergence-logging work that supports them. Contributions that fit that scope are welcome. General qMLX features, new model families, and broad serving improvements are better sent upstream.
 
 ## Scope check before you start
 
@@ -32,14 +32,14 @@ pip install -e .
 pip install pytest ruff
 ```
 
-**Requirements:** Python 3.11+, macOS with Apple Silicon. The disk-restore path is developed and tested on an M3 Ultra; most unit tests run on any Apple Silicon Mac without a model download.
+**Requirements:** Python 3.11+, macOS with Apple Silicon. The disk-restore path is developed and tested on a 96 GB Apple Silicon machine; most unit tests run on any Apple Silicon Mac without a model download.
 
 The package is still imported as `vllm_mlx` and the CLI is still `qmlx`. The `qmlx_*` metric names, `QMLX_*` environment variables, and the `~/.cache/qmlx/` cache path are also unchanged. These are kept on purpose for compatibility; please do not rename them in a PR.
 
 To run a dev server against the model this fork targets:
 
 ```bash
-qmlx serve mlx-community/Qwen3.5-122B-A10B-4bit \
+qmlx serve mlx-community/Qwen3.5-9B-4bit \
   --text-only --max-num-seqs 1 \
   --enable-prefix-cache --prefix-cache-index radix \
   --enable-disk-kv-restore

@@ -1,13 +1,13 @@
 # Tier 0 + Pinned Prefix Cache Implementation Plan
 
 **Status**: Planned
-**Target**: MiniMax-M2.5-MLX-4bit on M3 Ultra 256GB (serving OpenClaw)
+**Target**: MiniMax-M2.5-MLX-4bit on a 256GB Apple Silicon machine (serving OpenClaw)
 **Branch**: `feat-minimax-parser`
-**Baseline**: See [evals/results/baseline_benchmark.json](../../evals/results/baseline_benchmark.json) (MiniMax-M2.5-MLX-4bit on M3 Ultra 256GB, 2026-02-24)
+**Baseline**: See [evals/results/baseline_benchmark.json](../../evals/results/baseline_benchmark.json) (MiniMax-M2.5-MLX-4bit on a 256GB Apple Silicon machine, 2026-02-24)
 
 ## Context
 
-After establishing a baseline benchmark for MiniMax-M2.5-MLX-4bit on M3 Ultra 256GB, we're implementing the first round of optimizations:
+After establishing a baseline benchmark for MiniMax-M2.5-MLX-4bit on a 256GB Apple Silicon machine, we're implementing the first round of optimizations:
 
 - **Tier 0**: GC control, detokenizer caching, grammar error handling (low-risk, high-impact quick wins)
 - **Pinned Prefix Cache**: Prevent system prompt eviction under memory pressure
