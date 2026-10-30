@@ -424,9 +424,7 @@ def mtp_generate_step(
             lp_accept = logprobs
         else:
             if _next_key is not None:
-                token = mx.random.categorical(
-                    logprobs * (1.0 / temp), key=_next_key()
-                )
+                token = mx.random.categorical(logprobs * (1.0 / temp), key=_next_key())
             else:
                 token = categorical_sampling(logprobs, temp)
             scaled = logprobs / temp

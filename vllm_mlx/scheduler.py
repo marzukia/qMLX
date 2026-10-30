@@ -1762,6 +1762,23 @@ def _install_mtp_vendored(
                 _mtp_top_p = getattr(_mtp_sp, "top_p", 0.0) or 0.0
                 _mtp_top_k = getattr(_mtp_sp, "top_k", 0) or 0
                 _mtp_min_p = getattr(_mtp_sp, "min_p", 0.0) or 0.0
+                # #110: XTC (typical-set filtering) A/B wiring — env-gated
+                # stopgap for the wiring gap that kept XTC unreachable
+                # from the serve path (the sampler chain exists; no
+                # config path ever fed it). The chain order is top_p ->
+                # min_p -> xtc -> top_k with the apply/skip draw
+                # SHARED across draft and verify, so acceptance stays
+                # exact. Default off: QMLX_XTC_PROB unset/0 ->
+                # xtc_probability 0.0 -> the chain skips XTC entirely
+                # (byte-identical to pre-#110 behaviour). A/B verdict
+                # (temp 1, 27B oQ4e): NEGATIVE — the absolute floor
+                # fights flat vocab distributions (prob=1 thr=0.01
+                # collapsed output to 11 tokens); a min_p-style
+                # relative floor is the working narrowing mechanism.
+                # Follow-up: if XTC is kept, it belongs in the
+                # speculative config (JSON), not env.
+                _mtp_xtc_prob = float(os.environ.get("QMLX_XTC_PROB", "0") or 0.0)
+                _mtp_xtc_thr = float(os.environ.get("QMLX_XTC_THR", "0.01") or 0.01)
                 # Issue #53: the OpenAI ``seed`` parameter must reach the
                 # MTP hot loop (it previously only wired into the plain
                 # decode sampler via H-11). No ``or`` here — seed=0 is
@@ -1777,6 +1794,8 @@ def _install_mtp_vendored(
                     top_p=_mtp_top_p,
                     top_k=_mtp_top_k,
                     min_p=_mtp_min_p,
+                    xtc_probability=_mtp_xtc_prob,
+                    xtc_threshold=_mtp_xtc_thr,
                     # 0.9.13 PR-B: EV depth controller.
                     model_id=controller_key or f"mtp-model-{id(mtp_model)}",
                     max_k=max_k,
@@ -1973,6 +1992,18 @@ def _install_mtp_vendored(
     # instead of waiting for the next request's first step.
     batch_gen._mtp_purge_stale = _purge_stale_states
 
+    _xtc_boot_prob = os.environ.get("QMLX_XTC_PROB", "0")
+    if float(_xtc_boot_prob or 0.0) > 0.0:
+        # #110: announce the A/B state at boot so an operator can
+        # confirm the env gate landed (default off logs nothing —
+        # byte-identical to pre-#110 boot output).
+        logger.info(
+            "[MTP-vendored] XTC active: prob=%s thr=%s (QMLX_XTC_PROB / "
+            "QMLX_XTC_THR; shared draft/verify draw keeps acceptance "
+            "exact).",
+            _xtc_boot_prob,
+            os.environ.get("QMLX_XTC_THR", "0.01"),
+        )
     logger.info(
         "[MTP-vendored] installed on GenerationBatch._step "
         "(single-request greedy K=1 chain-of-1; falls through on B>1 / "
