@@ -1,6 +1,6 @@
 # Contributing to qMLX
 
-qMLX is a small, focused fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Its scope is deliberately narrow: disk KV checkpoint and restore for hybrid recurrent plus attention MoE models (hybrid large-MoE first), honest phase-split metrics, and the eviction and divergence-logging work that supports them. Contributions that fit that scope are welcome. General qMLX features, new model families, and broad serving improvements are better sent upstream.
+qMLX is a small, focused fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Its scope is deliberately narrow: disk KV checkpoint and restore for hybrid recurrent plus attention MoE models (Qwen models first), honest phase-split metrics, and the eviction and divergence-logging work that supports them. Contributions that fit that scope are welcome. General qMLX features, new model families, and broad serving improvements are better sent upstream.
 
 ## Scope check before you start
 
@@ -39,7 +39,7 @@ The package is still imported as `vllm_mlx` and the CLI is still `qmlx`. The `qm
 To run a dev server against the model this fork targets:
 
 ```bash
-qmlx serve <HF_MODEL_ID> \
+qmlx serve mlx-community/Qwen3.5-9B-4bit \
   --text-only --max-num-seqs 1 \
   --enable-prefix-cache --prefix-cache-index radix \
   --enable-disk-kv-restore

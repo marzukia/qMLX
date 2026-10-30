@@ -24,7 +24,7 @@
 
 ## Why this exists
 
-A hybrid large-MoE model is about 75% DeltaNet (recurrent, linear-attention) layers and 25% full attention. The recurrent state cannot be rewound to an earlier position, so a standard in-memory prefix cache drops every entry that contains those layers. On such a model it missed 100% of the time (zero in-memory hits against 109 disk hits in a normal window), so we removed it. There is no in-memory prefix cache; disk is the only reuse tier.
+Qwen3.5's large MoE models are hybrids: about 75% of their layers are DeltaNet (recurrent, linear-attention), 25% full attention. The recurrent state cannot be rewound to an earlier position, so a standard in-memory prefix cache drops every entry that contains those layers. On those models it missed 100% of the time (zero in-memory hits against 109 disk hits in a normal window), so we removed it. There is no in-memory prefix cache; disk is the only reuse tier.
 
 So the only thing that keeps the model warm is disk KV restore: checkpoint the attention KV to SSD, page it back on the next turn. It is not a fallback here, it is the entire cache. qMLX is that subsystem built properly, plus the fixes needed to make it hold on real agentic-coding traffic.
 
@@ -45,12 +45,12 @@ The result: a follow-up question on a 130,000-token conversation goes from a mul
 - **Specialise for the models you run.** Qwen-first. Breadth is a cost, not a feature.
 - **Honest about the concurrency profile.** Single-user, `--max-num-seqs 1`. A component that earns zero hits gets deleted, not tuned.
 - **Correctness beats cleverness on the cache path.** A wrong restore does not throw, it corrupts. Verify the token blob byte-for-byte, quarantine bad checkpoints, prove changes on real traffic.
-- **Measure on the real box.** Numbers come from a 96 GB Apple Silicon machine with real models, not CI that cannot load a large-MoE model.
+- **Measure on the real box.** Numbers come from a 96 GB Apple Silicon machine with real models, not CI that cannot load the large Qwen MoE models.
 - **Lean by default.** Minimal dependencies, no cruft.
 
 ## Status
 
-Alpha. Metal is the reference backend, measured on a 96GB+ unified Apple Silicon machine with a hybrid large-MoE model; mlx-rocm and mlx-cuda are the next implementations on the same device/backend seam. Qwen-first, and honest about what is built and what is not. Decode slows gradually with context because the dense-attention layers re-read a growing KV each token, but there is no cliff: it stays usable well past 100k tokens on this hardware. Windowed attention to flatten that curve further is on the roadmap.
+Alpha. Metal is the reference backend, measured on a 96GB+ unified Apple Silicon machine with Qwen3.5's large MoE models; mlx-rocm and mlx-cuda are the next implementations on the same device/backend seam. Qwen-first, and honest about what is built and what is not. Decode slows gradually with context because the dense-attention layers re-read a growing KV each token, but there is no cliff: it stays usable well past 100k tokens on this hardware. Windowed attention to flatten that curve further is on the roadmap.
 
 ## Known limitations
 
@@ -75,7 +75,7 @@ pip install -e .
 ## Serving
 
 ```sh
-qmlx serve <HF_MODEL_ID> \
+qmlx serve mlx-community/Qwen3.5-9B-4bit \
   --text-only --host 0.0.0.0 --port 8095 --max-num-seqs 1 \
   --enable-prefix-cache --kv-disk-checkpoint-interval 256
 ```
