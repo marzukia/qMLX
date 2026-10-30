@@ -1,6 +1,6 @@
 # Contributing to qMLX
 
-qMLX is a small, focused fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Its scope is deliberately narrow: disk KV checkpoint and restore for hybrid recurrent plus attention MoE models (Qwen models first), honest phase-split metrics, and the eviction and divergence-logging work that supports them. Contributions that fit that scope are welcome. General qMLX features, new model families, and broad serving improvements are better sent upstream.
+qMLX is a small, focused fork of [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX). Its scope is deliberately narrow: disk KV checkpoint and restore for the gated-DeltaNet Qwen models (3.5/3.6/3.8 line, with qwen 4 and qwen-next support), honest phase-split metrics, and the eviction and divergence-logging work that supports them. Contributions that fit that scope are welcome. General qMLX features, new model families, and broad serving improvements are better sent upstream.
 
 ## Scope check before you start
 
