@@ -146,18 +146,18 @@ def test_models_listing_renders_ddtree_column(capsys) -> None:
         None,
     )
     assert eligible_row is not None
-    assert (
-        ddtree_cell(eligible_row) == "✓"
-    ), f"DDTree column should be ✓: {eligible_row!r}"
+    assert ddtree_cell(eligible_row) == "✓", (
+        f"DDTree column should be ✓: {eligible_row!r}"
+    )
     ineligible_row = next(
         (line for line in lines if "qwen3.5-9b-4bit " in line),
         None,
     )
     assert ineligible_row is not None
     # issue #62: a DDTREE-ineligible alias renders BLANK, not "—".
-    assert (
-        ddtree_cell(ineligible_row) == ""
-    ), f"DDTree column should be blank: {ineligible_row!r}"
+    assert ddtree_cell(ineligible_row) == "", (
+        f"DDTree column should be blank: {ineligible_row!r}"
+    )
 
 
 @dataclass

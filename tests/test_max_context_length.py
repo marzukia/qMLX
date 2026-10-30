@@ -71,7 +71,10 @@ def _install_mlx_stubs() -> None:
     ``mlx_lm`` symbols ``scheduler.py`` imports. Nothing else is
     stubbed; the tests never execute model code."""
     for name in _MLX_STUB_NAMES:
-        if name in sys.modules:
+        # A failed import leaves a bare None entry in sys.modules (the
+        # key is present, the value is None); treat that as absent so we
+        # install a usable stub instead of binding attributes to None.
+        if sys.modules.get(name) is not None:
             continue
         module = types.ModuleType(name)
         # A real ``__spec__`` so ``importlib.util.find_spec`` (e.g.

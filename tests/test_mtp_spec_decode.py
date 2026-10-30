@@ -1923,9 +1923,9 @@ def test_generator_k3_fixed_reject_matrix(accepted_count):
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
 
     drafts = [11, 12, 13]
-    backbone = [7] + [
-        drafts[i] if i < accepted_count else 20 for i in range(3)
-    ] + [99]  # bonus slot (unused on reject)
+    backbone = (
+        [7] + [drafts[i] if i < accepted_count else 20 for i in range(3)] + [99]
+    )  # bonus slot (unused on reject)
     model = _MockedQwen35Model(backbone_outputs=backbone, mtp_outputs=drafts)
     counter = MTPAcceptCounter()
     prompt = mx.array([1], dtype=mx.uint32)
@@ -1953,10 +1953,13 @@ def test_generator_k3_fixed_reject_matrix(accepted_count):
     assert snap.tokens_saved == accepted_count
 
 
-@pytest.mark.parametrize("fixed_k, max_k, match", [
-    (4, 3, "must lie in"),
-    (-1, 3, "must lie in"),
-])
+@pytest.mark.parametrize(
+    "fixed_k, max_k, match",
+    [
+        (4, 3, "must lie in"),
+        (-1, 3, "must lie in"),
+    ],
+)
 def test_generator_fixed_k_validation(fixed_k, max_k, match):
     """``fixed_k`` outside ``[0, max_k]`` fails fast at construction."""
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
@@ -1981,9 +1984,7 @@ def test_generator_fixed_k_zero_parks_every_round():
     This is the K=0 baseline the gate harness compares against."""
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
 
-    model = _MockedQwen35Model(
-        backbone_outputs=[7, 8, 9, 10], mtp_outputs=[11, 12, 13]
-    )
+    model = _MockedQwen35Model(backbone_outputs=[7, 8, 9, 10], mtp_outputs=[11, 12, 13])
     prompt = mx.array([1], dtype=mx.uint32)
     emitted = []
     for tok, _lp, from_draft in mtp_generate_step(
