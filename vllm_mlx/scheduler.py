@@ -322,8 +322,13 @@ class SchedulerConfig:
     # PR-B follow-up work that lifts the K≥2 chain-of-K verify.
     # ``mtp_disable_auto_k`` bypasses the controller entirely and keeps
     # the pre-PR-B fixed-K=1 chain-of-1 behavior (used for A/B benching).
+    # #112 (option 2): that chain-of-1 bench mode is INTENTIONAL —
+    # ``disable_auto_k`` pins K=1, NOT the configured ``mtp_max_k``
+    # depth (the configured depth is silently dropped; pinning it is
+    # ``mtp_fixed_k`` / ``fixed_k`` in the speculative config).
     mtp_max_k: int = 3
     mtp_disable_auto_k: bool = False
+    mtp_fixed_k: int | None = None
 
     def __post_init__(self) -> None:
         if self.enable_mtp:
@@ -1039,6 +1044,7 @@ def _install_mtp_vendored(
     uid_to_request_id: dict[int, str] | None = None,
     max_k: int = 3,
     disable_auto_k: bool = False,
+    fixed_k: int | None = None,
     controller_key: str | None = None,
 ) -> bool:
     """Install the vendored PR #990 ``mtp_generate_step`` hot loop into
@@ -1779,26 +1785,14 @@ def _install_mtp_vendored(
                 # speculative config (JSON), not env.
                 _mtp_xtc_prob = float(os.environ.get("QMLX_XTC_PROB", "0") or 0.0)
                 _mtp_xtc_thr = float(os.environ.get("QMLX_XTC_THR", "0.01") or 0.01)
-                # #111: fixed_k A/B wiring — env-gated stopgap for
-                # controller A/B. ``fixed_k`` already exists in
-                # ``mtp_generate_step`` (harness-only per #53 — the
-                # byte-exact d=3 gate pins depth through it) but the
-                # serve call site never forwarded it, so it was
-                # unreachable in production. Unset/empty = None =
-                # the EV controller picks depth — behaviour identical
-                # to pre-#111 (the kwarg is ABSENT, not merely
-                # None). A/B verdict (workload-matched, 27B oQ4e):
-                # slightly WORSE than auto-K at both workloads —
-                # the EV controller is near-optimal (the K=0 parks
-                # are correct EV on hard-text segments); fixed depth
-                # is not the lever. The gate stays for future
-                # draft-quality changes (if p1 rises, fixed K=2/K=3
-                # becomes worth re-testing). Follow-up: if kept, it
-                # belongs in the speculative config, not env (same
-                # decision as #110). Boot-time validation lives in
-                # ``_install_mtp_vendored`` (see below).
+                # #111/#112: config pin (``fixed_k``) takes precedence;
+                # the QMLX_MTP_FIXED_K env gate is the fallback when no
+                # pin is configured. Absent kwarg when neither is set
+                # (behaviour identical to pre-#111).
                 _fixed_k_raw = os.environ.get("QMLX_MTP_FIXED_K", "").strip()
-                _mtp_fixed_k = int(_fixed_k_raw) if _fixed_k_raw else None
+                _mtp_fixed_k = fixed_k
+                if _mtp_fixed_k is None and _fixed_k_raw:
+                    _mtp_fixed_k = int(_fixed_k_raw)
                 _mtp_fixed_k_extra = (
                     {"fixed_k": _mtp_fixed_k} if _mtp_fixed_k is not None else {}
                 )
@@ -1819,8 +1813,8 @@ def _install_mtp_vendored(
                     min_p=_mtp_min_p,
                     xtc_probability=_mtp_xtc_prob,
                     xtc_threshold=_mtp_xtc_thr,
-                    # #111: absent kwarg when QMLX_MTP_FIXED_K is
-                    # unset (behaviour identical to pre-#111).
+                    # #111/#112: absent kwarg when no pin is set
+                    # (behaviour identical to pre-#111).
                     **_mtp_fixed_k_extra,
                     # 0.9.13 PR-B: EV depth controller.
                     model_id=controller_key or f"mtp-model-{id(mtp_model)}",
@@ -2018,28 +2012,41 @@ def _install_mtp_vendored(
     # instead of waiting for the next request's first step.
     batch_gen._mtp_purge_stale = _purge_stale_states
 
-    # #111: QMLX_MTP_FIXED_K is validated at BOOT (construction
-    # time), not mid-stream — reusing the #53 construction-time
-    # contract: a fixed_k outside [1, max_k] fails here with an
-    # actionable error rather than on the first request's
-    # generator build. Empty/unset = controller behaviour (no
-    # validation, byte-identical to pre-#111).
-    _fixed_k_boot_raw = os.environ.get("QMLX_MTP_FIXED_K", "").strip()
-    if _fixed_k_boot_raw:
-        try:
-            _fixed_k_boot = int(_fixed_k_boot_raw)
-        except ValueError as _e:
-            raise ValueError(
-                f"QMLX_MTP_FIXED_K must be an integer, got {_fixed_k_boot_raw!r}"
-            ) from _e
+    # #111/#112: the fixed depth (explicit config pin per #112,
+    # QMLX_MTP_FIXED_K env stopgap per #111) is validated at BOOT
+    # (construction time), not mid-stream — reusing the #53
+    # construction-time contract: a fixed_k outside [1, max_k] fails
+    # here with an actionable error rather than on the first
+    # request's generator build. The config pin takes precedence;
+    # the env gate is the fallback when no pin is configured.
+    # Unset/None = controller behaviour (no validation, byte-identical
+    # to pre-#111).
+    _fixed_k_boot = fixed_k
+    _fixed_k_source = "speculative config"
+    if _fixed_k_boot is None:
+        _fixed_k_boot_raw = os.environ.get("QMLX_MTP_FIXED_K", "").strip()
+        if _fixed_k_boot_raw:
+            try:
+                _fixed_k_boot = int(_fixed_k_boot_raw)
+            except ValueError as _e:
+                raise ValueError(
+                    f"QMLX_MTP_FIXED_K must be an integer, got {_fixed_k_boot_raw!r}"
+                ) from _e
+            _fixed_k_source = "QMLX_MTP_FIXED_K"
+    if _fixed_k_boot is not None:
+        _name = (
+            "QMLX_MTP_FIXED_K"
+            if _fixed_k_source == "QMLX_MTP_FIXED_K"
+            else "mtp_fixed_k"
+        )
         if not 1 <= _fixed_k_boot <= max_k:
-            raise ValueError(
-                f"QMLX_MTP_FIXED_K={_fixed_k_boot} must lie in [1, max_k={max_k}]"
-            )
+            raise ValueError(f"{_name}={_fixed_k_boot} must lie in [1, max_k={max_k}]")
         logger.info(
-            "[MTP-vendored] fixed depth pinned: QMLX_MTP_FIXED_K=%d "
-            "(EV controller bypassed; unset = controller behaviour).",
+            "[MTP-vendored] fixed depth pinned: %s=%d (source: %s; "
+            "EV controller bypassed; unset = controller behaviour).",
+            _name,
             _fixed_k_boot,
+            _fixed_k_source,
         )
     _xtc_boot_prob = os.environ.get("QMLX_XTC_PROB", "0")
     if float(_xtc_boot_prob or 0.0) > 0.0:
@@ -3237,6 +3244,7 @@ class Scheduler:
                     # 0.9.13 PR-B: EV depth controller knobs.
                     max_k=getattr(self.config, "mtp_max_k", 3),
                     disable_auto_k=getattr(self.config, "mtp_disable_auto_k", False),
+                    fixed_k=getattr(self.config, "mtp_fixed_k", None),
                     controller_key=(
                         getattr(self, "_model_name", None)
                         or getattr(self.model_config, "name", None)

@@ -737,6 +737,11 @@ def mtp_generate_step(
     else:
         # ``disable_auto_k`` keeps the pre-0.9.13 fixed-K=1 A/B-bench
         # behavior — no controller, no chain-of-K, verbatim chain-of-1.
+        # #112 (option 2): this is INTENTIONAL chain-of-1 bench mode,
+        # NOT "controller off, fixed depth = max_k" — the configured
+        # depth (``max_k``) is deliberately dropped and K=1 runs every
+        # round. Pinning the configured depth is ``fixed_k`` (validated
+        # per #53, exposed via the speculative config / mtp_fixed_k).
         max_k_effective = 1
         _controller = None
 

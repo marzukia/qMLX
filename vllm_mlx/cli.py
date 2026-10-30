@@ -1322,6 +1322,7 @@ def _normalize_speculative_config_or_exit(args):
             "mtp_sidecar": None,
             "mtp_max_k": 1,
             "mtp_disable_auto_k": False,
+            "mtp_fixed_k": None,
             "suffix_decoding": False,
         }
         for name, value in defaults.items():
@@ -1355,6 +1356,8 @@ def _normalize_speculative_config_or_exit(args):
             conflicts.append("mtp_num_draft_tokens")
         if getattr(args, "mtp_disable_auto_k", False):
             conflicts.append("mtp_disable_auto_k")
+        if getattr(args, "mtp_fixed_k", None) is not None:
+            conflicts.append("mtp_fixed_k")
         if getattr(args, "mtp_optimistic", False):
             conflicts.append("mtp_optimistic")
         if getattr(args, "suffix_decoding", False):
@@ -1397,6 +1400,8 @@ def _normalize_speculative_config_or_exit(args):
             fields.append("mtp_num_draft_tokens")
         if getattr(args, "mtp_disable_auto_k", False):
             fields.append("mtp_disable_auto_k")
+        if getattr(args, "mtp_fixed_k", None) is not None:
+            fields.append("mtp_fixed_k")
         if getattr(args, "mtp_optimistic", False):
             fields.append("mtp_optimistic")
         if getattr(args, "suffix_decoding", False):
@@ -1481,6 +1486,14 @@ def _normalize_speculative_config_or_exit(args):
             if not mtp_requested:
                 reject_orphan("mtp_disable_auto_k", "enable_mtp or spec_decode=mtp")
             mtp_payload["disable_auto_k"] = True
+        # #112 (option 2): explicit depth pin (chain-of-1 bench mode
+        # stays ``disable_auto_k``; pinning the configured depth is
+        # ``fixed_k``).
+        mtp_fixed_k = getattr(args, "mtp_fixed_k", None)
+        if mtp_fixed_k is not None:
+            if not mtp_requested:
+                reject_orphan("mtp_fixed_k", "enable_mtp or spec_decode=mtp")
+            mtp_payload["fixed_k"] = mtp_fixed_k
         if getattr(args, "mtp_optimistic", False):
             if not mtp_requested:
                 reject_orphan("mtp_optimistic", "enable_mtp or spec_decode=mtp")
@@ -1605,6 +1618,8 @@ def _normalize_speculative_config_or_exit(args):
             args.mtp_max_k = config.num_speculative_tokens
         if config.disable_auto_k is not None:
             args.mtp_disable_auto_k = config.disable_auto_k
+        if config.fixed_k is not None:
+            args.mtp_fixed_k = config.fixed_k
     elif config.method == "suffix":
         args.suffix_decoding = True
         if config.num_speculative_tokens is not None:
@@ -2686,6 +2701,7 @@ def serve_command(args):
         # 0.9.13 PR-B: EV depth controller knobs.
         mtp_max_k=getattr(args, "mtp_max_k", 3),
         mtp_disable_auto_k=getattr(args, "mtp_disable_auto_k", False),
+        mtp_fixed_k=getattr(args, "mtp_fixed_k", None),
         # SuffixDecoding
         enable_suffix_decoding=args.suffix_decoding,
         suffix_max_draft=args.suffix_max_draft,
@@ -5920,6 +5936,13 @@ Examples:
         "--mtp-disable-auto-k",
         action="store_true",
         default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--mtp-fixed-k",
+        dest="mtp_fixed_k",
+        type=int,
+        default=None,
         help=argparse.SUPPRESS,
     )
     serve_parser.add_argument(

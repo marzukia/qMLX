@@ -29,6 +29,12 @@ class SpeculativeConfig:
     num_speculative_tokens: int | None = None
     tree_budget: int | None = None
     disable_auto_k: bool | None = None
+    # #112 (option 2): explicit depth pin. ``disable_auto_k`` stays the
+    # pre-0.9.13 chain-of-1 A/B bench mode (fixed K=1, NOT the
+    # configured depth); pinning the configured depth is ``fixed_k``
+    # (0 = park every round; the generator validates it against
+    # ``num_speculative_tokens`` at construction — #53).
+    fixed_k: int | None = None
     max_suffix_len: int | None = None
     min_confidence: float | None = None
     min_draft_len: int | None = None
@@ -44,7 +50,7 @@ _COMMON_KEYS = frozenset(
 _METHOD_KEYS = {
     "ddtree": frozenset({"model", "num_speculative_tokens", "tree_budget"}),
     "dflash": frozenset({"model"}),
-    "mtp": frozenset({"model", "num_speculative_tokens", "disable_auto_k"}),
+    "mtp": frozenset({"model", "num_speculative_tokens", "disable_auto_k", "fixed_k"}),
     "suffix": frozenset(
         {
             "num_speculative_tokens",
@@ -63,6 +69,18 @@ def _positive_int(value: Any, key: str) -> int | None:
         raise SpeculativeConfigError(f"{key} must be a positive integer")
     if value <= 0:
         raise SpeculativeConfigError(f"{key} must be a positive integer")
+    return value
+
+
+def _nonnegative_int(value: Any, key: str) -> int | None:
+    """``fixed_k`` accepts 0 (park every round); the generator
+    validates the upper bound against ``max_k`` at construction."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SpeculativeConfigError(f"{key} must be a non-negative integer")
+    if value < 0:
+        raise SpeculativeConfigError(f"{key} must be a non-negative integer")
     return value
 
 
@@ -149,6 +167,7 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         ),
         tree_budget=_positive_int(payload.get("tree_budget"), "tree_budget"),
         disable_auto_k=_optional_bool(payload.get("disable_auto_k"), "disable_auto_k"),
+        fixed_k=_nonnegative_int(payload.get("fixed_k"), "fixed_k"),
         max_suffix_len=_positive_int(payload.get("max_suffix_len"), "max_suffix_len"),
         min_confidence=_confidence(payload.get("min_confidence"), "min_confidence"),
         min_draft_len=_positive_int(payload.get("min_draft_len"), "min_draft_len"),
