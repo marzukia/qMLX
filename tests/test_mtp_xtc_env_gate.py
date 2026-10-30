@@ -134,7 +134,23 @@ def _mlx_stubs(monkeypatch):
     for k in [k for k in sys.modules if k == "mlx" or k.startswith("mlx.")]:
         del sys.modules[k]
     sys.modules.update(saved)
-    sys.modules.update(saved_ours)
+    # Restore-or-DROP: a module we re-imported under the stubs (and
+    # that was NOT in sys.modules at setup) must be dropped, not
+    # kept — otherwise a later real-mx test's
+    # ``from vllm_mlx.spec_decode.mtp import generator`` finds the
+    # stub-bound module in sys.modules and inherits the numpy-backed
+    # mx.
+    for k in (
+        "vllm_mlx",
+        "vllm_mlx.scheduler",
+        "vllm_mlx.spec_decode",
+        "vllm_mlx.spec_decode.mtp",
+        "vllm_mlx.spec_decode.mtp.generator",
+    ):
+        if k in saved_ours:
+            sys.modules[k] = saved_ours[k]
+        else:
+            sys.modules.pop(k, None)
 
 
 # ----------------------------------------------------------------------
