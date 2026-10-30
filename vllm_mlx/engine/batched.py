@@ -1000,28 +1000,8 @@ class BatchedEngine(BaseEngine):
         if self._loaded:
             return
 
-        if self._is_mllm and self._mllm_explicit:
+        if self._is_mllm:
             await self._start_mllm()
-        elif self._is_mllm:
-            # Auto-detected as multimodal, but the operator did not ask
-            # for MLLM and this build has no MLLM/vision serving (stripped
-            # in the Qwen-only simplification, #20). Fall back to text-only
-            # serving instead of hard-failing: a vision-capable checkpoint
-            # still serves text fine through the LLM path, and MTP /
-            # spec-decode attach to the inner text model. Dogfood
-            # 2026-10-28: an oQ4e vision-capable model boot hard-failed
-            # on the stripped MLLM stub with no way to serve its text +
-            # MTP path without --text-only.
-            logger.warning(
-                "Model %s is vision-capable but this build has no "
-                "MLLM/vision serving — serving as text-only. Image input "
-                "is unavailable; pass --text-only to silence this, "
-                "--mllm to hard-fail, or use a vision-capable build "
-                "for image input.",
-                self._model_name,
-            )
-            self._is_mllm = False
-            await self._start_llm()
         else:
             await self._start_llm()
 
