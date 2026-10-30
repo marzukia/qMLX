@@ -76,7 +76,22 @@ Gates (new lists, CPython 3.11 CI-parity venv, 2026-10-30):
   deselected, 6 xfailed, 0 failed, 0 errors
 - `ruff check` + `ruff format --check` on the two fixed files: **PASS**
 
-Final partition: 141 Linux / 148 AS, 0 overlap, yaml valid.
+First real CI run adjudication (run 41013361336, head 074aefa):
+
+- **test-matrix 3.10**: collection error — `test_codex_profile.py` imports
+  `tomllib` (stdlib 3.11+) at module level; census ran 3.11-only. Fixed:
+  guarded import (`import tomllib` / `import tomli as tomllib`) +
+  `pip install "tomli; python_version < '3.11'"` in the job. Full list
+  re-verified on a CPython 3.10 CI-parity venv.
+- **test-apple-silicon**: 3 collection errors — the
+  `tests/integrations/test_{anthropic_sdk,pydantic_ai_full,smolagents_full}.py`
+  gauntlets need the `anthropic` / `pydantic-ai` / `smolagents` SDKs (absent
+  from `-e .[vision]`) AND a live server; all three are script-style with
+  **zero pytest functions** (collected 0 items), so removing them from the AS
+  list costs nothing. They run via `make release-check-m3` on M3 Ultra.
+  AS list 148 -> 145.
+
+Final partition: 141 Linux / 145 AS, 0 overlap, yaml valid.
 
 ## Dead tests removed (hard evidence)
 
