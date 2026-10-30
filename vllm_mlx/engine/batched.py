@@ -592,6 +592,28 @@ def _resolve_mllm_prefill_step_size(
     return user_value
 
 
+def _compute_metal_limit_bytes(
+    metal_residency_gb: float | None,
+    gpu_memory_utilization: float,
+    recommended_working_set_bytes: int,
+) -> tuple[int, int]:
+    """D11: ``(residency_hint_bytes, admission_cap_bytes)``.
+
+    The admission cap is ALWAYS ``util x recommended working set``
+    (unchanged — the scheduler's ``_resolve_metal_cap_bytes`` computes
+    the same number independently). The residency hint (passed to
+    ``set_memory_limit`` under HINT enforcement) defaults to the cap
+    (today behavior); ``metal_residency_gb`` overrides ONLY the hint,
+    enabling partial weight residency (weights page out) while the
+    admission cap stays put — the MTPLX ``--allow-swap`` equivalent
+    (carbon-parity journal D11).
+    """
+    cap = int(recommended_working_set_bytes * gpu_memory_utilization)
+    if metal_residency_gb is None:
+        return cap, cap
+    return int(metal_residency_gb * 1e9), cap
+
+
 def _compute_metal_cache_limit(soft_limit_bytes: int) -> int:
     """Pick a Metal free-cache size that scales with the device's working set.
 
@@ -745,6 +767,7 @@ class BatchedEngine(BaseEngine):
         force_mllm: bool = False,
         gpu_memory_utilization: float = 0.90,
         *,
+        metal_residency_gb: float | None = None,
         force_text: bool = False,
         force_hybrid: bool = False,
         no_hybrid: bool = False,
@@ -764,6 +787,23 @@ class BatchedEngine(BaseEngine):
             force_mllm: Force loading as MLLM even if not auto-detected
             gpu_memory_utilization: Fraction of device memory for Metal allocation
                 limit and emergency threshold (0.0-1.0, default 0.90)
+            metal_residency_gb: Keyword-only. D11 decouple (carbon-parity
+                journal, carbon-qmlx-perf D11): absolute size in GB of the
+                Metal weight-residency hint (``set_memory_limit``,
+                ``enforcement_mode == HINT``), decoupled from the
+                D-METAL-CAP admission cap which STAYS at
+                ``gpu_memory_utilization x recommended working set``.
+                16GB Apple Silicon case: a ~10.4GB model at
+                ``gpu_memory_utilization=1.0`` keeps its weights fully
+                resident (hint >= weight size) and 8K prefill OOMs because
+                weights + prefill peak exceed the working set, while at
+                0.90 the D-METAL-CAP gate rejects every request (weights
+                >= cap). Setting this below the weight size (MTPLX
+                ``--allow-swap`` equivalent) lets weights page out for
+                partial residency. Validated at startup: must be > 0 and
+                <= ``gpu_memory_utilization x recommended working set``
+                (clear ``ValueError`` otherwise). Default ``None`` = today
+                behavior (residency hint equals the admission cap).
             force_text: Keyword-only. Force loading as text-only LLM even when
                 auto-detection would route as MLLM (#393 escape hatch).
                 Mutually exclusive with ``force_mllm`` — caller is responsible
@@ -782,6 +822,7 @@ class BatchedEngine(BaseEngine):
         self._scheduler_config = scheduler_config
         self._stream_interval = stream_interval
         self._gpu_memory_utilization = gpu_memory_utilization
+        self._metal_residency_gb = metal_residency_gb
         self._force_hybrid = force_hybrid
         self._no_hybrid = no_hybrid
         self._force_spec_decode = force_spec_decode
@@ -826,6 +867,65 @@ class BatchedEngine(BaseEngine):
         # checks; an asyncio lock would only serialise the event loop.
         self._admission_lock = threading.Lock()
         self._admission_reservations = 0
+
+        # D11: fail at startup (before any model load) when the
+        # residency hint would exceed the admission cap — the 16GB
+        # E5 failure mode (fully resident weights + every request
+        # rejected at D-METAL-CAP) is exactly what the flag exists
+        # to prevent, so a misconfigured pair must not boot.
+        self._check_metal_residency_vs_cap()
+
+    def _check_metal_residency_vs_cap(self) -> None:
+        """Validate ``metal_residency_gb`` against the D-METAL-CAP cap.
+
+        The residency hint (``set_memory_limit``, HINT enforcement) must
+        stay at or below the admission cap
+        (``gpu_memory_utilization x recommended working set``). A hint
+        above the cap pages nothing (weights stay fully resident) while
+        the admission gate keeps rejecting — the exact 16GB coupling
+        failure the flag decouples (carbon-parity journal D11).
+
+        No-op when ``metal_residency_gb`` is ``None`` (default), when
+        the admission cap is disabled (util <= 0), or when no GPU
+        backend is available (non-Apple hosts, test harnesses) — those
+        paths are unchanged.
+        """
+        if self._metal_residency_gb is None:
+            return
+        if self._metal_residency_gb <= 0:
+            raise ValueError(
+                f"metal_residency_gb must be > 0 (got {self._metal_residency_gb})"
+            )
+        util = self._gpu_memory_utilization
+        if util <= 0.0:
+            return
+        try:
+            from vllm_mlx.device import get_backend
+
+            backend = get_backend()
+        except Exception:
+            return
+        if backend is None:
+            return
+        try:
+            recommended = backend.recommended_working_set_bytes()
+        except Exception:
+            return
+        if recommended <= 0:
+            return
+        residency_bytes, cap_bytes = _compute_metal_limit_bytes(
+            self._metal_residency_gb, util, recommended
+        )
+        if residency_bytes > cap_bytes:
+            raise ValueError(
+                f"metal_residency_gb={self._metal_residency_gb} exceeds the "
+                f"D-METAL-CAP admission cap {cap_bytes / 1e9:.2f}GB "
+                f"(gpu_memory_utilization={util} x "
+                f"{recommended / 1e9:.1f}GB recommended working set); the "
+                "residency hint must stay at or below the admission cap. "
+                "Lower --metal-residency-gb or raise "
+                "--gpu-memory-utilization."
+            )
 
     @property
     def model_name(self) -> str:
@@ -1120,19 +1220,35 @@ class BatchedEngine(BaseEngine):
             # HARD backend (the allocator then enforces it itself).
             max_recommended = backend.recommended_working_set_bytes()
             if max_recommended > 0:
-                soft_limit = int(max_recommended * self._gpu_memory_utilization)
+                soft_limit, cap = _compute_metal_limit_bytes(
+                    self._metal_residency_gb,
+                    self._gpu_memory_utilization,
+                    max_recommended,
+                )
                 backend.set_memory_limit(soft_limit)
                 cache_limit = _compute_metal_cache_limit(soft_limit)
                 backend.set_cache_limit(cache_limit)
                 pct = self._gpu_memory_utilization * 100
-                logger.info(
-                    f"Device memory limits set "
-                    f"(backend={backend.kind.value}, "
-                    f"enforcement={backend.enforcement_mode.value}): "
-                    f"allocation_limit={soft_limit / 1e9:.1f}GB "
-                    f"({pct:.0f}% of {max_recommended / 1e9:.1f}GB), "
-                    f"cache_limit={cache_limit / 1e9:.1f}GB"
-                )
+                if self._metal_residency_gb is not None:
+                    logger.info(
+                        f"Device memory limits set "
+                        f"(backend={backend.kind.value}, "
+                        f"enforcement={backend.enforcement_mode.value}): "
+                        f"residency_hint={soft_limit / 1e9:.1f}GB "
+                        f"(--metal-residency-gb, decoupled from cap), "
+                        f"admission_cap={cap / 1e9:.1f}GB "
+                        f"({pct:.0f}% of {max_recommended / 1e9:.1f}GB), "
+                        f"cache_limit={cache_limit / 1e9:.1f}GB"
+                    )
+                else:
+                    logger.info(
+                        f"Device memory limits set "
+                        f"(backend={backend.kind.value}, "
+                        f"enforcement={backend.enforcement_mode.value}): "
+                        f"allocation_limit={soft_limit / 1e9:.1f}GB "
+                        f"({pct:.0f}% of {max_recommended / 1e9:.1f}GB), "
+                        f"cache_limit={cache_limit / 1e9:.1f}GB"
+                    )
 
         try:
             self._model_load_executor.submit(_set_metal_limits).result()

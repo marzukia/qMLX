@@ -1055,6 +1055,7 @@ def load_model(
     mtp: bool = False,
     *,
     max_tokens_is_explicit: bool | None = None,
+    metal_residency_gb: float | None = None,
     force_text: bool = False,
     force_hybrid: bool = False,
     no_hybrid: bool = False,
@@ -1078,6 +1079,14 @@ def load_model(
             explicit while callers that omit it keep the implicit default.
         force_mllm: Force loading as MLLM even if not auto-detected
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
+        metal_residency_gb: Keyword-only. D11 decouple — absolute GB
+            size of the Metal weight-residency hint, decoupled from
+            the D-METAL-CAP admission cap (which stays at
+            ``gpu_memory_utilization x working set``). 16GB Apple
+            Silicon: set below the weight size for partial weight
+            residency (MTPLX ``--allow-swap`` equivalent). Validated
+            at startup (must be <= the cap); ``None`` = today
+            behavior.
         prefill_step_size: DEPRECATED — pass via
             ``scheduler_config.prefill_step_size`` instead. Pre-0.6.52 this
             parameter was accepted but silently ignored (the value never
@@ -1341,6 +1350,7 @@ def load_model(
             force_mllm=force_mllm,
             force_text=force_text,
             gpu_memory_utilization=gpu_memory_utilization,
+            metal_residency_gb=metal_residency_gb,
             force_hybrid=force_hybrid,
             no_hybrid=no_hybrid,
             force_spec_decode=force_spec_decode,
