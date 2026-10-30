@@ -243,6 +243,7 @@ jobs:
             tests/test_validate_release_subject.py \
             tests/test_version_check.py \
             tests/test_vibethinker_function_xml.py \
+            tests/test_wired_limit.py \
             tests/test_xfail_audit.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
@@ -442,6 +443,7 @@ jobs:
             tests/test_tools_auto_disable_thinking.py \
             tests/test_truncation_no_synthetic_text.py \
             tests/test_vision_kv_e2e_wiring.py \
+            tests/test_wired_limit.py \
             -v --tb=short \
             -m "not slow" \
             -k "not Integration"

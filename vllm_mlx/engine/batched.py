@@ -640,6 +640,29 @@ def _compute_metal_cache_limit(soft_limit_bytes: int) -> int:
     return min(cache, soft_limit_bytes) if soft_limit_bytes > 0 else cache
 
 
+def _compute_wired_limit_bytes(
+    wired_limit_gb: float,
+    recommended_working_set_bytes: int,
+) -> tuple[int, bool]:
+    """D23.1: ``(wired_bytes, clamped)`` for ``set_wired_limit``.
+
+    The per-process GPU wired (resident) cap is a SEPARATE axis from
+    the ``set_memory_limit`` allocation budget and the D-METAL-CAP
+    admission cap: above the wired cap the OS pages weight memory out
+    to RAM/swap (lazy re-wire on the next submit) — the MTPLX
+    partial-residency survival mechanism on 16GB Macs (carbon parity
+    journal D23.1: 9.99GB active under a 12.17GB peak at a 12GB
+    budget). MLX refuses a wired limit above the system's
+    ``max_recommended_working_set_size`` (a refused limit wires
+    nothing), so clamp to it and let the caller log the clamp —
+    MTPLX parity.
+    """
+    requested = int(wired_limit_gb * 1e9)
+    if recommended_working_set_bytes > 0 and requested > recommended_working_set_bytes:
+        return recommended_working_set_bytes, True
+    return requested, False
+
+
 # Check for guided generation availability
 try:
     from ..api.guided import GuidedGenerator, is_guided_available
@@ -768,6 +791,7 @@ class BatchedEngine(BaseEngine):
         gpu_memory_utilization: float = 0.90,
         *,
         metal_residency_gb: float | None = None,
+        wired_limit_gb: float | None = None,
         force_text: bool = False,
         force_hybrid: bool = False,
         no_hybrid: bool = False,
@@ -804,6 +828,27 @@ class BatchedEngine(BaseEngine):
                 <= ``gpu_memory_utilization x recommended working set``
                 (clear ``ValueError`` otherwise). Default ``None`` = today
                 behavior (residency hint equals the admission cap).
+            wired_limit_gb: Keyword-only. D23.1 (carbon-parity journal
+                E10-E11 + D23.1): absolute size in GB of the
+                per-process GPU WIRED (resident) limit — ENFORCEMENT,
+                not a hint. The ``metal_residency_gb`` hint is advisory
+                (``enforcement_mode == HINT``): the 10.4GB TWIN weight
+                set stays fully wired at 9.5G AND 8.0G and the first
+                generation-step eval OOMs
+                (``kIOGPUCommandBufferCallbackErrorOutOfMemory``).
+                Above the wired limit the OS pages weight memory out
+                to RAM/swap (lazy re-wire on the next submit) — the
+                MTPLX ``--allow-swap`` survival mechanism (9.99GB
+                active under a 12.17GB peak at a 12GB budget). Set at
+                or below the weight size on a 16GB Mac (e.g.
+                ``--wired-limit-gb 8.0`` with
+                ``--gpu-memory-utilization 1.0``). Validated at
+                startup (must be > 0); clamped at apply time to the
+                system ``max_recommended_working_set_size`` (MLX
+                refuses a wired limit above it — a refused limit wires
+                nothing). Default ``None`` = no wired limit (no
+                behavior change). Metal-first: a backend without a
+                wired-limit API is a warned no-op.
             force_text: Keyword-only. Force loading as text-only LLM even when
                 auto-detection would route as MLLM (#393 escape hatch).
                 Mutually exclusive with ``force_mllm`` — caller is responsible
@@ -823,6 +868,7 @@ class BatchedEngine(BaseEngine):
         self._stream_interval = stream_interval
         self._gpu_memory_utilization = gpu_memory_utilization
         self._metal_residency_gb = metal_residency_gb
+        self._wired_limit_gb = wired_limit_gb
         self._force_hybrid = force_hybrid
         self._no_hybrid = no_hybrid
         self._force_spec_decode = force_spec_decode
@@ -874,6 +920,7 @@ class BatchedEngine(BaseEngine):
         # rejected at D-METAL-CAP) is exactly what the flag exists
         # to prevent, so a misconfigured pair must not boot.
         self._check_metal_residency_vs_cap()
+        self._check_wired_limit()
 
     def _check_metal_residency_vs_cap(self) -> None:
         """Validate ``metal_residency_gb`` against the D-METAL-CAP cap.
@@ -926,6 +973,71 @@ class BatchedEngine(BaseEngine):
                 "Lower --metal-residency-gb or raise "
                 "--gpu-memory-utilization."
             )
+
+    def _check_wired_limit(self) -> None:
+        """Validate ``wired_limit_gb`` at startup (before any model
+        load) — the same posture as
+        ``_check_metal_residency_vs_cap``.
+
+        The wired (resident) cap is a SEPARATE axis from the
+        residency hint / admission cap, so there is no cross-flag
+        inequality to check here: a wired cap BELOW the weight size
+        is exactly the point (partial residency — weights page out),
+        and one above the allocation cap simply never binds (the
+        allocator cannot hand out more than its budget, so nothing
+        extra can wire). The only nonsense is a non-positive value;
+        the ``max_recommended_working_set_size`` clamp happens at
+        apply time (``_apply_wired_limits`` — MLX would refuse the
+        call, a refused limit wires nothing).
+        """
+        if self._wired_limit_gb is None:
+            return
+        if self._wired_limit_gb <= 0:
+            raise ValueError(f"wired_limit_gb must be > 0 (got {self._wired_limit_gb})")
+
+    def _apply_wired_limits(self, backend: Any, max_recommended: int) -> str:
+        """D23.1: apply the per-process GPU wired (resident) limit.
+
+        Returns the log fragment for the "Device memory limits set"
+        line (``""`` when nothing was applied — the default-off path
+        never touches a wired setter).
+
+        Graceful no-op with a warning when the backend has no
+        ``set_wired_limit`` (ported backends / older mlx) — the flag
+        is Metal-first by design and must not break non-Metal serves.
+        A request above the system ``max_recommended_working_set``
+        is clamped to it (MTPLX parity: a refused wired limit wires
+        nothing) with a warning.
+        """
+        if self._wired_limit_gb is None:
+            return ""
+        setter = getattr(backend, "set_wired_limit", None)
+        if not callable(setter):
+            logger.warning(
+                f"wired_limit_gb={self._wired_limit_gb} is set but this "
+                "backend has no wired-limit API; ignoring "
+                "(wired-limit enforcement is Metal-only)"
+            )
+            return ""
+        wired_bytes, clamped = _compute_wired_limit_bytes(
+            self._wired_limit_gb, max_recommended
+        )
+        if clamped:
+            logger.warning(
+                f"wired_limit_gb={self._wired_limit_gb} exceeds the "
+                f"system max_recommended_working_set_size "
+                f"({max_recommended / 1e9:.2f}GB); MLX would refuse a "
+                "wired limit above it (a refused limit wires nothing), "
+                "so clamping to the maximum"
+            )
+        setter(wired_bytes)
+        fragment = (
+            f", wired_limit={wired_bytes / 1e9:.1f}GB "
+            f"(enforcement=wired"
+            + (", clamped to max_recommended" if clamped else "")
+            + ")"
+        )
+        return fragment
 
     @property
     def model_name(self) -> str:
@@ -1228,6 +1340,11 @@ class BatchedEngine(BaseEngine):
                 backend.set_memory_limit(soft_limit)
                 cache_limit = _compute_metal_cache_limit(soft_limit)
                 backend.set_cache_limit(cache_limit)
+                # D23.1: the per-process wired (resident) cap — a
+                # separate axis from the allocation hint above; "" (no
+                # behavior change) when the flag is unset or the
+                # backend cannot apply it.
+                wired_fragment = self._apply_wired_limits(backend, max_recommended)
                 pct = self._gpu_memory_utilization * 100
                 if self._metal_residency_gb is not None:
                     logger.info(
@@ -1239,6 +1356,7 @@ class BatchedEngine(BaseEngine):
                         f"admission_cap={cap / 1e9:.1f}GB "
                         f"({pct:.0f}% of {max_recommended / 1e9:.1f}GB), "
                         f"cache_limit={cache_limit / 1e9:.1f}GB"
+                        f"{wired_fragment}"
                     )
                 else:
                     logger.info(
@@ -1248,6 +1366,7 @@ class BatchedEngine(BaseEngine):
                         f"allocation_limit={soft_limit / 1e9:.1f}GB "
                         f"({pct:.0f}% of {max_recommended / 1e9:.1f}GB), "
                         f"cache_limit={cache_limit / 1e9:.1f}GB"
+                        f"{wired_fragment}"
                     )
 
         try:
