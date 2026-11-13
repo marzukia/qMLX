@@ -21,6 +21,14 @@ Stdlib only. The worker holds strong refs to the handed-over views
 - ``shutdown(timeout)``: bounded drain; work still pending on timeout is
   logged as lost. The thread is a daemon, so process exit can never
   hang on this worker.
+
+``gated_work`` wraps a task so it first waits on a ``threading.Event``
+(q9b completion-write UAF): the completion checkpoint's force-eval must
+not interleave with the step thread's ``_cleanup_finished`` work
+(per-layer ``mx.eval`` of the *same* arrays, cache release,
+``mx.clear_cache()``). The gate is set after that call is fully done;
+the bounded wait (``timeout`` seconds, then proceed with a warning)
+means the worker can never deadlock on a gate that is never set.
 """
 
 import logging
@@ -28,6 +36,28 @@ import queue
 import threading
 
 logger = logging.getLogger(__name__)
+
+
+def gated_work(work, gate, *, timeout: float = 60.0, name: str = ""):
+    """Wrap a zero-arg ``work`` callable so it first waits on ``gate``.
+
+    ``gate`` is a ``threading.Event``; the wrapped task runs ``work``
+    only after the event is set (or after ``timeout`` seconds, in which
+    case it proceeds anyway with a warning — checkpointing is
+    best-effort and the worker must never hang). With ``gate`` None the
+    task runs immediately (same as submitting ``work`` directly).
+    """
+
+    def _run() -> None:
+        if gate is not None and not gate.wait(timeout=timeout):
+            logger.warning(
+                "[persist_worker] %s: gate not released in %.0fs; proceeding anyway",
+                name or "gated task",
+                timeout,
+            )
+        work()
+
+    return _run
 
 
 class PersistWorker:

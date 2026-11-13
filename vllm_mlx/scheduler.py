@@ -5555,6 +5555,7 @@ class Scheduler:
         stable_prefix_len: int | None = None,
         media_key: str = "",
         on_stored=None,
+        wait_before=None,
     ) -> None:
         """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
@@ -5576,6 +5577,19 @@ class Scheduler:
         holds strong refs to them until the write completes. A full
         worker queue skips the checkpoint with one log line
         (checkpointing is resilience, not correctness).
+
+        ``wait_before`` (q9b completion-write UAF, fix round 2): a
+        ``threading.Event`` the worker task must be set before the
+        write runs. The completion store site passes the barrier for
+        the in-flight ``_cleanup_finished`` call: that call's own work
+        (per-layer ``mx.eval`` of the *same* extracted arrays, the
+        ``prompt_cache``/``_extracted_cache`` release and
+        ``mx.clear_cache()``) must finish before the worker force-evals
+        those arrays — two threads inside ``mlx::core::eval`` on the
+        same lazy array set is the UAF-by-reuse (G5: SEGV in
+        ``save_safetensors``→``eval`` on the persist thread while the
+        step thread sat in the per-layer ``mx.eval`` loop of
+        ``_cleanup_finished``).
         """
         interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
         if not interval or not tokens or cache is None:
@@ -5604,6 +5618,13 @@ class Scheduler:
                     on_stored()
                 except Exception:  # best-effort notification
                     pass
+
+        if wait_before is not None:
+            # Completion write: defer the whole task until the step
+            # thread's _cleanup_finished is fully done (see docstring).
+            from .persist_worker import gated_work
+
+            _run_work = gated_work(_run_work, wait_before, timeout=60.0)
 
         if not worker.submit(_run_work):
             # Backpressure: skip this checkpoint (resilience, not
@@ -6357,6 +6378,15 @@ class Scheduler:
 
     def _cleanup_finished(self, finished_ids: set[str]) -> None:
         """Clean up finished requests and store caches for reuse."""
+        # q9b completion-write UAF: gates the persist worker's completion
+        # checkpoint write(s) on this call finishing. The worker task
+        # force-evals the same extracted arrays this function evaluates
+        # (per-layer mx.eval loop) and then releases (prompt_cache /
+        # _extracted_cache = None, mx.clear_cache()); two threads inside
+        # mlx::core::eval on the same lazy array set is the UAF.
+        # Set ONLY after that work (end of function), so the worker's
+        # write then runs on the already-materialized arrays alone.
+        _persist_gates: list = []
         for request_id in finished_ids:
             request = self.running.get(request_id)
 
@@ -6406,6 +6436,12 @@ class Scheduler:
                                 f"time={_store_dt:.3f}s"
                             )
 
+                        # q9b: gate this write on this _cleanup_finished
+                        # call finishing (per-layer eval, cache release,
+                        # mx.clear_cache all touch the same arrays the
+                        # worker's force-eval reads).
+                        _gate = threading.Event()
+                        _persist_gates.append(_gate)
                         self._disk_persist_boundary(
                             full_token_sequence,
                             request._extracted_cache,
@@ -6419,6 +6455,7 @@ class Scheduler:
                             # bucket.
                             media_key=getattr(request, "media_key", "") or "",
                             on_stored=_log_stored,
+                            wait_before=_gate,
                         )
                     except Exception as e:
                         logger.debug(
@@ -6572,6 +6609,15 @@ class Scheduler:
         # Free Metal command buffers after cleanup (prevents end-of-generation spike)
         if finished_ids:
             mx.clear_cache()
+
+        # q9b completion-write UAF: only now — after the per-layer eval
+        # of the extracted caches, the prompt_cache/_extracted_cache
+        # release and mx.clear_cache() — is this call done touching the
+        # arrays the persist worker's completion write force-evals. The
+        # worker's bounded wait (60s) bounds the deferral even in the
+        # pathological case where this point is never reached.
+        for _gate in _persist_gates:
+            _gate.set()
 
     def _is_cache_corruption_error(self, error: Exception) -> bool:
         """Check if an error indicates cache corruption."""
