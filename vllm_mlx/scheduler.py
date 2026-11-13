@@ -2807,6 +2807,18 @@ class Scheduler:
             if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
             else None
         )
+        # q9b fix (async isolation): the MLX-touching half of a
+        # checkpoint save (trim/quant helpers + the D2H materialisation
+        # of the body) runs on the step thread at the store site (see
+        # ``_disk_persist_boundary``); the worker receives a pure-numpy
+        # serialisation task only, so it can never be inside
+        # ``mlx::core::eval`` while the step thread's async evals are
+        # in flight (the G4/G5/G5b UAF-by-reuse class).
+        self._persist_worker = None
+        if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0:
+            from .persist_worker import PersistWorker
+
+            self._persist_worker = PersistWorker()
 
     def _get_actual_tokenizer(self, tokenizer: Any) -> Any:
         """
@@ -3268,16 +3280,22 @@ class Scheduler:
 
             prompt_tokens = list(request.prompt_token_ids)
             _t0 = _time.monotonic()
+
+            def _log_stored() -> None:
+                # Runs on the persist worker after the disk write, so
+                # store_time covers the real (now off-main-thread) store.
+                _dt = _time.monotonic() - _t0
+                logger.info(
+                    f"[prompt_cache_save] request={request_id[:12]} "
+                    f"prompt_tokens={len(prompt_tokens)} "
+                    f"store_time={_dt:.3f}s"
+                )
+
             self._disk_persist_boundary(
                 prompt_tokens,
                 extracted_cache,
                 media_key=getattr(request, "media_key", "") or "",
-            )
-            _dt = _time.monotonic() - _t0
-            logger.info(
-                f"[prompt_cache_save] request={request_id[:12]} "
-                f"prompt_tokens={len(prompt_tokens)} "
-                f"store_time={_dt:.3f}s"
+                on_stored=_log_stored,
             )
 
         return _prompt_cache_save
@@ -3450,32 +3468,39 @@ class Scheduler:
 
             prefix_tokens = list(request.prompt_token_ids[:prefix_boundary])
             _t0 = _time.monotonic()
-            stored = False
             try:
+
+                def _log_stored(
+                    _t0=_t0,
+                    request_id=request_id,
+                    prefix_boundary=prefix_boundary,
+                ) -> None:
+                    # Runs on the persist worker after the disk write, so
+                    # store_time covers the real (off-main-thread) store.
+                    # Loop values are bound at definition time.
+                    _dt = _time.monotonic() - _t0
+                    logger.info(
+                        f"[boundary_snapshot] request={request_id[:12]} "
+                        f"saved {prefix_boundary} tokens at message boundary "
+                        f"store_time={_dt:.3f}s"
+                    )
+
                 self._disk_persist_boundary(
                     prefix_tokens,
                     reconstructed,
                     media_key=getattr(request, "media_key", "") or "",
+                    on_stored=_log_stored,
                 )
-                stored = True
             except Exception as exc:
                 logger.debug(
                     "[boundary_snapshot] store failed for uid=%s: %s", uid, exc
                 )
-            _dt = _time.monotonic() - _t0
             # Mark the guard after the attempt (success OR failure) so a
             # repeated end_of_segment doesn't redo the expensive
             # extract+reconstruct cycle. A failed store usually means
             # the cache is busy — retrying every step would be pure waste.
             # DeepSeek finding #2 on PR #435.
             request._boundary_snapshot_taken = True
-
-            if stored:
-                logger.info(
-                    f"[boundary_snapshot] request={request_id[:12]} "
-                    f"saved {prefix_boundary} tokens at message boundary "
-                    f"store_time={_dt:.3f}s"
-                )
             # Free extracted cache states to prevent memory accumulation
             del states, reconstructed
             cache = None
@@ -5530,26 +5555,55 @@ class Scheduler:
         *,
         stable_prefix_len: int | None = None,
         media_key: str = "",
+        on_stored=None,
     ) -> None:
         """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
         Called directly from the scheduler store sites (prompt / message
-        boundary / mid-prefill / completion). Reproduces the disk half of
-        ``MemoryAwarePrefixCache.store()``: hybrid recurrent-state entries are
-        written RAW (never trimmed, #1025/#1058/#163); trimmable entries are
-        trimmed then quantized to the on-disk footprint restore expects. A
-        checkpoint that already exists for this ``(req_hash, offset)`` is not
-        re-serialized, which reproduces store()'s exact-match skip without the
-        in-memory cache (the writer is atomic, so an existing file is complete).
-        Never raises into the caller.
+        boundary / mid-prefill / completion) — ALL of them on the
+        scheduler step thread, the thread that owns the model's async
+        evals.
+
+        Async-isolation contract (G4/G5 fix, see ``persist_worker``):
+        every MLX-touching half of the save runs HERE on the step
+        thread — the trim/slice/quant helpers plus the D2H
+        materialisation of the final body into numpy
+        (``disk_kv_checkpoint.prepare_numpy_body``). What the persist
+        worker receives is a pure-numpy serialisation task (hash/dedup
+        already done here; the safetensors body is written with
+        ``write_safetensors_numpy`` + the sidecar/blob/index commit —
+        no MLX call anywhere in the worker task), so it can overlap
+        the step thread's async decode evals without two threads ever
+        being inside ``mlx::core::eval`` on the same array set.
+
+        Cost on the step thread is the D2H copy of the body (~0.1-0.3s
+        for the 512-token checkpoint class); one step is delayed by that
+        much. That is the safe form of the legacy main-thread write,
+        which crashed (G4/G5) because the main thread is not the
+        eval-owning thread.
+
+        Hybrid recurrent-state entries are written RAW (never trimmed,
+        #1025/#1058/#163); trimmable entries are trimmed then quantized
+        to the on-disk footprint restore expects. A checkpoint that
+        already exists for this ``(req_hash, offset)`` is not
+        re-serialised (dedup happens here, before the D2H, so an
+        existing file skips the copy too). A full worker queue skips
+        the checkpoint with one log line (checkpointing is resilience,
+        not correctness). Never raises into the caller.
         """
+        interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
+        if not interval or not tokens or cache is None:
+            return
+        if len(tokens) < 256:
+            # Cold-prefilling <256 tokens is instant; not worth a write.
+            return
+
+        worker = getattr(self, "_persist_worker", None)
+        if worker is None:
+            return
+
+        # ---- step thread (eval-owning): bookkeeping + body prep ----
         try:
-            interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
-            if not interval or not tokens or cache is None:
-                return
-            if len(tokens) < 256:
-                # Cold-prefilling <256 tokens is instant; not worth a write.
-                return
             import array as _arr
             import hashlib as _hl
 
@@ -5562,13 +5616,11 @@ class Scheduler:
             )
             from .runtime import disk_kv_checkpoint as _dkc
 
-            has_non_trimmable = _cache_has_non_trimmable(cache)
-
             # Round-trip-stable keying (follow-up to #9). The completion store
             # site hands us prompt + generated-output tokens, but the model's
             # own output token IDs do NOT survive the client re-tokenizing the
-            # conversation text next turn (the empty ``<think></think>`` scaffold
-            # and tool-call formatting re-encode to different IDs). Keying a
+            # conversation text next turn (the empty ``think`` scaffold and
+            # tool-call formatting re-encode to different IDs). Keying a
             # checkpoint on that volatile prompt+output tail means the next
             # turn's prompt is never a prefix of the key, so every multi-turn
             # request falls back to the system-prompt checkpoint and cold-
@@ -5579,6 +5631,7 @@ class Scheduler:
             # Requires a trimmable cache: a recurrent state can't be sliced to a
             # shorter prefix (#1025/#1058), so hybrid models keep the full key
             # (exact-match reuse only), unchanged.
+            has_non_trimmable = _cache_has_non_trimmable(cache)
             key_tokens = list(tokens)
             target_len = len(key_tokens)
             if (
@@ -5603,24 +5656,20 @@ class Scheduler:
                 ).hexdigest()[:16]
             else:
                 req_hash = _hl.sha256(str(mname).encode() + raw).hexdigest()[:16]
-            extra_metadata: dict = {
-                "tokens_key": list(key_tokens),
-                "save_uuid": uuid.uuid4().hex,
-            }
-            if media_key:
-                extra_metadata["media_key"] = media_key
+            kv_dtype = getattr(self.config, "kv_cache_dtype", "bf16") or "bf16"
 
-            # Dedup: reproduce store()'s exact-match skip without the RAM cache.
-            # The writer is atomic (temp + fsync + rename), so a present file is
-            # always complete; re-serializing would just repeat a multi-GB write
-            # on the hot repeat-prompt path.
+            # Dedup BEFORE the D2H: the writer is atomic (temp + fsync +
+            # rename), so a present file is always complete; re-serializing
+            # would just repeat a multi-GB write on the hot repeat-prompt
+            # path (and re-copy ~0.3s of D2H on the step thread).
             if os.path.exists(_dkc.checkpoint_path(root, req_hash, target_len)):
                 return
 
             # Hybrid recurrent-state caches are written RAW. Trimming a
-            # non-trimmable layer is the #1025/#1058/#163 bug. Trimmable caches
-            # are trimmed then quantized to the footprint restore expects
-            # (dtype + size checks on the restore path assume this).
+            # non-trimmable layer is the #1025/#1058/#163 bug. Trimmable
+            # caches are trimmed then quantized to the footprint restore
+            # expects (dtype + size checks on the restore path assume this).
+            # (Lazy mx ops on this, eval-owning thread — safe.)
             if has_non_trimmable:
                 write_cache = cache
             else:
@@ -5651,74 +5700,101 @@ class Scheduler:
                         self.config.kv_cache_quantization_group_size,
                     )
 
-            # Delta path (off by default). Discover the longest strict-prefix
-            # checkpoint as a parent via the content index, build a delta body
-            # (attention sliced to [base_offset, len(tokens)); recurrent whole),
-            # and hand both to the writer, which re-validates the parent under
-            # _DISK_LOCK and falls back to a full base if it was evicted (TOCTOU).
-            # A keyframe every N deltas writes a full base to bound chain length.
-            delta_kind = "full"
-            delta_cache = None
-            delta_meta = None
-            if _dkc.delta_checkpoints_enabled() and not (
-                _dkc.model_requires_full_checkpoint(mname)
-            ):
+            # D2H materialise on THIS (eval-owning) thread; the worker then
+            # writes the file from the numpy body with zero MLX work.
+            # ``save_uuid`` is pre-minted so the body (embedded metadata),
+            # sidecar and content index share one uuid.
+            save_uuid = uuid.uuid4().hex
+            st_meta = {
+                "token_offset": str(target_len),
+                "kv_dtype": kv_dtype,
+                "requires_full_checkpoint": (
+                    "true" if _dkc.model_requires_full_checkpoint(mname) else "false"
+                ),
+                "save_uuid": save_uuid,
+                "kind": "full",
+            }
+            if mname:
+                st_meta["model_name"] = str(mname)
+            np_body = _dkc.prepare_numpy_body(write_cache, st_meta)
+            if np_body is None:
+                # prepare_numpy_body logged the reason; skip the write
+                # (best-effort persistence contract).
+                return
+            extra_metadata: dict = {
+                "tokens_key": list(key_tokens),
+                "save_uuid": save_uuid,
+            }
+            if media_key:
+                extra_metadata["media_key"] = media_key
+        except Exception as _prep_err:  # pragma: no cover — best-effort
+            logger.debug("[disk_persist] step-thread body prep failed: %s", _prep_err)
+            return
+
+        # ---- persist worker: pure file I/O, no MLX ----
+        def _run_work() -> None:
+            self._persist_boundary_work(
+                np_body,
+                root=root,
+                req_hash=req_hash,
+                target_len=target_len,
+                kv_dtype=kv_dtype,
+                extra_metadata=extra_metadata,
+                mname=mname,
+            )
+            if on_stored is not None:
                 try:
-                    parent = _dkc.get_content_index().longest_strict_prefix(
-                        key_tokens, media_key
-                    )
-                    if parent is not None:
-                        pside = _dkc.read_sidecar(
-                            root, parent.req_hash, parent.token_offset
-                        )
-                        parent_depth = (
-                            int((pside or {}).get("chain_depth", 0) or 0)
-                            if pside is not None
-                            else 0
-                        )
-                        child_depth = parent_depth + 1
-                        base_offset = int(parent.token_offset)
-                        # Keyframe: when the next depth reaches N, write a full
-                        # base instead (resets the chain, bounds restore links).
-                        if (
-                            pside is not None
-                            and not _dkc.should_write_keyframe(parent_depth)
-                            and 0 < base_offset < target_len
-                        ):
-                            built = _dkc.build_delta_cache(
-                                write_cache, base_offset, target_len
-                            )
-                            if built is not None:
-                                delta_cache = built
-                                delta_kind = "delta"
-                                delta_meta = {
-                                    "base_hash": parent.req_hash,
-                                    "base_offset": base_offset,
-                                    "base_save_uuid": parent.save_uuid,
-                                    "delta_range": [base_offset, target_len],
-                                    "chain_depth": child_depth,
-                                }
-                except Exception as _delta_err:  # pragma: no cover — best-effort
-                    logger.debug(
-                        "[disk_persist] delta planning failed: %s; full base",
-                        _delta_err,
-                    )
-                    delta_kind = "full"
-                    delta_cache = None
-                    delta_meta = None
+                    on_stored()
+                except Exception:  # best-effort notification
+                    pass
+
+        if not worker.submit(_run_work):
+            # Backpressure: skip this checkpoint (resilience, not
+            # correctness); one line so operators can see the skip.
+            logger.warning(
+                "[disk_persist] persist queue full; skipping checkpoint for "
+                "%d-token prefix",
+                len(tokens),
+            )
+
+    def _persist_boundary_work(
+        self,
+        np_body,
+        *,
+        root: str,
+        req_hash: str,
+        target_len: int,
+        kv_dtype: str,
+        extra_metadata: dict,
+        mname,
+    ) -> None:
+        """Worker half of a boundary checkpoint save: pure file I/O.
+
+        The numpy body was D2H-materialised on the eval-owning step
+        thread (see :meth:`_disk_persist_boundary`); this task writes
+        the safetensors body from numpy plus the sidecar / tokens blob /
+        content-index commit. No MLX call anywhere, so it is safe to
+        overlap the step thread's async decode evals. Best-effort: never
+        raises into the worker loop.
+
+        Note: the legacy delta path is not available for numpy bodies
+        (they are built for the full snapshot); with delta checkpoints
+        enabled this writes full bases instead. Delta is off by default.
+        """
+        try:
+            from .runtime import disk_kv_checkpoint as _dkc
 
             _dkc.write_checkpoint(
-                write_cache,
+                None,
+                numpy_body=np_body,
                 root=root,
                 req_hash=req_hash,
                 token_offset=target_len,
-                kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
+                kv_dtype=kv_dtype,
                 requires_full_checkpoint=_dkc.model_requires_full_checkpoint(mname),
                 model_name=mname,
                 extra_metadata=extra_metadata,
-                kind=delta_kind,
-                delta_cache=delta_cache,
-                delta_meta=delta_meta,
+                kind="full",
             )
         except Exception as _e:  # pragma: no cover — boundary write is best-effort
             logger.debug("[disk_persist] boundary write failed: %s", _e)
@@ -6310,6 +6386,28 @@ class Scheduler:
                         import time as _time
 
                         _store_t0 = _time.monotonic()
+
+                        def _log_stored(
+                            _store_t0=_store_t0,
+                            request_id=request_id,
+                            full_token_sequence=full_token_sequence,
+                            request=request,
+                        ) -> None:
+                            # Runs on the persist worker after the disk
+                            # write, so time covers the real store.
+                            # Loop values are bound at definition time.
+                            _store_dt = _time.monotonic() - _store_t0
+                            logger.info(
+                                f"[cache_store] request={request_id[:12]} "
+                                f"tokens={len(full_token_sequence)} "
+                                f"({len(request.prompt_token_ids)} prompt + {len(request.output_token_ids)} output) "
+                                f"time={_store_dt:.3f}s"
+                            )
+
+                        # The body D2H runs on this (step) thread inside
+                        # _disk_persist_boundary; the worker then writes
+                        # the file with pure I/O. No barrier needed: the
+                        # worker's task no longer touches MLX at all.
                         self._disk_persist_boundary(
                             full_token_sequence,
                             request._extracted_cache,
@@ -6322,14 +6420,7 @@ class Scheduler:
                             # with identical tokens collide in the text
                             # bucket.
                             media_key=getattr(request, "media_key", "") or "",
-                        )
-                        _store_dt = _time.monotonic() - _store_t0
-
-                        logger.info(
-                            f"[cache_store] request={request_id[:12]} "
-                            f"tokens={len(full_token_sequence)} "
-                            f"({len(request.prompt_token_ids)} prompt + {len(request.output_token_ids)} output) "
-                            f"time={_store_dt:.3f}s"
+                            on_stored=_log_stored,
                         )
                     except Exception as e:
                         logger.debug(
@@ -7033,6 +7124,16 @@ class Scheduler:
         if self.prefix_cache is not None:
             self.prefix_cache.clear()
 
+    def _shutdown_persist_worker(self) -> None:
+        """Drain the checkpoint persist worker (bounded; marks rest lost)."""
+        worker = getattr(self, "_persist_worker", None)
+        if worker is not None:
+            try:
+                worker.shutdown()
+            except Exception as exc:  # best-effort teardown
+                logger.debug("persist worker shutdown failed: %s", exc)
+        self._persist_worker = None
+
     def deep_reset(self) -> None:
         """
         Deep reset that clears ALL cache state including model-level caches.
@@ -7040,6 +7141,15 @@ class Scheduler:
         This is more aggressive than reset() and should be used when
         switching engines or recovering from errors.
         """
+        # Drain the persist worker (bounded) on teardown so pending
+        # checkpoint writes finish or are marked lost, then bring it
+        # back for the next user of this scheduler.
+        self._shutdown_persist_worker()
+        if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0:
+            from .persist_worker import PersistWorker
+
+            self._persist_worker = PersistWorker()
+
         # Standard reset first
         self.reset()
 
