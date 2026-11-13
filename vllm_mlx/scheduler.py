@@ -5728,9 +5728,7 @@ class Scheduler:
             if media_key:
                 extra_metadata["media_key"] = media_key
         except Exception as _prep_err:  # pragma: no cover — best-effort
-            logger.debug(
-                "[disk_persist] step-thread body prep failed: %s", _prep_err
-            )
+            logger.debug("[disk_persist] step-thread body prep failed: %s", _prep_err)
             return
 
         # ---- persist worker: pure file I/O, no MLX ----

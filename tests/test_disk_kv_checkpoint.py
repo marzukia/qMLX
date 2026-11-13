@@ -1304,8 +1304,10 @@ def test_mid_prefill_checkpoint_scenario_32k_interrupt_20k_restore_at_8k(
 # ``mlx_lm.load_prompt_cache``, is shared).
 # ---------------------------------------------------------------------------
 
+
 def _parse_safetensors(path: Path) -> tuple[dict, bytes]:
     import struct
+
     raw = path.read_bytes()
     hdr_len = struct.unpack("<Q", raw[:8])[0]
     hdr = json.loads(raw[8 : 8 + hdr_len])
@@ -1322,6 +1324,7 @@ def _mlx_available() -> bool:
 def test_write_safetensors_numpy_format():
     """Structural safetensors layout of the pure-numpy writer."""
     import numpy as np
+
     from vllm_mlx.runtime.disk_kv_checkpoint import write_safetensors_numpy
 
     p = Path(tmp := tempfile.mkdtemp()) / "t.safetensors"
@@ -1352,14 +1355,42 @@ def test_write_safetensors_numpy_format():
     assert data[32:36] == bf.tobytes()
 
 
+def test_write_checkpoint_numpy_body_with_none_cache():
+    """Regression: the off-thread path calls write_checkpoint(cache=None,
+    numpy_body=...); the legacy belt guard must not swallow it."""
+    import numpy as np
+
+    from vllm_mlx.runtime import disk_kv_checkpoint as dkc
+
+    root = tempfile.mkdtemp()
+    a = np.arange(4, dtype=np.float32)
+    body = {
+        "tensors": [("t", "F32", [4], a)],
+        "metadata": {"0.token_offset": "4", "1.0": "KVCache", "2.0": ""},
+    }
+    p = dkc.write_checkpoint(
+        None,
+        numpy_body=body,
+        root=root,
+        req_hash="abc123",
+        token_offset=4,
+        kv_dtype="bf16",
+    )
+    assert p is not None, "numpy_body write must not be swallowed by the cache guard"
+    assert os.path.exists(p)
+    h, data = _parse_safetensors(Path(p))
+    assert h["t"]["dtype"] == "F32"
+    assert data[h["t"]["data_offsets"][0] : h["t"]["data_offsets"][1]] == a.tobytes()
+
+
 @pytest.mark.skipif(not _mlx_available(), reason="needs mlx")
 def test_numpy_body_roundtrip_vs_mx():
     """prepare_numpy_body + write_safetensors_numpy is byte-identical to
     mlx_lm.save_prompt_cache for a real KVCache pair, and both files load
     back to identical arrays."""
-    import numpy as np
     import mlx.core as mx
-    from mlx_lm.models.cache import KVCache, save_prompt_cache, load_prompt_cache
+    import numpy as np
+    from mlx_lm.models.cache import KVCache, load_prompt_cache, save_prompt_cache
 
     from vllm_mlx.runtime.disk_kv_checkpoint import (
         prepare_numpy_body,
@@ -1419,8 +1450,9 @@ def test_numpy_body_roundtrip_vs_mx():
 @pytest.mark.skipif(not _mlx_available(), reason="needs mlx")
 def test_numpy_body_bf16_bits():
     """bf16 values survive the f32-upcast / RNE round-trip bit-exactly."""
-    import numpy as np
     import mlx.core as mx
+    import numpy as np
+
     from vllm_mlx.runtime.disk_kv_checkpoint import _mlx_array_to_numpy
 
     f32 = np.array([1.5, 2.5, -0.25, 3.14159], dtype=np.float32)
@@ -1428,7 +1460,6 @@ def test_numpy_body_bf16_bits():
     arr, dtype = _mlx_array_to_numpy(bf)
     assert dtype == "BF16"
     # The original bf16 file bytes (what mx.save_safetensors would write).
-    import struct, json
     p = Path(tempfile.mkdtemp()) / "x.safetensors"
     mx.save_safetensors(str(p), {"t": bf}, {})
     h, data = _parse_safetensors(p)

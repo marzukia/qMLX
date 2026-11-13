@@ -107,6 +107,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1027,6 +1029,7 @@ _NP_DTYPE_NAMES = {
     "bool": "BOOL",
 }
 
+
 def write_safetensors_numpy(
     file_path: str,
     tensors: list[tuple[str, str, list[int], Any]],
@@ -1079,14 +1082,14 @@ def _mlx_array_to_numpy(arr) -> tuple[np.ndarray, str] | None:
     thread); the numpy result is a host-side copy that the persist
     worker can serialise without any further MLX work.
     """
-    import numpy as np
     import mlx.core as mx
+    import numpy as np
 
     # mlx dtypes expose no ``.name``; ``str(dtype)`` is e.g.
     # ``"mlx.core.bfloat16"`` / ``"mlx.core.float16"``.
     short = str(arr.dtype)
     if short.startswith("mlx.core."):
-        short = short[len("mlx.core."):]
+        short = short[len("mlx.core.") :]
     if short == "bfloat16":
         # No numpy bfloat16: upcast to f32 (bit-exact), D2H, then
         # round-to-nearest-even back to the 16 bits (identity for
@@ -1116,8 +1119,8 @@ def prepare_numpy_body(
     any leaf is not serialisable (the caller skips the write with a
     log — same best-effort contract as the MLX path).
     """
-    import numpy as np  # noqa: F401
     import mlx.core as mx
+    import numpy as np  # noqa: F401
     from mlx.utils import tree_flatten
 
     scalars: list[tuple[str, str]] = [""]  # leading "" like save_prompt_cache
@@ -1238,9 +1241,12 @@ def write_checkpoint(
     # The CLI / scheduler caller already gates on
     # :func:`should_checkpoint`; the guard here is a belt for the
     # in-process radix path that pokes ``write_checkpoint`` directly.
+    # A ``numpy_body`` caller (the off-thread scheduler path) passes
+    # ``cache=None`` — the guard only applies when there is no body.
+    _has_np = numpy_body is not None and "tensors" in numpy_body
     if not isinstance(token_offset, int) or token_offset < 0:
         return None
-    if cache is None or not cache:
+    if (cache is None or not cache) and not _has_np:
         return None
 
     with _DISK_LOCK:
