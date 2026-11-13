@@ -2818,6 +2818,15 @@ class Scheduler:
             from .persist_worker import PersistWorker
 
             self._persist_worker = PersistWorker()
+        # q9b completion-write UAF (fix round 2): set while the step
+        # thread is inside a step() / direct step-thread task (close,
+        # pressure-evict tick). The persist worker's force-eval waits
+        # for an idle gap: a sync eval on a non-step thread that
+        # overlaps the step thread's async eval is the UAF-by-reuse
+        # (G4 window: prefill->first-decode; G5: completion write
+        # racing _cleanup_finished; G5b: prompt write racing decode
+        # evals, surfacing at shutdown close()).
+        self._step_busy = threading.Event()
 
     def _get_actual_tokenizer(self, tokenizer: Any) -> Any:
         """
@@ -5590,6 +5599,15 @@ class Scheduler:
         ``save_safetensors``→``eval`` on the persist thread while the
         step thread sat in the per-layer ``mx.eval`` loop of
         ``_cleanup_finished``).
+
+        Every task additionally waits for a step-idle gap (bounded
+        60s) before the force-eval: a sync eval on the persist thread
+        overlapping the step thread's async evals is the same UAF class
+        (G5b: prompt write running concurrently with decode evals left
+        the run's request phase clean but the process SEGV'd at the
+        shutdown ``mx.synchronize(stream)`` in ``BatchGenerator.close``
+        — classic deferred UAF-by-reuse surfacing at the next
+        stream-state touch).
         """
         interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
         if not interval or not tokens or cache is None:
@@ -5607,6 +5625,32 @@ class Scheduler:
             # views, the numpy/quant helpers and the raw disk write all
             # happen off the main thread, so nothing in this window can
             # free-and-reuse MLX event memory under a live decode eval.
+            if wait_before is not None:
+                # Completion write: first wait for this call's
+                # _cleanup_finished to be fully done (per-layer eval,
+                # cache release, mx.clear_cache — see docstring).
+                if not wait_before.wait(timeout=60.0):
+                    logger.warning(
+                        "[disk_persist] teardown barrier not released in 60s; "
+                        "proceeding"
+                    )
+            busy = getattr(self, "_step_busy", None)
+            if busy is not None:
+                # Step-idle gate: wait for the step thread to be
+                # between steps (bounded, so the worker never hangs on
+                # a stuck step). A sync eval on this thread overlapping
+                # the step thread's async evals is the UAF (G5b);
+                # with the step thread idle the one-shot sync events
+                # this write creates cannot touch in-flight step
+                # machinery.
+                _t0 = time.monotonic()
+                while busy.is_set():
+                    if time.monotonic() - _t0 > 60.0:
+                        logger.warning(
+                            "[disk_persist] step thread busy for 60s; proceeding anyway"
+                        )
+                        break
+                    time.sleep(0.005)
             self._persist_boundary_work(
                 tokens,
                 cache,
@@ -5618,13 +5662,6 @@ class Scheduler:
                     on_stored()
                 except Exception:  # best-effort notification
                     pass
-
-        if wait_before is not None:
-            # Completion write: defer the whole task until the step
-            # thread's _cleanup_finished is fully done (see docstring).
-            from .persist_worker import gated_work
-
-            _run_work = gated_work(_run_work, wait_before, timeout=60.0)
 
         if not worker.submit(_run_work):
             # Backpressure: skip this checkpoint (resilience, not
@@ -6699,6 +6736,23 @@ class Scheduler:
             logger.info(f"Rescheduled {count} requests for retry")
 
     def step(self, max_retries: int = 1) -> SchedulerOutput:
+        """One scheduler step, marking the step thread busy (q9b gate).
+
+        See :meth:`_step_impl` for the step itself; the wrapper only
+        brackets it with ``_step_busy`` so the persist worker's
+        force-eval can wait for a step-idle gap (two threads inside
+        ``mlx::core::eval`` — or a sync eval on one thread overlapping
+        the step thread's async eval — is the UAF-by-reuse; the
+        worker's eval runs on the persist thread, not the step
+        thread, so it must never overlap step-thread MLX work).
+        """
+        self._step_busy.set()
+        try:
+            return self._step_impl(max_retries)
+        finally:
+            self._step_busy.clear()
+
+    def _step_impl(self, max_retries: int = 1) -> SchedulerOutput:
         """
         Execute one scheduling step with automatic error recovery.
 
