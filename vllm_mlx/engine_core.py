@@ -406,23 +406,7 @@ class EngineCore:
             )
             return func(*args, **kwargs)
 
-        def _busy_wrapped() -> Any:
-            # q9b: mark the step thread busy around direct step-thread
-            # tasks (generator close, pressure-evict tick) so the
-            # persist worker's force-eval (which waits for a
-            # step-idle gap) does not overlap them. Bounded on the
-            # worker side, so a stuck task can only delay — never
-            # deadlock — the checkpoint write.
-            busy = getattr(self.scheduler, "_step_busy", None)
-            if busy is not None:
-                busy.set()
-            try:
-                return func(*args, **kwargs)
-            finally:
-                if busy is not None:
-                    busy.clear()
-
-        future = executor.submit(_busy_wrapped)
+        future = executor.submit(func, *args, **kwargs)
         return future.result()
 
     def is_running(self) -> bool:
@@ -461,27 +445,17 @@ class EngineCore:
           ``_pressure_evict_error_logged`` sentinel so a persistent
           failure doesn't flood at 16-step cadence.
         """
-        # q9b: mark the step thread busy around the eviction (it frees
-        # cache entries); the persist worker's force-eval waits for a
-        # step-idle gap and must not overlap this work.
-        _busy = getattr(self.scheduler, "_step_busy", None)
-        if _busy is not None:
-            _busy.set()
         try:
-            try:
-                self.scheduler.evict_prefix_cache_under_pressure()
-            except Exception as evict_exc:
-                if not getattr(self, "_pressure_evict_error_logged", False):
-                    self._pressure_evict_error_logged = True
-                    logger.warning(
-                        "[D-METAL-PFX] prefix-cache pressure "
-                        "eviction raised; further failures "
-                        "will be suppressed: %r",
-                        evict_exc,
-                    )
-        finally:
-            if _busy is not None:
-                _busy.clear()
+            self.scheduler.evict_prefix_cache_under_pressure()
+        except Exception as evict_exc:
+            if not getattr(self, "_pressure_evict_error_logged", False):
+                self._pressure_evict_error_logged = True
+                logger.warning(
+                    "[D-METAL-PFX] prefix-cache pressure "
+                    "eviction raised; further failures "
+                    "will be suppressed: %r",
+                    evict_exc,
+                )
 
     async def _engine_loop(self) -> None:
         """Main engine loop."""

@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -1291,3 +1292,146 @@ def test_mid_prefill_checkpoint_scenario_32k_interrupt_20k_restore_at_8k(
         f"interrupted at {interrupted_at}, "
         f"restored at offset {result.token_offset}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Off-thread (numpy) write path — G5-B fix.
+#
+# ``write_safetensors_numpy`` + ``prepare_numpy_body`` let the scheduler
+# D2H-materialise the cache body on the eval-owning step thread and hand
+# the worker a pure-numpy serialisation task. The writer must be
+# byte-compatible with ``mx.save_safetensors`` (the loader,
+# ``mlx_lm.load_prompt_cache``, is shared).
+# ---------------------------------------------------------------------------
+
+def _parse_safetensors(path: Path) -> tuple[dict, bytes]:
+    import struct
+    raw = path.read_bytes()
+    hdr_len = struct.unpack("<Q", raw[:8])[0]
+    hdr = json.loads(raw[8 : 8 + hdr_len])
+    data = raw[8 + hdr_len :]
+    return hdr, data
+
+
+def _mlx_available() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("mlx") is not None
+
+
+def test_write_safetensors_numpy_format():
+    """Structural safetensors layout of the pure-numpy writer."""
+    import numpy as np
+    from vllm_mlx.runtime.disk_kv_checkpoint import write_safetensors_numpy
+
+    p = Path(tmp := tempfile.mkdtemp()) / "t.safetensors"
+    a = np.arange(6, dtype=np.float32)
+    b = np.array([1, 2], dtype=np.int32)
+    bf = np.array([0x3FC0, 0x4020], dtype=np.uint16)  # 1.5 / 2.5 as bf16 bits
+    write_safetensors_numpy(
+        str(p),
+        [
+            ("a", "F32", [6], a),
+            ("b", "I32", [2], b),
+            ("bf", "BF16", [2], bf),
+        ],
+        metadata={"k1": "v1"},
+    )
+    import struct as _s
+
+    raw = p.read_bytes()
+    hdr_len = _s.unpack("<Q", raw[:8])[0]
+    hdr = json.loads(raw[8 : 8 + hdr_len])
+    data = raw[8 + hdr_len :]
+    assert hdr["a"] == {"dtype": "F32", "shape": [6], "data_offsets": [0, 24]}
+    assert hdr["b"] == {"dtype": "I32", "shape": [2], "data_offsets": [24, 32]}
+    assert hdr["bf"] == {"dtype": "BF16", "shape": [2], "data_offsets": [32, 36]}
+    assert hdr["__metadata__"] == {"k1": "v1"}
+    assert data[:24] == a.tobytes()
+    assert data[24:32] == b.tobytes()
+    assert data[32:36] == bf.tobytes()
+
+
+@pytest.mark.skipif(not _mlx_available(), reason="needs mlx")
+def test_numpy_body_roundtrip_vs_mx():
+    """prepare_numpy_body + write_safetensors_numpy is byte-identical to
+    mlx_lm.save_prompt_cache for a real KVCache pair, and both files load
+    back to identical arrays."""
+    import numpy as np
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache, save_prompt_cache, load_prompt_cache
+
+    from vllm_mlx.runtime.disk_kv_checkpoint import (
+        prepare_numpy_body,
+        write_safetensors_numpy,
+    )
+
+    rng = np.random.default_rng(0)
+    c1 = KVCache()
+    c2 = KVCache()
+    for _ in range(4):
+        c1.update_and_fetch(
+            mx.array(rng.normal(size=(1, 2, 1, 8)).astype(np.float32)),
+            mx.array(rng.normal(size=(1, 2, 1, 8)).astype(np.float32)),
+        )
+        c2.update_and_fetch(
+            mx.array(rng.normal(size=(1, 2, 1, 8)).astype(np.float32)),
+            mx.array(rng.normal(size=(1, 2, 1, 8)).astype(np.float32)),
+        )
+    st_meta = {
+        "token_offset": "8",
+        "kv_dtype": "bf16",
+        "requires_full_checkpoint": "false",
+        "save_uuid": "test-uuid",
+        "kind": "full",
+    }
+    d = Path(tempfile.mkdtemp())
+    mx_path = d / "mx.safetensors"
+    np_path = d / "np.safetensors"
+    save_prompt_cache(str(mx_path), [c1, c2], metadata=st_meta)
+    body = prepare_numpy_body([c1, c2], st_meta)
+    assert body is not None
+    write_safetensors_numpy(str(np_path), body["tensors"], metadata=body["metadata"])
+
+    h_mx, d_mx = _parse_safetensors(mx_path)
+    h_np, d_np = _parse_safetensors(np_path)
+    # Tensor set identical, byte-identical payloads (order-independent).
+    assert set(h_mx) == set(h_np)
+    for k in h_mx:
+        if k == "__metadata__":
+            continue
+        o = h_mx[k]["data_offsets"]
+        o2 = h_np[k]["data_offsets"]
+        assert h_mx[k]["dtype"] == h_np[k]["dtype"]
+        assert h_mx[k]["shape"] == h_np[k]["shape"]
+        assert d_mx[o[0] : o[1]] == d_np[o2[0] : o2[1]]
+    # Metadata: mlx writes the flattened [st_meta, classes, scalars] tree.
+    assert h_np["__metadata__"] == h_mx["__metadata__"]
+    # And both load back to identical values.
+    arr_mx, _ = load_prompt_cache(str(mx_path), return_metadata=True)
+    arr_np, _ = load_prompt_cache(str(np_path), return_metadata=True)
+    for a, b in zip(arr_mx, arr_np):
+        for ka, kb in zip(a.state, b.state):
+            if isinstance(ka, mx.array):
+                assert mx.all(ka == kb).item()
+
+
+@pytest.mark.skipif(not _mlx_available(), reason="needs mlx")
+def test_numpy_body_bf16_bits():
+    """bf16 values survive the f32-upcast / RNE round-trip bit-exactly."""
+    import numpy as np
+    import mlx.core as mx
+    from vllm_mlx.runtime.disk_kv_checkpoint import _mlx_array_to_numpy
+
+    f32 = np.array([1.5, 2.5, -0.25, 3.14159], dtype=np.float32)
+    bf = mx.array(f32).astype(mx.bfloat16)
+    arr, dtype = _mlx_array_to_numpy(bf)
+    assert dtype == "BF16"
+    # The original bf16 file bytes (what mx.save_safetensors would write).
+    import struct, json
+    p = Path(tempfile.mkdtemp()) / "x.safetensors"
+    mx.save_safetensors(str(p), {"t": bf}, {})
+    h, data = _parse_safetensors(p)
+    o = h["t"]["data_offsets"]
+    expected = np.frombuffer(data[o[0] : o[1]], dtype=np.uint16)
+    assert arr.tobytes() == expected.tobytes()
