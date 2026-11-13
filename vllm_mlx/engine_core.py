@@ -405,6 +405,7 @@ class EngineCore:
                 getattr(func, "__qualname__", func),
             )
             return func(*args, **kwargs)
+
         future = executor.submit(func, *args, **kwargs)
         return future.result()
 
