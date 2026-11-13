@@ -578,6 +578,7 @@ def test_mtp_off_with_images_threads_media_key(root: str):
     sched._disk_persist_boundary(
         tokens, cache, media_key=getattr(req, "media_key", "") or ""
     )
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
     idx = _dkc.get_content_index()
     assert idx.lookup(tokens, req.media_key) is not None
     assert idx.lookup(tokens, _media_key(IMG_B)) is None
