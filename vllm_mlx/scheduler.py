@@ -2807,6 +2807,17 @@ class Scheduler:
             if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0
             else None
         )
+        # q9b fix: the heavy half of a checkpoint save (force-eval of the
+        # extracted views, quant helpers, raw disk write) must never run
+        # on the main thread inside the prefill->first-decode eval
+        # window (UAF via freed-and-reused MLX event memory). Store
+        # sites do the cheap extract only and hand the views to this
+        # worker.
+        self._persist_worker = None
+        if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0:
+            from .persist_worker import PersistWorker
+
+            self._persist_worker = PersistWorker()
 
     def _get_actual_tokenizer(self, tokenizer: Any) -> Any:
         """
@@ -3268,16 +3279,22 @@ class Scheduler:
 
             prompt_tokens = list(request.prompt_token_ids)
             _t0 = _time.monotonic()
+
+            def _log_stored() -> None:
+                # Runs on the persist worker after the disk write, so
+                # store_time covers the real (now off-main-thread) store.
+                _dt = _time.monotonic() - _t0
+                logger.info(
+                    f"[prompt_cache_save] request={request_id[:12]} "
+                    f"prompt_tokens={len(prompt_tokens)} "
+                    f"store_time={_dt:.3f}s"
+                )
+
             self._disk_persist_boundary(
                 prompt_tokens,
                 extracted_cache,
                 media_key=getattr(request, "media_key", "") or "",
-            )
-            _dt = _time.monotonic() - _t0
-            logger.info(
-                f"[prompt_cache_save] request={request_id[:12]} "
-                f"prompt_tokens={len(prompt_tokens)} "
-                f"store_time={_dt:.3f}s"
+                on_stored=_log_stored,
             )
 
         return _prompt_cache_save
@@ -3450,32 +3467,39 @@ class Scheduler:
 
             prefix_tokens = list(request.prompt_token_ids[:prefix_boundary])
             _t0 = _time.monotonic()
-            stored = False
             try:
+
+                def _log_stored(
+                    _t0=_t0,
+                    request_id=request_id,
+                    prefix_boundary=prefix_boundary,
+                ) -> None:
+                    # Runs on the persist worker after the disk write, so
+                    # store_time covers the real (off-main-thread) store.
+                    # Loop values are bound at definition time.
+                    _dt = _time.monotonic() - _t0
+                    logger.info(
+                        f"[boundary_snapshot] request={request_id[:12]} "
+                        f"saved {prefix_boundary} tokens at message boundary "
+                        f"store_time={_dt:.3f}s"
+                    )
+
                 self._disk_persist_boundary(
                     prefix_tokens,
                     reconstructed,
                     media_key=getattr(request, "media_key", "") or "",
+                    on_stored=_log_stored,
                 )
-                stored = True
             except Exception as exc:
                 logger.debug(
                     "[boundary_snapshot] store failed for uid=%s: %s", uid, exc
                 )
-            _dt = _time.monotonic() - _t0
             # Mark the guard after the attempt (success OR failure) so a
             # repeated end_of_segment doesn't redo the expensive
             # extract+reconstruct cycle. A failed store usually means
             # the cache is busy — retrying every step would be pure waste.
             # DeepSeek finding #2 on PR #435.
             request._boundary_snapshot_taken = True
-
-            if stored:
-                logger.info(
-                    f"[boundary_snapshot] request={request_id[:12]} "
-                    f"saved {prefix_boundary} tokens at message boundary "
-                    f"store_time={_dt:.3f}s"
-                )
             # Free extracted cache states to prevent memory accumulation
             del states, reconstructed
             cache = None
@@ -5530,26 +5554,80 @@ class Scheduler:
         *,
         stable_prefix_len: int | None = None,
         media_key: str = "",
+        on_stored=None,
     ) -> None:
         """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
         Called directly from the scheduler store sites (prompt / message
-        boundary / mid-prefill / completion). Reproduces the disk half of
-        ``MemoryAwarePrefixCache.store()``: hybrid recurrent-state entries are
-        written RAW (never trimmed, #1025/#1058/#163); trimmable entries are
-        trimmed then quantized to the on-disk footprint restore expects. A
-        checkpoint that already exists for this ``(req_hash, offset)`` is not
-        re-serialized, which reproduces store()'s exact-match skip without the
-        in-memory cache (the writer is atomic, so an existing file is complete).
+        boundary / mid-prefill / completion). The heavy half (force-eval
+        of the extracted views, numpy/quant helpers, raw disk write) runs
+        on the dedicated persist worker, reproducing the disk half of
+        ``MemoryAwarePrefixCache.store()``: hybrid recurrent-state
+        entries are written RAW (never trimmed, #1025/#1058/#163);
+        trimmable entries are trimmed then quantized to the on-disk
+        footprint restore expects. A checkpoint that already exists for
+        this ``(req_hash, offset)`` is not re-serialized, which
+        reproduces store()'s exact-match skip without the in-memory
+        cache (the writer is atomic, so an existing file is complete).
         Never raises into the caller.
+
+        q9b fix: the main thread runs only the cheap gates (plus the
+        caller's cheap extract) and hands the views to the worker, which
+        holds strong refs to them until the write completes. A full
+        worker queue skips the checkpoint with one log line
+        (checkpointing is resilience, not correctness).
+        """
+        interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
+        if not interval or not tokens or cache is None:
+            return
+        if len(tokens) < 256:
+            # Cold-prefilling <256 tokens is instant; not worth a write.
+            return
+
+        worker = getattr(self, "_persist_worker", None)
+        if worker is None:
+            return
+
+        def _run_work() -> None:
+            # Runs on the persist worker: the force-eval of the extracted
+            # views, the numpy/quant helpers and the raw disk write all
+            # happen off the main thread, so nothing in this window can
+            # free-and-reuse MLX event memory under a live decode eval.
+            self._persist_boundary_work(
+                tokens,
+                cache,
+                stable_prefix_len=stable_prefix_len,
+                media_key=media_key,
+            )
+            if on_stored is not None:
+                try:
+                    on_stored()
+                except Exception:  # best-effort notification
+                    pass
+
+        if not worker.submit(_run_work):
+            # Backpressure: skip this checkpoint (resilience, not
+            # correctness); one line so operators can see the skip.
+            logger.warning(
+                "[disk_persist] persist queue full; skipping checkpoint for "
+                "%d-token prefix",
+                len(tokens),
+            )
+
+    def _persist_boundary_work(
+        self,
+        tokens,
+        cache,
+        *,
+        stable_prefix_len: int | None = None,
+        media_key: str = "",
+    ) -> None:
+        """Heavy half of a boundary checkpoint save, on the persist worker.
+
+        Force-eval of the extracted views, numpy/quant helpers, raw
+        disk write. Best-effort: never raises into the worker loop.
         """
         try:
-            interval = getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0
-            if not interval or not tokens or cache is None:
-                return
-            if len(tokens) < 256:
-                # Cold-prefilling <256 tokens is instant; not worth a write.
-                return
             import array as _arr
             import hashlib as _hl
 
@@ -6310,6 +6388,24 @@ class Scheduler:
                         import time as _time
 
                         _store_t0 = _time.monotonic()
+
+                        def _log_stored(
+                            _store_t0=_store_t0,
+                            request_id=request_id,
+                            full_token_sequence=full_token_sequence,
+                            request=request,
+                        ) -> None:
+                            # Runs on the persist worker after the disk
+                            # write, so time covers the real store.
+                            # Loop values are bound at definition time.
+                            _store_dt = _time.monotonic() - _store_t0
+                            logger.info(
+                                f"[cache_store] request={request_id[:12]} "
+                                f"tokens={len(full_token_sequence)} "
+                                f"({len(request.prompt_token_ids)} prompt + {len(request.output_token_ids)} output) "
+                                f"time={_store_dt:.3f}s"
+                            )
+
                         self._disk_persist_boundary(
                             full_token_sequence,
                             request._extracted_cache,
@@ -6322,14 +6418,7 @@ class Scheduler:
                             # with identical tokens collide in the text
                             # bucket.
                             media_key=getattr(request, "media_key", "") or "",
-                        )
-                        _store_dt = _time.monotonic() - _store_t0
-
-                        logger.info(
-                            f"[cache_store] request={request_id[:12]} "
-                            f"tokens={len(full_token_sequence)} "
-                            f"({len(request.prompt_token_ids)} prompt + {len(request.output_token_ids)} output) "
-                            f"time={_store_dt:.3f}s"
+                            on_stored=_log_stored,
                         )
                     except Exception as e:
                         logger.debug(
@@ -7033,6 +7122,16 @@ class Scheduler:
         if self.prefix_cache is not None:
             self.prefix_cache.clear()
 
+    def _shutdown_persist_worker(self) -> None:
+        """Drain the checkpoint persist worker (bounded; marks rest lost)."""
+        worker = getattr(self, "_persist_worker", None)
+        if worker is not None:
+            try:
+                worker.shutdown()
+            except Exception as exc:  # best-effort teardown
+                logger.debug("persist worker shutdown failed: %s", exc)
+        self._persist_worker = None
+
     def deep_reset(self) -> None:
         """
         Deep reset that clears ALL cache state including model-level caches.
@@ -7040,6 +7139,15 @@ class Scheduler:
         This is more aggressive than reset() and should be used when
         switching engines or recovering from errors.
         """
+        # Drain the persist worker (bounded) on teardown so pending
+        # checkpoint writes finish or are marked lost, then bring it
+        # back for the next user of this scheduler.
+        self._shutdown_persist_worker()
+        if (getattr(self.config, "kv_disk_checkpoint_interval", 0) or 0) > 0:
+            from .persist_worker import PersistWorker
+
+            self._persist_worker = PersistWorker()
+
         # Standard reset first
         self.reset()
 
