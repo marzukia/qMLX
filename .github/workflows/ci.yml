@@ -135,7 +135,8 @@ jobs:
           fail_ci_if_error: false
 
   test-apple-silicon:
-    runs-on: macos-14
+    # macos-14 image retired 2026-11-02 (actions/runner-images#13518); macos-15 is the current arm64 standard
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
