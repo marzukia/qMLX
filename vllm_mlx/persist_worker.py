@@ -34,6 +34,7 @@ means the worker can never deadlock on a gate that is never set.
 import logging
 import queue
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,21 @@ class PersistWorker:
         """Number of tasks waiting to run."""
         return self._queue.qsize()
 
+    def wait_idle(self, timeout: float = 10.0) -> bool:
+        """Bounded wait until the queue is empty and no task is in flight.
+
+        Test/teardown sync point only: production callers never wait
+        (checkpointing must not block the step thread). Returns False on
+        timeout. ``unfinished_tasks`` counts queued + in-flight tasks
+        (task_done in the worker loop decrements it when each finishes).
+        """
+        deadline = time.monotonic() + timeout
+        while self._queue.unfinished_tasks:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.002)
+        return True
+
     def shutdown(self, timeout: float = 2.0) -> int:
         """Signal stop and drain for at most ``timeout`` seconds.
 
@@ -119,6 +135,6 @@ class PersistWorker:
             try:
                 work()
             except Exception as exc:  # best-effort work: never kill the worker
-                logger.debug("[persist_worker] task failed: %s", exc)
+                logger.warning("[persist_worker] task failed: %s", exc)
             finally:
                 self._queue.task_done()
