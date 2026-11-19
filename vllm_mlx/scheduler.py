@@ -42,6 +42,7 @@ from ._sampler_fast_path import (  # noqa: E402
 )
 from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .honest_metrics import HonestMetrics  # noqa: E402
+from .output_collector import RequestOutputCollector
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
 from .pflash_v2 import install_pflash_v2  # noqa: E402
@@ -5341,10 +5342,21 @@ class Scheduler:
                 new_text = ""
             else:
                 decoder = getattr(request, "_decoder", None)
-                if decoder is not None:
+                # F3 PROBE (t3219): skip per-step detok when no streaming
+                # consumer is waiting. Non-streaming requests wait on the
+                # finished-event (engine_core.generate), never on the
+                # collector, so no waiting consumer exists and their
+                # per-step new_text is unused — the final text comes
+                # from the one-shot full decode at finish (see below).
+                # NOTE: global (any-collector) gate; exact per-request
+                # gating is a follow-up. Probe-only mechanism check.
+                if (
+                    decoder is not None
+                    and RequestOutputCollector.has_waiting_consumers()
+                ):
                     new_text = decoder.add_token(response.token)
                 else:
-                    new_text = self._decode_tokens([response.token])
+                    new_text = ""
 
             # output_token_ids is a live reference (not a defensive copy):
             # consumers read it synchronously; the per-decode list() was O(n).
@@ -5385,7 +5397,10 @@ class Scheduler:
             stop_params = request.sampling_params.stop or []
             if finish_reason is None and stop_params:
                 decoder = getattr(request, "_decoder", None)
-                if decoder is not None:
+                # t3219: an F3-skipped (non-streaming) decoder has no
+                # accumulated tokens — fall back to the one-shot full
+                # decode so stop-string matching still works.
+                if decoder is not None and decoder.token_ids:
                     decoded_so_far = decoder.get_full_text()
                 else:
                     decoded_so_far = self._decode_tokens(request.output_token_ids)
@@ -5480,8 +5495,11 @@ class Scheduler:
                 else:
                     # Decode full output using decoder if available (ensures
                     # any held-back multi-byte chars are flushed)
+                    # t3219: an F3-skipped (non-streaming) decoder has no
+                    # accumulated tokens — use the one-shot full decode
+                    # so the non-streaming text is complete.
                     decoder = getattr(request, "_decoder", None)
-                    if decoder is not None:
+                    if decoder is not None and decoder.token_ids:
                         output.output_text = decoder.get_full_text()
                     else:
                         output.output_text = self._decode_tokens(
