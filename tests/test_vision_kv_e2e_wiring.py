@@ -475,6 +475,7 @@ def test_repeated_multimodal_turn_prefix_hit(root: str):
     cache = _seed_kv_cache(num_tokens=len(tokens))
     mk = _media_key(IMG_A)
     sched._disk_persist_boundary(tokens, cache, media_key=mk)
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
 
     # Turn 2: the SAME image, the conversation extended with new tokens.
     turn2 = tokens + [900, 901, 902]
@@ -490,6 +491,7 @@ def test_image_change_no_stale_reuse(root: str):
     tokens = list(range(1, 257))
     cache = _seed_kv_cache(num_tokens=len(tokens))
     sched._disk_persist_boundary(tokens, cache, media_key=_media_key(IMG_A))
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
 
     assert _dkc.get_content_index().lookup(tokens, _media_key(IMG_B)) is None
     # ...and a text-only query for the same tokens must not match either.
@@ -513,6 +515,7 @@ def test_disk_kv_roundtrip_image_aware_keys(root: str):
     cache = _seed_kv_cache(num_tokens=len(tokens))
     mk_a = _media_key(IMG_A)
     sched._disk_persist_boundary(tokens, cache, media_key=mk_a)
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
 
     # The on-disk sidecar carries the media key.
     import hashlib
@@ -575,6 +578,7 @@ def test_mtp_off_with_images_threads_media_key(root: str):
     sched._disk_persist_boundary(
         tokens, cache, media_key=getattr(req, "media_key", "") or ""
     )
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
     idx = _dkc.get_content_index()
     assert idx.lookup(tokens, req.media_key) is not None
     assert idx.lookup(tokens, _media_key(IMG_B)) is None
@@ -599,5 +603,6 @@ def test_mtp_on_with_images_keys_same_media_bucket(root: str):
     cache = _seed_kv_cache(num_tokens=len(tokens))
     mk = _media_key(IMG_A)
     sched._disk_persist_boundary(tokens, cache, media_key=mk)
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
     assert _dkc.get_content_index().lookup(tokens, mk) is not None
     assert _dkc.get_content_index().lookup(tokens, _media_key(IMG_B)) is None

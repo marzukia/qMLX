@@ -226,6 +226,7 @@ def test_disk_persist_boundary_text_hash_unchanged(root: str):
     tokens = list(range(1, 257))
     cache = _seed_kv_cache(num_tokens=len(tokens))
     sched._disk_persist_boundary(tokens, cache)
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
 
     raw = b"".join(int(t).to_bytes(4, "little", signed=True) for t in tokens)
     expected = hashlib.sha256(b"test-model" + raw).hexdigest()[:16]
@@ -242,6 +243,7 @@ def test_disk_persist_boundary_media_key_changes_hash_and_sidecar(root: str):
     cache = _seed_kv_cache(num_tokens=len(tokens))
     mk = _media_key(IMG_A)
     sched._disk_persist_boundary(tokens, cache, media_key=mk)
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
 
     raw = b"".join(int(t).to_bytes(4, "little", signed=True) for t in tokens)
     text_hash = hashlib.sha256(b"test-model" + raw).hexdigest()[:16]
@@ -257,6 +259,7 @@ def test_disk_persist_boundary_media_key_changes_hash_and_sidecar(root: str):
     # The changed image lands in a different directory with its own sidecar.
     mk_b = _media_key(IMG_B)
     sched._disk_persist_boundary(tokens, cache, media_key=mk_b)
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
     media_hash_b = hashlib.sha256(
         b"test-model" + raw + b"\x00" + mk_b.encode()
     ).hexdigest()[:16]
@@ -283,6 +286,7 @@ def test_disk_persist_boundary_threads_request_media_key(root: str):
     sched._disk_persist_boundary(
         tokens, cache, media_key=getattr(req, "media_key", "") or ""
     )
+    sched._persist_worker.wait_idle(10.0)  # #119: the write runs on the persist worker
     # The content index resolves this exact (tokens, image) pair and only it.
     idx = _dkc.get_content_index()
     assert idx.lookup(tokens, req.media_key) is not None

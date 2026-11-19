@@ -107,6 +107,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1013,9 +1015,162 @@ def should_checkpoint(
     return num_tokens >= last_checkpoint_at + interval
 
 
+_NP_DTYPE_NAMES = {
+    "float32": "F32",
+    "float16": "F16",
+    "int64": "I64",
+    "int32": "I32",
+    "int16": "I16",
+    "int8": "I8",
+    "uint8": "U8",
+    "uint16": "U16",
+    "uint32": "U32",
+    "uint64": "U64",
+    "bool": "BOOL",
+}
+
+
+def write_safetensors_numpy(
+    file_path: str,
+    tensors: list[tuple[str, str, list[int], Any]],
+    metadata: dict[str, str] | None = None,
+) -> None:
+    """Write a safetensors file from numpy arrays (pure file I/O).
+
+    Byte-compatible with what ``mx.save_safetensors`` produces for the
+    same tensor set (8-byte LE header length + JSON header + packed, un-
+    padded data region; ``__metadata__`` carries the caller's metadata
+    dict). No MLX calls anywhere in this path: the arrays must already
+    be on the host, so this can safely run on a background thread while
+    the decode step thread is mid-``eval`` (the async-isolation
+    contract — see ``persist_worker`` / the scheduler's checkpoint
+    store sites).
+
+    ``tensors`` items are ``(name, safetensors_dtype, shape, ndarray)``;
+    the ndarray's own dtype is ignored in favour of the explicit
+    ``safetensors_dtype`` (callers use it for bf16, whose bits arrive
+    as uint16). Raises on any I/O error; the caller owns tmp/rename.
+    """
+    import json as _json
+    import struct
+
+    header: dict[str, Any] = {}
+    if metadata is not None:
+        header["__metadata__"] = metadata
+    data = b""
+    for name, dtype_str, shape, arr in tensors:
+        import numpy as np
+
+        raw = np.ascontiguousarray(arr).tobytes()
+        header[name] = {
+            "dtype": dtype_str,
+            "shape": list(shape),
+            "data_offsets": [len(data), len(data) + len(raw)],
+        }
+        data += raw
+    hdr = _json.dumps(header).encode("utf-8")
+    with open(file_path, "wb") as f:
+        f.write(struct.pack("<Q", len(hdr)))
+        f.write(hdr)
+        f.write(data)
+
+
+def _mlx_array_to_numpy(arr) -> tuple[np.ndarray, str] | None:
+    """Host-materialise one mx.array WITHOUT touching its compute graph.
+
+    Must run on the thread that owns the eval (the scheduler step
+    thread); the numpy result is a host-side copy that the persist
+    worker can serialise without any further MLX work.
+    """
+    import mlx.core as mx
+    import numpy as np
+
+    # mlx dtypes expose no ``.name``; ``str(dtype)`` is e.g.
+    # ``"mlx.core.bfloat16"`` / ``"mlx.core.float16"``.
+    short = str(arr.dtype)
+    if short.startswith("mlx.core."):
+        short = short[len("mlx.core.") :]
+    if short == "bfloat16":
+        # No numpy bfloat16: upcast to f32 (bit-exact), D2H, then
+        # round-to-nearest-even back to the 16 bits (identity for
+        # values that are already representable in bf16).
+        f32 = np.asarray(arr.astype(mx.float32))
+        u32 = f32.view(np.uint32)
+        u16 = (u32 + 0x7FFF + ((u32 >> 16) & 1)) >> 16
+        return u16.astype(np.uint16), "BF16"
+    mapped = _NP_DTYPE_NAMES.get(short)
+    if mapped is None:
+        return None
+    return np.asarray(arr), mapped
+
+
+def prepare_numpy_body(
+    cache: list[Any], st_meta: dict[str, str]
+) -> dict[str, Any] | None:
+    """Step-thread side of an off-thread checkpoint write.
+
+    Replicates ``mlx_lm.save_prompt_cache``'s flattening (tree of
+    ``c.state`` + scalar/string/None mapping) but ends at host-side
+    numpy arrays instead of calling ``mx.save_safetensors`` (which
+    force-evals + D2Hs on the calling thread).
+
+    Returns ``{"tensors": [(name, dtype, shape, ndarray)...],
+    "metadata": {flattened save_prompt_cache metadata}}`` or None when
+    any leaf is not serialisable (the caller skips the write with a
+    log — same best-effort contract as the MLX path).
+    """
+    import mlx.core as mx
+    import numpy as np  # noqa: F401
+    from mlx.utils import tree_flatten
+
+    scalars: list[tuple[str, str]] = [""]  # leading "" like save_prompt_cache
+
+    def map_data(item):
+        i, data = item
+        if isinstance(data, mx.array):
+            conv = _mlx_array_to_numpy(data)
+            if conv is None:
+                raise ValueError(f"unsupported dtype {data.dtype}")
+            arr, dtype = conv
+            return (i, arr, dtype)
+        if isinstance(data, bool):
+            scalars.append((i, "scalar"))
+            return (i, np.bool_(data), "BOOL")
+        if isinstance(data, (int, float)):
+            scalars.append((i, "scalar"))
+            if isinstance(data, int):
+                arr, dtype = np.int32(data), "I32"
+            else:
+                arr, dtype = np.float32(data), "F32"
+            return (i, arr, dtype)
+        if isinstance(data, str):
+            scalars.append((i, "string"))
+            return (i, np.array([ord(c) for c in data], dtype=np.int32), "I32")
+        if data is None:
+            scalars.append((i, "none"))
+            return (i, np.array([], dtype=np.float32), "F32")
+        raise ValueError(f"Model state is not serializable: {data}")
+
+    try:
+        flat = tree_flatten([c.state for c in cache])
+        mapped = [map_data(x) for x in flat]
+    except Exception as e:
+        logger.warning(f"[disk_kv_checkpoint] numpy body prep failed: {e}")
+        return None
+
+    tensors: list[tuple[str, str, list[int], Any]] = []
+    for i, arr, dtype in mapped:
+        tensors.append((str(i), dtype, list(arr.shape), arr))
+
+    cache_classes = [type(c).__name__ for c in cache]
+    metadata = dict(tree_flatten([st_meta, cache_classes, scalars]))
+    return {"tensors": tensors, "metadata": metadata}
+
+
 def write_checkpoint(
     cache: list[Any],
     *,
+    numpy_body: dict[str, Any] | None = None,
     root: str,
     req_hash: str,
     token_offset: int,
@@ -1086,9 +1241,12 @@ def write_checkpoint(
     # The CLI / scheduler caller already gates on
     # :func:`should_checkpoint`; the guard here is a belt for the
     # in-process radix path that pokes ``write_checkpoint`` directly.
+    # A ``numpy_body`` caller (the off-thread scheduler path) passes
+    # ``cache=None`` — the guard only applies when there is no body.
+    _has_np = numpy_body is not None and "tensors" in numpy_body
     if not isinstance(token_offset, int) or token_offset < 0:
         return None
-    if cache is None or not cache:
+    if (cache is None or not cache) and not _has_np:
         return None
 
     with _DISK_LOCK:
@@ -1136,6 +1294,14 @@ def write_checkpoint(
                 except (TypeError, ValueError):
                     tokens_for_blob = None
 
+        # A ``numpy_body`` (see :func:`prepare_numpy_body`) means the
+        # caller already host-materialised the body on its own eval-
+        # owning thread; the body write below is then pure file I/O and
+        # this call is safe to run on the background persist worker. The
+        # delta branch is skipped for numpy bodies (they are built for
+        # the full snapshot; delta checkpoints default off).
+        has_numpy_body = numpy_body is not None and "tensors" in numpy_body
+
         # Delta vs full decision, made HERE under ``_DISK_LOCK`` so the parent
         # re-validation and the write share the same lock the trailing
         # eviction holds (TOCTOU, design §1). ``delta_cache`` is the sliced
@@ -1147,7 +1313,12 @@ def write_checkpoint(
         write_body = cache
         final_kind = "full"
         resolved_delta: dict[str, Any] | None = None
-        if kind == "delta" and delta_cache is not None and delta_meta is not None:
+        if (
+            kind == "delta"
+            and delta_cache is not None
+            and delta_meta is not None
+            and not has_numpy_body
+        ):
             b_hash = str(delta_meta.get("base_hash") or "")
             b_off = int(delta_meta.get("base_offset") or 0)
             b_uuid = delta_meta.get("base_save_uuid")
@@ -1179,7 +1350,14 @@ def write_checkpoint(
             st_meta["model_name"] = str(model_name)
 
         try:
-            save_prompt_cache(tmp_path, write_body, metadata=st_meta)
+            if has_numpy_body:
+                write_safetensors_numpy(
+                    tmp_path,
+                    numpy_body["tensors"],
+                    metadata=numpy_body["metadata"],
+                )
+            else:
+                save_prompt_cache(tmp_path, write_body, metadata=st_meta)
             # Durably commit the body BEFORE the rename. Same rationale as
             # ``memory_cache.py`` R8-M7 codex r1 BLOCKING #3 — without
             # the fsync a SIGTERM-driven shutdown could leave a renamed

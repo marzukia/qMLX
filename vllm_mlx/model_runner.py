@@ -21,6 +21,9 @@ import mlx.core as mx
 from vllm_mlx.patches.deepseek_v32_indexer_gate import (
     install_deepseek_v32_indexer_gate as _install_dsv32_indexer_gate,
 )
+from vllm_mlx.patches.ssm_mask_short_circuit import (
+    install_ssm_mask_short_circuit as _install_ssm_mask_short_circuit,
+)
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -32,6 +35,11 @@ logger = logging.getLogger(__name__)
 # (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit) load via mlx_lm.
 # Idempotent + no-op on configs that don't publish ``indexer_types``.
 _install_dsv32_indexer_gate()
+
+# Install the conditional SSM-mask short-circuit so hybrid (GDN/Mamba)
+# models stay on the unmasked fast path when the batch has no real padding
+# or length truncation. Idempotent + no-op when mlx_lm is unavailable.
+_install_ssm_mask_short_circuit()
 
 
 @dataclass

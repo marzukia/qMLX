@@ -2573,6 +2573,22 @@ def serve_command(args):
             hf_cfg_eligibility, _ = _gather_kv_cache_dtype_inputs(args.model)
         except Exception:  # pragma: no cover — best-effort
             hf_cfg_eligibility = None
+        # Local-path gate fallback: _gather_kv_cache_dtype_inputs only reads
+        # config.json from the HF hub cache, so raw local model directories
+        # always yield None and the gate below wrongly rejects an
+        # MTP-eligible checkpoint. Fall back to reading <model>/config.json
+        # directly when the model arg is a local dir.
+        if hf_cfg_eligibility is None:
+            try:
+                import json as _json
+                import os as _os
+
+                _cp = _os.path.join(str(args.model), "config.json")
+                if _os.path.isfile(_cp):
+                    with open(_cp) as _fh:
+                        hf_cfg_eligibility = _json.load(_fh)
+            except Exception:  # pragma: no cover
+                pass
         has_sidecar = bool(getattr(args, "mtp_sidecar", None))
         eligibility = detect_mtp_eligibility(
             hf_cfg_eligibility, has_external_sidecar=has_sidecar
