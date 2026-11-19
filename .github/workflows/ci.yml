@@ -121,6 +121,7 @@ jobs:
             tests/test_tmax_merge_vision.py \
             tests/test_text_only_media_gate.py \
             tests/test_image_block_requires_vision_model.py \
+            tests/test_persist_worker.py \
             -v --tb=short \
             -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
             --cov=vllm_mlx \

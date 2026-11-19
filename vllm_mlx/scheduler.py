@@ -5399,8 +5399,14 @@ class Scheduler:
                 decoder = getattr(request, "_decoder", None)
                 # t3219: an F3-skipped (non-streaming) decoder has no
                 # accumulated tokens — fall back to the one-shot full
-                # decode so stop-string matching still works.
-                if decoder is not None and decoder.token_ids:
+                # decode so stop-string matching still works. The gate is
+                # COMPLETENESS, not truthiness: a mid-request flip of the
+                # global any-collector gate can leave the decoder
+                # partially populated (a subsequence of the output ids),
+                # and stop strings spanning a gap would be missed.
+                if decoder is not None and len(decoder.token_ids) == len(
+                    request.output_token_ids
+                ):
                     decoded_so_far = decoder.get_full_text()
                 else:
                     decoded_so_far = self._decode_tokens(request.output_token_ids)
@@ -5497,9 +5503,14 @@ class Scheduler:
                     # any held-back multi-byte chars are flushed)
                     # t3219: an F3-skipped (non-streaming) decoder has no
                     # accumulated tokens — use the one-shot full decode
-                    # so the non-streaming text is complete.
+                    # so the non-streaming text is complete. Same
+                    # completeness gate as the stop check above: only trust
+                    # the decoder when it holds every output id — a
+                    # partially populated decoder would flush a subsequence.
                     decoder = getattr(request, "_decoder", None)
-                    if decoder is not None and decoder.token_ids:
+                    if decoder is not None and len(decoder.token_ids) == len(
+                        request.output_token_ids
+                    ):
                         output.output_text = decoder.get_full_text()
                     else:
                         output.output_text = self._decode_tokens(
