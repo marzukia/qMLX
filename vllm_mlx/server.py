@@ -430,15 +430,102 @@ async def lifespan(app: FastAPI):
                     "Hybrid model: running full request warmup "
                     "(compiling GatedDeltaNet kernels)"
                 )
+                # t3219 FIX: the prior call used `_engine.stream_chat(...)`,
+                # which does not exist on BatchedEngine — the
+                # AttributeError was swallowed at logger.debug, so the
+                # warmup never executed a forward ("Warmup complete
+                # (0.0s)") and every fresh serve's first 4K request paid
+                # one-time GDN kernel compilation + BatchGenerator
+                # priming (~28s TTFT). Fix: run a REAL engine request
+                # (full scheduler path: BatchGenerator prime + GDN
+                # kernels + detok + KV allocation) at serve startup, and
+                # fall back to the plain-forward generate_warmup() if it
+                # fails. Failures are logged at WARNING (visible at
+                # --log-level info) so the warmup can never be a silent
+                # no-op again.
+                _warmed = False
                 try:
-                    async for _ in _engine.stream_chat(
-                        messages=[{"role": "user", "content": "Hi"}],
-                        max_tokens=2,
-                        temperature=0.0,
-                    ):
-                        pass
+                    if hasattr(_engine, "generate"):
+                        _wo = await _engine.generate(
+                            "Hi", max_tokens=2, temperature=0.0
+                        )
+                        _warmed = True
+                        logger.info(
+                            "Hybrid warmup request done (prompt_tokens=%s, "
+                            "completion_tokens=%s)",
+                            getattr(_wo, "prompt_tokens", "?"),
+                            getattr(_wo, "completion_tokens", "?"),
+                        )
                 except Exception as _e:
-                    logger.debug(f"Hybrid warmup error (non-fatal): {_e}")
+                    logger.warning(
+                        "Hybrid warmup request failed: %r — falling back "
+                        "to generate_warmup()",
+                        _e,
+                    )
+                if not _warmed:
+                    try:
+                        _engine.generate_warmup()
+                        _warmed = True
+                    except Exception as _e2:
+                        logger.warning("Hybrid generate_warmup() failed: %r", _e2)
+                if not _warmed:
+                    logger.warning(
+                        "Hybrid warmup did NOT run a forward — first "
+                        "request will pay one-time kernel compilation"
+                    )
+                # t3225 EXTEND: the 2-token request above primes the
+                # BatchGenerator + T=1 decode GDN kernels, but the
+                # 2048-token prefill chunks (native prefill_step_size
+                # = 2048) only JIT-compile on the first real 4K
+                # request (~1 s one-time cost on the first 4K TTFT).
+                # Run one more full-request warmup with an
+                # exactly-4096-token prompt (2 x 2048 prefill steps,
+                # max_tokens=1) so the first real 4K request never
+                # pays one-time kernel compilation. Untimed diagnostic
+                # only — logged, never the headline.
+                _tk4k = getattr(_engine, "tokenizer", None)
+                _enc4k = getattr(_tk4k, "encode", None)
+                if callable(_enc4k):
+                    _wp4k = "The quick brown fox jumps over the lazy dog. "
+                    _n4k = len(_enc4k(_wp4k))
+                    _wp4k = _wp4k * max(1, 4096 // _n4k)
+                    _n4k = len(_enc4k(_wp4k))
+                    while _n4k < 4096:
+                        _wp4k += "The"
+                        _n4k = len(_enc4k(_wp4k))
+                    if _n4k == 4096:
+                        _w4k_start = _time.monotonic()
+                        try:
+                            _wo4k = await _engine.generate(
+                                _wp4k, max_tokens=1, temperature=0.0
+                            )
+                            logger.info(
+                                "Hybrid 4K-prefill warmup request done "
+                                "(prompt_tokens=%s, completion_tokens=%s, "
+                                "wall=%.1fs, untimed diagnostic only)",
+                                getattr(_wo4k, "prompt_tokens", "?"),
+                                getattr(_wo4k, "completion_tokens", "?"),
+                                _time.monotonic() - _w4k_start,
+                            )
+                        except Exception as _e4k:
+                            logger.warning(
+                                "Hybrid 4K-prefill warmup request failed: "
+                                "%r (first 4K request may pay one-time "
+                                "JIT)",
+                                _e4k,
+                            )
+                    else:
+                        logger.warning(
+                            "Hybrid 4K warmup prompt could not be sized "
+                            "to exactly 4096 tokens (got %s) — 2x2048 "
+                            "prefill shape may not be primed",
+                            _n4k,
+                        )
+                else:
+                    logger.warning(
+                        "Hybrid 4K warmup skipped: engine tokenizer lacks "
+                        "encode() — first 4K request may pay one-time JIT"
+                    )
         except Exception as e:
             logger.debug(f"Warmup failed (non-fatal): {e}")
         _warmup_secs = _time.monotonic() - _warmup_start
