@@ -135,7 +135,7 @@ jobs:
           fail_ci_if_error: false
 
   test-apple-silicon:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
