@@ -1061,6 +1061,39 @@ def _release_kv_cache_fields(caches: Any, skip_ids: set[int] | None = None) -> i
     return released
 
 
+def _install_arrays_extract_copy_guard() -> None:
+    """slice-2 fix (A): ArraysCache.extract materializes each slice.
+
+    The GDN ssm/conv buffers are rewritten in place by the ROCm recurrence
+    kernels, so a lazy alias read at the deferred save time captures a torn
+    state. Copying at extract time freezes the boundary value. Idempotent.
+    """
+    try:
+        import mlx.core as mx
+        from mlx_lm.models.cache import ArraysCache
+    except ImportError:  # pragma: no cover
+        return
+    if getattr(ArraysCache, "_slice2_extract_guard", False):
+        return
+    _orig_extract = ArraysCache.extract
+
+    def _extract_copy(self, idx):
+        cache = ArraysCache(len(self.cache))
+        slices = []
+        for c in self.cache:
+            if c is None:
+                slices.append(None)
+                continue
+            s = mx.contiguous(c[idx : idx + 1])
+            mx.eval(s)
+            slices.append(s)
+        cache.cache = slices
+        return cache
+
+    ArraysCache.extract = _extract_copy
+    ArraysCache._slice2_extract_guard = True
+
+
 def _install_mtp_vendored(
     batch_gen: "BatchGenerator",
     model: Any,
@@ -3238,7 +3271,61 @@ class Scheduler:
         # so this layering is safe.
         _install_dense_sampler_fastpath(bg)
 
+        # slice-2 fix (A): materialized extract copy for the recurrent
+        # (GDN) state - the ROCm recurrence kernels rewrite those buffers
+        # in place, so a lazy alias read at the deferred save time would
+        # capture a torn state.
+        _install_arrays_extract_copy_guard()
+
+        # slice-2 fix (B): capture the prompt-boundary checkpoint state at
+        # the true boundary (before the Batch.generate bootstrap feed),
+        # persisted deferred on a worker thread (no main-thread D2H race
+        # with the decode async_eval).
+        self._install_prompt_boundary_snapshot(bg)
+
         return bg
+
+    def _install_prompt_boundary_snapshot(self, bg: Any) -> None:
+        try:
+            from mlx_lm.generate import PromptProcessingBatch as _PromptBatchCls
+        except ImportError:
+            from mlx_lm.generate import Batch as _PromptBatchCls
+
+        if getattr(bg, "_prompt_boundary_installed", False):
+            return
+
+        _orig_generate = _PromptBatchCls.generate
+
+        def _hook_generate(self_batch, tokens):
+            scheduler = self
+            try:
+                for i in range(len(self_batch.uids)):
+                    fed = list(self_batch.tokens[i])
+                    last = list(tokens[i])
+                    key_tokens = fed + last
+                    if len(key_tokens) < 256:
+                        continue
+                    offset = len(fed)
+                    extracted = self_batch.extract_cache(i)
+
+                    def _deferred(k=key_tokens, o=offset, c=extracted):
+                        time.sleep(0.1)
+                        # offset stays the key length (4096): the restore
+                        # index matches offset == query_len. The state is the
+                        # pre-bootstrap capture (4095); the engine feeds the
+                        # last token via the bootstrap exactly like the fresh
+                        # path (cached=N + tokens_to_prefill=1 contract).
+                        scheduler._disk_persist_boundary(k, c, media_key="")
+
+                    threading.Thread(target=_deferred, daemon=True).start()
+            except Exception as _e:  # pragma: no cover - best-effort
+                logger.debug("[prompt_boundary] snapshot failed: %r", _e)
+            return _orig_generate(self_batch, tokens)
+
+        _PromptBatchCls.generate = _hook_generate
+        bg._prompt_boundary_installed = True
+        self._prompt_boundary_wrapper_active = True
+        logger.info("[prompt_boundary] Batch.generate snapshot installed")
 
     def _make_prompt_cache_save_callback(self):
         """Create a callback that stores prompt-only KV/Mamba cache.
@@ -3283,6 +3370,12 @@ class Scheduler:
         return _prompt_cache_save
 
     def _snapshot_promoted_prompts(self, prompt_responses) -> None:
+        # slice-2 fix (C): the boundary capture moved to the Batch.generate
+        # hook (pre-bootstrap state). This end_of_prompt snapshot fires one
+        # bootstrap feed late (state @prompt_len under the prompt_len-1
+        # semantics) and would write a second, restore-mismatched file.
+        if getattr(self, "_prompt_boundary_wrapper_active", False):
+            return
         """Snapshot prompt-only cache for sequences just promoted to generation.
 
         Reads the public ``end_of_prompt`` flag from mlx-lm 0.31+'s prompt
@@ -5530,6 +5623,7 @@ class Scheduler:
         *,
         stable_prefix_len: int | None = None,
         media_key: str = "",
+        state_offset: int | None = None,
     ) -> None:
         """Write a boundary checkpoint to disk, decoupled from the RAM prefix cache.
 
@@ -5589,6 +5683,10 @@ class Scheduler:
                 key_tokens = key_tokens[:stable_prefix_len]
                 target_len = stable_prefix_len
 
+            # slice-2 fix (D): the state may lag the match key by the
+            # bootstrap feed (state @prompt_len-1, key = full prompt).
+            # Filename/sidecar/content-index offset = the state length.
+            state_offset_len = target_len if state_offset is None else state_offset
             mname = getattr(self, "_model_name", None)
             root = _dkc.get_default_root()
             raw = _arr.array("i", (int(t) for t in key_tokens)).tobytes()
@@ -5614,7 +5712,7 @@ class Scheduler:
             # The writer is atomic (temp + fsync + rename), so a present file is
             # always complete; re-serializing would just repeat a multi-GB write
             # on the hot repeat-prompt path.
-            if os.path.exists(_dkc.checkpoint_path(root, req_hash, target_len)):
+            if os.path.exists(_dkc.checkpoint_path(root, req_hash, state_offset_len)):
                 return
 
             # Hybrid recurrent-state caches are written RAW. Trimming a
@@ -5711,7 +5809,7 @@ class Scheduler:
                 write_cache,
                 root=root,
                 req_hash=req_hash,
-                token_offset=target_len,
+                token_offset=state_offset_len,
                 kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
                 requires_full_checkpoint=_dkc.model_requires_full_checkpoint(mname),
                 model_name=mname,
@@ -6043,6 +6141,29 @@ class Scheduler:
                         _deq_err,
                     )
                     return
+            # slice-2 fix (G2): materialize the loaded cache arrays on
+            # this (request/scheduler) thread before the engine merges
+            # them on the mlx-step thread (a different stream). On ROCm,
+            # a cross-stream read of pending H2D copies loses or shifts
+            # data; the lookup path bypasses load_checkpoint, so the eval
+            # lives at the handoff.
+            try:
+                _deps = []
+                for _c in restored_cache:
+                    if hasattr(_c, "keys") and _c.keys is not None:
+                        _deps.append(_c.keys)
+                    if hasattr(_c, "values") and _c.values is not None:
+                        _deps.append(_c.values)
+                    if hasattr(_c, "cache"):
+                        for _st in _c.cache:
+                            if _st is not None:
+                                _deps.append(_st)
+                if _deps:
+                    import mlx.core as _mx
+
+                    _mx.eval(*_deps)
+            except Exception:  # pragma: no cover - never break restore
+                pass
             request.prompt_cache = restored_cache
             request.cached_tokens = offset
             request.remaining_tokens = list(prompt_ids[offset:])

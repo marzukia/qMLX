@@ -2881,7 +2881,11 @@ def _cache_offset_matches(cache: list[Any], offset: int) -> bool:
     """
     for layer in cache:
         off = getattr(layer, "offset", None)
-        if isinstance(off, int) and off != offset:
+        # slice-2 fix: the hybrid prompt-boundary capture is pre-bootstrap
+        # (state @offset-1); the restore replays the last-token feed via the
+        # bootstrap, so offset-1 is the consistent geometry. The overshoot
+        # class (off > offset) stays rejected.
+        if isinstance(off, int) and off not in (offset, offset - 1):
             return False
     return True
 
