@@ -575,7 +575,12 @@ def inject_mtp_support(
     # corrupts normalization. Run this ONLY after confirming the model is
     # a real MTP checkpoint (num_mtp_layers >= 1) so a rejected/non-MTP
     # model is never mutated.
-    _fix_mtp_norm_double_shift(inner)
+    # K3 ablation-1 (2026-11-20, card on the qmlx lane): the mean > 1.5
+    # threshold misfires on the qwen3-9b MTP sidecar, whose 7 norms are a
+    # uniform +1.0 convention shift that the module consumes uncorrected.
+    # The "fix" subtracts 1.0 from 3 of 7 norms (k_norm, q_norm, mtp.norm)
+    # and collapses the pos2/pos3 draft acceptance; disabled below.
+    # _fix_mtp_norm_double_shift(inner)
 
     # --- Step 3 (early): Load MTP weights + infer config if auto-detecting ---
     # When model_repo is provided, load weights BEFORE building the MTP
